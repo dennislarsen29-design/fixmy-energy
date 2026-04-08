@@ -670,9 +670,8 @@
           '<div><label class="ed-label">Cell Phone *</label><input type="tel"  id="nlPhone" class="ed-input" placeholder="(619) 555-1234"/></div>' +
           '<div><label class="ed-label">Email Address</label><input type="email" id="nlEmail" class="ed-input" placeholder="john@email.com"/></div>' +
         '</div>' +
-        '<div class="editor-section-title">Appointment</div>' +
+        '<div class="editor-section-title">Setter Info</div>' +
         '<div class="ed-grid">' +
-          '<div><label class="ed-label">Appointment Date/Time</label><input type="datetime-local" id="nlAppt" class="ed-input" value="'+localDT+'"/></div>' +
           '<div><label class="ed-label">Setter Name</label><input type="text" id="nlSetter" class="ed-input" placeholder="Your name"/></div>' +
         '</div>' +
         '<div class="editor-section-title">Qualification Checklist</div>' +
@@ -788,7 +787,7 @@
     var addr   = (document.getElementById('nlAddr').value||'').trim();
     var first  = (document.getElementById('nlFirst').value||'').trim();
     var type   = document.getElementById('nlType').value;
-    var appt   = document.getElementById('nlAppt').value;
+    var appt   = '';
     var setter = (document.getElementById('nlSetter').value||'').trim();
     var notes  = (document.getElementById('nlNotes').value||'').trim();
     var owned  = (document.getElementById('nlOwned').value||'').trim();
@@ -818,17 +817,15 @@
     ].filter(Boolean).join(' | ');
 
     var newLead = {
-      first_name:      first,
-      last_name:       (document.getElementById('nlLast').value||null),
-      email:           email,
-      phone:           phone,
-      address:         addr,
-      monthly_bill:    bill||null,
-      access_code:     digits,
-      step:            appt ? 2 : 1,
-      notes:           fullNotes||null,
-      diagnostic_date: appt ? new Date(appt).toISOString() : null,
-      source:          isOutbound ? ('setter-' + type) : 'admin-inbound',
+      first_name:   first,
+      last_name:    (document.getElementById('nlLast').value||null),
+      email:        email,
+      phone:        phone,
+      address:      addr,
+      monthly_bill: bill||null,
+      access_code:  digits,
+      step:         1,
+      notes:        fullNotes||null,
     };
 
     var btn = document.querySelector('#newLeadPanel .lead-btn.lime');
@@ -850,7 +847,7 @@
         setter_name:    setter||type,
         lat:            geo ? geo.lat : '',
         lng:            geo ? geo.lng : '',
-        maps_status:    appt ? 'booked' : 'needs-followup',
+        maps_status:    'needs-followup',
         postcard:       postcard,
         utility_bill:   utilityBill,
         two_hr_window:  window2hr,
@@ -865,9 +862,7 @@
       }).catch(function(e){ console.warn('Sheets:', e); });
 
       // 4. GHL webhook
-      var tags = isOutbound
-        ? ['setter-lead','no-automation', type]
-        : ['admin-inbound'];
+                var tags = ['setter-lead', 'no-automation', type];
       fetch(GHL_WEBHOOK, {
         method:'POST', mode:'no-cors',
         headers:{'Content-Type':'application/json'},
@@ -883,7 +878,7 @@
             monthly_bill:     bill,
             lead_type:        type,
             setter_name:      setter||type,
-            appointment_time: appt||'',
+
             years_owned:      owned,
             roof_age:         roof,
             postcard:         postcard,
@@ -1042,16 +1037,31 @@
   async function handleUpload(type, input) {
     if (!input.files || !input.files[0] || !currentUser) return;
     var el = document.getElementById('ust-'+type);
-    if (el) el.textContent = 'Uploading…';
+    if (el) { el.textContent = 'Uploading…'; el.className = 'upload-status'; }
     try {
       var client = supabase.createClient(SUPA_URL, SUPA_KEY);
       var file = input.files[0];
-      var path = currentUser.id+'/'+type+'_'+Date.now()+'_'+file.name;
-      var { error } = await client.storage.from('customer-docs').upload(path, file, {upsert:true});
-      if (error) throw error;
-      await client.from('uploads').upsert({customer_id:currentUser.id,upload_type:type,file_name:file.name,status:'uploaded'},{onConflict:'customer_id,upload_type'});
-      if (el) { el.textContent = '&#10003; Uploaded'; el.className = 'upload-status ok'; }
-    } catch(e) { if (el) el.textContent = 'Failed — try again'; }
+      // Sanitize filename
+      var safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+      var path = (currentUser.id||'anon')+'/'+type+'_'+Date.now()+'_'+safeName;
+      var { data, error } = await client.storage.from('customer-docs').upload(path, file, {upsert:true});
+      if (error) {
+        console.error('Upload error:', error);
+        if (el) el.textContent = 'Error: ' + (error.message||'Upload failed');
+        return;
+      }
+      // Record in uploads table
+      await client.from('uploads').upsert({
+        customer_id:  currentUser.id,
+        upload_type:  type,
+        file_name:    file.name,
+        status:       'uploaded'
+      }, {onConflict:'customer_id,upload_type'});
+      if (el) { el.textContent = '\u2713 Uploaded'; el.className = 'upload-status ok'; }
+    } catch(e) {
+      console.error('Upload exception:', e);
+      if (el) el.textContent = 'Failed: ' + (e.message||'Unknown error');
+    }
   }
 
   async function saveNotes() {
