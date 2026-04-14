@@ -401,7 +401,8 @@
       var ops = OPS_PARTNERS.find(function(o) { return o.email === email && o.code === code; });
       if (ops) {
         sessionStorage.setItem('user', JSON.stringify({isOps:true, name:ops.name, id:ops.id, role:'ops'}));
-        loadOpsDashboard(ops); return;
+        try { loadOpsDashboard(ops); } catch(e) { showErr('Error loading dashboard: ' + e.message); btn.textContent = 'Access My Portal'; btn.disabled = false; }
+        return;
       } else { showErr('Ops credentials not found. Check email and code.'); btn.textContent = 'Access My Portal'; btn.disabled = false; return; }
     }
 
@@ -2097,8 +2098,7 @@
     // Only jobs assigned to this ops partner
     var resp = await client.from('customers').select('*')
       .eq('assigned_ops', ops.id)
-      .gte('step', 3)
-      .order('install_date', {ascending:true});
+      .order('created_at', {ascending:false});
     var jobs = resp.data || [];
 
     var activeJobId = null;
@@ -2133,7 +2133,7 @@
           return items.map(function(item, i) {
             var key = phase + '_' + i;
             var checked = checklistState[checkKey][key];
-            return '<div class="tech-check-item ' + (checked?'checked':'') + '" onclick="opsToggleCheck('' + jid + '','' + phase + '_' + i + '')">' +
+            return '<div class="tech-check-item ' + (checked?'checked':'') + '" data-key="' + key + '" onclick="opsToggleCheck(this.closest(\'[data-jid]\').dataset.jid,this.dataset.key)">' +
               '<div class="tech-check-box">' + (checked?'✓':'') + '</div>' +
               '<div class="tech-check-label">' + item + '</div></div>';
           }).join('');
@@ -2156,7 +2156,7 @@
           return '<img class="tech-photo-thumb" src="' + p.url + '"' + flagDot + ' onclick="window.open(this.src,'_blank')" title="' + (p.label||'') + (p.quality_note?' — '+p.quality_note:'') + '"/>';
         }).join('');
 
-        h += '<div class="tech-job-card">' +
+        h += '<div class="tech-job-card" data-jid="' + jid + '">' +
           '<div class="tech-job-header">' +
             '<div><div class="tech-job-name">' + (job.first_name||'') + ' ' + (job.last_name||'') + '</div>' +
             '<div class="tech-job-addr">📍 ' + (job.address||'No address') + '</div></div>' +
@@ -2164,7 +2164,7 @@
           '<div class="tech-actions">' +
             (job.phone ? '<a href="tel:' + (job.phone||'').replace(/\D/g,'') + '" class="tech-btn tech-btn-call">📞 Call Customer</a>' : '') +
             (job.address ? '<a href="https://maps.apple.com/?q=' + encodeURIComponent(job.address) + '" target="_blank" class="tech-btn tech-btn-secondary">🗺 Directions</a>' : '') +
-            '<button class="tech-btn tech-btn-primary" onclick="opsToggleJob('' + jid + '')">' + (isOpen?'▲ Close':'▼ Open Job') + '</button>' +
+            '<button class="tech-btn tech-btn-primary" onclick="opsToggleJob(this.closest(\'[data-jid]\').dataset.jid)">' + (isOpen?'▲ Close':'▼ Open Job') + '</button>' +
           '</div>';
 
         if (isOpen) {
@@ -2191,21 +2191,21 @@
 
           // Photo grid
           h += '<div class="tech-section-title">📸 Job Photos</div>' +
-            '<div class="tech-photo-zone" onclick="document.getElementById('opsPhotoInput_' + jid + '').click()" ' +
-            'ondragover="event.preventDefault();this.classList.add('dragover')" ' +
-            'ondragleave="this.classList.remove('dragover')" ' +
-            'ondrop="this.classList.remove('dragover');handleOpsDrop(event,'' + jid + '')">' +
+            '<div class="tech-photo-zone" onclick="this.nextElementSibling.click()" ' +
+            'ondragover="event.preventDefault();this.classList.add(\'dragover\')" ' +
+            'ondragleave="this.classList.remove(\'dragover\')" ' +
+            'ondrop="this.classList.remove(\'dragover\');handleOpsDrop(event,this.closest(\'[data-jid]\').dataset.jid)">' +
             '<div class="tech-photo-icon">📷</div>' +
             '<div class="tech-photo-label">Tap to upload on-site photos<br/><span style="font-size:0.72rem;color:#555;">Before & after shots</span></div></div>' +
-            '<input type="file" id="opsPhotoInput_' + jid + '" accept="image/*" multiple capture="environment" style="display:none" ' +
-            'onchange="setOpsJob('' + jid + '');handlePhotoSelect(event)"/>' +
+            '<input type="file" accept="image/*" multiple capture="environment" style="display:none" ' +
+            'onchange="setOpsJob(this.closest(\'[data-jid]\').dataset.jid);handlePhotoSelect(event)"/>' +
             (photoThumbsHtml ? '<div class="tech-photo-grid">' + photoThumbsHtml + '</div>' : '');
 
           // On-site + post checklists
           h += '<div class="tech-checklist" style="margin-top:12px;"><div class="tech-check-title">⚡ On-Site Checklist</div>' + checkHtml(onChecks, 'on') + '</div>';
           h += '<div class="tech-section-title">📝 Field Notes</div>' +
-            '<textarea class="tech-notes-area" id="opsNotes_' + jid + '" placeholder="Observations, issues found, materials used...">' + (job.job_notes||'') + '</textarea>' +
-            '<button class="tech-save-btn" onclick="saveOpsNotes('' + jid + '')">💾 Save Notes</button>';
+            '<textarea class="tech-notes-area" data-notes-jid="' + jid + '" placeholder="Observations, issues found, materials used...">' + (job.job_notes||'') + '</textarea>' +
+            '<button class="tech-save-btn" onclick="saveOpsNotes(this.previousElementSibling.dataset.notesJid)">💾 Save Notes</button>';
           h += '<div class="tech-checklist" style="margin-top:12px;"><div class="tech-check-title">✅ Post-Job Checklist</div>' + checkHtml(postChecks, 'post') + '</div>';
         }
         h += '</div>';
@@ -2237,7 +2237,8 @@
       renderOps();
     };
     window.saveOpsNotes = async function(jid) {
-      var notes = (document.getElementById('opsNotes_' + jid)||{}).value || '';
+      var ta = document.querySelector('[data-notes-jid="' + jid + '"]');
+      var notes = ta ? ta.value : '';
       var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
       await c2.from('customers').update({job_notes: notes}).eq('id', jid);
       var btn = document.querySelector('.tech-save-btn');
