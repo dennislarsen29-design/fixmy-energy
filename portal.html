@@ -203,9 +203,6 @@
     .assessment-preview-name { font-size:0.82rem; font-weight:600; color:#eee; margin-bottom:3px; word-break:break-all; }
 
     /* ── ROLE SELECTOR ── */
-    .role-tabs { display:flex; gap:8px; margin-bottom:20px; }
-    .role-tab { flex:1; padding:8px 4px; border-radius:10px; border:1px solid rgba(255,255,255,0.1); background:rgba(255,255,255,0.04); color:#888; font-size:0.65rem; font-weight:600; text-transform:uppercase; letter-spacing:0.04em; cursor:pointer; text-align:center; transition:all 0.2s; }
-    .role-tab.active { background:#8DC63F; color:#1A1A1A; border-color:#8DC63F; }
     .role-hint { font-size:0.68rem; color:#555; text-align:center; margin-top:-10px; margin-bottom:16px; }
 
     /* ── SALES REP DASHBOARD ── */
@@ -277,20 +274,13 @@
   <h1>Solar<span style="color:#8DC63F">.</span>Review</h1>
   <p id="loginSubtitle">Sign in to your portal</p>
 
-  <div class="role-tabs">
-    <div class="role-tab active" id="roleCustomer" onclick="setRole('customer')">Customer</div>
-    <div class="role-tab" id="roleField"    onclick="setRole('rep')">Field</div>
-    <div class="role-tab" id="roleOps"      onclick="setRole('ops')">Ops</div>
-    <div class="role-tab" id="roleAdmin"    onclick="setRole('admin')">Admin</div>
-  </div>
-
   <label>Email Address</label>
   <input type="email" id="emailInput" placeholder="your@email.com"/>
-  <label id="codeLabel">Access Code</label>
-  <input type="password" id="codeInput" placeholder="Your 10-digit phone number"/>
+  <label>Access Code</label>
+  <input type="password" id="codeInput" placeholder="Your access code"/>
   <button id="loginBtn" onclick="handleLogin()">Access My Portal</button>
   <div class="err" id="errMsg"></div>
-  <div class="hint" id="loginHint">Access code is your 10-digit phone number</div>
+  <div class="hint" id="loginHint">Customers: use your 10-digit phone number</div>
 </div>
 
 <!-- DASHBOARD -->
@@ -321,40 +311,7 @@
     { email: 'cosmic@fixmy.energy', code: 'cosmic2026', name: 'Cosmic Solar',  id: 'ops3' },
   ];
 
-  function setRole(role) {
-    CURRENT_ROLE = role;
-    var idMap = {
-      customer: 'roleCustomer',
-      rep:      'roleField',
-      ops:      'roleOps',
-      admin:    'roleAdmin'
-    };
-    ['customer','rep','ops','admin'].forEach(function(r) {
-      var el = document.getElementById(idMap[r]);
-      if (el) el.classList.toggle('active', r === role);
-    });
-    var hints = {
-      customer: 'Access code is your 10-digit phone number',
-      rep:      'Field rep — use your fixmy.energy email and access code',
-      ops:      'Ops partner — use your fixmy.energy email and access code',
-      admin:    'Admin access only'
-    };
-    var labels = {
-      customer: 'Access Code (phone number)',
-      rep:      'Field Access Code',
-      ops:      'Ops Access Code',
-      admin:    'Admin Code'
-    };
-    var placeholders = {
-      customer: 'Your 10-digit phone number',
-      rep:      'Your field access code',
-      ops:      'Your ops access code',
-      admin:    'Enter admin code'
-    };
-    document.getElementById('loginHint').textContent = hints[role] || '';
-    document.getElementById('codeLabel').textContent = labels[role] || 'Access Code';
-    document.getElementById('codeInput').placeholder = placeholders[role] || '';
-  }
+
   var GHL_WEBHOOK   = 'https://services.leadconnectorhq.com/hooks/gXWwbOVymY0iRfj7c1It/webhook-trigger/032a0503-c92f-4711-89c0-0a4659e8e4ff';
   var SHEETBEST_URL = 'https://api.sheetbest.com/sheets/cf351a87-0260-4633-aaa9-d955caf6c630';
   var GHL_BOOKING   = 'https://api.leadconnectorhq.com/widget/booking/UjlvHxE8AlyhG5frBkqr';
@@ -396,17 +353,21 @@
     if (!code)  { showErr('Please enter your access code.'); return; }
     btn.textContent = 'Signing in...'; btn.disabled = true;
 
-    // Read role directly from active tab UI (not variable which may be stale)
-    var activeTab = document.querySelector('.role-tab.active');
+    // ── Auto-detect role from email (overrides tab selection) ──────────────────
+    // This prevents ops/rep users from freezing if they forgot to switch tabs
+    var detectedRep = SALES_REPS.find(function(r){ return r.email === email; });
+    var detectedOps = OPS_PARTNERS.find(function(o){ return o.email === email; });
+
+    // Read role from active tab UI as fallback
+    var activeTab = null; // role tabs removed — role resolved from email
     var tabRole = activeTab ? activeTab.id.replace('role','').toLowerCase() : CURRENT_ROLE;
-    // Normalize tab IDs to role keys
-    if (tabRole === 'customer') tabRole = 'customer';
-    if (tabRole === 'field')    tabRole = 'rep';
-    if (tabRole === 'ops')      tabRole = 'ops';
-    if (tabRole === 'admin')    tabRole = 'admin';
+    if (tabRole === 'field') tabRole = 'rep';
+
+    // Email match takes priority over tab selection
+    var resolvedRole = detectedOps ? 'ops' : detectedRep ? 'rep' : tabRole;
 
     // Admin login
-    if (tabRole === 'admin') {
+    if (resolvedRole === 'admin') {
       if (code === ADMIN_CODE) {
         sessionStorage.setItem('user', JSON.stringify({isAdmin:true, name:'Admin', role:'admin'}));
         loadAdminDashboard(); return;
@@ -414,27 +375,33 @@
     }
 
     // Field rep login
-    if (tabRole === 'rep') {
+    if (resolvedRole === 'rep') {
       var rep = SALES_REPS.find(function(r) { return r.email === email && r.code === code; });
       if (rep) {
         sessionStorage.setItem('user', JSON.stringify({isRep:true, name:rep.name, id:rep.id, role:'rep'}));
         loadRepDashboard(rep); return;
-      } else { showErr('Field credentials not found.'); btn.textContent = 'Access My Portal'; btn.disabled = false; return; }
+      } else { showErr('Field credentials not found. Check email and code.'); btn.textContent = 'Access My Portal'; btn.disabled = false; return; }
     }
 
     // Ops login — fully offline, no Supabase needed
-    if (tabRole === 'ops') {
+    if (resolvedRole === 'ops') {
       var ops = OPS_PARTNERS.find(function(o) { return o.email === email && o.code === code; });
       if (ops) {
         sessionStorage.setItem('user', JSON.stringify({isOps:true, name:ops.name, id:ops.id, role:'ops'}));
         loadOpsDashboard(ops); return;
       } else { showErr('Ops credentials not found. Check email and code.'); btn.textContent = 'Access My Portal'; btn.disabled = false; return; }
     }
+
+    // Customer login — Supabase lookup with timeout guard
     var client;
     try { client = supabase.createClient(SUPA_URL, SUPA_KEY); }
     catch(e) { showErr('Connection error. Please refresh.'); btn.textContent = 'Access My Portal'; btn.disabled = false; return; }
     try {
-      var resp = await client.from('customers').select('*').eq('email', email).single();
+      var queryPromise = client.from('customers').select('*').eq('email', email).single();
+      var timeoutPromise = new Promise(function(_, reject){
+        setTimeout(function(){ reject(new Error('Request timed out. Check your connection and try again.')); }, 10000);
+      });
+      var resp = await Promise.race([queryPromise, timeoutPromise]);
       if (resp.error || !resp.data) { showErr('Email not found.'); btn.textContent = 'Access My Portal'; btn.disabled = false; return; }
       var c = resp.data;
       function normalize(p) {
@@ -1604,8 +1571,8 @@
     var saved = sessionStorage.getItem('user');
     if (saved) {
       var u = JSON.parse(saved);
-      if (u.role === 'tech')   { setRole('tech');   var r = SALES_REPS.find(function(x){ return x.id===u.id; }) || u; loadRepDashboard(r); return; }
-      if (u.role === 'ops')    { setRole('ops');    var o = OPS_PARTNERS.find(function(x){ return x.id===u.id; }) || u; loadOpsDashboard(o); return; }
+      if (u.role === 'tech')   { var r = SALES_REPS.find(function(x){ return x.id===u.id; }) || u; loadRepDashboard(r); return; }
+      if (u.role === 'ops')    { var o = OPS_PARTNERS.find(function(x){ return x.id===u.id; }) || u; loadOpsDashboard(o); return; }
     }
     var p=new URLSearchParams(location.search); var ue=p.get('email'),uc=p.get('code');
     if(ue&&uc){
@@ -1710,7 +1677,7 @@
             '<div style="font-size:0.75rem;color:#666;margin-bottom:16px;">Or sign in manually:</div>' +
             '<label style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em;color:#888;display:block;margin-bottom:6px;">Email Address</label>' +
             '<input type="email" id="emailInput" value="' + cleanEmail + '" style="width:100%;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:13px 14px;color:#F3EDE3;font-size:0.9rem;margin-bottom:12px;outline:none;box-sizing:border-box;"/>' +
-            '<label style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em;color:#888;display:block;margin-bottom:6px;" id="codeLabel">Access Code</label>' +
+            '<label style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em;color:#888;display:block;margin-bottom:6px;">Access Code</label>' +
             '<input type="password" id="codeInput" placeholder="Your 10-digit phone number" style="width:100%;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:13px 14px;color:#F3EDE3;font-size:0.9rem;margin-bottom:16px;outline:none;box-sizing:border-box;"/>' +
             '<button id="loginBtn" onclick="handleLogin()" style="width:100%;background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;padding:15px;font-size:0.9rem;font-weight:700;cursor:pointer;">Try Again</button>' +
             '<div class="err" id="errMsg" style="display:none;"></div>' +
