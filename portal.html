@@ -2141,6 +2141,7 @@
 
     var activeJobId = null;
     var checklistState = JSON.parse(sessionStorage.getItem('checklist_ops_' + ops.id) || '{}');
+    var opsSolarCache = {};
 
     function renderOps() {
       var h = '<div class="tech-header" style="background:rgba(141,198,63,0.08);border-color:rgba(141,198,63,0.2);">' +
@@ -2227,6 +2228,11 @@
           '</div>';
 
         if (isOpen) {
+          // Satellite + Solar Intelligence panel (populated async from cache or fresh fetch)
+          h += '<div id="opssolar_' + jid + '" style="margin-bottom:12px;">' +
+            '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:14px;text-align:center;font-size:0.72rem;color:#555;">🛰 Loading rooftop data...</div>' +
+            '</div>';
+
           // Admin briefing notes
           if (job.field_notes) {
             h += '<div style="background:rgba(255,165,0,0.08);border:1px solid rgba(255,165,0,0.2);border-radius:8px;padding:12px;margin-bottom:8px;font-size:0.82rem;line-height:1.6;">' +
@@ -2277,9 +2283,19 @@
       });
 
       document.getElementById('dashBody').innerHTML = h;
+      // Immediately repopulate solar panel from cache (survives each re-render)
+      if (activeJobId && opsSolarCache[activeJobId]) {
+        var _sw = document.getElementById('opssolar_' + activeJobId);
+        if (_sw) _sw.innerHTML = opsSolarCache[activeJobId];
+      }
       if (activeJobId) {
         currentJobId = activeJobId;
+        var _opsActiveJob = jobs.find(function(j){ return j.id === activeJobId; });
         loadJobPhotos(activeJobId).then(renderOps);
+        // Trigger first solar load if not yet cached
+        if (_opsActiveJob && _opsActiveJob.address && !opsSolarCache[activeJobId]) {
+          setTimeout(function() { loadOpsSolarPanel(_opsActiveJob.address, activeJobId); }, 250);
+        }
       }
     }
 
@@ -2309,6 +2325,44 @@
       var btn = document.querySelector('.tech-save-btn');
       if (btn) { btn.textContent = '✓ Saved'; setTimeout(function(){ btn.textContent = '💾 Save Notes'; }, 2000); }
     };
+
+    async function loadOpsSolarPanel(address, jid) {
+      // If cached, re-inject immediately (DOM was rebuilt by renderOps)
+      if (opsSolarCache[jid]) {
+        var w = document.getElementById('opssolar_' + jid);
+        if (w) w.innerHTML = opsSolarCache[jid];
+        return;
+      }
+      try {
+        var geo = await fetch('https://maps.googleapis.com/maps/api/geocode/json?address=' + encodeURIComponent(address) + '&key=' + GKEY);
+        var gd = await geo.json();
+        if (gd.status !== 'OK') { var we = document.getElementById('opssolar_' + jid); if (we) we.innerHTML = ''; return; }
+        var loc = gd.results[0].geometry.location;
+        var sat = 'https://maps.googleapis.com/maps/api/staticmap?center=' + encodeURIComponent(address) + '&zoom=19&size=700x220&maptype=satellite&key=' + GKEY;
+        var sr = await fetch('https://solar.googleapis.com/v1/buildingInsights:findClosest?location.latitude=' + loc.lat + '&location.longitude=' + loc.lng + '&requiredQuality=LOW&key=' + GKEY);
+        var s = sr.status === 200 ? (await sr.json()).solarPotential : null;
+        var stats = '';
+        if (s) {
+          var maxKw = s.maxArrayPanelsCount ? (s.maxArrayPanelsCount * 0.4).toFixed(1) : '--';
+          var sunHrs = s.maxSunshineHoursPerYear ? Math.round(s.maxSunshineHoursPerYear) : '--';
+          function osStat(v,l){ return '<div style="text-align:center;background:rgba(255,255,255,0.04);border-radius:8px;padding:8px 4px;"><div style="font-size:0.9rem;font-weight:700;color:#8DC63F;">'+v+'</div><div style="font-size:0.6rem;color:#777;margin-top:2px;">'+l+'</div></div>'; }
+          stats = '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:10px;">' +
+            osStat(s.maxArrayPanelsCount||'--','Max Panels') + osStat(maxKw+' kW','Max Capacity') + osStat(sunHrs+' hrs','Peak Sun/Yr') + '</div>';
+        }
+        var html = '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:10px;padding:12px;">' +
+          '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">' +
+          '<span style="font-size:0.72rem;font-weight:700;color:#8DC63F;">🛰 Rooftop Solar Intelligence</span>' +
+          '<span style="font-size:0.6rem;color:#444;">Google Solar API</span></div>' +
+          '<img src="' + sat + '" style="width:100%;border-radius:8px;max-height:160px;object-fit:cover;" onerror="this.style.display=\'none\'"/>' +
+          stats + '</div>';
+        opsSolarCache[jid] = html;
+        var wf = document.getElementById('opssolar_' + jid);
+        if (wf) wf.innerHTML = html;
+      } catch(e) {
+        var wErr = document.getElementById('opssolar_' + jid);
+        if (wErr) wErr.innerHTML = '';
+      }
+    }
 
     renderOps();
   }
