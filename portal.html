@@ -304,6 +304,11 @@
     { email: 'ronda@fixmy.energy', code: 'ronda2026', name: 'Ronda', id: 'rep1' },
   ];
 
+  // Setters (inside sales — phone & online)
+  var SETTERS = [
+    { email: 'setter@fixmy.energy', code: 'setter2026', name: 'Setter', id: 'setter1' },
+  ];
+
   // Ops partners (installers — each only sees assigned jobs)
   var OPS_PARTNERS = [
     { email: 'jon@fixmy.energy',    code: 'jon2026',    name: 'Jon Klos',      id: 'ops1' },
@@ -353,18 +358,17 @@
     if (!code)  { showErr('Please enter your access code.'); return; }
     btn.textContent = 'Signing in...'; btn.disabled = true;
 
-    // ── Auto-detect role from email (overrides tab selection) ──────────────────
-    // This prevents ops/rep users from freezing if they forgot to switch tabs
-    var detectedRep = SALES_REPS.find(function(r){ return r.email === email; });
-    var detectedOps = OPS_PARTNERS.find(function(o){ return o.email === email; });
+    // ── Resolve role from email + code ────────────────────────────────────────
+    var detectedRep    = SALES_REPS.find(function(r){ return r.email === email; });
+    var detectedOps    = OPS_PARTNERS.find(function(o){ return o.email === email; });
+    var detectedSetter = SETTERS.find(function(s){ return s.email === email; });
+    var detectedAdmin  = (email === ADMIN_EMAIL) || (code === ADMIN_CODE);
 
-    // Read role from active tab UI as fallback
-    var activeTab = null; // role tabs removed — role resolved from email
-    var tabRole = activeTab ? activeTab.id.replace('role','').toLowerCase() : CURRENT_ROLE;
-    if (tabRole === 'field') tabRole = 'rep';
-
-    // Email match takes priority over tab selection
-    var resolvedRole = detectedOps ? 'ops' : detectedRep ? 'rep' : tabRole;
+    var resolvedRole = detectedAdmin  ? 'admin'
+                     : detectedOps    ? 'ops'
+                     : detectedRep    ? 'rep'
+                     : detectedSetter ? 'setter'
+                     : 'customer';
 
     // Admin login
     if (resolvedRole === 'admin') {
@@ -381,6 +385,15 @@
         sessionStorage.setItem('user', JSON.stringify({isRep:true, name:rep.name, id:rep.id, role:'rep'}));
         loadRepDashboard(rep); return;
       } else { showErr('Field credentials not found. Check email and code.'); btn.textContent = 'Access My Portal'; btn.disabled = false; return; }
+    }
+
+    // Setter login
+    if (resolvedRole === 'setter') {
+      var setter = SETTERS.find(function(s) { return s.email === email && s.code === code; });
+      if (setter) {
+        sessionStorage.setItem('user', JSON.stringify({isSetter:true, name:setter.name, id:setter.id, role:'setter'}));
+        loadSetterDashboard(setter); return;
+      } else { showErr('Setter credentials not found.'); btn.textContent = 'Access My Portal'; btn.disabled = false; return; }
     }
 
     // Ops login — fully offline, no Supabase needed
@@ -1570,9 +1583,28 @@
     // Restore rep/tech session
     var saved = sessionStorage.getItem('user');
     if (saved) {
-      var u = JSON.parse(saved);
-      if (u.role === 'tech')   { var r = SALES_REPS.find(function(x){ return x.id===u.id; }) || u; loadRepDashboard(r); return; }
-      if (u.role === 'ops')    { var o = OPS_PARTNERS.find(function(x){ return x.id===u.id; }) || u; loadOpsDashboard(o); return; }
+      try {
+        var u = JSON.parse(saved);
+        if (u.isAdmin || u.role === 'admin') {
+          currentUser = {isAdmin:true, email:ADMIN_EMAIL};
+          loadAdminDashboard(); return;
+        }
+        if (u.isOps || u.role === 'ops') {
+          var o = OPS_PARTNERS.find(function(x){ return x.id===u.id; }) || u;
+          loadOpsDashboard(o); return;
+        }
+        if (u.isRep || u.role === 'rep' || u.role === 'tech') {
+          var r = SALES_REPS.find(function(x){ return x.id===u.id; }) || u;
+          loadRepDashboard(r); return;
+        }
+        if (u.isSetter || u.role === 'setter') {
+          var s = SETTERS.find(function(x){ return x.id===u.id; }) || u;
+          loadSetterDashboard(s); return;
+        }
+        // Customer
+        currentUser = u;
+        loadCustomerDashboard(u); return;
+      } catch(e) { sessionStorage.clear(); }
     }
     var p=new URLSearchParams(location.search); var ue=p.get('email'),uc=p.get('code');
     if(ue&&uc){
@@ -1688,12 +1720,12 @@
       magicLinkLogin();
       return;
     }
-    var saved=sessionStorage.getItem('user');
-    if(saved){try{var u=JSON.parse(saved);if(u.isAdmin){currentUser={isAdmin:true,email:ADMIN_EMAIL};loadAdminDashboard();}else{currentUser=u;loadCustomerDashboard(u);}}catch(e){sessionStorage.clear();}}
+    // session restore handled above
   });
 </script>
 
-<script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBedpPe3461c1mYiD8yxjDMkYvrJ4MQQpc&libraries=places" async defer>
+<script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBedpPe3461c1mYiD8yxjDMkYvrJ4MQQpc&libraries=places" async defer></script>
+<script>
   // ── SALES REP DASHBOARD ────────────────────────────────────────────────────
   async function loadRepDashboard(rep) {
     document.getElementById('loginBox').style.display = 'none';
