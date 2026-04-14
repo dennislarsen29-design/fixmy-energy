@@ -396,8 +396,17 @@
     if (!code)  { showErr('Please enter your access code.'); return; }
     btn.textContent = 'Signing in...'; btn.disabled = true;
 
+    // Read role directly from active tab UI (not variable which may be stale)
+    var activeTab = document.querySelector('.role-tab.active');
+    var tabRole = activeTab ? activeTab.id.replace('role','').toLowerCase() : CURRENT_ROLE;
+    // Normalize tab IDs to role keys
+    if (tabRole === 'customer') tabRole = 'customer';
+    if (tabRole === 'field')    tabRole = 'rep';
+    if (tabRole === 'ops')      tabRole = 'ops';
+    if (tabRole === 'admin')    tabRole = 'admin';
+
     // Admin login
-    if (CURRENT_ROLE === 'admin' || (email === ADMIN_EMAIL && code === ADMIN_CODE)) {
+    if (tabRole === 'admin') {
       if (code === ADMIN_CODE) {
         sessionStorage.setItem('user', JSON.stringify({isAdmin:true, name:'Admin', role:'admin'}));
         loadAdminDashboard(); return;
@@ -405,7 +414,7 @@
     }
 
     // Field rep login
-    if (CURRENT_ROLE === 'rep') {
+    if (tabRole === 'rep') {
       var rep = SALES_REPS.find(function(r) { return r.email === email && r.code === code; });
       if (rep) {
         sessionStorage.setItem('user', JSON.stringify({isRep:true, name:rep.name, id:rep.id, role:'rep'}));
@@ -413,13 +422,13 @@
       } else { showErr('Field credentials not found.'); btn.textContent = 'Access My Portal'; btn.disabled = false; return; }
     }
 
-    // Ops login
-    if (CURRENT_ROLE === 'ops') {
+    // Ops login — fully offline, no Supabase needed
+    if (tabRole === 'ops') {
       var ops = OPS_PARTNERS.find(function(o) { return o.email === email && o.code === code; });
       if (ops) {
         sessionStorage.setItem('user', JSON.stringify({isOps:true, name:ops.name, id:ops.id, role:'ops'}));
         loadOpsDashboard(ops); return;
-      } else { showErr('Ops credentials not found.'); btn.textContent = 'Access My Portal'; btn.disabled = false; return; }
+      } else { showErr('Ops credentials not found. Check email and code.'); btn.textContent = 'Access My Portal'; btn.disabled = false; return; }
     }
     var client;
     try { client = supabase.createClient(SUPA_URL, SUPA_KEY); }
@@ -948,7 +957,8 @@
         '- "Utility bill too blurry to read account number"',
         '- "Panel amperage label not legible — open panel door fully"',
         '- "Solar array partially cut off — step back to capture full array"'
-      ].join('\n');
+      ].join('
+');
 
       var response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
@@ -1131,7 +1141,7 @@
           '<div class="photo-img-wrap" style="position:relative;">' +
             '<img class="photo-thumb" src="' + purl + '" loading="lazy" title="' + label + '" ' +
               'data-href="' + purl + '" onclick="openPhoto(this)" ' +
-              'onerror="this.style.opacity=0">' +
+              'onerror="this.style.display='none'">' +
             flagBadge + sourceBadge +
             '<button class="photo-delete-btn" data-path="' + ppath + '" data-id="' + pid + '" ' +
               'onclick="deletePhoto(this)" title="Delete">&#10005;</button>' +
@@ -1594,7 +1604,7 @@
     var saved = sessionStorage.getItem('user');
     if (saved) {
       var u = JSON.parse(saved);
-      if (u.role === 'rep')    { setRole('rep');    var r = SALES_REPS.find(function(x){ return x.id===u.id; }) || u; loadRepDashboard(r); return; }
+      if (u.role === 'tech')   { setRole('tech');   var r = SALES_REPS.find(function(x){ return x.id===u.id; }) || u; loadRepDashboard(r); return; }
       if (u.role === 'ops')    { setRole('ops');    var o = OPS_PARTNERS.find(function(x){ return x.id===u.id; }) || u; loadOpsDashboard(o); return; }
     }
     var p=new URLSearchParams(location.search); var ue=p.get('email'),uc=p.get('code');
@@ -1716,91 +1726,351 @@
   });
 </script>
 
-<script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBedpPe3461c1mYiD8yxjDMkYvrJ4MQQpc&libraries=places" async defer></script>
-<script>
-  // ── SALES REP / FIELD DASHBOARD ────────────────────────────────────────────
+<script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBedpPe3461c1mYiD8yxjDMkYvrJ4MQQpc&libraries=places" async defer>
+  // ── SALES REP DASHBOARD ────────────────────────────────────────────────────
   async function loadRepDashboard(rep) {
     document.getElementById('loginBox').style.display = 'none';
     document.getElementById('dashboard').style.display = 'block';
-    document.getElementById('userName').textContent = rep.name + ' · Field';
+    document.getElementById('userName').textContent = rep.name + ' · Tech';
     document.getElementById('dashBody').innerHTML = '<p style="color:#aaa;padding:20px 0;">Loading your leads...</p>';
+
     var client;
     try { client = supabase.createClient(SUPA_URL, SUPA_KEY); }
     catch(e) { document.getElementById('dashBody').innerHTML = '<p style="color:#ef4444;">Database error.</p>'; return; }
+
+    // Load leads assigned to this rep (by setter_name or assigned_rep field)
     var resp = await client.from('customers').select('*')
       .or('setter_name.eq.' + rep.name + ',assigned_rep.eq.' + rep.id)
       .order('created_at', {ascending:false});
     var leads = resp.data || [];
-    var repView = 'leads';
 
-    function calcRepCommission(lead) {
-      var amt = parseFloat(lead.invoice_amount) || 0;
-      if (!amt && lead.step >= 6) amt = 500;
-      var rate = lead.install_type === 'battery' ? 0.08 : lead.install_type === 'diagnostic' ? 0.15 : 0.10;
-      return Math.round(amt * rate);
-    }
+    var repView = 'leads'; // leads | commissions
 
     function renderRepView() {
-      var newLeads    = leads.filter(function(l){ return !l.step || l.step <= 1; });
-      var activeLeads = leads.filter(function(l){ return l.step >= 2 && l.step < 6; });
-      var closedLeads = leads.filter(function(l){ return l.step >= 6; });
-      var totalComm   = closedLeads.reduce(function(s,l){ return s + calcRepCommission(l); }, 0);
-      var pendingComm = activeLeads.reduce(function(s,l){ return s + calcRepCommission(l); }, 0);
-      var listLeads   = repView === 'leads' ? leads : closedLeads;
+      var newLeads     = leads.filter(function(l){ return !l.step || l.step <= 1; });
+      var activeLeads  = leads.filter(function(l){ return l.step >= 2 && l.step < 6; });
+      var closedLeads  = leads.filter(function(l){ return l.step >= 6; });
+      var totalComm    = closedLeads.reduce(function(s, l){ return s + calcRepCommission(l); }, 0);
+      var pendingComm  = activeLeads.reduce(function(s, l){ return s + calcRepCommission(l); }, 0);
 
-      var h = '<div class="rep-header">' +
-        '<div><div class="rep-name">' + rep.name + '</div><div style="font-size:0.72rem;color:#666;">Field Representative</div></div>' +
+      var listLeads = repView === 'leads' ? leads : closedLeads;
+
+      var html = '<div class="rep-header">' +
+        '<div><div class="rep-name">' + rep.name + '</div><div style="font-size:0.72rem;color:#666;">Sales Representative</div></div>' +
         '<div class="rep-stats">' +
           '<div class="rep-stat"><div class="rep-stat-val">' + leads.length + '</div><div class="rep-stat-lbl">Total</div></div>' +
           '<div class="rep-stat"><div class="rep-stat-val">' + activeLeads.length + '</div><div class="rep-stat-lbl">Active</div></div>' +
           '<div class="rep-stat"><div class="rep-stat-val">' + closedLeads.length + '</div><div class="rep-stat-lbl">Closed</div></div>' +
-        '</div></div>';
+        '</div></div>' +
 
-      h += '<div class="rep-tabs">';
-      h += '<div class="rep-tab' + (repView === 'leads' ? ' active' : '') + '" onclick="window._repSwitch(\'leads\')">My Leads</div>';
-      h += '<div class="rep-tab' + (repView === 'commissions' ? ' active' : '') + '" onclick="window._repSwitch(\'commissions\')">Commissions</div>';
-      h += '</div>';
+        '<div class="rep-tabs">' +
+          '<div class="rep-tab ' + (repView==='leads'?'active':'') + '" onclick="repViewSwitch('leads')">My Leads</div>' +
+          '<div class="rep-tab ' + (repView==='commissions'?'active':'') + '" onclick="repViewSwitch('commissions')">Commissions</div>' +
+        '</div>';
 
       if (repView === 'commissions') {
-        h += '<div class="rep-commission-bar">' +
+        html += '<div class="rep-commission-bar">' +
           '<div class="rep-comm-row"><span class="rep-comm-label">Closed Jobs</span><span>' + closedLeads.length + '</span></div>' +
           '<div class="rep-comm-row"><span class="rep-comm-label">Earned (Paid)</span><span>$' + totalComm.toLocaleString() + '</span></div>' +
           '<div class="rep-comm-row"><span class="rep-comm-label">Pending (Active)</span><span>$' + pendingComm.toLocaleString() + '</span></div>' +
-          '<div class="rep-comm-row"><span class="rep-comm-label">Total Pipeline</span><span>$' + (totalComm + pendingComm).toLocaleString() + '</span></div>' +
+          '<div class="rep-comm-row"><span class="rep-comm-label">Total Pipeline Value</span><span>$' + (totalComm + pendingComm).toLocaleString() + '</span></div>' +
         '</div>';
         listLeads = closedLeads;
       }
 
-      h += '<div class="rep-pipeline">';
+      html += '<div class="rep-pipeline">';
       if (!listLeads.length) {
-        h += '<div style="text-align:center;padding:32px;color:#555;">No leads yet.</div>';
+        html += '<div style="text-align:center;padding:32px;color:#555;">No leads yet. Start adding!</div>';
       } else {
         listLeads.forEach(function(l) {
-          var stage = l.step <= 1 ? 'New' : l.step <= 3 ? 'Evaluation' : l.step <= 5 ? 'Active' : 'Complete';
-          var stageCls = l.step <= 1 ? 'stage-new' : l.step <= 5 ? 'stage-active' : 'stage-complete';
+          var stageLbl = l.step<=1?'New':l.step<=3?'Evaluation':l.step<=5?'Active Job':'Complete';
+          var stageCls = l.step<=1?'stage-new':l.step<=3?'stage-active':l.step<=5?'stage-active':'stage-complete';
           var comm = calcRepCommission(l);
-          h += '<div class="rep-lead-card">';
-          h += '<div>';
-          h += '<div class="rep-lead-name">' + (l.first_name||'') + ' ' + (l.last_name||'') + '</div>';
-          h += '<div class="rep-lead-detail">' + (l.address || l.phone || 'No address') + (l.utility ? ' · ' + l.utility : '') + '</div>';
-          if (comm) h += '<div class="rep-lead-detail" style="color:#8DC63F;margin-top:4px;">Commission: $' + comm.toLocaleString() + '</div>';
-          h += '</div>';
-          h += '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;">';
-          h += '<span class="rep-lead-stage ' + stageCls + '">' + stage + '</span>';
-          if (l.phone) h += '<a href="tel:' + l.phone.replace(/\D/g,'') + '" class="tech-btn tech-btn-call" style="font-size:0.68rem;padding:5px 12px;">Call</a>';
-          h += '</div>';
-          h += '</div>';
+          html += '<div class="rep-lead-card">' +
+            '<div><div class="rep-lead-name">' + (l.first_name||'') + ' ' + (l.last_name||'') + '</div>' +
+            '<div class="rep-lead-detail">' + (l.address||l.phone||'No address') + ' · ' + (l.utility||'') + '</div>' +
+            '<div class="rep-lead-detail" style="color:#8DC63F;margin-top:4px;">Commission: $' + comm.toLocaleString() + '</div></div>' +
+            '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;">' +
+            '<span class="rep-lead-stage ' + stageCls + '">' + stageLbl + '</span>' +
+            (l.phone ? '<a href="tel:' + l.phone.replace(/\D/g,'') + '" class="tech-btn tech-btn-call" style="font-size:0.68rem;padding:5px 12px;">Call</a>' : '') +
+            '</div></div>';
+        });
+      }
+      html += '</div>';
+      document.getElementById('dashBody').innerHTML = html;
+    }
+
+    window.repViewSwitch = function(v) { repView = v; renderRepView(); };
+    renderRepView();
+  }
+
+  function calcRepCommission(lead) {
+    // Base commission structure — adjust as needed
+    var amt = parseFloat(lead.invoice_amount) || 0;
+    if (!amt && lead.step >= 6) amt = 500; // default if no invoice
+    var rate = 0.10; // 10% base commission
+    if (lead.install_type === 'battery') rate = 0.08;
+    if (lead.install_type === 'diagnostic') rate = 0.15;
+    return Math.round(amt * rate);
+  }
+
+
+  // ── TECH / FIELD DASHBOARD ─────────────────────────────────────────────────
+  async function loadTechDashboard(tech) {
+    document.getElementById('loginBox').style.display = 'none';
+    document.getElementById('dashboard').style.display = 'block';
+    document.getElementById('userName').textContent = tech.name + ' · Ops';
+    document.getElementById('dashBody').innerHTML = '<p style="color:#aaa;padding:20px 0;">Loading your jobs...</p>';
+
+    var client;
+    try { client = supabase.createClient(SUPA_URL, SUPA_KEY); }
+    catch(e) { document.getElementById('dashBody').innerHTML = '<p style="color:#ef4444;">Database error.</p>'; return; }
+
+    // Load jobs with step >= 3 (scheduled/active)
+    var resp = await client.from('customers').select('*')
+      .gte('step', 3).order('install_date', {ascending:true});
+    var jobs = resp.data || [];
+    var activeJobId = null;
+    var checklistState = JSON.parse(sessionStorage.getItem('checklist_' + tech.id) || '{}');
+
+    function renderTechView() {
+      var html = '<div class="tech-header">' +
+        '<div><div class="tech-name">👷 ' + tech.name + '</div><div style="font-size:0.72rem;color:#888;margin-top:3px;">' + jobs.length + ' active job' + (jobs.length!==1?'s':'') + ' assigned</div></div>' +
+        '<span class="tech-badge">Ops</span></div>';
+
+      if (!jobs.length) {
+        html += '<div class="tech-no-jobs">✅ No active jobs right now.<br/>Check back after new evaluations are scheduled.</div>';
+        document.getElementById('dashBody').innerHTML = html;
+        return;
+      }
+
+      jobs.forEach(function(job) {
+        var jid = job.id;
+        var isOpen = activeJobId === jid;
+        var dateStr = job.install_date ? new Date(job.install_date).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'}) : (job.diagnostic_date ? 'Diag: ' + new Date(job.diagnostic_date).toLocaleDateString() : 'Date TBD');
+        var checkKey = 'job_' + jid;
+        if (!checklistState[checkKey]) checklistState[checkKey] = {};
+
+        var preChecks = ['Reviewed job notes','Loaded all tools & equipment','Confirmed customer address','Called customer to confirm arrival window'];
+        var onChecks  = ['System diagnostics run','Photos taken — before state','Work completed','Photos taken — after state','Customer walkthrough done'];
+        var postChecks = ['Tools packed & site clean','Job notes updated in portal','Photos uploaded to portal','Customer signed off'];
+
+        function checkHtml(items, phase) {
+          var h = '';
+          items.forEach(function(item, i) {
+            var key = phase + '_' + i;
+            var checked = checklistState[checkKey][key];
+            h += '<div class="tech-check-item ' + (checked?'checked':'') + '" onclick="toggleCheck('' + jid + '','' + phase + '_' + i + '')">' +
+              '<div class="tech-check-box">' + (checked?'✓':'') + '</div>' +
+              '<div class="tech-check-label">' + item + '</div></div>';
+          });
+          return h;
+        }
+
+        var photos = jobPhotos[jid] || [];
+        var photoThumbsHtml = photos.map(function(p){
+          return '<img class="tech-photo-thumb" src="' + p.url + '" onclick="window.open(this.src,'_blank')" title="' + (p.label||'') + '"/>';
+        }).join('');
+
+        html += '<div class="tech-job-card">' +
+          '<div class="tech-job-header">' +
+            '<div><div class="tech-job-name">' + (job.first_name||'') + ' ' + (job.last_name||'') + '</div>' +
+            '<div class="tech-job-addr">📍 ' + (job.address||'No address on file') + '</div></div>' +
+            '<div class="tech-job-date">' + dateStr + '</div></div>' +
+
+          '<div class="tech-actions">' +
+            (job.phone ? '<a href="tel:' + (job.phone||'').replace(/\D/g,'') + '" class="tech-btn tech-btn-call">📞 Call Customer</a>' : '') +
+            (job.address ? '<a href="https://maps.apple.com/?q=' + encodeURIComponent(job.address) + '" target="_blank" class="tech-btn tech-btn-secondary">🗺 Directions</a>' : '') +
+            '<button class="tech-btn tech-btn-primary" onclick="toggleTechJob('' + jid + '')">' + (isOpen?'▲ Close':'▼ Open Job') + '</button>' +
+          '</div>';
+
+        if (isOpen) {
+          // Notes from admin
+          if (job.job_notes || job.notes) {
+            html += '<div style="background:rgba(255,165,0,0.08);border:1px solid rgba(255,165,0,0.2);border-radius:8px;padding:12px;margin-bottom:12px;font-size:0.82rem;line-height:1.6;">' +
+              '<span style="color:#ffa500;font-weight:700;font-size:0.68rem;text-transform:uppercase;letter-spacing:0.08em;">📋 Note from Admin</span><br/>' +
+              (job.job_notes || job.notes || '') + '</div>';
+          }
+
+          // System info
+          html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">' +
+            '<div class="info-card"><div class="info-label">System Size</div><div class="info-val">' + (job.system_size||'Unknown') + '</div></div>' +
+            '<div class="info-card"><div class="info-label">Utility</div><div class="info-val">' + (job.utility||'Unknown') + '</div></div>' +
+            '<div class="info-card"><div class="info-label">Job Type</div><div class="info-val">' + (job.install_type||'Diagnostic') + '</div></div>' +
+            '<div class="info-card"><div class="info-label">NEM Status</div><div class="info-val">' + (job.nem_status||'Unknown') + '</div></div>' +
+          '</div>';
+
+          // Pre-visit checklist
+          html += '<div class="tech-checklist"><div class="tech-check-title">🔧 Pre-Visit Checklist</div>' + checkHtml(preChecks, 'pre') + '</div>';
+
+          // Photo upload — big and prominent
+          html += '<div class="tech-section-title">📸 Job Photos</div>' +
+            '<div class="tech-photo-zone" onclick="document.getElementById('techPhotoInput_' + jid + '').click()" ' +
+            'ondragover="event.preventDefault();this.classList.add('dragover')" ' +
+            'ondragleave="this.classList.remove('dragover')" ' +
+            'ondrop="this.classList.remove('dragover');handleTechPhotoDrop(event,'' + jid + '')">' +
+            '<div class="tech-photo-icon">📷</div>' +
+            '<div class="tech-photo-label">Tap to take or upload photos<br/><span style="font-size:0.72rem;color:#555;">Drag & drop or tap — before AND after shots</span></div></div>' +
+            '<input type="file" id="techPhotoInput_' + jid + '" accept="image/*" multiple capture="environment" style="display:none" ' +
+            'onchange="setTechJob('' + jid + '');handlePhotoSelect(event)"/>' +
+            (photoThumbsHtml ? '<div class="tech-photo-grid">' + photoThumbsHtml + '</div>' : '');
+
+          // On-site checklist
+          html += '<div class="tech-checklist" style="margin-top:12px;"><div class="tech-check-title">⚡ On-Site Checklist</div>' + checkHtml(onChecks, 'on') + '</div>';
+
+          // Field notes
+          html += '<div class="tech-section-title">📝 Field Notes</div>' +
+            '<textarea class="tech-notes-area" id="techNotes_' + jid + '" placeholder="Add field notes, observations, issues found...">' + (job.job_notes||'') + '</textarea>' +
+            '<button class="tech-save-btn" onclick="saveTechNotes('' + jid + '')">💾 Save Notes</button>';
+
+          // Post checklist
+          html += '<div class="tech-checklist" style="margin-top:12px;"><div class="tech-check-title">✅ Post-Job Checklist</div>' + checkHtml(postChecks, 'post') + '</div>';
+        }
+
+        html += '</div>'; // end tech-job-card
+      });
+
+      document.getElementById('dashBody').innerHTML = html;
+
+      // Reload photos for open job
+      if (activeJobId) {
+        currentJobId = activeJobId;
+        loadJobPhotos(activeJobId).then(renderTechView);
+      }
+    }
+
+    window.toggleTechJob = function(jid) {
+      activeJobId = (activeJobId === jid) ? null : jid;
+      if (activeJobId) { currentJobId = activeJobId; loadJobPhotos(activeJobId).then(renderTechView); }
+      else renderTechView();
+    };
+
+    window.setTechJob = function(jid) { currentJobId = jid; activeJobId = jid; };
+
+    window.handleTechPhotoDrop = function(event, jid) {
+      event.preventDefault();
+      currentJobId = jid; activeJobId = jid;
+      var files = Array.from(event.dataTransfer.files).filter(function(f){ return f.type.startsWith('image/'); });
+      uploadPhotos(files).then(renderTechView);
+    };
+
+    window.toggleCheck = function(jid, key) {
+      var checkKey = 'job_' + jid;
+      if (!checklistState[checkKey]) checklistState[checkKey] = {};
+      checklistState[checkKey][key] = !checklistState[checkKey][key];
+      sessionStorage.setItem('checklist_' + tech.id, JSON.stringify(checklistState));
+      renderTechView();
+    };
+
+    window.saveTechNotes = async function(jid) {
+      var notes = (document.getElementById('techNotes_' + jid)||{}).value || '';
+      var client2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var r = await client2.from('customers').update({job_notes: notes}).eq('id', jid);
+      var btn = document.querySelector('.tech-save-btn');
+      if (btn) { btn.textContent = '✓ Saved'; btn.style.background = '#555'; setTimeout(function(){ btn.textContent = '💾 Save Notes'; btn.style.background = '#8DC63F'; }, 2000); }
+    };
+
+    renderTechView();
+  }
+
+
+  // ── SETTER DASHBOARD (inside sales) ────────────────────────────────────────
+  async function loadSetterDashboard(setter) {
+    document.getElementById('loginBox').style.display = 'none';
+    document.getElementById('dashboard').style.display = 'block';
+    document.getElementById('userName').textContent = setter.name + ' · Setter';
+    document.getElementById('dashBody').innerHTML = '<p style="color:#aaa;padding:20px 0;">Loading...</p>';
+
+    var client;
+    try { client = supabase.createClient(SUPA_URL, SUPA_KEY); }
+    catch(e) { document.getElementById('dashBody').innerHTML = '<p style="color:#ef4444;">Database error.</p>'; return; }
+
+    var resp = await client.from('customers').select('*')
+      .or('setter_name.ilike.' + setter.name + ',setter_name.ilike.setter-' + setter.name.toLowerCase())
+      .order('created_at', {ascending:false});
+    var leads = resp.data || [];
+
+    var setterFilter = 'all'; // all | callback | booked | new
+
+    function renderSetter() {
+      var newLeads      = leads.filter(function(l){ return !l.step || l.step < 1; });
+      var bookedLeads   = leads.filter(function(l){ return l.step >= 1 && l.step < 6; });
+      var callbackLeads = leads.filter(function(l){ return !l.diagnostic_date && (!l.step || l.step <= 1); });
+      var closedLeads   = leads.filter(function(l){ return l.step >= 6; });
+
+      var filterList = setterFilter === 'callback' ? callbackLeads
+                     : setterFilter === 'booked'   ? bookedLeads
+                     : setterFilter === 'new'       ? newLeads
+                     : leads;
+
+      var h = '<div class="rep-header">' +
+        '<div>' +
+          '<div class="rep-name">' + setter.name + '</div>' +
+          '<div style="font-size:0.72rem;color:#666;">Setter · Phone & Online</div>' +
+        '</div>' +
+        '<div class="rep-stats">' +
+          '<div class="rep-stat"><div class="rep-stat-val">' + leads.length + '</div><div class="rep-stat-lbl">Total</div></div>' +
+          '<div class="rep-stat"><div class="rep-stat-val">' + callbackLeads.length + '</div><div class="rep-stat-lbl">Call Back</div></div>' +
+          '<div class="rep-stat"><div class="rep-stat-val">' + bookedLeads.length + '</div><div class="rep-stat-lbl">Booked</div></div>' +
+          '<div class="rep-stat"><div class="rep-stat-val">' + closedLeads.length + '</div><div class="rep-stat-lbl">Closed</div></div>' +
+        '</div></div>';
+
+      // Filter tabs + new lead button
+      h += '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:16px;">' +
+        '<div class="rep-tabs" style="margin-bottom:0;">' +
+          '<div class="rep-tab ' + (setterFilter==='all'?'active':'') + '" onclick="setterFilterSwitch('all')">All</div>' +
+          '<div class="rep-tab ' + (setterFilter==='callback'?'active':'') + '" onclick="setterFilterSwitch('callback')">📞 Call Back (' + callbackLeads.length + ')</div>' +
+          '<div class="rep-tab ' + (setterFilter==='booked'?'active':'') + '" onclick="setterFilterSwitch('booked')">📅 Booked</div>' +
+        '</div>' +
+        '<button class="rep-new-lead-btn" onclick="openNewLead()">+ New Lead</button>' +
+      '</div>';
+
+      h += '<div class="rep-pipeline">';
+      if (!filterList.length) {
+        h += '<div style="text-align:center;padding:32px;color:#555;">' +
+          (setterFilter === 'callback' ? '✅ No callbacks pending!' : 'No leads in this view.') +
+          '</div>';
+      } else {
+        filterList.forEach(function(l) {
+          var stageLbl = !l.step||l.step<1 ? 'New'
+                       : l.diagnostic_date  ? 'Booked'
+                       : l.step>=2          ? 'Active'
+                       : 'Needs Booking';
+          var stageCls = stageLbl==='New'||stageLbl==='Needs Booking' ? 'stage-new'
+                       : stageLbl==='Booked' ? 'stage-active' : 'stage-complete';
+          var diagDate = l.diagnostic_date
+            ? '📅 ' + new Date(l.diagnostic_date).toLocaleDateString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})
+            : '';
+          var needsCall = !l.diagnostic_date && (!l.step || l.step <= 1);
+
+          h += '<div class="rep-lead-card" style="' + (needsCall ? 'border-color:rgba(100,180,255,0.3);' : '') + '">' +
+            '<div style="flex:1;">' +
+              '<div class="rep-lead-name">' + (l.first_name||'') + ' ' + (l.last_name||'') + '</div>' +
+              '<div class="rep-lead-detail">' + (l.phone||'No phone') + ' · ' + (l.address||'No address') + '</div>' +
+              '<div class="rep-lead-detail" style="color:#aaa;margin-top:2px;">' +
+                (l.monthly_bill ? '$'+l.monthly_bill+'/mo' : '') +
+                (l.utility ? ' · '+l.utility : '') +
+                (diagDate ? ' · <span style="color:#8DC63F;">'+diagDate+'</span>' : '') +
+              '</div>' +
+              (needsCall ? '<div style="font-size:0.65rem;color:#64b4ff;margin-top:4px;font-weight:600;">📞 Needs follow-up call</div>' : '') +
+            '</div>' +
+            '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex-shrink:0;">' +
+              '<span class="rep-lead-stage ' + stageCls + '">' + stageLbl + '</span>' +
+              (l.phone ? '<a href="tel:' + l.phone.replace(/[^0-9]/g,'') + '" class="tech-btn tech-btn-call" style="font-size:0.68rem;padding:5px 12px;">📞 Call</a>' : '') +
+            '</div>' +
+          '</div>';
         });
       }
       h += '</div>';
       document.getElementById('dashBody').innerHTML = h;
     }
 
-    window._repSwitch = function(v) { repView = v; renderRepView(); };
-    renderRepView();
+    window.setterFilterSwitch = function(f) { setterFilter = f; renderSetter(); };
+    renderSetter();
   }
 
-  // ── OPS DASHBOARD ──────────────────────────────────────────────────────────
+
+  // ── OPS DASHBOARD (install partners) ───────────────────────────────────────
   async function loadOpsDashboard(ops) {
     document.getElementById('loginBox').style.display = 'none';
     document.getElementById('dashboard').style.display = 'block';
@@ -1811,144 +2081,154 @@
     try { client = supabase.createClient(SUPA_URL, SUPA_KEY); }
     catch(e) { document.getElementById('dashBody').innerHTML = '<p style="color:#ef4444;">Database error.</p>'; return; }
 
+    // Only jobs assigned to this ops partner
     var resp = await client.from('customers').select('*')
       .eq('assigned_ops', ops.id)
-      .order('created_at', {ascending:false});
+      .gte('step', 3)
+      .order('install_date', {ascending:true});
     var jobs = resp.data || [];
+
     var activeJobId = null;
-    var checkState = JSON.parse(sessionStorage.getItem('ck_ops_' + ops.id) || '{}');
+    var checklistState = JSON.parse(sessionStorage.getItem('checklist_ops_' + ops.id) || '{}');
 
     function renderOps() {
-      var h = '<div class="tech-header" style="background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.2);border-radius:12px;padding:16px 20px;margin-bottom:20px;display:flex;justify-content:space-between;align-items:center;">' +
-        '<div><div class="tech-name">&#128296; ' + ops.name + '</div>' +
+      var h = '<div class="tech-header" style="background:rgba(141,198,63,0.08);border-color:rgba(141,198,63,0.2);">' +
+        '<div><div class="tech-name">🔧 ' + ops.name + '</div>' +
         '<div style="font-size:0.72rem;color:#888;margin-top:3px;">' + jobs.length + ' job' + (jobs.length!==1?'s':'') + ' assigned</div></div>' +
         '<span class="tech-badge" style="background:rgba(141,198,63,0.15);color:#8DC63F;">Ops Partner</span></div>';
 
       if (!jobs.length) {
-        h += '<div class="tech-no-jobs">&#9989; No jobs assigned yet.<br/>Check back after Admin assigns you a job.</div>';
+        h += '<div class="tech-no-jobs">✅ No jobs assigned yet.<br/>Check back after Admin assigns you a job.</div>';
         document.getElementById('dashBody').innerHTML = h;
         return;
       }
 
       jobs.forEach(function(job) {
-        var jid = String(job.id);
+        var jid = job.id;
         var isOpen = activeJobId === jid;
-        var dateStr = job.diagnostic_date
-          ? new Date(job.diagnostic_date).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})
-          : (job.install_date ? new Date(job.install_date).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'}) : 'Date TBD');
+        var dateStr = job.install_date
+          ? new Date(job.install_date).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})
+          : 'Date TBD';
+        var checkKey = 'job_' + jid;
+        if (!checklistState[checkKey]) checklistState[checkKey] = {};
 
-        var ck = 'job_' + jid;
-        if (!checkState[ck]) checkState[ck] = {};
+        var preChecks  = ['Reviewed job notes & photos','Loaded all tools & equipment','Confirmed customer address & arrival window','Checked quality flags on uploaded photos'];
+        var onChecks   = ['System diagnostics run','Photos taken — before state','Work completed','Photos taken — after state','Customer walkthrough done'];
+        var postChecks = ['Tools packed & site clean','Job notes updated','Photos uploaded','Customer signed off'];
 
-        var preItems  = ['Reviewed job notes & photos','Loaded all tools & equipment','Confirmed address & arrival window','Checked quality flags on photos'];
-        var onItems   = ['System diagnostics run','Photos taken — before state','Work completed','Photos taken — after state','Customer walkthrough done'];
-        var postItems = ['Tools packed & site clean','Job notes updated','Photos uploaded','Customer signed off'];
-
-        function ckHtml(items, phase) {
+        function checkHtml(items, phase) {
           return items.map(function(item, i) {
             var key = phase + '_' + i;
-            var done = checkState[ck] && checkState[ck][key];
-            return '<div class="tech-check-item' + (done?' checked':'') + '" onclick="window._opsCk(\'' + jid + '\',\'' + phase + '_' + i + '\')">' +
-              '<div class="tech-check-box">' + (done?'&#10003;':'') + '</div>' +
+            var checked = checklistState[checkKey][key];
+            return '<div class="tech-check-item ' + (checked?'checked':'') + '" onclick="opsToggleCheck('' + jid + '','' + phase + '_' + i + '')">' +
+              '<div class="tech-check-box">' + (checked?'✓':'') + '</div>' +
               '<div class="tech-check-label">' + item + '</div></div>';
           }).join('');
         }
 
         var photos = jobPhotos[jid] || [];
-        var flagged = photos.filter(function(p){ return p.quality_flag && p.quality_flag !== 'good'; });
+        // Show quality-flagged photos prominently for Ops pre-site prep
+        var flaggedPhotos = photos.filter(function(p){ return p.quality_flag && p.quality_flag !== 'good'; });
+        var flaggedHtml = '';
+        if (flaggedPhotos.length) {
+          flaggedHtml = '<div style="background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.25);border-radius:8px;padding:12px;margin-bottom:12px;">' +
+            '<div style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#ffaa00;margin-bottom:8px;">⚠ ' + flaggedPhotos.length + ' Photo' + (flaggedPhotos.length!==1?'s':'') + ' Need Attention</div>' +
+            flaggedPhotos.map(function(p){
+              return '<div style="font-size:0.78rem;color:#ccc;padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.05);">📷 ' + (p.label||'Photo') + ' — <span style="color:#ffaa00;">' + (p.quality_note||'Needs retake') + '</span></div>';
+            }).join('') + '</div>';
+        }
 
-        h += '<div class="tech-job-card">';
-        h += '<div class="tech-job-header">';
-        h += '<div><div class="tech-job-name">' + (job.first_name||'') + ' ' + (job.last_name||'') + '</div>';
-        h += '<div class="tech-job-addr">&#128205; ' + (job.address||'No address') + '</div></div>';
-        h += '<div class="tech-job-date">' + dateStr + '</div></div>';
+        var photoThumbsHtml = photos.map(function(p){
+          var flagDot = p.quality_flag && p.quality_flag !== 'good' ? ' style="border:2px solid #ffaa00;"' : '';
+          return '<img class="tech-photo-thumb" src="' + p.url + '"' + flagDot + ' onclick="window.open(this.src,'_blank')" title="' + (p.label||'') + (p.quality_note?' — '+p.quality_note:'') + '"/>';
+        }).join('');
 
-        h += '<div class="tech-actions">';
-        if (job.phone) h += '<a href="tel:' + job.phone.replace(/\D/g,'') + '" class="tech-btn tech-btn-call">&#128222; Call</a>';
-        if (job.address) h += '<a href="https://maps.apple.com/?q=' + encodeURIComponent(job.address) + '" target="_blank" class="tech-btn tech-btn-secondary">&#128506; Directions</a>';
-        h += '<button class="tech-btn tech-btn-primary" onclick="window._opsToggle(\'' + jid + '\')">' + (isOpen?'&#9650; Close':'&#9660; Open Job') + '</button>';
-        h += '</div>';
+        h += '<div class="tech-job-card">' +
+          '<div class="tech-job-header">' +
+            '<div><div class="tech-job-name">' + (job.first_name||'') + ' ' + (job.last_name||'') + '</div>' +
+            '<div class="tech-job-addr">📍 ' + (job.address||'No address') + '</div></div>' +
+            '<div class="tech-job-date">' + dateStr + '</div></div>' +
+          '<div class="tech-actions">' +
+            (job.phone ? '<a href="tel:' + (job.phone||'').replace(/\D/g,'') + '" class="tech-btn tech-btn-call">📞 Call Customer</a>' : '') +
+            (job.address ? '<a href="https://maps.apple.com/?q=' + encodeURIComponent(job.address) + '" target="_blank" class="tech-btn tech-btn-secondary">🗺 Directions</a>' : '') +
+            '<button class="tech-btn tech-btn-primary" onclick="opsToggleJob('' + jid + '')">' + (isOpen?'▲ Close':'▼ Open Job') + '</button>' +
+          '</div>';
 
         if (isOpen) {
-          if (flagged.length) {
-            h += '<div style="background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.25);border-radius:8px;padding:12px;margin-bottom:12px;">';
-            h += '<div style="font-size:0.68rem;font-weight:700;text-transform:uppercase;color:#ffaa00;margin-bottom:8px;">&#9888; ' + flagged.length + ' Photo' + (flagged.length!==1?'s':'') + ' Need Attention</div>';
-            flagged.forEach(function(p){
-              h += '<div style="font-size:0.78rem;color:#ccc;padding:4px 0;">&#128247; ' + (p.label||'Photo') + ' — <span style="color:#ffaa00;">' + (p.quality_note||'Needs retake') + '</span></div>';
-            });
-            h += '</div>';
-          }
-
+          // Admin note
           if (job.job_notes || job.notes) {
             h += '<div style="background:rgba(255,165,0,0.08);border:1px solid rgba(255,165,0,0.2);border-radius:8px;padding:12px;margin-bottom:12px;font-size:0.82rem;line-height:1.6;">' +
-              '<span style="color:#ffa500;font-weight:700;font-size:0.68rem;text-transform:uppercase;">&#128203; Note from Admin</span><br/>' +
+              '<span style="color:#ffa500;font-weight:700;font-size:0.68rem;text-transform:uppercase;letter-spacing:0.08em;">📋 Note from Admin</span><br/>' +
               (job.job_notes || job.notes) + '</div>';
           }
 
-          h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">';
-          h += '<div class="info-card"><div class="info-label">System Size</div><div class="info-val">' + (job.system_size||'Unknown') + '</div></div>';
-          h += '<div class="info-card"><div class="info-label">Utility</div><div class="info-val">' + (job.utility||'Unknown') + '</div></div>';
-          h += '<div class="info-card"><div class="info-label">Job Type</div><div class="info-val">' + (job.install_type||'Diagnostic') + '</div></div>';
-          h += '<div class="info-card"><div class="info-label">Monthly Bill</div><div class="info-val">$' + (job.monthly_bill||'?') + '</div></div>';
-          h += '</div>';
+          // System info
+          h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">' +
+            '<div class="info-card"><div class="info-label">System Size</div><div class="info-val">' + (job.system_size||'Unknown') + '</div></div>' +
+            '<div class="info-card"><div class="info-label">Utility</div><div class="info-val">' + (job.utility||'Unknown') + '</div></div>' +
+            '<div class="info-card"><div class="info-label">Job Type</div><div class="info-val">' + (job.install_type||'Diagnostic') + '</div></div>' +
+            '<div class="info-card"><div class="info-label">NEM Status</div><div class="info-val">' + (job.nem_status||'Unknown') + '</div></div>' +
+          '</div>';
 
-          h += '<div class="tech-checklist"><div class="tech-check-title">&#128296; Pre-Visit Checklist</div>' + ckHtml(preItems,'pre') + '</div>';
+          // Flagged photos warning
+          h += flaggedHtml;
 
-          h += '<div class="tech-section-title">&#128247; Job Photos</div>';
-          h += '<div class="tech-photo-zone" onclick="document.getElementById(\'opsIn_' + jid + '\').click()" ondragover="event.preventDefault()" ondrop="window._opsDrop(event,\'' + jid + '\')">';
-          h += '<div class="tech-photo-icon">&#128247;</div>';
-          h += '<div class="tech-photo-label">Tap to upload photos</div></div>';
-          h += '<input type="file" id="opsIn_' + jid + '" accept="image/*" multiple capture="environment" style="display:none" onchange="window._opsUpload(\'' + jid + '\',event)"/>';
+          // Pre-visit checklist
+          h += '<div class="tech-checklist"><div class="tech-check-title">🔧 Pre-Visit Checklist</div>' + checkHtml(preChecks, 'pre') + '</div>';
 
-          if (photos.length) {
-            h += '<div class="tech-photo-grid">';
-            photos.forEach(function(p){
-              var border = p.quality_flag && p.quality_flag !== 'good' ? ' style="border:2px solid #ffaa00;"' : '';
-              h += '<img class="tech-photo-thumb" src="' + p.url + '"' + border + ' onclick="window.open(\'' + p.url + '\',\'_blank\')" onerror="this.style.opacity=0"/>';
-            });
-            h += '</div>';
-          }
+          // Photo grid
+          h += '<div class="tech-section-title">📸 Job Photos</div>' +
+            '<div class="tech-photo-zone" onclick="document.getElementById('opsPhotoInput_' + jid + '').click()" ' +
+            'ondragover="event.preventDefault();this.classList.add('dragover')" ' +
+            'ondragleave="this.classList.remove('dragover')" ' +
+            'ondrop="this.classList.remove('dragover');handleOpsDrop(event,'' + jid + '')">' +
+            '<div class="tech-photo-icon">📷</div>' +
+            '<div class="tech-photo-label">Tap to upload on-site photos<br/><span style="font-size:0.72rem;color:#555;">Before & after shots</span></div></div>' +
+            '<input type="file" id="opsPhotoInput_' + jid + '" accept="image/*" multiple capture="environment" style="display:none" ' +
+            'onchange="setOpsJob('' + jid + '');handlePhotoSelect(event)"/>' +
+            (photoThumbsHtml ? '<div class="tech-photo-grid">' + photoThumbsHtml + '</div>' : '');
 
-          h += '<div class="tech-checklist" style="margin-top:12px;"><div class="tech-check-title">&#9889; On-Site Checklist</div>' + ckHtml(onItems,'on') + '</div>';
-          h += '<div class="tech-section-title">&#128221; Field Notes</div>';
-          h += '<textarea class="tech-notes-area" id="opsNt_' + jid + '" placeholder="Observations, issues found...">' + (job.job_notes||'') + '</textarea>';
-          h += '<button class="tech-save-btn" onclick="window._opsSave(\'' + jid + '\')">&#128190; Save Notes</button>';
-          h += '<div class="tech-checklist" style="margin-top:12px;"><div class="tech-check-title">&#9989; Post-Job Checklist</div>' + ckHtml(postItems,'post') + '</div>';
+          // On-site + post checklists
+          h += '<div class="tech-checklist" style="margin-top:12px;"><div class="tech-check-title">⚡ On-Site Checklist</div>' + checkHtml(onChecks, 'on') + '</div>';
+          h += '<div class="tech-section-title">📝 Field Notes</div>' +
+            '<textarea class="tech-notes-area" id="opsNotes_' + jid + '" placeholder="Observations, issues found, materials used...">' + (job.job_notes||'') + '</textarea>' +
+            '<button class="tech-save-btn" onclick="saveOpsNotes('' + jid + '')">💾 Save Notes</button>';
+          h += '<div class="tech-checklist" style="margin-top:12px;"><div class="tech-check-title">✅ Post-Job Checklist</div>' + checkHtml(postChecks, 'post') + '</div>';
         }
         h += '</div>';
       });
 
       document.getElementById('dashBody').innerHTML = h;
-      if (activeJobId) { currentJobId = activeJobId; loadJobPhotos(activeJobId).then(renderOps); }
+      if (activeJobId) {
+        currentJobId = activeJobId;
+        loadJobPhotos(activeJobId).then(renderOps);
+      }
     }
 
-    window._opsToggle = function(jid) {
+    window.opsToggleJob = function(jid) {
       activeJobId = (activeJobId === jid) ? null : jid;
       if (activeJobId) { currentJobId = activeJobId; loadJobPhotos(activeJobId).then(renderOps); }
       else renderOps();
     };
-    window._opsCk = function(jid, key) {
-      var ck = 'job_' + jid;
-      if (!checkState[ck]) checkState[ck] = {};
-      checkState[ck][key] = !checkState[ck][key];
-      sessionStorage.setItem('ck_ops_' + ops.id, JSON.stringify(checkState));
-      renderOps();
-    };
-    window._opsUpload = function(jid, event) {
-      currentJobId = jid; activeJobId = jid;
-      uploadPhotos(Array.from(event.target.files)).then(renderOps);
-    };
-    window._opsDrop = function(event, jid) {
+    window.setOpsJob   = function(jid) { currentJobId = jid; activeJobId = jid; };
+    window.handleOpsDrop = function(event, jid) {
       event.preventDefault();
       currentJobId = jid; activeJobId = jid;
       uploadPhotos(Array.from(event.dataTransfer.files).filter(function(f){ return f.type.startsWith('image/'); })).then(renderOps);
     };
-    window._opsSave = async function(jid) {
-      var notes = (document.getElementById('opsNt_' + jid)||{}).value || '';
+    window.opsToggleCheck = function(jid, key) {
+      var checkKey = 'job_' + jid;
+      if (!checklistState[checkKey]) checklistState[checkKey] = {};
+      checklistState[checkKey][key] = !checklistState[checkKey][key];
+      sessionStorage.setItem('checklist_ops_' + ops.id, JSON.stringify(checklistState));
+      renderOps();
+    };
+    window.saveOpsNotes = async function(jid) {
+      var notes = (document.getElementById('opsNotes_' + jid)||{}).value || '';
       var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
       await c2.from('customers').update({job_notes: notes}).eq('id', jid);
       var btn = document.querySelector('.tech-save-btn');
-      if (btn) { btn.textContent = '&#10003; Saved'; setTimeout(function(){ btn.textContent = '&#128190; Save Notes'; }, 2000); }
+      if (btn) { btn.textContent = '✓ Saved'; setTimeout(function(){ btn.textContent = '💾 Save Notes'; }, 2000); }
     };
 
     renderOps();
