@@ -406,17 +406,19 @@
     }
 
     // Customer login — Supabase lookup with timeout guard
+    if (typeof supabase === 'undefined') { showErr('Connection error — please refresh the page and try again.'); btn.textContent = 'Access My Portal'; btn.disabled = false; return; }
     var client;
     try { client = supabase.createClient(SUPA_URL, SUPA_KEY); }
     catch(e) { showErr('Connection error. Please refresh.'); btn.textContent = 'Access My Portal'; btn.disabled = false; return; }
     try {
-      var queryPromise = client.from('customers').select('*').eq('email', email).single();
+      // Use .limit(1) instead of .single() so duplicate records don't break login
+      var queryPromise = client.from('customers').select('*').eq('email', email).limit(1);
       var timeoutPromise = new Promise(function(_, reject){
-        setTimeout(function(){ reject(new Error('Request timed out. Check your connection and try again.')); }, 10000);
+        setTimeout(function(){ reject(new Error('Request timed out. Check your connection and try again.')); }, 12000);
       });
       var resp = await Promise.race([queryPromise, timeoutPromise]);
-      if (resp.error || !resp.data) { showErr('Email not found.'); btn.textContent = 'Access My Portal'; btn.disabled = false; return; }
-      var c = resp.data;
+      if (resp.error || !resp.data || !resp.data.length) { showErr('No account found for this email. Double-check your address or call us at (619) 777-6527.'); btn.textContent = 'Access My Portal'; btn.disabled = false; return; }
+      var c = resp.data[0];
       function normalize(p) {
         var d = (p||'').replace(/[^0-9]/g,'');
         if (d.length===11 && d.charAt(0)==='1') d = d.slice(1);
@@ -1601,9 +1603,20 @@
           var s = SETTERS.find(function(x){ return x.id===u.id; }) || u;
           loadSetterDashboard(s); return;
         }
-        // Customer
+        // Customer — re-fetch fresh data from DB so updates (invoice, step, etc.) are current
         currentUser = u;
-        loadCustomerDashboard(u); return;
+        try {
+          var rc = supabase.createClient(SUPA_URL, SUPA_KEY);
+          var fr = await rc.from('customers').select('*').eq('id', u.id).limit(1);
+          if (!fr.error && fr.data && fr.data.length) {
+            var freshUser = fr.data[0];
+            sessionStorage.setItem('user', JSON.stringify(freshUser));
+            loadCustomerDashboard(freshUser);
+          } else {
+            loadCustomerDashboard(u);
+          }
+        } catch(e) { loadCustomerDashboard(u); }
+        return;
       } catch(e) { sessionStorage.clear(); }
     }
     var p=new URLSearchParams(location.search); var ue=p.get('email'),uc=p.get('code');
@@ -1653,10 +1666,11 @@
             return;
           }
 
-          var resp = await client.from('customers').select('*').eq('email', cleanEmail).single();
+          // Use .limit(1) instead of .single() so duplicate records don't break magic-link login
+          var resp = await client.from('customers').select('*').eq('email', cleanEmail).limit(1);
 
           // Email not found
-          if(resp.error || !resp.data) {
+          if(resp.error || !resp.data || !resp.data.length) {
             showMagicLinkError(
               'We couldn\'t find an account for ' + cleanEmail + '.',
               'This link may have been sent to a different email address. Check your inbox for a Solar Review message, or call us at (619) 722-9268.'
@@ -1664,7 +1678,7 @@
             return;
           }
 
-          var c = resp.data;
+          var c = resp.data[0];
           function normalize(ph) {
             var d=(ph||'').replace(/[^0-9]/g,'');
             if(d.length===11&&d.charAt(0)==='1') d=d.slice(1);
