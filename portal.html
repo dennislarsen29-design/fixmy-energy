@@ -318,6 +318,11 @@
     { email: 'cosmic@fixmy.energy', code: 'cosmic2026', name: 'Cosmic Solar',  id: 'ops3' },
   ];
 
+  // Internal techs (see all active jobs + do field work + sales)
+  var TECHS = [
+    { email: 'juan@fixmy.energy', code: 'juan2026', name: 'Juan', id: 'tech1' },
+  ];
+
 
   var GHL_WEBHOOK   = 'https://services.leadconnectorhq.com/hooks/gXWwbOVymY0iRfj7c1It/webhook-trigger/032a0503-c92f-4711-89c0-0a4659e8e4ff';
   var SHEETBEST_URL = 'https://api.sheetbest.com/sheets/cf351a87-0260-4633-aaa9-d955caf6c630';
@@ -364,10 +369,12 @@
     var detectedRep    = SALES_REPS.find(function(r){ return r.email === email; });
     var detectedOps    = OPS_PARTNERS.find(function(o){ return o.email === email; });
     var detectedSetter = SETTERS.find(function(s){ return s.email === email; });
+    var detectedTech   = TECHS.find(function(t){ return t.email === email; });
     var detectedAdmin  = (email === ADMIN_EMAIL) || (code === ADMIN_CODE);
 
     var resolvedRole = detectedAdmin  ? 'admin'
                      : detectedOps    ? 'ops'
+                     : detectedTech   ? 'tech'
                      : detectedRep    ? 'rep'
                      : detectedSetter ? 'setter'
                      : 'customer';
@@ -387,6 +394,16 @@
         sessionStorage.setItem('user', JSON.stringify({isRep:true, name:rep.name, id:rep.id, role:'rep'}));
         loadRepDashboard(rep); return;
       } else { showErr('Field credentials not found. Check email and code.'); btn.textContent = 'Access My Portal'; btn.disabled = false; return; }
+    }
+
+    // Internal tech login
+    if (resolvedRole === 'tech') {
+      var tech = TECHS.find(function(t) { return t.email === email && t.code === code; });
+      if (tech) {
+        sessionStorage.setItem('user', JSON.stringify({isTech:true, name:tech.name, id:tech.id, role:'tech'}));
+        try { await loadTechDashboard(tech); } catch(e) { showErr('Error loading dashboard: ' + e.message); btn.textContent = 'Access My Portal'; btn.disabled = false; }
+        return;
+      } else { showErr('Tech credentials not found. Check email and code.'); btn.textContent = 'Access My Portal'; btn.disabled = false; return; }
     }
 
     // Setter login
@@ -464,6 +481,7 @@
         if (adminFilter==='complete') return x.step>=8;
         if (adminFilter==='invoice') return x.invoice_status&&x.invoice_status!=='none'&&x.invoice_status!=='paid';
         if (adminFilter==='agreement') return x.agreement_status==='sent'||x.agreement_status==='pending';
+        if (adminFilter==='ops_needed') return x.ops_ready===true&&!x.assigned_ops;
         return true;
       });
     }
@@ -471,8 +489,9 @@
     var active = adminCustomers.filter(function(x){ return x.step>=2&&x.step<8; }).length;
     var invoicePending = adminCustomers.filter(function(x){ return x.invoice_status==='pending'||x.invoice_status==='sent'; }).length;
     var agreementPending = adminCustomers.filter(function(x){ return x.agreement_status==='sent'||x.agreement_status==='pending'; }).length;
-    var statsHtml = '<div class="admin-stats">'+adminStat(total,'Total Leads','#8DC63F','all')+adminStat(active,'Active Jobs','#4a9eff','active')+adminStat(invoicePending,'Invoice Due','#ffaa00','invoice')+adminStat(agreementPending,'Awaiting Sig','#f97316','agreement')+'</div>';
-    var searchBar = '<div class="admin-toolbar"><input type="text" id="adminSearchInput" class="admin-search" placeholder="Search leads..." value="'+adminSearch+'" oninput="adminSearch=this.value;renderAdminView(adminView)"/><div class="admin-filters">'+filterBtn('all','All')+filterBtn('new','New')+filterBtn('active','Active')+filterBtn('invoice','Invoice')+filterBtn('agreement','Sig Needed')+filterBtn('complete','Complete')+'</div></div>';
+    var opsNeeded = adminCustomers.filter(function(x){ return x.ops_ready===true&&!x.assigned_ops; }).length;
+    var statsHtml = '<div class="admin-stats">'+adminStat(total,'Total Leads','#8DC63F','all')+adminStat(active,'Active Jobs','#4a9eff','active')+adminStat(invoicePending,'Invoice Due','#ffaa00','invoice')+adminStat(agreementPending,'Awaiting Sig','#f97316','agreement')+adminStat(opsNeeded,'OPS Needed','#f97316','ops_needed')+'</div>';
+    var searchBar = '<div class="admin-toolbar"><input type="text" id="adminSearchInput" class="admin-search" placeholder="Search leads..." value="'+adminSearch+'" oninput="adminSearch=this.value;renderAdminView(adminView)"/><div class="admin-filters">'+filterBtn('all','All')+filterBtn('new','New')+filterBtn('active','Active')+filterBtn('invoice','Invoice')+filterBtn('agreement','Sig Needed')+filterBtn('ops_needed','🔧 OPS')+filterBtn('complete','Complete')+'</div></div>';
     var actionsBar = '<div class="admin-actions-bar"><button class="admin-action-btn" onclick="openNewLead()">+ New Lead</button><button class="admin-action-btn ghost" onclick="exportCSV()">&#8681; Export CSV</button></div>';
     var listHtml = '';
     if (!c.length) { listHtml = '<div style="padding:32px;text-align:center;color:#555;">No leads match this filter.</div>'; }
@@ -1252,6 +1271,7 @@
     var stepColors = ['#666','#4a9eff','#ffaa00','#f97316','#8DC63F','#8DC63F'];
     var invBadge = c.invoice_status&&c.invoice_status!=='none' ? '<span class="mini-badge" style="background:rgba(255,170,0,0.12);color:#ffaa00;">INV: '+c.invoice_status+'</span>' : '';
     var agBadge  = c.agreement_status&&c.agreement_status!=='none' ? '<span class="mini-badge" style="background:rgba(74,158,255,0.12);color:#4a9eff;">AGR: '+c.agreement_status+'</span>' : '';
+    var opsBadge = (c.ops_ready&&!c.assigned_ops) ? '<span class="mini-badge" style="background:rgba(249,115,22,0.15);color:#f97316;">🔧 OPS NEEDED</span>' : '';
     var magic = 'https://fixmy.energy/portal?email='+encodeURIComponent(c.email||'')+'&code='+encodeURIComponent(c.access_code||(c.phone||'').replace(/\D/g,''));
     var created = c.created_at ? new Date(c.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric'}) : '';
     return '<div class="lead-card" id="lead-'+c.id+'">'+
@@ -1260,7 +1280,7 @@
           '<span class="step-pill" style="background:'+stepColors[step-1]+'22;color:'+stepColors[step-1]+'">'+stepLabels[step-1]+'</span></div>'+
         '<div class="lead-meta">'+(c.email||'')+(c.phone?' &middot; '+c.phone:'')+(created?' &middot; '+created:'')+'</div>'+
         '<div class="lead-addr">'+(c.address||'No address')+'</div>'+
-        '<div style="margin-top:6px;">'+invBadge+agBadge+'</div></div>'+
+        '<div style="margin-top:6px;">'+invBadge+agBadge+opsBadge+'</div></div>'+
       '<div class="lead-card-actions">'+
         '<button class="lead-btn lime" data-id="'+c.id+'" onclick="openLeadEditor(this.dataset.id)">Edit</button>'+
         '<button class="lead-btn ghost" data-link="'+magic+'" data-email="'+c.email+'" onclick="sendMagicLink(this.dataset.link,this.dataset.email)">&#128279; Link</button>'+
@@ -1318,7 +1338,7 @@
       '</div>'+
       '<div class="editor-section-title">Assignment</div>'+
       '<div class="ed-grid">'+
-        edSelect('Assign Ops','edAssignedOps',c.assigned_ops||'none',[['none','— Unassigned —'],['ops1','Jon Klos'],['ops2','John Espinoza'],['ops3','Cosmic Solar'],['dennis','Dennis (Self)']])+
+        edSelect('Assign Ops','edAssignedOps',c.assigned_ops||'none',[['none','— Unassigned —'],['tech1','Juan'],['ops1','Jon Klos'],['ops2','John Espinoza'],['ops3','Cosmic Solar'],['dennis','Dennis (Self)']])+
         edSelect('Ops Payout','edOpsPayout',c.ops_payout_status||'pending',[['pending','Pending'],['paid','Paid']])+
       '</div>'+
       '<div class="ed-full"><label class="ed-label">Internal Notes</label><textarea id="edNotes" class="ed-input" rows="2" placeholder="Tech notes...">'+(c.notes||'')+'</textarea></div>'+
@@ -1359,7 +1379,7 @@
     } catch(e) { alert('Save failed: '+e.message); }
   }
 
-  function openNewLead() {
+  function openNewLead(repId, repName) {
     var slot = document.getElementById('editorSlot');
     if (!slot) return;
     slot.innerHTML =
@@ -1374,6 +1394,8 @@
           '<button class="type-btn" data-type="inbound" onclick="setLeadType(this)">&#127760; Inbound</button>'+
         '</div>'+
         '<input type="hidden" id="nlType" value="setter-ronda"/>'+
+        '<input type="hidden" id="nlRepId" value="'+(repId||'')+'"/>'+
+        '<input type="hidden" id="nlRepName" value="'+(repName||'')+'"/>'+
         '<div id="nlAutoNote" style="padding:8px 14px;background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.2);border-radius:8px;font-size:0.72rem;color:#ffaa00;margin-bottom:16px;">&#128222; <strong>Setter lead:</strong> No confirmation SMS/email will be sent.</div>'+
         '<div class="editor-section-title">Home Details</div>'+
         '<div class="ed-grid">'+
@@ -1468,7 +1490,9 @@
     if (!email) email=digits+'@setter.local';
     var checkNotes=[]; if(postcard) checkNotes.push('Postcard Available'); if(utilityBill) checkNotes.push('Utility Bill Available'); if(window2hr) checkNotes.push('2-Hour Window Prompted');
     var fullNotes=[owned?'Owned home: '+owned:'',roof?'Roof age: '+roof:'',checkNotes.length?checkNotes.join(' - '):'',notes].filter(Boolean).join(' | ');
-    var newLead={first_name:first,last_name:(document.getElementById('nlLast').value||null),email:email,phone:phone,address:addr,monthly_bill:bill||null,access_code:digits,step:1,notes:fullNotes||null};
+    var repId=(document.getElementById('nlRepId')?document.getElementById('nlRepId').value:'')||'';
+    var repName=(document.getElementById('nlRepName')?document.getElementById('nlRepName').value:'')||'';
+    var newLead={first_name:first,last_name:(document.getElementById('nlLast').value||null),email:email,phone:phone,address:addr,monthly_bill:bill||null,access_code:digits,step:1,notes:fullNotes||null,rep_id:repId||null,setter_name:repName||setter||null,lead_temp:'cold'};
     var btn=document.querySelector('#newLeadPanel .lead-btn.lime');
     if(btn){btn.textContent='Creating...';btn.disabled=true;}
     try{
@@ -1481,7 +1505,7 @@
       fetch(SHEETBEST_URL,{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify([sheetRow])}).catch(function(e){console.warn('Sheets:',e);});
       fetch(GHL_WEBHOOK,{method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},body:JSON.stringify({firstName:first,lastName:newLead.last_name||'',email:email,phone:phone,address1:addr,source:isOutbound?('Setter: '+type):'Admin Inbound',tags:['setter-lead','no-automation',type],customField:{monthly_bill:bill,lead_type:type,setter_name:setter||type,years_owned:owned,roof_age:roof,postcard:postcard,utility_bill_avail:utilityBill,two_hr_window:window2hr}})}).catch(function(e){console.warn('GHL:',e);});
       var saved=document.getElementById('nlSaved'); if(saved) saved.style.display='inline';
-      setTimeout(function(){closeLeadEditor();renderAdminView(adminView);},1400);
+      setTimeout(function(){closeLeadEditor();if(typeof adminCustomers!=='undefined'&&adminCustomers)renderAdminView(adminView);else if(typeof window.salesRefresh==='function')window.salesRefresh();},1400);
     }catch(e){ alert('Failed: '+e.message); if(btn){btn.textContent='Create Lead';btn.disabled=false;} }
   }
 
@@ -1696,7 +1720,11 @@
           var o = OPS_PARTNERS.find(function(x){ return x.id===u.id; }) || u;
           loadOpsDashboard(o); return;
         }
-        if (u.isRep || u.role === 'rep' || u.role === 'tech') {
+        if (u.isTech || u.role === 'tech') {
+          var t = TECHS.find(function(x){ return x.id===u.id; }) || u;
+          loadTechDashboard(t); return;
+        }
+        if (u.isRep || u.role === 'rep') {
           var r = SALES_REPS.find(function(x){ return x.id===u.id; }) || u;
           loadRepDashboard(r); return;
         }
@@ -1841,24 +1869,222 @@
 
 <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBedpPe3461c1mYiD8yxjDMkYvrJ4MQQpc&libraries=places" async defer></script>
 <script>
-  // ── SALES REP DASHBOARD ────────────────────────────────────────────────────
-  async function loadRepDashboard(rep) {
+  // ── UNIFIED SALES / TECH DASHBOARD ────────────────────────────────────────
+  async function loadSalesDashboard(person, config) {
+    config = config || {};
+    var roleLabel = config.roleLabel || 'Sales';
+    var showFieldJobs = !!config.showFieldJobs;
+
     document.getElementById('loginBox').style.display = 'none';
     document.getElementById('dashboard').style.display = 'block';
-    document.getElementById('userName').textContent = rep.name + ' · Tech';
-    document.getElementById('dashBody').innerHTML = '<p style="color:#aaa;padding:20px 0;">Loading your leads...</p>';
+    document.getElementById('userName').textContent = person.name + ' \xB7 ' + roleLabel;
+    document.getElementById('dashBody').innerHTML = '<p style="color:#aaa;padding:20px 0;">Loading...</p>';
 
     var client;
     try { client = supabase.createClient(SUPA_URL, SUPA_KEY); }
     catch(e) { document.getElementById('dashBody').innerHTML = '<p style="color:#ef4444;">Database error.</p>'; return; }
 
-    // Load leads assigned to this rep (by setter_name or assigned_rep field)
-    var resp = await client.from('customers').select('*')
-      .or('setter_name.eq.' + rep.name + ',assigned_rep.eq.' + rep.id)
-      .order('created_at', {ascending:false});
-    var leads = resp.data || [];
+    // Fetch this person's accounts — rep_id primary, setter_name backward compat
+    var r1 = await client.from('customers').select('*').eq('rep_id', person.id).order('created_at', {ascending:false});
+    var r2 = await client.from('customers').select('*').ilike('setter_name', person.name).order('created_at', {ascending:false});
+    var seen = {}; var allRecords = [];
+    [(r1.data||[]), (r2.data||[])].forEach(function(arr){
+      arr.forEach(function(r){ if(!seen[r.id]){ seen[r.id]=true; allRecords.push(r); } });
+    });
+    allRecords.sort(function(a,b){ return new Date(b.created_at)-new Date(a.created_at); });
 
-    var repView = 'leads'; // leads | commissions
+    var myLeads = allRecords.filter(function(r){ return !r.invoice_status||r.invoice_status==='none'; });
+    var myJobs  = allRecords.filter(function(r){ return r.invoice_status&&r.invoice_status!=='none'; });
+
+    var fieldJobs = [];
+    if (showFieldJobs) {
+      var fr = await client.from('customers').select('*').eq('assigned_ops', person.id).order('diagnostic_date', {ascending:true});
+      fieldJobs = fr.data || [];
+    }
+
+    var salesView = sessionStorage.getItem('salesView_'+person.id) || 'leads';
+    var OPS_NAMES = {ops1:'Jon Klos',ops2:'John Espinoza',ops3:'Cosmic Solar',dennis:'Dennis',tech1:'Juan'};
+
+    function fmtDt(iso) {
+      if (!iso) return null;
+      var dt = new Date(iso);
+      return dt.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'}) + ' @ ' +
+             dt.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true});
+    }
+
+    function renderSales() {
+      var h = '<div id="editorSlot"></div>';
+
+      // Header
+      h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">' +
+        '<div><div style="font-size:1rem;font-weight:700;">' + person.name + '</div>' +
+        '<div style="font-size:0.72rem;color:#666;margin-top:1px;">' + roleLabel + '</div></div>' +
+        '<button onclick="openNewLead(\'' + person.id + '\',\'' + person.name + '\')" style="background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;padding:9px 18px;font-size:0.8rem;font-weight:700;cursor:pointer;">+ New Lead</button>' +
+      '</div>';
+
+      // Stats
+      var cols = showFieldJobs ? 4 : 3;
+      h += '<div style="display:grid;grid-template-columns:repeat('+cols+',1fr);gap:8px;margin-bottom:14px;">';
+      function sBox(v,lbl){ return '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:10px;text-align:center;"><div style="font-size:1.2rem;font-weight:800;color:#8DC63F;">'+v+'</div><div style="font-size:0.68rem;color:#888;">'+lbl+'</div></div>'; }
+      h += sBox(myLeads.length,'Leads') + sBox(myJobs.length,'Jobs');
+      if (showFieldJobs) h += sBox(fieldJobs.length,'Field');
+      h += sBox(allRecords.length,'Total') + '</div>';
+
+      // Tabs
+      function tBtn(v,lbl) {
+        var a = salesView===v;
+        return '<button onclick="salesSetView(\''+v+'\')" style="flex:1;padding:9px 4px;border:none;border-radius:8px;font-size:0.75rem;font-weight:700;cursor:pointer;'+(a?'background:#8DC63F;color:#1A1A1A;':'background:rgba(255,255,255,0.07);color:#888;')+'">'+lbl+'</button>';
+      }
+      h += '<div style="display:flex;gap:6px;margin-bottom:16px;">';
+      h += tBtn('leads','📋 Leads ('+myLeads.length+')');
+      h += tBtn('jobs','💼 Jobs ('+myJobs.length+')');
+      if (showFieldJobs) h += tBtn('field','🔧 Field ('+fieldJobs.length+')');
+      h += tBtn('map','🗺 Map');
+      h += '</div>';
+
+      // ── Leads view ──────────────────────────────────────────────────────────
+      if (salesView === 'leads') {
+        if (!myLeads.length) {
+          h += '<div style="text-align:center;padding:32px;color:#555;">No leads yet. Tap + New Lead to add one.</div>';
+        } else {
+          myLeads.forEach(function(l) {
+            var temp = l.lead_temp || 'cold';
+            var tClr = {cold:'#4a9eff',warm:'#ffaa00',hot:'#ef4444'};
+            var tBdr = {cold:'rgba(74,158,255,0.2)',warm:'rgba(255,170,0,0.2)',hot:'rgba(239,68,68,0.2)'};
+            function tempBtn(t,lbl) {
+              var a = temp===t;
+              return '<button onclick="setLeadTemp(\''+l.id+'\',\''+t+'\')" style="padding:3px 9px;border-radius:100px;font-size:0.62rem;font-weight:700;cursor:pointer;border:1px solid '+tClr[t]+';'+(a?'background:'+tClr[t]+';color:#fff;':'background:transparent;color:'+tClr[t]+';')+'">'+lbl+'</button>';
+            }
+            var step = l.step||1;
+            h += '<div style="background:rgba(255,255,255,0.04);border:1px solid '+tBdr[temp]+';border-radius:12px;padding:14px;margin-bottom:8px;">';
+            h += '<div style="display:flex;justify-content:space-between;align-items:flex-start;">';
+            h += '<div style="flex:1;"><div style="font-size:0.92rem;font-weight:700;">'+(l.first_name||'')+' '+(l.last_name||'')+'</div>' +
+              '<div style="font-size:0.75rem;color:#888;margin-top:2px;">'+(l.phone||'No phone')+'</div>' +
+              '<div style="font-size:0.72rem;color:#666;margin-top:1px;">'+(l.address||'No address')+'</div>' +
+              (l.monthly_bill?'<div style="font-size:0.7rem;color:#8DC63F;margin-top:2px;">$'+l.monthly_bill+'/mo'+(l.utility?' &middot; '+l.utility:'')+'</div>':'') +
+            '</div>';
+            h += '<div style="display:flex;flex-direction:column;gap:5px;align-items:flex-end;">';
+            h += '<div style="display:flex;gap:3px;">'+tempBtn('cold','❄ Cold')+tempBtn('warm','☀ Warm')+tempBtn('hot','🔥 Hot')+'</div>';
+            if (l.phone) h += '<a href="tel:'+l.phone.replace(/\D/g,'')+'" style="font-size:0.68rem;padding:4px 10px;background:rgba(141,198,63,0.12);color:#8DC63F;border-radius:100px;border:1px solid rgba(141,198,63,0.25);text-decoration:none;font-weight:700;">📞</a>';
+            h += '</div></div>';
+            // Progress dots
+            h += '<div style="display:flex;align-items:center;gap:2px;margin-top:10px;">';
+            [1,2,3,4,5,6,7,8].forEach(function(n,i){
+              h += '<div style="width:'+(n<=step?'8px':'6px')+';height:'+(n<=step?'8px':'6px')+';border-radius:50%;background:'+(n<=step?'#8DC63F':'rgba(255,255,255,0.12)')+';flex-shrink:0;"></div>';
+              if(i<7) h += '<div style="flex:1;height:2px;background:'+(step>n?'#8DC63F':'rgba(255,255,255,0.08)')+';"></div>';
+            });
+            h += '</div></div>';
+          });
+        }
+      }
+
+      // ── Jobs view ───────────────────────────────────────────────────────────
+      else if (salesView === 'jobs') {
+        if (!myJobs.length) {
+          h += '<div style="text-align:center;padding:32px;color:#555;">No jobs yet. Jobs appear once an invoice is created.</div>';
+        } else {
+          myJobs.forEach(function(j) {
+            var inv = j.invoice_status||'';
+            var iClr = inv==='paid'?'#8DC63F':inv==='overdue'?'#ef4444':'#ffaa00';
+            var iBg  = inv==='paid'?'rgba(141,198,63,0.1)':inv==='overdue'?'rgba(239,68,68,0.1)':'rgba(255,170,0,0.1)';
+            var iLbl = {paid:'✓ Paid',pending:'⏳ Payment Due',sent:'📧 Invoice Sent',overdue:'⚠ Overdue',draft:'Draft'}[inv]||inv;
+            var opsHtml = '';
+            if (j.assigned_ops && (j.diagnostic_date||j.install_date)) {
+              var partnerName = OPS_NAMES[j.assigned_ops]||j.assigned_ops;
+              var apptStr = fmtDt(j.install_date||j.diagnostic_date);
+              opsHtml = '<div style="background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.2);border-radius:8px;padding:8px 12px;margin-top:8px;font-size:0.78rem;">' +
+                '<span style="color:#8DC63F;font-weight:700;">✓ '+partnerName+' Assigned</span>' +
+                (apptStr?'<br/><span style="color:#aaa;font-size:0.72rem;">📅 '+apptStr+'</span>':'') +
+              '</div>';
+            } else if (j.ops_ready) {
+              opsHtml = '<div style="background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.2);border-radius:8px;padding:8px 12px;margin-top:8px;font-size:0.78rem;color:#ffaa00;font-weight:700;">⏳ Pending Admin Assignment</div>';
+            } else {
+              opsHtml = '<button onclick="sendToOps(\''+j.id+'\')" style="margin-top:8px;width:100%;padding:9px;background:rgba(249,115,22,0.1);border:1px solid rgba(249,115,22,0.3);border-radius:8px;color:#f97316;font-size:0.78rem;font-weight:700;cursor:pointer;">📤 Send to Ops</button>';
+            }
+            h += '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:14px;margin-bottom:8px;">';
+            h += '<div style="display:flex;justify-content:space-between;align-items:flex-start;">';
+            h += '<div style="flex:1;"><div style="font-size:0.92rem;font-weight:700;">'+(j.first_name||'')+' '+(j.last_name||'')+'</div>' +
+              '<div style="font-size:0.75rem;color:#888;margin-top:2px;">'+(j.address||'No address')+'</div>' +
+              (j.install_type?'<div style="font-size:0.7rem;color:#666;margin-top:1px;">'+j.install_type+'</div>':'') +
+            '</div>';
+            h += '<div style="background:'+iBg+';border-radius:6px;padding:4px 10px;font-size:0.72rem;font-weight:700;color:'+iClr+';">'+iLbl+'</div>';
+            h += '</div>'+opsHtml+'</div>';
+          });
+        }
+      }
+
+      // ── Field jobs view (Juan only) ─────────────────────────────────────────
+      else if (salesView === 'field' && showFieldJobs) {
+        if (!fieldJobs.length) {
+          h += '<div style="text-align:center;padding:32px;color:#555;">No field jobs assigned yet.</div>';
+        } else {
+          fieldJobs.forEach(function(j) {
+            var diag = fmtDt(j.diagnostic_date), inst = fmtDt(j.install_date);
+            h += '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:14px;margin-bottom:8px;">';
+            h += '<div style="font-size:0.92rem;font-weight:700;">'+(j.first_name||'')+' '+(j.last_name||'')+'</div>';
+            h += '<div style="font-size:0.75rem;color:#888;margin-top:2px;">📍 '+(j.address||'No address')+'</div>';
+            if (diag) h += '<div style="font-size:0.72rem;color:#4a9eff;margin-top:4px;">🔍 Diag: '+diag+'</div>';
+            if (inst) h += '<div style="font-size:0.72rem;color:#8DC63F;margin-top:2px;">🔧 Install: '+inst+'</div>';
+            if (!diag&&!inst) h += '<div style="font-size:0.72rem;color:#666;margin-top:4px;">Not yet scheduled</div>';
+            h += '<div style="display:flex;gap:8px;margin-top:10px;">';
+            if (j.phone) h += '<a href="tel:'+j.phone.replace(/\D/g,'')+'" style="font-size:0.72rem;padding:5px 12px;background:rgba(141,198,63,0.12);color:#8DC63F;border-radius:100px;border:1px solid rgba(141,198,63,0.25);text-decoration:none;font-weight:700;">📞 Call</a>';
+            if (j.address) h += '<a href="https://maps.apple.com/?q='+encodeURIComponent(j.address)+'" target="_blank" style="font-size:0.72rem;padding:5px 12px;background:rgba(255,255,255,0.06);color:#aaa;border-radius:100px;border:1px solid rgba(255,255,255,0.1);text-decoration:none;font-weight:700;">🗺 Directions</a>';
+            h += '</div></div>';
+          });
+        }
+      }
+
+      // ── Map view ────────────────────────────────────────────────────────────
+      else if (salesView === 'map') {
+        h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;margin-bottom:8px;">Territory Map</div>';
+        h += '<div style="border-radius:12px;overflow:hidden;border:1px solid rgba(255,255,255,0.1);margin-bottom:10px;">';
+        h += '<iframe src="https://www.google.com/maps/d/embed?mid=1q3vKapAtZP0jXPPsBQNFAn0rKMfH-s4&ehbc=2E312F" width="100%" height="420" frameborder="0" style="border:none;display:block;"></iframe>';
+        h += '</div>';
+        h += '<div style="font-size:0.68rem;color:#555;text-align:center;">Dev Roadmap: two-way sync — status changes will auto-update map pins</div>';
+      }
+
+      document.getElementById('dashBody').innerHTML = h;
+    }
+
+    window.salesSetView = function(v) { salesView=v; sessionStorage.setItem('salesView_'+person.id,v); renderSales(); };
+    window.setLeadTemp = async function(id, temp) {
+      var c2=supabase.createClient(SUPA_URL,SUPA_KEY);
+      await c2.from('customers').update({lead_temp:temp}).eq('id',id);
+      var rec=allRecords.find(function(r){return r.id===id;}); if(rec) rec.lead_temp=temp;
+      renderSales();
+    };
+    window.sendToOps = async function(id) {
+      if(!confirm('Send this job to Admin for Ops scheduling?\nAdmin will assign a partner and set the appointment time.')) return;
+      var c2=supabase.createClient(SUPA_URL,SUPA_KEY);
+      await c2.from('customers').update({ops_ready:true}).eq('id',id);
+      var rec=myJobs.find(function(r){return r.id===id;}); if(rec) rec.ops_ready=true;
+      renderSales();
+    };
+    window.salesRefresh = function() { loadSalesDashboard(person, config); };
+
+    renderSales();
+  }
+
+
+  // ── SALES REP DASHBOARD ────────────────────────────────────────────────────
+  async function loadRepDashboard(rep) {
+    return loadSalesDashboard(rep, {roleLabel: 'Tech \xB7 Sales', showFieldJobs: false});
+  }
+
+  // placeholder — commission view available via Jobs tab
+  function calcRepCommission(lead) {
+    var amt = parseFloat(lead.invoice_amount) || 0;
+    if (!amt && lead.step >= 8) amt = 500;
+    var rate = 0.10;
+    if (lead.install_type === 'battery') rate = 0.08;
+    if (lead.install_type === 'diagnostic') rate = 0.15;
+    return Math.round(amt * rate);
+  }
+
+
+  // ── (legacy rep view removed — replaced by loadSalesDashboard) ──────────────
+  async function loadRepDashboard_UNUSED(rep) { /* replaced by loadSalesDashboard */
+    var leads = []; var repView = 'leads';
 
     function renderRepView() {
       var newLeads     = leads.filter(function(l){ return !l.step || l.step <= 1; });
@@ -1914,43 +2140,35 @@
       document.getElementById('dashBody').innerHTML = html;
     }
 
-    window.repViewSwitch = function(v) { repView = v; renderRepView(); };
-    renderRepView();
-  }
-
-  function calcRepCommission(lead) {
-    // Base commission structure — adjust as needed
-    var amt = parseFloat(lead.invoice_amount) || 0;
-    if (!amt && lead.step >= 8) amt = 500; // default if no invoice
-    var rate = 0.10; // 10% base commission
-    if (lead.install_type === 'battery') rate = 0.08;
-    if (lead.install_type === 'diagnostic') rate = 0.15;
-    return Math.round(amt * rate);
   }
 
 
-  // ── TECH / FIELD DASHBOARD ─────────────────────────────────────────────────
+  // ── TECH / FIELD DASHBOARD — routes to unified sales dashboard ───────────────
   async function loadTechDashboard(tech) {
+    return loadSalesDashboard(tech, {roleLabel: 'Tech \xB7 Sales', showFieldJobs: true});
+  }
+
+  async function loadTechDashboard_FIELD(tech) {
     document.getElementById('loginBox').style.display = 'none';
     document.getElementById('dashboard').style.display = 'block';
-    document.getElementById('userName').textContent = tech.name + ' · Ops';
+    document.getElementById('userName').textContent = tech.name + ' \xB7 Tech';
     document.getElementById('dashBody').innerHTML = '<p style="color:#aaa;padding:20px 0;">Loading your jobs...</p>';
 
     var client;
     try { client = supabase.createClient(SUPA_URL, SUPA_KEY); }
     catch(e) { document.getElementById('dashBody').innerHTML = '<p style="color:#ef4444;">Database error.</p>'; return; }
 
-    // Load jobs with step >= 3 (scheduled/active)
+    // Load all active jobs (step >= 2) for internal tech view
     var resp = await client.from('customers').select('*')
-      .gte('step', 3).order('install_date', {ascending:true});
+      .gte('step', 2).order('diagnostic_date', {ascending:true});
     var jobs = resp.data || [];
     var activeJobId = null;
     var checklistState = JSON.parse(sessionStorage.getItem('checklist_' + tech.id) || '{}');
 
     function renderTechView() {
       var html = '<div class="tech-portal-wrap"><div class="tech-header">' +
-        '<div><div class="tech-name">👷 ' + tech.name + '</div><div style="font-size:0.72rem;color:#888;margin-top:3px;">' + jobs.length + ' active job' + (jobs.length!==1?'s':'') + ' assigned</div></div>' +
-        '<span class="tech-badge">Ops</span></div>';
+        '<div><div class="tech-name">👷 ' + tech.name + '</div><div style="font-size:0.72rem;color:#888;margin-top:3px;">' + jobs.length + ' active job' + (jobs.length!==1?'s':'') + '</div></div>' +
+        '<span class="tech-badge">Tech · Sales</span></div>';
 
       if (!jobs.length) {
         html += '<div class="tech-no-jobs">✅ No active jobs right now.<br/>Check back after new evaluations are scheduled.</div>';
@@ -2121,11 +2339,15 @@
   }
 
 
-  // ── SETTER DASHBOARD (inside sales) ────────────────────────────────────────
+  // ── SETTER DASHBOARD — routes to unified sales dashboard ───────────────────
   async function loadSetterDashboard(setter) {
+    return loadSalesDashboard(setter, {roleLabel: 'Setter', showFieldJobs: false});
+  }
+
+  async function loadSetterDashboard_LEGACY(setter) {
     document.getElementById('loginBox').style.display = 'none';
     document.getElementById('dashboard').style.display = 'block';
-    document.getElementById('userName').textContent = setter.name + ' · Setter';
+    document.getElementById('userName').textContent = setter.name + ' \xB7 Setter';
     document.getElementById('dashBody').innerHTML = '<p style="color:#aaa;padding:20px 0;">Loading...</p>';
 
     var client;
@@ -2214,8 +2436,6 @@
       document.getElementById('dashBody').innerHTML = h;
     }
 
-    window.setterFilterSwitch = function(f) { setterFilter = f; renderSetter(); };
-    renderSetter();
   }
 
 
