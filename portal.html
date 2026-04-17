@@ -337,6 +337,7 @@
   var currentUser = null;
   var adminView = 'dashboard';
   var adminCustomers = [];
+  var adminRecentAgreements = [];
   var adminFilter = 'all';
   var adminSearch = '';
   var currentJobId = null;
@@ -489,6 +490,7 @@
     catch(e) { document.getElementById('dashBody').innerHTML = '<p style="color:#ef4444;">Database unavailable. <button onclick="loadAdminDashboard()" style="width:auto;padding:8px 16px;font-size:0.75rem;background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;cursor:pointer;">Retry</button></p>'; return; }
     var resp = await client.from('customers').select('*').order('created_at', {ascending:false});
     adminCustomers = resp.data || [];
+    try { var agResp = await client.from('rep_agreements').select('*').order('signed_at',{ascending:false}); adminRecentAgreements = agResp.data || []; } catch(e) { adminRecentAgreements = []; }
     renderAdminView('dashboard');
   }
 
@@ -515,18 +517,29 @@
     var invoicePending = adminCustomers.filter(function(x){ return x.invoice_status==='pending'||x.invoice_status==='sent'; }).length;
     var agreementPending = adminCustomers.filter(function(x){ return x.agreement_status==='sent'||x.agreement_status==='pending'; }).length;
     var opsNeeded = adminCustomers.filter(function(x){ return x.ops_ready===true&&!x.assigned_ops; }).length;
+    var dayAgo = Date.now() - 24*60*60*1000;
+    var newSigs = adminRecentAgreements.filter(function(a){ return a.signed_at && new Date(a.signed_at).getTime() > dayAgo; });
+    var teamBadge = newSigs.length ? ' <span style="display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;background:#8DC63F;color:#1A1A1A;border-radius:50%;font-size:0.6rem;font-weight:900;margin-left:4px;">'+newSigs.length+'</span>' : '';
     var portalNav = '<div class="portal-tab-nav">'+
       '<button class="portal-tab active" onclick="renderAdminView(\'dashboard\')">&#128203; CRM</button>'+
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
-      '<button class="portal-tab" onclick="renderTeamView()">&#128101; Team</button>'+
+      '<button class="portal-tab" onclick="renderTeamView()">&#128101; Team'+teamBadge+'</button>'+
     '</div>';
+    var agNotifHtml = '';
+    if (newSigs.length) {
+      agNotifHtml = '<div style="padding:10px 14px;background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.25);border-radius:8px;font-size:0.75rem;color:#8DC63F;margin-bottom:12px;">'+
+        '&#10003; <strong>New agreement'+(newSigs.length>1?'s':'')+' signed</strong> &mdash; '+
+        newSigs.map(function(a){ return (a.rep_name||a.rep_id)+(a.rep_legal_name?' ('+a.rep_legal_name+')':''); }).join(', ')+
+        ' &nbsp;<button onclick="renderTeamView()" style="font-size:0.7rem;padding:3px 10px;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.3);color:#8DC63F;border-radius:6px;cursor:pointer;margin-left:6px;">View Team</button>'+
+      '</div>';
+    }
     var statsHtml = '<div class="admin-stats">'+adminStat(total,'All','#8DC63F','all')+adminStat(leadsOnly,'Leads','#4a9eff','leads_only')+adminStat(jobsOnly,'Jobs','#8DC63F','jobs_only')+adminStat(invoicePending,'Invoice Due','#ffaa00','invoice')+adminStat(agreementPending,'Awaiting Sig','#f97316','agreement')+adminStat(opsNeeded,'OPS Needed','#f97316','ops_needed')+'</div>';
     var searchBar = '<div class="admin-toolbar"><input type="text" id="adminSearchInput" class="admin-search" placeholder="Search leads..." value="'+adminSearch+'" oninput="adminSearch=this.value;renderAdminView(adminView)"/><div class="admin-filters">'+filterBtn('all','All')+filterBtn('leads_only','Leads')+filterBtn('jobs_only','Jobs')+filterBtn('invoice','Invoice')+filterBtn('agreement','Sig Needed')+filterBtn('ops_needed','🔧 OPS')+'</div></div>';
     var actionsBar = '<div class="admin-actions-bar"><button class="admin-action-btn" onclick="openNewLead()">+ New Lead</button><button class="admin-action-btn ghost" onclick="exportCSV()">&#8681; Export CSV</button><button class="admin-action-btn ghost" onclick="loadAdminDashboard()" title="Re-pull all leads from database">&#8635; Refresh</button></div>';
     var listHtml = '';
     if (!c.length) { listHtml = '<div style="padding:32px;text-align:center;color:#555;">No leads match this filter.</div>'; }
     else { c.forEach(function(cust) { listHtml += buildLeadCard(cust); }); }
-    document.getElementById('dashBody').innerHTML = portalNav+'<div class="admin-header-row"><h2 style="font-size:1.1rem;font-weight:700;">Solar Review CRM</h2><span style="font-size:0.72rem;color:#555;">'+total+' records total</span></div>'+statsHtml+searchBar+actionsBar+'<div id="editorSlot"></div><div id="leadList">'+listHtml+'</div>';
+    document.getElementById('dashBody').innerHTML = portalNav+agNotifHtml+'<div class="admin-header-row"><h2 style="font-size:1.1rem;font-weight:700;">Solar Review CRM</h2><span style="font-size:0.72rem;color:#555;">'+total+' records total</span></div>'+statsHtml+searchBar+actionsBar+'<div id="editorSlot"></div><div id="leadList">'+listHtml+'</div>';
   }
 
   function setFilter(f) { adminFilter = f; renderAdminView(adminView); }
@@ -592,11 +605,13 @@
       var agRec = needsAgreement ? agreements.find(function(a){ return a.rep_id === u.id; }) : null;
       var agHtml = needsAgreement ? (
         '<div style="margin-top:6px;">'+agStatus(u.id)+'</div>' +
-        (!agRec ?
-          '<div style="display:flex;gap:6px;margin-top:8px;">'+
-            '<button onclick="adminMarkSigned(\''+u.id+'\',\''+u.name+'\')" style="padding:5px 12px;font-size:0.7rem;font-weight:700;background:rgba(141,198,63,0.12);border:1px solid rgba(141,198,63,0.3);color:#8DC63F;border-radius:6px;cursor:pointer;">&#10003; Mark Signed</button>'+
-          '</div>'
-        : '')
+        '<div style="display:flex;gap:6px;margin-top:8px;">' +
+          (!agRec ?
+            '<button onclick="adminMarkSigned(\''+u.id+'\',\''+u.name+'\')" style="padding:5px 12px;font-size:0.7rem;font-weight:700;background:rgba(141,198,63,0.12);border:1px solid rgba(141,198,63,0.3);color:#8DC63F;border-radius:6px;cursor:pointer;">&#10003; Mark Signed</button>'
+          :
+            '<button onclick="adminResetAgreement(\''+u.id+'\',\''+u.name+'\')" style="padding:5px 12px;font-size:0.7rem;font-weight:700;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);color:#ef4444;border-radius:6px;cursor:pointer;">&#8635; Reset Agreement</button>'
+          ) +
+        '</div>'
       ) : '<div style="font-size:0.7rem;color:#555;margin-top:4px;">No agreement required</div>';
       var editId = 'edit_' + (u.id || '').replace(/[^a-z0-9]/gi,'_');
       return '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:14px;margin-bottom:8px;">'+
@@ -651,6 +666,17 @@
     '</div>';
 
     document.getElementById('dashBody').innerHTML = h;
+
+    window.adminResetAgreement = async function(repId, repName) {
+      if (!confirm('Reset agreement for ' + repName + '? They will see the agreement screen on next login.')) return;
+      try {
+        var tcR = supabase.createClient(SUPA_URL, SUPA_KEY);
+        var {error: rErr} = await tcR.from('rep_agreements').delete().eq('rep_id', repId);
+        if (rErr) throw new Error(rErr.message);
+        adminRecentAgreements = adminRecentAgreements.filter(function(a){ return a.rep_id !== repId; });
+        renderTeamView();
+      } catch(e) { alert('Reset failed: ' + e.message); }
+    };
 
     window.adminMarkSigned = async function(repId, repName) {
       var legal = prompt('Enter their full legal name as it appears on the signed agreement:');
@@ -2230,16 +2256,24 @@
     var roleLabel = config.roleLabel || 'Sales';
     var showFieldJobs = !!config.showFieldJobs;
 
-    // Agreement gate — check localStorage first (fast), then Supabase (cross-device)
-    var storedAg = '';
-    try { storedAg = localStorage.getItem('repAgreement_' + person.id) || ''; } catch(e) {}
-    var agreementSigned = !!person.agreementSigned || !!storedAg;
-    if (!agreementSigned) {
-      try {
-        var agc = supabase.createClient(SUPA_URL, SUPA_KEY);
-        var agr = await agc.from('rep_agreements').select('id').eq('rep_id', person.id).maybeSingle();
-        if (agr.data) { agreementSigned = true; try { localStorage.setItem('repAgreement_' + person.id, 'supabase'); } catch(e) {} }
-      } catch(e) {}
+    // Agreement gate — Supabase is authoritative; localStorage used only as offline fallback
+    var agreementSigned = !!person.agreementSigned;
+    try {
+      var agc = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var agr = await agc.from('rep_agreements').select('id').eq('rep_id', person.id).maybeSingle();
+      if (agr.data) {
+        agreementSigned = true;
+        try { localStorage.setItem('repAgreement_' + person.id, 'supabase'); } catch(e) {}
+      } else if (!agr.error) {
+        // Supabase confirmed no record (admin may have reset) — clear local cache
+        agreementSigned = false;
+        try { localStorage.removeItem('repAgreement_' + person.id); } catch(e) {}
+      } else {
+        // Supabase unreachable — fall back to localStorage so rep isn't locked out offline
+        try { if (localStorage.getItem('repAgreement_' + person.id)) agreementSigned = true; } catch(e) {}
+      }
+    } catch(e) {
+      try { if (localStorage.getItem('repAgreement_' + person.id)) agreementSigned = true; } catch(e2) {}
     }
 
     document.getElementById('loginBox').style.display = 'none';
