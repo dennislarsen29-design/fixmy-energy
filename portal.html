@@ -589,10 +589,14 @@
     function userCard(u, role, needsAgreement) {
       var code = effectiveCode(u.id || u.email, u.code || '');
       var codeId = 'code_' + (u.id || u.email).replace(/[^a-z0-9]/gi,'_');
-      var agHtml = needsAgreement ? ('<div style="margin-top:6px;">'+agStatus(u.id)+'</div>' +
-        '<div style="display:flex;gap:6px;margin-top:8px;">'+
-          '<button onclick="adminMarkSigned(\''+u.id+'\',\''+u.name+'\')" style="padding:5px 12px;font-size:0.7rem;font-weight:700;background:rgba(141,198,63,0.12);border:1px solid rgba(141,198,63,0.3);color:#8DC63F;border-radius:6px;cursor:pointer;">&#10003; Mark Signed</button>'+
-        '</div>'
+      var agRec = needsAgreement ? agreements.find(function(a){ return a.rep_id === u.id; }) : null;
+      var agHtml = needsAgreement ? (
+        '<div style="margin-top:6px;">'+agStatus(u.id)+'</div>' +
+        (!agRec ?
+          '<div style="display:flex;gap:6px;margin-top:8px;">'+
+            '<button onclick="adminMarkSigned(\''+u.id+'\',\''+u.name+'\')" style="padding:5px 12px;font-size:0.7rem;font-weight:700;background:rgba(141,198,63,0.12);border:1px solid rgba(141,198,63,0.3);color:#8DC63F;border-radius:6px;cursor:pointer;">&#10003; Mark Signed</button>'+
+          '</div>'
+        : '')
       ) : '<div style="font-size:0.7rem;color:#555;margin-top:4px;">No agreement required</div>';
       var editId = 'edit_' + (u.id || '').replace(/[^a-z0-9]/gi,'_');
       return '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:14px;margin-bottom:8px;">'+
@@ -653,9 +657,10 @@
       if (!legal) return;
       try {
         var tc2 = supabase.createClient(SUPA_URL, SUPA_KEY);
-        await tc2.from('rep_agreements').upsert({rep_id:repId, rep_name:repName, rep_legal_name:legal, signed_at:new Date().toISOString(), source:'admin'}, {onConflict:'rep_id'});
+        var {error: uErr} = await tc2.from('rep_agreements').upsert({rep_id:repId, rep_name:repName, rep_legal_name:legal, signed_at:new Date().toISOString(), source:'admin'}, {onConflict:'rep_id'});
+        if (uErr) throw new Error(uErr.message);
         renderTeamView();
-      } catch(e) { alert('Error saving: ' + e.message); }
+      } catch(e) { alert('Save failed: ' + e.message); }
     };
 
     window.adminSaveCode = async function(repId, newCode) {
@@ -2257,8 +2262,9 @@
         } catch(e){}
         try {
           var agClient = supabase.createClient(SUPA_URL, SUPA_KEY);
-          await agClient.from('rep_agreements').upsert({rep_id:person.id, rep_name:person.name, rep_legal_name:repName, signed_at:ts, source:'self-signed'}, {onConflict:'rep_id'});
-        } catch(e){}
+          var {error: agSaveErr} = await agClient.from('rep_agreements').upsert({rep_id:person.id, rep_name:person.name, rep_legal_name:repName, signed_at:ts, source:'self-signed'}, {onConflict:'rep_id'});
+          if (agSaveErr) console.warn('Agreement Supabase save error:', agSaveErr.message);
+        } catch(e){ console.warn('Agreement save exception:', e); }
         loadSalesDashboard(person, config);
       };
       document.getElementById('dashBody').innerHTML = buildRepAgreementHTML();
