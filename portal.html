@@ -522,7 +522,7 @@
     '</div>';
     var statsHtml = '<div class="admin-stats">'+adminStat(total,'All','#8DC63F','all')+adminStat(leadsOnly,'Leads','#4a9eff','leads_only')+adminStat(jobsOnly,'Jobs','#8DC63F','jobs_only')+adminStat(invoicePending,'Invoice Due','#ffaa00','invoice')+adminStat(agreementPending,'Awaiting Sig','#f97316','agreement')+adminStat(opsNeeded,'OPS Needed','#f97316','ops_needed')+'</div>';
     var searchBar = '<div class="admin-toolbar"><input type="text" id="adminSearchInput" class="admin-search" placeholder="Search leads..." value="'+adminSearch+'" oninput="adminSearch=this.value;renderAdminView(adminView)"/><div class="admin-filters">'+filterBtn('all','All')+filterBtn('leads_only','Leads')+filterBtn('jobs_only','Jobs')+filterBtn('invoice','Invoice')+filterBtn('agreement','Sig Needed')+filterBtn('ops_needed','🔧 OPS')+'</div></div>';
-    var actionsBar = '<div class="admin-actions-bar"><button class="admin-action-btn" onclick="openNewLead()">+ New Lead</button><button class="admin-action-btn ghost" onclick="exportCSV()">&#8681; Export CSV</button></div>';
+    var actionsBar = '<div class="admin-actions-bar"><button class="admin-action-btn" onclick="openNewLead()">+ New Lead</button><button class="admin-action-btn ghost" onclick="exportCSV()">&#8681; Export CSV</button><button class="admin-action-btn ghost" onclick="loadAdminDashboard()" title="Re-pull all leads from database">&#8635; Refresh</button></div>';
     var listHtml = '';
     if (!c.length) { listHtml = '<div style="padding:32px;text-align:center;color:#555;">No leads match this filter.</div>'; }
     else { c.forEach(function(cust) { listHtml += buildLeadCard(cust); }); }
@@ -1683,8 +1683,12 @@
     try{
       var client=supabase.createClient(SUPA_URL,SUPA_KEY);
       var {data,error}=await client.from('customers').insert(newLead).select().single();
-      if(error) throw error;
-      adminCustomers.unshift(data);
+      if(error&&!data){
+        // Insert may have committed but select failed — try fetching back by access_code
+        var fb=await client.from('customers').select('*').eq('access_code',digits).order('created_at',{ascending:false}).limit(1).single();
+        if(fb.data){ data=fb.data; } else { throw error; }
+      }
+      adminCustomers.unshift(data||Object.assign({id:'tmp-'+Date.now(),created_at:new Date().toISOString()},newLead));
       var geo=await geocodeAddress(addr);
       var sheetRow=Object.assign({},newLead,{id:data.id,setter_name:setter||type,lat:geo?geo.lat:'',lng:geo?geo.lng:'',maps_status:'needs-followup',postcard:postcard,utility_bill:utilityBill,two_hr_window:window2hr,years_owned:owned,roof_age:roof,created_at:new Date().toISOString()});
       fetch(SHEETBEST_URL,{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify([sheetRow])}).catch(function(e){console.warn('Sheets:',e);});
