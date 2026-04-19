@@ -340,6 +340,8 @@
   var adminRecentAgreements = [];
   var adminFilter = 'all';
   var adminSearch = '';
+  var adminTechFilter = '';
+  var adminOpsFilter  = '';
   var currentJobId = null;
   var upgradeItems = [];
   var jobPhotos = {};
@@ -496,32 +498,31 @@
 
   function renderAdminView(view) {
     adminView = view;
-    var c = adminCustomers;
+    var c = adminCustomers.filter(function(x){ return !x.sold_type; }); // Leads = not sold
     if (adminSearch) { var q = adminSearch.toLowerCase(); c = c.filter(function(x){ return ((x.first_name||'')+(x.last_name||'')+(x.email||'')+(x.phone||'')+(x.address||'')).toLowerCase().includes(q); }); }
+    if (adminTechFilter) c = c.filter(function(x){ return (x.setter_name||'').toLowerCase()===adminTechFilter||(x.rep_id||'')===adminTechFilter; });
+    if (adminOpsFilter)  c = c.filter(function(x){ return (x.assigned_ops||'')===adminOpsFilter; });
     if (adminFilter !== 'all') {
       c = c.filter(function(x){
-        if (adminFilter==='leads_only') return !x.invoice_status||x.invoice_status==='none';
-        if (adminFilter==='jobs_only') return x.invoice_status&&x.invoice_status!=='none';
         if (adminFilter==='new') return !x.step||x.step<=1;
         if (adminFilter==='active') return x.step>=2&&x.step<=7;
         if (adminFilter==='complete') return x.step>=8;
         if (adminFilter==='invoice') return x.invoice_status&&x.invoice_status!=='none'&&x.invoice_status!=='paid';
-        if (adminFilter==='agreement') return x.agreement_status==='sent'||x.agreement_status==='pending';
         if (adminFilter==='ops_needed') return x.ops_ready===true&&!x.assigned_ops;
         return true;
       });
     }
-    var total = adminCustomers.length;
-    var leadsOnly = adminCustomers.filter(function(x){ return !x.invoice_status||x.invoice_status==='none'; }).length;
-    var jobsOnly  = adminCustomers.filter(function(x){ return x.invoice_status&&x.invoice_status!=='none'; }).length;
-    var invoicePending = adminCustomers.filter(function(x){ return x.invoice_status==='pending'||x.invoice_status==='sent'; }).length;
-    var agreementPending = adminCustomers.filter(function(x){ return x.agreement_status==='sent'||x.agreement_status==='pending'; }).length;
-    var opsNeeded = adminCustomers.filter(function(x){ return x.ops_ready===true&&!x.assigned_ops; }).length;
+    var allLeads = adminCustomers.filter(function(x){ return !x.sold_type; });
+    var total = allLeads.length;
+    var newLeads    = allLeads.filter(function(x){ return !x.step||x.step<=1; }).length;
+    var activeLeads = allLeads.filter(function(x){ return x.step>=2&&x.step<=7; }).length;
+    var invoicePending = allLeads.filter(function(x){ return x.invoice_status&&x.invoice_status!=='none'&&x.invoice_status!=='paid'; }).length;
+    var opsNeeded = allLeads.filter(function(x){ return x.ops_ready===true&&!x.assigned_ops; }).length;
     var dayAgo = Date.now() - 24*60*60*1000;
     var newSigs = adminRecentAgreements.filter(function(a){ return a.signed_at && new Date(a.signed_at).getTime() > dayAgo; });
     var teamBadge = newSigs.length ? ' <span style="display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;background:#8DC63F;color:#1A1A1A;border-radius:50%;font-size:0.6rem;font-weight:900;margin-left:4px;">'+newSigs.length+'</span>' : '';
     var portalNav = '<div class="portal-tab-nav">'+
-      '<button class="portal-tab active" onclick="renderAdminView(\'dashboard\')">&#128203; CRM</button>'+
+      '<button class="portal-tab active" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Team'+teamBadge+'</button>'+
     '</div>';
@@ -533,13 +534,27 @@
         ' &nbsp;<button onclick="renderTeamView()" style="font-size:0.7rem;padding:3px 10px;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.3);color:#8DC63F;border-radius:6px;cursor:pointer;margin-left:6px;">View Team</button>'+
       '</div>';
     }
-    var statsHtml = '<div class="admin-stats">'+adminStat(total,'All','#8DC63F','all')+adminStat(leadsOnly,'Leads','#4a9eff','leads_only')+adminStat(jobsOnly,'Jobs','#8DC63F','jobs_only')+adminStat(invoicePending,'Invoice Due','#ffaa00','invoice')+adminStat(agreementPending,'Awaiting Sig','#f97316','agreement')+adminStat(opsNeeded,'OPS Needed','#f97316','ops_needed')+'</div>';
-    var searchBar = '<div class="admin-toolbar"><input type="text" id="adminSearchInput" class="admin-search" placeholder="Search leads..." value="'+adminSearch+'" oninput="adminSearch=this.value;renderAdminView(adminView)"/><div class="admin-filters">'+filterBtn('all','All')+filterBtn('leads_only','Leads')+filterBtn('jobs_only','Jobs')+filterBtn('invoice','Invoice')+filterBtn('agreement','Sig Needed')+filterBtn('ops_needed','🔧 OPS')+'</div></div>';
+    var statsHtml = '<div class="admin-stats">'+adminStat(total,'All Leads','#8DC63F','all')+adminStat(newLeads,'New','#4a9eff','new')+adminStat(activeLeads,'Active','#8DC63F','active')+adminStat(invoicePending,'Invoice Due','#ffaa00','invoice')+adminStat(opsNeeded,'OPS Needed','#f97316','ops_needed')+'</div>';
+    // Build tech options from loaded data + hardcoded arrays
+    var techNames = {}; adminCustomers.forEach(function(x){ if(x.setter_name) techNames[x.setter_name.toLowerCase()]=x.setter_name; if(x.rep_id) techNames[x.rep_id]=x.rep_id; });
+    var techOpts = '<option value="">All Reps</option>';
+    TECHS.forEach(function(t){ techOpts += '<option value="'+t.id+'"'+(adminTechFilter===t.id?' selected':'')+'>'+t.name+'</option>'; });
+    SALES_REPS.forEach(function(r){ techOpts += '<option value="'+r.id+'"'+(adminTechFilter===r.id?' selected':'')+'>'+r.name+'</option>'; });
+    var opsOpts = '<option value="">All Ops</option>';
+    OPS_PARTNERS.forEach(function(o){ opsOpts += '<option value="'+o.id+'"'+(adminOpsFilter===o.id?' selected':'')+'>'+o.name+'</option>'; });
+    var searchBar = '<div class="admin-toolbar">'+
+      '<input type="text" id="adminSearchInput" class="admin-search" placeholder="Search leads..." value="'+adminSearch+'" oninput="adminSearch=this.value;renderAdminView(adminView)"/>'+
+      '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;align-items:center;">'+
+        '<select onchange="adminTechFilter=this.value;renderAdminView(adminView)" style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);color:#F3EDE3;border-radius:8px;padding:5px 10px;font-size:0.72rem;outline:none;">'+techOpts+'</select>'+
+        '<select onchange="adminOpsFilter=this.value;renderAdminView(adminView)" style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);color:#F3EDE3;border-radius:8px;padding:5px 10px;font-size:0.72rem;outline:none;">'+opsOpts+'</select>'+
+        '<div class="admin-filters">'+filterBtn('all','All')+filterBtn('new','New')+filterBtn('active','Active')+filterBtn('complete','Complete')+filterBtn('invoice','Invoice')+filterBtn('ops_needed','&#128295; OPS')+'</div>'+
+      '</div>'+
+    '</div>';
     var actionsBar = '<div class="admin-actions-bar"><button class="admin-action-btn" onclick="openNewLead()">+ New Lead</button><button class="admin-action-btn ghost" onclick="exportCSV()">&#8681; Export CSV</button><button class="admin-action-btn ghost" onclick="loadAdminDashboard()" title="Re-pull all leads from database">&#8635; Refresh</button><a class="admin-action-btn ghost" href="/ghl-journey.html?t=fixmy2026" target="_blank" rel="noopener" style="text-decoration:none;">&#128247; Journey Map</a></div>';
     var listHtml = '';
     if (!c.length) { listHtml = '<div style="padding:32px;text-align:center;color:#555;">No leads match this filter.</div>'; }
     else { c.forEach(function(cust) { listHtml += buildLeadCard(cust); }); }
-    document.getElementById('dashBody').innerHTML = portalNav+agNotifHtml+'<div class="admin-header-row"><h2 style="font-size:1.1rem;font-weight:700;">Solar Review CRM</h2><span style="font-size:0.72rem;color:#555;">'+total+' records total</span></div>'+statsHtml+searchBar+actionsBar+'<div id="editorSlot"></div><div id="leadList">'+listHtml+'</div>';
+    document.getElementById('dashBody').innerHTML = portalNav+agNotifHtml+'<div class="admin-header-row"><h2 style="font-size:1.1rem;font-weight:700;">Leads</h2><span style="font-size:0.72rem;color:#555;">'+total+' leads total</span></div>'+statsHtml+searchBar+actionsBar+'<div id="editorSlot"></div><div id="leadList">'+listHtml+'</div>';
   }
 
   function setFilter(f) { adminFilter = f; renderAdminView(adminView); }
@@ -547,31 +562,37 @@
   // ── JOBS TAB ───────────────────────────────────────────────────────────────
   function renderJobsView() {
     adminView = 'jobs';
-    var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128203; CRM</button><button class="portal-tab active" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab" onclick="renderTeamView()">&#128101; Team</button></div>';
-    var jobs = adminCustomers.filter(function(c){ return c.step>=3; });
+    var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab active" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab" onclick="renderTeamView()">&#128101; Team</button></div>';
+    var jobs = adminCustomers.filter(function(c){ return !!c.sold_type; });
+    var saleTypeLabel = {diagnostic:'Diagnostic',battery_retrofit:'Battery Retrofit',monitoring:'Monitoring'};
+    var saleTypeColor = {diagnostic:'#8DC63F',battery_retrofit:'#4a9eff',monitoring:'#9b6de8'};
     var listHtml = '';
-    if (!jobs.length) { listHtml = '<div class="jobs-empty">No active jobs yet. Jobs appear here when a Diagnostic is sold (Step 3+).</div>'; }
+    if (!jobs.length) { listHtml = '<div class="jobs-empty">No jobs yet. A lead moves here once marked as Sold (Diagnostic, Battery Retrofit, or Monitoring).</div>'; }
     else {
       jobs.forEach(function(c) {
         var status = c.job_status||'pending';
         var statusLabel = {pending:'Pending Assessment',in_progress:'In Progress',ready:'Ready for Review',approved:'Approved'}[status]||status;
         var statusColor = {pending:'#ffaa00',in_progress:'#4a9eff',ready:'#f97316',approved:'#8DC63F'}[status]||'#888';
+        var sLabel = saleTypeLabel[c.sold_type]||c.sold_type||'';
+        var sColor = saleTypeColor[c.sold_type]||'#888';
         listHtml += '<div class="job-card" data-id="'+c.id+'" onclick="openJob(this.dataset.id)">'+
           '<div class="job-card-top"><div class="job-name">'+(c.first_name||'')+' '+(c.last_name||'')+'</div>'+
-          '<div class="job-status-pill" style="background:'+statusColor+'22;color:'+statusColor+';border:1px solid '+statusColor+'44;">'+statusLabel+'</div></div>'+
+          '<div style="display:flex;gap:6px;align-items:center;">'+
+          '<span style="font-size:0.65rem;font-weight:700;padding:2px 7px;border-radius:20px;background:'+sColor+'22;color:'+sColor+';border:1px solid '+sColor+'44;">'+sLabel+'</span>'+
+          '<div class="job-status-pill" style="background:'+statusColor+'22;color:'+statusColor+';border:1px solid '+statusColor+'44;">'+statusLabel+'</div></div></div>'+
           '<div class="job-addr">'+(c.address||'No address')+'</div>'+
-          '<div class="job-meta">'+(c.system_size?c.system_size+' kW system':'')+(c.utility?' &middot; '+c.utility:'')+'</div></div>';
+          '<div class="job-meta">'+(c.system_size?c.system_size+' kW system':'')+(c.utility?' &middot; '+c.utility:'')+(c.setter_name?' &middot; '+c.setter_name:'')+'</div></div>';
       });
     }
     document.getElementById('dashBody').innerHTML = portalNav+
-      '<div class="admin-header-row"><h2 style="font-size:1.1rem;font-weight:700;">Active Jobs</h2><span style="font-size:0.72rem;color:#555;">'+jobs.length+' jobs</span></div>'+
+      '<div class="admin-header-row"><h2 style="font-size:1.1rem;font-weight:700;">Jobs</h2><span style="font-size:0.72rem;color:#555;">'+jobs.length+' sold</span></div>'+
       '<div id="jobList">'+listHtml+'</div><div id="jobDetail" style="display:none;"></div>';
   }
 
   // ── TEAM TAB ───────────────────────────────────────────────────────────────
   async function renderTeamView() {
     adminView = 'team';
-    var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128203; CRM</button><button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab active" onclick="renderTeamView()">&#128101; Team</button></div>';
+    var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab active" onclick="renderTeamView()">&#128101; Team</button></div>';
     document.getElementById('dashBody').innerHTML = portalNav + '<p style="color:#aaa;padding:20px 0;">Loading team data...</p>';
 
     // Fetch agreement records and credential overrides from Supabase
@@ -603,15 +624,20 @@
       var code = effectiveCode(u.id || u.email, u.code || '');
       var codeId = 'code_' + (u.id || u.email).replace(/[^a-z0-9]/gi,'_');
       var agRec = needsAgreement ? agreements.find(function(a){ return a.rep_id === u.id; }) : null;
+      var urlInputId = 'agurl_' + (u.id||'').replace(/[^a-z0-9]/gi,'_');
       var agHtml = needsAgreement ? (
         '<div style="margin-top:6px;">'+agStatus(u.id)+'</div>' +
-        '<div style="display:flex;gap:6px;margin-top:8px;">' +
-          (!agRec ?
-            '<button onclick="adminMarkSigned(\''+u.id+'\',\''+u.name+'\')" style="padding:5px 12px;font-size:0.7rem;font-weight:700;background:rgba(141,198,63,0.12);border:1px solid rgba(141,198,63,0.3);color:#8DC63F;border-radius:6px;cursor:pointer;">&#10003; Mark Signed</button>'
-          :
-            '<button onclick="adminResetAgreement(\''+u.id+'\',\''+u.name+'\')" style="padding:5px 12px;font-size:0.7rem;font-weight:700;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);color:#ef4444;border-radius:6px;cursor:pointer;">&#8635; Reset Agreement</button>'
-          ) +
-        '</div>'
+        (agRec ? (
+          '<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">'+
+            '<button onclick="adminViewAgreement(\''+u.id+'\')" style="padding:5px 12px;font-size:0.7rem;font-weight:700;background:rgba(141,198,63,0.12);border:1px solid rgba(141,198,63,0.3);color:#8DC63F;border-radius:6px;cursor:pointer;">&#128065; View Agreement</button>'+
+            (agRec.agreement_url ? '<a href="'+agRec.agreement_url+'" target="_blank" rel="noopener" style="padding:5px 12px;font-size:0.7rem;font-weight:700;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);color:#4a9eff;border-radius:6px;cursor:pointer;text-decoration:none;">&#128196; External Doc</a>' : '')+
+            '<button onclick="adminResetAgreement(\''+u.id+'\',\''+u.name+'\')" style="padding:5px 12px;font-size:0.7rem;font-weight:700;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);color:#ef4444;border-radius:6px;cursor:pointer;">&#8635; Reset</button>'+
+          '</div>'+
+          '<div style="display:flex;gap:6px;margin-top:6px;align-items:center;">'+
+            '<input id="'+urlInputId+'" type="url" placeholder="Paste DocuSign / PDF link..." value="'+(agRec.agreement_url||'')+'" style="flex:1;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:4px 8px;color:#F3EDE3;font-size:0.7rem;outline:none;"/>'+
+            '<button onclick="adminSaveAgreementUrl(\''+u.id+'\',document.getElementById(\''+urlInputId+'\').value)" style="padding:4px 10px;font-size:0.7rem;font-weight:700;background:rgba(74,158,255,0.12);border:1px solid rgba(74,158,255,0.3);color:#4a9eff;border-radius:6px;cursor:pointer;white-space:nowrap;">Save Link</button>'+
+          '</div>'
+        ) : '<div style="font-size:0.7rem;color:#ef4444;margin-top:6px;">&#8226; Awaiting digital signature via portal</div>')
       ) : '<div style="font-size:0.7rem;color:#555;margin-top:4px;">No agreement required</div>';
       var editId = 'edit_' + (u.id || '').replace(/[^a-z0-9]/gi,'_');
       return '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:14px;margin-bottom:8px;">'+
@@ -678,17 +704,40 @@
       } catch(e) { alert('Reset failed: ' + e.message); }
     };
 
-    window.adminMarkSigned = async function(repId, repName) {
-      var legal = prompt('Enter their full legal name as it appears on the signed agreement:');
-      if (!legal) return;
+    window.adminViewAgreement = function(repId) {
+      var rec = agreements.find(function(a){ return a.rep_id === repId; });
+      if (!rec) return;
+      var d = rec.signed_at ? new Date(rec.signed_at).toLocaleString('en-US',{month:'long',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'}) : 'Unknown date';
+      var modal = document.createElement('div');
+      modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.88);z-index:9999;overflow-y:auto;padding:32px 16px;';
+      modal.innerHTML = '<div style="max-width:680px;margin:0 auto;background:#141714;border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:32px;">'+
+        '<div style="font-family:Syne,sans-serif;font-size:1.1rem;font-weight:700;color:#8DC63F;margin-bottom:4px;">FixMy.Energy</div>'+
+        '<div style="font-size:0.75rem;color:#888;margin-bottom:20px;font-family:monospace;letter-spacing:1px;text-transform:uppercase;">Sales Representative Agreement</div>'+
+        '<div style="font-size:0.78rem;color:rgba(232,228,220,0.75);line-height:1.7;max-height:400px;overflow-y:auto;border:1px solid rgba(255,255,255,0.07);border-radius:8px;padding:16px;background:rgba(0,0,0,0.2);">'+
+          '<p><strong style="color:#F3EDE3;">PARTIES:</strong> Solar Review Corp (DBA: FixMy.Energy) and the Sales Representative identified below.</p>'+
+          '<p style="margin-top:10px;"><strong style="color:#F3EDE3;">SCOPE:</strong> Rep agrees to represent FixMy.Energy services in accordance with all company policies, pricing, and ethical standards.</p>'+
+          '<p style="margin-top:10px;"><strong style="color:#F3EDE3;">COMPENSATION:</strong> Commission structure as communicated by management. Subject to change with 30-day notice.</p>'+
+          '<p style="margin-top:10px;"><strong style="color:#F3EDE3;">CONFIDENTIALITY:</strong> Rep shall not disclose proprietary customer data, pricing, or company processes.</p>'+
+          '<p style="margin-top:10px;"><strong style="color:#F3EDE3;">INDEPENDENT CONTRACTOR:</strong> Rep is an independent contractor, not an employee. Rep is responsible for own taxes and expenses.</p>'+
+          '<p style="margin-top:10px;"><strong style="color:#F3EDE3;">TERMINATION:</strong> Either party may terminate with written notice. Commissions on closed deals prior to termination will be honored per standard schedule.</p>'+
+        '</div>'+
+        '<div style="margin-top:20px;padding:16px;border:1px solid rgba(141,198,63,0.3);border-radius:10px;background:rgba(141,198,63,0.05);">'+
+          '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#8DC63F;margin-bottom:8px;">&#10003; Digital Signature on File</div>'+
+          '<div style="font-size:0.85rem;color:#F3EDE3;font-weight:600;">'+rec.rep_legal_name+'</div>'+
+          '<div style="font-size:0.72rem;color:#888;margin-top:4px;">'+d+' &nbsp;&middot;&nbsp; '+((rec.source||'self-signed').replace(/-/g,' '))+'</div>'+
+          (rec.agreement_url ? '<div style="margin-top:8px;"><a href="'+rec.agreement_url+'" target="_blank" style="font-size:0.72rem;color:#4a9eff;">&#128196; View External Document</a></div>' : '')+
+        '</div>'+
+        '<button onclick="this.closest(\'[style*=fixed]\').remove()" style="margin-top:20px;width:100%;padding:10px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);color:#F3EDE3;border-radius:8px;cursor:pointer;font-size:0.8rem;">Close</button>'+
+      '</div>';
+      document.body.appendChild(modal);
+    };
+
+    window.adminSaveAgreementUrl = async function(repId, url) {
+      if (!url || !url.trim()) { alert('Paste a URL first.'); return; }
       try {
-        var tc2 = supabase.createClient(SUPA_URL, SUPA_KEY);
-        var agPayload2 = {rep_id:repId, rep_name:repName, rep_legal_name:legal, signed_at:new Date().toISOString(), source:'admin'};
-        var {error: iErr2} = await tc2.from('rep_agreements').insert(agPayload2);
-        if (iErr2) {
-          var {error: uErr2} = await tc2.from('rep_agreements').update(agPayload2).eq('rep_id', repId);
-          if (uErr2) throw new Error(uErr2.message);
-        }
+        var tcU = supabase.createClient(SUPA_URL, SUPA_KEY);
+        var {error: uErr} = await tcU.from('rep_agreements').update({agreement_url: url.trim()}).eq('rep_id', repId);
+        if (uErr) throw new Error(uErr.message);
         renderTeamView();
       } catch(e) { alert('Save failed: ' + e.message); }
     };
@@ -1496,6 +1545,10 @@
         edField('Utility','edUtil',c.utility||'','text')+edField('Monthly Bill ($)','edBill',c.monthly_bill||'','text')+
         edField('NEM Status','edNem',c.nem_status||'','text')+
       '</div>'+
+      '<div class="editor-section-title">Sale Type</div>'+
+      '<div class="ed-grid" style="margin-bottom:8px;">'+
+        edSelect('Sale Type (moves to Jobs when set)','edSoldType',c.sold_type||'',[['','— Lead (Not Sold) —'],['diagnostic','Diagnostic'],['battery_retrofit','Battery Retrofit'],['monitoring','Monitoring']])+
+      '</div>'+
       '<div class="editor-section-title">Progress & Scheduling</div>'+
       '<div class="ed-grid">'+
         edSelect('Progress Step','edStep',c.step||1,[[1,'1 - Evaluation Booked'],[2,'2 - Photos Uploaded'],[3,'3 - Diagnostic Booked'],[4,'4 - Analysis Done'],[5,'5 - Battery Retrofit: Presentation Done, Follow Up Needed'],[6,'6 - Battery Retrofit: Presentation Done, Not Sold / Dead'],[7,'7 - Install Booked'],[8,'8 - Monitoring Online']])+
@@ -1546,7 +1599,8 @@
     // Route appt to correct field based on step; preserve the other field's historical value
     var diagDate = stepVal >= 7 ? (cRec.diagnostic_date||null) : apptISO;
     var instDate = stepVal >= 7 ? apptISO : (cRec.install_date||null);
-    var updates = { first_name:document.getElementById('edFirst').value||null, last_name:document.getElementById('edLast').value||null, email:document.getElementById('edEmail').value||null, phone:document.getElementById('edPhone').value||null, address:document.getElementById('edAddr').value||null, system_size:document.getElementById('edSys').value||null, utility:document.getElementById('edUtil').value||null, monthly_bill:document.getElementById('edBill').value||null, step:stepVal, diagnostic_date:diagDate, install_date:instDate, install_type:document.getElementById('edInstType').value||null, invoice_status:document.getElementById('edInvSt').value, invoice_number:document.getElementById('edInvNum').value||null, invoice_amount:parseFloat(document.getElementById('edInvAmt').value)||null, invoice_url:document.getElementById('edInvUrl').value||null, invoice_items:items, agreement_status:document.getElementById('edAgSt').value, agreement_url:document.getElementById('edAgUrl').value||null, notes:document.getElementById('edNotes').value||null, assigned_ops:document.getElementById('edAssignedOps').value==='none'?null:document.getElementById('edAssignedOps').value||null, arrival_end:document.getElementById('edArrivalEnd').value||null, nem_status:document.getElementById('edNem').value||null, ops_payout_status:document.getElementById('edOpsPayout').value||null };
+    var soldTypeVal = document.getElementById('edSoldType').value||null;
+    var updates = { sold_type:soldTypeVal, first_name:document.getElementById('edFirst').value||null, last_name:document.getElementById('edLast').value||null, email:document.getElementById('edEmail').value||null, phone:document.getElementById('edPhone').value||null, address:document.getElementById('edAddr').value||null, system_size:document.getElementById('edSys').value||null, utility:document.getElementById('edUtil').value||null, monthly_bill:document.getElementById('edBill').value||null, step:stepVal, diagnostic_date:diagDate, install_date:instDate, install_type:document.getElementById('edInstType').value||null, invoice_status:document.getElementById('edInvSt').value, invoice_number:document.getElementById('edInvNum').value||null, invoice_amount:parseFloat(document.getElementById('edInvAmt').value)||null, invoice_url:document.getElementById('edInvUrl').value||null, invoice_items:items, agreement_status:document.getElementById('edAgSt').value, agreement_url:document.getElementById('edAgUrl').value||null, notes:document.getElementById('edNotes').value||null, assigned_ops:document.getElementById('edAssignedOps').value==='none'?null:document.getElementById('edAssignedOps').value||null, arrival_end:document.getElementById('edArrivalEnd').value||null, nem_status:document.getElementById('edNem').value||null, ops_payout_status:document.getElementById('edOpsPayout').value||null };
     try {
       var client=supabase.createClient(SUPA_URL,SUPA_KEY);
       var { error }=await client.from('customers').update(updates).eq('id',id);
@@ -2328,8 +2382,8 @@
     });
     allRecords.sort(function(a,b){ return new Date(b.created_at)-new Date(a.created_at); });
 
-    var myLeads = allRecords.filter(function(r){ return !r.invoice_status||r.invoice_status==='none'; });
-    var myJobs  = allRecords.filter(function(r){ return r.invoice_status&&r.invoice_status!=='none'; });
+    var myLeads = allRecords.filter(function(r){ return !r.sold_type; });
+    var myJobs  = allRecords.filter(function(r){ return !!r.sold_type; });
 
     var fieldJobs = [];
     if (showFieldJobs) {
