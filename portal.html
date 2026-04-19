@@ -343,6 +343,7 @@
   var adminSearch = '';
   var adminTechFilter = '';
   var adminOpsFilter  = '';
+  var adminTeamMembers = [];
   var currentJobId = null;
   var upgradeItems = [];
   var jobPhotos = {};
@@ -371,84 +372,47 @@
     if (!code)  { showErr('Please enter your access code.'); return; }
     btn.textContent = 'Signing in...'; btn.disabled = true;
 
-    // ── Resolve role from email + code ────────────────────────────────────────
-    var detectedRep    = SALES_REPS.find(function(r){ return r.email === email; });
-    var detectedOps    = OPS_PARTNERS.find(function(o){ return o.email === email; });
-    var detectedSetter = SETTERS.find(function(s){ return s.email === email; });
-    var detectedTech   = TECHS.find(function(t){ return t.email === email; });
-    var detectedAdmin  = (email === ADMIN_EMAIL) || (code === ADMIN_CODE);
-
-    var resolvedRole = detectedAdmin  ? 'admin'
-                     : detectedOps    ? 'ops'
-                     : detectedTech   ? 'tech'
-                     : detectedRep    ? 'rep'
-                     : detectedSetter ? 'setter'
-                     : 'customer';
-
-    // Admin login
-    if (resolvedRole === 'admin') {
+    // ── Admin check (always hardcoded) ───────────────────────────────────────
+    if ((email === ADMIN_EMAIL) || (code === ADMIN_CODE)) {
       if (code === ADMIN_CODE) {
         sessionStorage.setItem('user', JSON.stringify({isAdmin:true, name:'Admin', role:'admin'}));
         loadAdminDashboard(); return;
       } else { showErr('Admin code incorrect.'); btn.textContent = 'Access My Portal'; btn.disabled = false; return; }
     }
 
-    // Field rep login
-    if (resolvedRole === 'rep') {
-      var repMatch = SALES_REPS.find(function(r) { return r.email === email; });
-      if (repMatch) {
-        var repCode = repMatch.code;
-        try { var cr=supabase.createClient(SUPA_URL,SUPA_KEY); var crr=await cr.from('portal_credentials').select('code').eq('rep_id',repMatch.id).maybeSingle(); if(crr.data&&crr.data.code) repCode=crr.data.code; } catch(e) {}
-        if (code === repCode) {
-          sessionStorage.setItem('user', JSON.stringify({isRep:true, name:repMatch.name, id:repMatch.id, role:'rep'}));
-          loadRepDashboard(repMatch); return;
-        }
-      }
-      showErr('Field credentials not found. Check email and code.'); btn.textContent = 'Access My Portal'; btn.disabled = false; return;
+    // ── Team member lookup — DB first, hardcoded arrays as fallback ──────────
+    var teamMember = null;
+    try {
+      var tmC = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var tmR = await tmC.from('team_members').select('*').eq('email', email).eq('active', true).maybeSingle();
+      teamMember = tmR.data || null;
+    } catch(e) { console.warn('team_members lookup failed, using fallback:', e); }
+
+    if (!teamMember) {
+      var _r=SALES_REPS.find(function(x){return x.email===email;}),
+          _t=TECHS.find(function(x){return x.email===email;}),
+          _s=SETTERS.find(function(x){return x.email===email;}),
+          _o=OPS_PARTNERS.find(function(x){return x.email===email;});
+      if (_r)      teamMember=Object.assign({},_r,{role:'rep'});
+      else if (_t) teamMember=Object.assign({},_t,{role:'tech'});
+      else if (_s) teamMember=Object.assign({},_s,{role:'setter'});
+      else if (_o) teamMember=Object.assign({},_o,{role:'ops'});
     }
 
-    // Internal tech login
-    if (resolvedRole === 'tech') {
-      var techMatch = TECHS.find(function(t) { return t.email === email; });
-      if (techMatch) {
-        var techCode = techMatch.code;
-        try { var ct=supabase.createClient(SUPA_URL,SUPA_KEY); var ctr=await ct.from('portal_credentials').select('code').eq('rep_id',techMatch.id).maybeSingle(); if(ctr.data&&ctr.data.code) techCode=ctr.data.code; } catch(e) {}
-        if (code === techCode) {
-          sessionStorage.setItem('user', JSON.stringify({isTech:true, name:techMatch.name, id:techMatch.id, role:'tech'}));
-          try { await loadTechDashboard(techMatch); } catch(e) { showErr('Error loading dashboard: ' + e.message); btn.textContent = 'Access My Portal'; btn.disabled = false; }
-          return;
-        }
-      }
-      showErr('Tech credentials not found. Check email and code.'); btn.textContent = 'Access My Portal'; btn.disabled = false; return;
-    }
-
-    // Setter login
-    if (resolvedRole === 'setter') {
-      var setterMatch = SETTERS.find(function(s) { return s.email === email; });
-      if (setterMatch) {
-        var setterCode = setterMatch.code;
-        try { var cs=supabase.createClient(SUPA_URL,SUPA_KEY); var csr=await cs.from('portal_credentials').select('code').eq('rep_id',setterMatch.id).maybeSingle(); if(csr.data&&csr.data.code) setterCode=csr.data.code; } catch(e) {}
-        if (code === setterCode) {
-          sessionStorage.setItem('user', JSON.stringify({isSetter:true, name:setterMatch.name, id:setterMatch.id, role:'setter'}));
-          loadSetterDashboard(setterMatch); return;
-        }
-      }
-      showErr('Setter credentials not found.'); btn.textContent = 'Access My Portal'; btn.disabled = false; return;
-    }
-
-    // Ops login
-    if (resolvedRole === 'ops') {
-      var opsMatch = OPS_PARTNERS.find(function(o) { return o.email === email; });
-      if (opsMatch) {
-        var opsCode = opsMatch.code;
-        try { var co=supabase.createClient(SUPA_URL,SUPA_KEY); var cor=await co.from('portal_credentials').select('code').eq('rep_id',opsMatch.id).maybeSingle(); if(cor.data&&cor.data.code) opsCode=cor.data.code; } catch(e) {}
-        if (code === opsCode) {
-          sessionStorage.setItem('user', JSON.stringify({isOps:true, name:opsMatch.name, id:opsMatch.id, role:'ops'}));
-          try { await loadOpsDashboard(opsMatch); } catch(e) { showErr('Error loading dashboard: ' + e.message); btn.textContent = 'Access My Portal'; btn.disabled = false; }
-          return;
-        }
-      }
-      showErr('Ops credentials not found. Check email and code.'); btn.textContent = 'Access My Portal'; btn.disabled = false; return;
+    if (teamMember) {
+      // Verify code (with portal_credentials override)
+      var mCode = teamMember.code;
+      try {
+        var mcC=supabase.createClient(SUPA_URL,SUPA_KEY);
+        var mcR=await mcC.from('portal_credentials').select('code').eq('rep_id',teamMember.id).maybeSingle();
+        if (mcR.data&&mcR.data.code) mCode=mcR.data.code;
+      } catch(e) {}
+      if (code !== mCode) { showErr('Access code incorrect.'); btn.textContent='Access My Portal'; btn.disabled=false; return; }
+      var tm=teamMember;
+      if (tm.role==='rep')    { sessionStorage.setItem('user',JSON.stringify({isRep:true,name:tm.name,id:tm.id,role:'rep'})); loadRepDashboard(tm); return; }
+      if (tm.role==='tech')   { sessionStorage.setItem('user',JSON.stringify({isTech:true,name:tm.name,id:tm.id,role:'tech'})); try{await loadTechDashboard(tm);}catch(e){showErr('Error: '+e.message);btn.textContent='Access My Portal';btn.disabled=false;} return; }
+      if (tm.role==='setter') { sessionStorage.setItem('user',JSON.stringify({isSetter:true,name:tm.name,id:tm.id,role:'setter'})); loadSetterDashboard(tm); return; }
+      if (tm.role==='ops')    { sessionStorage.setItem('user',JSON.stringify({isOps:true,name:tm.name,id:tm.id,role:'ops'})); try{await loadOpsDashboard(tm);}catch(e){showErr('Error: '+e.message);btn.textContent='Access My Portal';btn.disabled=false;} return; }
     }
 
     // Customer login — Supabase lookup with timeout guard
@@ -494,6 +458,7 @@
     var resp = await client.from('customers').select('*').order('created_at', {ascending:false});
     adminCustomers = resp.data || [];
     try { var agResp = await client.from('rep_agreements').select('*').order('signed_at',{ascending:false}); adminRecentAgreements = agResp.data || []; } catch(e) { adminRecentAgreements = []; }
+    try { var tmResp = await client.from('team_members').select('*').order('created_at',{ascending:true}); adminTeamMembers = tmResp.data || []; } catch(e) { adminTeamMembers = []; }
     renderAdminView('dashboard');
   }
 
@@ -536,13 +501,15 @@
       '</div>';
     }
     var statsHtml = '<div class="admin-stats">'+adminStat(total,'All Leads','#8DC63F','all')+adminStat(newLeads,'New','#4a9eff','new')+adminStat(activeLeads,'Active','#8DC63F','active')+adminStat(invoicePending,'Invoice Due','#ffaa00','invoice')+adminStat(opsNeeded,'OPS Needed','#f97316','ops_needed')+'</div>';
-    // Build tech options from loaded data + hardcoded arrays
-    var techNames = {}; adminCustomers.forEach(function(x){ if(x.setter_name) techNames[x.setter_name.toLowerCase()]=x.setter_name; if(x.rep_id) techNames[x.rep_id]=x.rep_id; });
+    // Build dropdowns from DB team members (with hardcoded fallback)
+    var repPool = adminTeamMembers.filter(function(m){ return m.role==='rep'||m.role==='tech'||m.role==='setter'; });
+    if (!repPool.length) repPool = SALES_REPS.concat(TECHS).concat(SETTERS);
+    var opsPool = adminTeamMembers.filter(function(m){ return m.role==='ops'; });
+    if (!opsPool.length) opsPool = OPS_PARTNERS;
     var techOpts = '<option value="">All Reps</option>';
-    TECHS.forEach(function(t){ techOpts += '<option value="'+t.id+'"'+(adminTechFilter===t.id?' selected':'')+'>'+t.name+'</option>'; });
-    SALES_REPS.forEach(function(r){ techOpts += '<option value="'+r.id+'"'+(adminTechFilter===r.id?' selected':'')+'>'+r.name+'</option>'; });
+    repPool.forEach(function(m){ techOpts += '<option value="'+m.id+'"'+(adminTechFilter===m.id?' selected':'')+'>'+m.name+'</option>'; });
     var opsOpts = '<option value="">All Ops</option>';
-    OPS_PARTNERS.forEach(function(o){ opsOpts += '<option value="'+o.id+'"'+(adminOpsFilter===o.id?' selected':'')+'>'+o.name+'</option>'; });
+    opsPool.forEach(function(m){ opsOpts += '<option value="'+m.id+'"'+(adminOpsFilter===m.id?' selected':'')+'>'+m.name+'</option>'; });
     var searchBar = '<div class="admin-toolbar">'+
       '<input type="text" id="adminSearchInput" class="admin-search" placeholder="Search leads..." value="'+adminSearch+'" oninput="adminSearch=this.value;renderAdminView(adminView)"/>'+
       '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;align-items:center;">'+
@@ -641,6 +608,7 @@
         ) : '<div style="font-size:0.7rem;color:#ef4444;margin-top:6px;">&#8226; Awaiting digital signature via portal</div>')
       ) : '<div style="font-size:0.7rem;color:#555;margin-top:4px;">No agreement required</div>';
       var editId = 'edit_' + (u.id || '').replace(/[^a-z0-9]/gi,'_');
+      var isDbMember = adminTeamMembers.some(function(m){ return m.id===u.id; });
       return '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:14px;margin-bottom:8px;">'+
         '<div style="display:flex;justify-content:space-between;align-items:flex-start;">'+
           '<div style="flex:1;">'+
@@ -657,34 +625,40 @@
             '</div>'+
             agHtml+
           '</div>'+
-          '<span style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;padding:3px 8px;background:rgba(255,255,255,0.06);border-radius:100px;color:#888;">'+role+'</span>'+
+          '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;">'+
+            '<span style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;padding:3px 8px;background:rgba(255,255,255,0.06);border-radius:100px;color:#888;">'+role+'</span>'+
+            (isDbMember ? '<button onclick="adminToggleMember(\''+u.id+'\',false)" style="padding:3px 10px;font-size:0.65rem;font-weight:700;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);color:#ef4444;border-radius:100px;cursor:pointer;">Deactivate</button>' : '')+
+          '</div>'+
         '</div>'+
       '</div>';
     }
 
+    // Use DB team members; fall back to hardcoded arrays if table not yet seeded
+    var dbMembers = adminTeamMembers.length ? adminTeamMembers : (
+      SALES_REPS.map(function(r){return Object.assign({},r,{role:'rep',active:true});}).concat(
+      TECHS.map(function(t){return Object.assign({},t,{role:'tech',active:true});})).concat(
+      SETTERS.map(function(s){return Object.assign({},s,{role:'setter',active:true});})).concat(
+      OPS_PARTNERS.map(function(o){return Object.assign({},o,{role:'ops',active:true});}))
+    );
+    var activeMembers   = dbMembers.filter(function(m){ return m.active!==false; });
+    var inactiveMembers = dbMembers.filter(function(m){ return m.active===false; });
+    var roleSections = [{key:'rep',label:'Field Setters',ag:true},{key:'tech',label:'Techs / Sales',ag:true},{key:'setter',label:'Inside Setters',ag:true},{key:'ops',label:'Ops Partners',ag:false}];
+    var roleDisplay = {rep:'Field Setter',tech:'Tech',setter:'Inside Setter',ops:'Ops'};
+
     var h = portalNav;
-    h += '<div class="admin-header-row"><h2 style="font-size:1.1rem;font-weight:700;">Team &amp; Credentials</h2></div>';
-    if (teamFetchError) h += '<div style="padding:10px 14px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.25);border-radius:8px;font-size:0.72rem;color:#ef4444;margin-bottom:12px;">&#9888; Database error — agreement data unavailable. Table may not exist yet.<br><span style="opacity:0.7;">'+teamFetchError+'</span></div>';
+    h += '<div class="admin-header-row"><h2 style="font-size:1.1rem;font-weight:700;">Team &amp; Credentials</h2>'+
+      '<button onclick="adminShowAddMember()" style="padding:6px 14px;background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;font-size:0.75rem;font-weight:700;cursor:pointer;">+ Add Member</button></div>';
+    h += '<div id="addMemberSlot"></div>';
+    if (teamFetchError) h += '<div style="padding:10px 14px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.25);border-radius:8px;font-size:0.72rem;color:#ef4444;margin-bottom:12px;">&#9888; '+teamFetchError+'</div>';
 
-    // Setters
-    h += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#8DC63F;margin:14px 0 6px;">Setters</div>';
-    SALES_REPS.forEach(function(r){ h += userCard(r, 'Setter', true); });
+    roleSections.forEach(function(sec){
+      var members = activeMembers.filter(function(m){ return m.role===sec.key; });
+      if (!members.length) return;
+      h += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#8DC63F;margin:14px 0 6px;">'+sec.label+'</div>';
+      members.forEach(function(u){ h += userCard(u, roleDisplay[u.role]||u.role, sec.ag); });
+    });
 
-    // Techs
-    h += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#8DC63F;margin:14px 0 6px;">Techs / Sales</div>';
-    TECHS.forEach(function(t){ h += userCard(t, 'Tech', true); });
-
-    // Setters (internal)
-    if (SETTERS.length) {
-      h += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#8DC63F;margin:14px 0 6px;">Inside Setters</div>';
-      SETTERS.forEach(function(s){ h += userCard(s, 'Setter', true); });
-    }
-
-    // Ops
-    h += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#8DC63F;margin:14px 0 6px;">Ops Partners</div>';
-    OPS_PARTNERS.forEach(function(o){ h += userCard(o, 'Ops', false); });
-
-    // Admin
+    // Admin card
     h += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#8DC63F;margin:14px 0 6px;">Admin</div>';
     var adminAgRec = agreements.find(function(a){ return a.rep_id === ADMIN_REP_ID; });
     var adminAgHtml = '';
@@ -694,7 +668,7 @@
         '<div style="margin-top:6px;"><span style="color:#8DC63F;font-size:0.72rem;">&#10003; Signed '+adDate+(adminAgRec.rep_legal_name?' &middot; '+adminAgRec.rep_legal_name:'')+'</span></div>'+
         '<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">'+
           '<button onclick="adminViewAgreement(\''+ADMIN_REP_ID+'\')" style="padding:5px 12px;font-size:0.7rem;font-weight:700;background:rgba(141,198,63,0.12);border:1px solid rgba(141,198,63,0.3);color:#8DC63F;border-radius:6px;cursor:pointer;">&#128065; View Agreement</button>'+
-          (adminAgRec.agreement_url ? '<a href="'+adminAgRec.agreement_url+'" target="_blank" rel="noopener" style="padding:5px 12px;font-size:0.7rem;font-weight:700;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);color:#4a9eff;border-radius:6px;cursor:pointer;text-decoration:none;">&#128196; External Doc</a>' : '')+
+          (adminAgRec.agreement_url ? '<a href="'+adminAgRec.agreement_url+'" target="_blank" rel="noopener" style="padding:5px 12px;font-size:0.7rem;font-weight:700;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);color:#4a9eff;border-radius:6px;text-decoration:none;">&#128196; External Doc</a>' : '')+
         '</div>'+
         '<div style="display:flex;gap:6px;margin-top:6px;align-items:center;">'+
           '<input id="agurl_admin" type="url" placeholder="Paste DocuSign / PDF link..." value="'+(adminAgRec.agreement_url||'')+'" style="flex:1;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:4px 8px;color:#F3EDE3;font-size:0.7rem;outline:none;"/>'+
@@ -704,15 +678,25 @@
       adminAgHtml = '<div style="font-size:0.7rem;color:#555;margin-top:4px;">&#128274; Admin credentials managed in portal code</div>';
     }
     h += '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:14px;margin-bottom:8px;">'+
-      '<div style="display:flex;justify-content:space-between;align-items:flex-start;">'+
-        '<div style="flex:1;">'+
-          '<div style="font-size:0.9rem;font-weight:700;">Admin</div>'+
-          '<div style="font-size:0.72rem;color:#888;margin-top:2px;">'+ADMIN_EMAIL+'</div>'+
-          adminAgHtml+
-        '</div>'+
-        '<span style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;padding:3px 8px;background:rgba(255,255,255,0.06);border-radius:100px;color:#888;">Admin</span>'+
-      '</div>'+
-    '</div>';
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;"><div style="flex:1;">'+
+        '<div style="font-size:0.9rem;font-weight:700;">Admin</div>'+
+        '<div style="font-size:0.72rem;color:#888;margin-top:2px;">'+ADMIN_EMAIL+'</div>'+
+        adminAgHtml+'</div>'+
+      '<span style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;padding:3px 8px;background:rgba(255,255,255,0.06);border-radius:100px;color:#888;">Admin</span>'+
+      '</div></div>';
+
+    // Deactivated members
+    if (inactiveMembers.length) {
+      h += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#555;margin:20px 0 6px;">Deactivated</div>';
+      inactiveMembers.forEach(function(u){
+        h += '<div style="background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:12px 14px;margin-bottom:8px;opacity:0.6;">'+
+          '<div style="display:flex;justify-content:space-between;align-items:center;">'+
+            '<div><div style="font-size:0.85rem;font-weight:700;color:#888;">'+u.name+'</div>'+
+            '<div style="font-size:0.7rem;color:#555;">'+u.email+' &middot; '+(roleDisplay[u.role]||u.role)+'</div></div>'+
+            '<button onclick="adminToggleMember(\''+u.id+'\',true)" style="padding:5px 12px;font-size:0.7rem;font-weight:700;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.25);color:#8DC63F;border-radius:6px;cursor:pointer;">&#8635; Reactivate</button>'+
+          '</div></div>';
+      });
+    }
 
     document.getElementById('dashBody').innerHTML = h;
 
@@ -862,10 +846,71 @@
       if (!newCode || !newCode.trim()) { alert('Enter a new code first.'); return; }
       try {
         var tc3 = supabase.createClient(SUPA_URL, SUPA_KEY);
+        // Update both team_members and portal_credentials for compatibility
+        await tc3.from('team_members').update({code:newCode.trim()}).eq('id',repId);
         await tc3.from('portal_credentials').upsert({rep_id:repId, code:newCode.trim()}, {onConflict:'rep_id'});
-        alert('Code updated. The new code takes effect immediately on next login.');
+        var idx = adminTeamMembers.findIndex(function(m){return m.id===repId;});
+        if (idx>-1) adminTeamMembers[idx].code=newCode.trim();
+        alert('Code updated. Takes effect on next login.');
         renderTeamView();
       } catch(e) { alert('Error saving: ' + e.message); }
+    };
+
+    window.adminToggleMember = async function(memberId, activate) {
+      var member = adminTeamMembers.find(function(m){return m.id===memberId;});
+      if (!member) return;
+      var action = activate ? 'Reactivate' : 'Deactivate';
+      if (!confirm(action+' '+member.name+'? '+(activate?'They will be able to log in again.':'They will no longer be able to log in.'))) return;
+      try {
+        var tgC = supabase.createClient(SUPA_URL, SUPA_KEY);
+        var {error: tgE} = await tgC.from('team_members').update({active:activate}).eq('id', memberId);
+        if (tgE) throw new Error(tgE.message);
+        var idx = adminTeamMembers.findIndex(function(m){return m.id===memberId;});
+        if (idx>-1) adminTeamMembers[idx].active = activate;
+        renderTeamView();
+      } catch(e) { alert(action+' failed: '+e.message); }
+    };
+
+    window.adminShowAddMember = function() {
+      var slot = document.getElementById('addMemberSlot');
+      if (!slot) return;
+      slot.innerHTML = '<div class="editor-panel" style="margin-bottom:16px;">'+
+        '<div class="editor-header"><div style="font-weight:700;color:#8DC63F;font-size:1rem;">+ Add Team Member</div>'+
+        '<button onclick="document.getElementById(\'addMemberSlot\').innerHTML=\'\'" style="background:none;border:none;color:#666;cursor:pointer;font-size:1.1rem;">&#10005;</button></div>'+
+        '<div class="ed-grid">'+
+          '<div><label class="ed-label">Full Name *</label><input type="text" id="amName" class="ed-input" placeholder="Jane Smith"/></div>'+
+          '<div><label class="ed-label">Email *</label><input type="email" id="amEmail" class="ed-input" placeholder="jane@fixmy.energy"/></div>'+
+          '<div><label class="ed-label">Access Code *</label><input type="text" id="amCode" class="ed-input" placeholder="e.g. jane2026"/></div>'+
+          '<div><label class="ed-label">Role *</label><select id="amRole" class="ed-input">'+
+            '<option value="rep">Field Setter (auto-opens lead form)</option>'+
+            '<option value="tech">Tech / Sales (sees all jobs)</option>'+
+            '<option value="setter">Inside Setter</option>'+
+            '<option value="ops">Ops Partner (sees assigned jobs only)</option>'+
+          '</select></div>'+
+        '</div>'+
+        '<div class="editor-footer">'+
+          '<button class="lead-btn lime" style="padding:10px 24px;" onclick="adminAddMember()">Add Member</button>'+
+          '<button class="lead-btn ghost" style="padding:10px 16px;" onclick="document.getElementById(\'addMemberSlot\').innerHTML=\'\'">Cancel</button>'+
+          '<span id="amSaved" style="display:none;font-size:0.72rem;color:#8DC63F;margin-left:10px;">&#10003; Added</span>'+
+        '</div></div>';
+    };
+
+    window.adminAddMember = async function() {
+      var name  = (document.getElementById('amName').value||'').trim();
+      var email = (document.getElementById('amEmail').value||'').trim().toLowerCase();
+      var code  = (document.getElementById('amCode').value||'').trim();
+      var role  = document.getElementById('amRole').value;
+      if (!name||!email||!code) { alert('Name, email, and access code are required.'); return; }
+      // Generate a unique ID: role prefix + random chars
+      var newId = role.substring(0,3) + '_' + Math.random().toString(36).substr(2,6);
+      try {
+        var addC = supabase.createClient(SUPA_URL, SUPA_KEY);
+        var {error: addE} = await addC.from('team_members').insert({id:newId, name:name, email:email, code:code, role:role, active:true});
+        if (addE) throw new Error(addE.message);
+        adminTeamMembers.push({id:newId,name:name,email:email,code:code,role:role,active:true,created_at:new Date().toISOString()});
+        document.getElementById('addMemberSlot').innerHTML='';
+        renderTeamView();
+      } catch(e) { alert('Add failed: '+e.message); }
     };
   }
 
