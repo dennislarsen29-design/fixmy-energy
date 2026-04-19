@@ -330,6 +330,7 @@
   var SHEETBEST_URL = 'https://api.sheetbest.com/sheets/cf351a87-0260-4633-aaa9-d955caf6c630';
   var GHL_BOOKING   = 'https://api.leadconnectorhq.com/widget/booking/UjlvHxE8AlyhG5frBkqr';
   var ADMIN_CODE    = 'SR2026admin';
+  var ADMIN_REP_ID  = 'dennis'; // rep_agreements lookup key for the admin/owner
   var SUPA_URL      = 'https://kbtobyoumvbcxfbugsid.supabase.co';
   var SUPA_KEY      = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtidG9ieW91bXZiY3hmYnVnc2lkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ1NjY5MDcsImV4cCI6MjA5MDE0MjkwN30.nLE0TlMu43E4dNRxxjoc6P1OQMjfwXgonbA2MrCCrhk';
   var GKEY          = 'AIzaSyBedpPe3461c1mYiD8yxjDMkYvrJ4MQQpc';
@@ -685,10 +686,32 @@
 
     // Admin
     h += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#8DC63F;margin:14px 0 6px;">Admin</div>';
+    var adminAgRec = agreements.find(function(a){ return a.rep_id === ADMIN_REP_ID; });
+    var adminAgHtml = '';
+    if (adminAgRec) {
+      var adDate = adminAgRec.signed_at ? new Date(adminAgRec.signed_at).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '';
+      adminAgHtml =
+        '<div style="margin-top:6px;"><span style="color:#8DC63F;font-size:0.72rem;">&#10003; Signed '+adDate+(adminAgRec.rep_legal_name?' &middot; '+adminAgRec.rep_legal_name:'')+'</span></div>'+
+        '<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">'+
+          '<button onclick="adminViewAgreement(\''+ADMIN_REP_ID+'\')" style="padding:5px 12px;font-size:0.7rem;font-weight:700;background:rgba(141,198,63,0.12);border:1px solid rgba(141,198,63,0.3);color:#8DC63F;border-radius:6px;cursor:pointer;">&#128065; View Agreement</button>'+
+          (adminAgRec.agreement_url ? '<a href="'+adminAgRec.agreement_url+'" target="_blank" rel="noopener" style="padding:5px 12px;font-size:0.7rem;font-weight:700;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);color:#4a9eff;border-radius:6px;cursor:pointer;text-decoration:none;">&#128196; External Doc</a>' : '')+
+        '</div>'+
+        '<div style="display:flex;gap:6px;margin-top:6px;align-items:center;">'+
+          '<input id="agurl_admin" type="url" placeholder="Paste DocuSign / PDF link..." value="'+(adminAgRec.agreement_url||'')+'" style="flex:1;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:4px 8px;color:#F3EDE3;font-size:0.7rem;outline:none;"/>'+
+          '<button onclick="adminSaveAgreementUrl(\''+ADMIN_REP_ID+'\',document.getElementById(\'agurl_admin\').value)" style="padding:4px 10px;font-size:0.7rem;font-weight:700;background:rgba(74,158,255,0.12);border:1px solid rgba(74,158,255,0.3);color:#4a9eff;border-radius:6px;cursor:pointer;white-space:nowrap;">Save Link</button>'+
+        '</div>';
+    } else {
+      adminAgHtml = '<div style="font-size:0.7rem;color:#555;margin-top:4px;">&#128274; Admin credentials managed in portal code</div>';
+    }
     h += '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:14px;margin-bottom:8px;">'+
-      '<div style="font-size:0.9rem;font-weight:700;">Admin</div>'+
-      '<div style="font-size:0.72rem;color:#888;margin-top:2px;">'+ADMIN_EMAIL+'</div>'+
-      '<div style="font-size:0.7rem;color:#555;margin-top:4px;">&#128274; Admin credentials managed in portal code</div>'+
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;">'+
+        '<div style="flex:1;">'+
+          '<div style="font-size:0.9rem;font-weight:700;">Admin</div>'+
+          '<div style="font-size:0.72rem;color:#888;margin-top:2px;">'+ADMIN_EMAIL+'</div>'+
+          adminAgHtml+
+        '</div>'+
+        '<span style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;padding:3px 8px;background:rgba(255,255,255,0.06);border-radius:100px;color:#888;">Admin</span>'+
+      '</div>'+
     '</div>';
 
     document.getElementById('dashBody').innerHTML = h;
@@ -2314,24 +2337,46 @@
     var roleLabel = config.roleLabel || 'Sales';
     var showFieldJobs = !!config.showFieldJobs;
 
-    // Agreement gate — Supabase is authoritative; localStorage used only as offline fallback
+    // Agreement gate — Supabase is authoritative; localStorage used as offline fallback
     var agreementSigned = !!person.agreementSigned;
-    try {
-      var agc = supabase.createClient(SUPA_URL, SUPA_KEY);
-      var agr = await agc.from('rep_agreements').select('id').eq('rep_id', person.id).maybeSingle();
-      if (agr.data) {
-        agreementSigned = true;
-        try { localStorage.setItem('repAgreement_' + person.id, 'supabase'); } catch(e) {}
-      } else if (!agr.error) {
-        // Supabase confirmed no record (admin may have reset) — clear local cache
-        agreementSigned = false;
-        try { localStorage.removeItem('repAgreement_' + person.id); } catch(e) {}
-      } else {
-        // Supabase unreachable — fall back to localStorage so rep isn't locked out offline
-        try { if (localStorage.getItem('repAgreement_' + person.id)) agreementSigned = true; } catch(e) {}
+    // If rep just signed this session, trust it immediately (avoids Supabase re-check race)
+    var justSigned = false;
+    try { justSigned = !!sessionStorage.getItem('repAgreementJustSigned_' + person.id); } catch(e) {}
+    if (justSigned) {
+      agreementSigned = true;
+    } else {
+      try {
+        var agc = supabase.createClient(SUPA_URL, SUPA_KEY);
+        var agr = await agc.from('rep_agreements').select('id').eq('rep_id', person.id).maybeSingle();
+        if (agr.data) {
+          agreementSigned = true;
+          try { localStorage.setItem('repAgreement_' + person.id, 'supabase'); } catch(e) {}
+        } else if (!agr.error) {
+          // Supabase returned no record — check for a local signed record before clearing
+          var localRec = null;
+          try { localRec = localStorage.getItem('repAgreement_' + person.id); } catch(e) {}
+          if (localRec && localRec !== 'supabase') {
+            // Local signed record exists but not in Supabase — let them through and re-sync
+            agreementSigned = true;
+            var rParts = localRec.split('|');
+            var rTs = rParts[0], rName = rParts.slice(1).join('|');
+            if (rName) {
+              agc.from('rep_agreements').insert({rep_id:person.id, rep_name:person.name, rep_legal_name:rName, signed_at:rTs, source:'resync'}).then(function(res){
+                if (!res.error) { try { localStorage.setItem('repAgreement_'+person.id,'supabase'); } catch(ex){} }
+              });
+            }
+          } else {
+            // Truly no record (admin reset or never signed) — clear cache
+            agreementSigned = false;
+            try { localStorage.removeItem('repAgreement_' + person.id); } catch(e) {}
+          }
+        } else {
+          // Supabase unreachable — fall back to localStorage so rep isn't locked out offline
+          try { if (localStorage.getItem('repAgreement_' + person.id)) agreementSigned = true; } catch(e) {}
+        }
+      } catch(e) {
+        try { if (localStorage.getItem('repAgreement_' + person.id)) agreementSigned = true; } catch(e2) {}
       }
-    } catch(e) {
-      try { if (localStorage.getItem('repAgreement_' + person.id)) agreementSigned = true; } catch(e2) {}
     }
 
     document.getElementById('loginBox').style.display = 'none';
@@ -2346,6 +2391,7 @@
         if (!checked) { alert('Please check the box confirming you have read and agree to the terms.'); return; }
         var ts = new Date().toISOString();
         try { localStorage.setItem('repAgreement_' + person.id, ts + '|' + repName); } catch(e) {}
+        try { sessionStorage.setItem('repAgreementJustSigned_' + person.id, '1'); } catch(e) {} // bypass re-check this session
         try {
           fetch(GHL_WEBHOOK, {method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},
             body:JSON.stringify({firstName:person.name,lastName:repName,source:'Rep Agreement Signed',
@@ -2357,10 +2403,18 @@
           var agPayload = {rep_id:person.id, rep_name:person.name, rep_legal_name:repName, signed_at:ts, source:'self-signed'};
           var {error: iErr} = await agClient.from('rep_agreements').insert(agPayload);
           if (iErr) {
+            console.error('[Agreement] INSERT failed ('+iErr.code+'):', iErr.message);
             var {error: uErr} = await agClient.from('rep_agreements').update(agPayload).eq('rep_id', person.id);
-            if (uErr) alert('Agreement saved on this device, but cloud sync failed: ' + uErr.message);
+            if (uErr) {
+              console.error('[Agreement] UPDATE also failed ('+uErr.code+'):', uErr.message);
+              // Still signed locally via sessionStorage — they can continue this session
+            } else {
+              try { localStorage.setItem('repAgreement_' + person.id, 'supabase'); } catch(ex) {}
+            }
+          } else {
+            try { localStorage.setItem('repAgreement_' + person.id, 'supabase'); } catch(ex) {}
           }
-        } catch(e){ console.warn('Agreement save exception:', e); }
+        } catch(e){ console.warn('[Agreement] Exception:', e); }
         loadSalesDashboard(person, config);
       };
       document.getElementById('dashBody').innerHTML = buildRepAgreementHTML();
