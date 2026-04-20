@@ -39,6 +39,18 @@ We sell a fee-based diagnostic service that identifies problems, then convert a 
 
 Rep earns 40%, company keeps 60% of gross commission on every transaction.
 
+### Owner Distributions & Equity (Paid Monthly)
+
+After rep commissions are paid, the company's 60% net flows into a monthly owner distribution pool.
+
+| Partner | Role | Equity % |
+|---------|------|----------|
+| Dennis Larsen | Owner / Admin | 25% |
+| Sales Partners | Rep / Tech (equity holders) | TBD |
+| Ops Partners | Installers (equity holders) | TBD |
+
+Distributions are paid monthly from actual company net collected. Total equity must sum to 100%.
+
 ---
 
 ## 3. Target Customer
