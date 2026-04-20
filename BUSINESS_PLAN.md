@@ -84,10 +84,9 @@ The portal tracks every lead through 8 stages:
 | Role | Name | Function |
 |------|------|----------|
 | Admin / Owner | Dennis Larsen | Operations, strategy, installs (self) |
-| Field Setter | Ronda | Door-to-door lead generation, books evals |
-| Tech / Sales | Juan | Field diagnostics, battery sales |
-| Tech / Sales | Ranie | Field diagnostics, battery sales |
-| Tech / Sales | Michael Smith | Field diagnostics, battery sales |
+| Phone Setter | Ronda | Inside sales — phone outreach, books evals |
+| Tech / Sales | Ranie | Leads, door-to-door, diagnostic sales, battery sales |
+| Tech / Sales | Michael Smith | Leads, door-to-door, diagnostic sales, battery sales |
 | Ops Partner | Jon Klos | Installs |
 | Ops Partner | John Espinoza | Installs |
 | Ops Partner | Cosmic Solar | Installs |
