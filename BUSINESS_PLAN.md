@@ -49,7 +49,7 @@ Rep earns 40%, company keeps 60% of gross commission on every transaction.
 - Don't know if their system is working at full capacity
 - Are interested in battery backup (post-wildfire / outage concerns)
 
-**Secondary:** Homeowners considering solar for the first time (future service line).
+**Secondary:** Homeowners considering solar for the first time. Dennis has 10+ years operating in new solar installation — this remains an active service line alongside diagnostics and retrofits.
 
 **Psychographic:** Homeowners aged 40–65, household income $120K+, own their home, concerned about energy costs and grid reliability.
 
@@ -116,18 +116,19 @@ The portal tracks every lead through 8 stages:
 ### ✅ Built & Working
 - Customer portal (login, progress tracker, steps 1–8)
 - Admin portal (Leads tab, Jobs tab, Team tab)
-- Rep portal (Ronda) — new lead form, map view, Leads/Jobs split
+- Rep portal (Ronda) — new lead form, map view, Leads/Jobs split (sold_type)
 - Tech portal — Leads/Jobs, field job assignments, photo uploads
 - Ops portal — assigned job view
-- Agreement signing flow (digital signature, Supabase-backed)
-- Team onboard/offboard (DB-driven via team_members table)
+- Agreement signing flow (digital signature, Supabase-backed, print-to-PDF)
+- Team onboard/offboard (DB-driven via team_members table — "+ Add Member", Deactivate/Reactivate)
 - GHL webhook integration on lead submit
-- Print-to-PDF agreement generation
+- sold_type field (Diagnostic / Battery Retrofit / Monitoring) fully wired — drives Leads vs Jobs split across admin, tech, and rep portals
+- Admin Leads: Tech + Ops filter dropdowns (DB-driven from team_members)
+- Business Model page (token-gated /business-model.html, noindex, linked from Admin portal)
 
 ### 🔧 In Progress / Needs Testing
 - GHL automation sequences (SMS/email confirmation, reminders, follow-ups)
 - End-to-end lead flow: portal submit → GHL contact created → booking confirmation sent
-- sold_type field (Diagnostic / Battery Retrofit / Monitoring) fully wired into Jobs tab
 - Monitoring subscription service (not yet launched)
 
 ### ❌ Not Yet Built
