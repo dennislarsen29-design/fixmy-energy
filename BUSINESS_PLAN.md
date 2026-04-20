@@ -31,7 +31,9 @@ We sell a fee-based diagnostic service that identifies problems, then convert a 
 ### Revenue Model
 - **Diagnostic** = cash-flow entry point. Low resistance, immediate revenue.
 - **Battery Retrofit** = primary profit driver. One close = $3,299 to company.
-- **Monitoring** = recurring revenue. 100 active accounts = $2,580/mo passive.
+- **Monitoring** = recurring revenue. 100 active accounts = $1,579/mo passive (panel cleaning 2×/year included).
+- **Partner / Add-On Leads** = leads outside current scope sold or closed through vetted partners.
+- **Future Partnerships** = retail distribution through Sunly or Lowe's directly.
 - Diagnostic-to-retrofit conversion is the most important metric to track and optimize.
 
 ### Commission Formula
@@ -172,9 +174,10 @@ The portal tracks every lead through 8 stages:
 **Goal:** $50K+/month revenue, multiple reps, expand to LA/OC
 
 - Hire 2–3 additional field setters
-- Launch monitoring subscription service
+- Launch monitoring subscription service (panel cleaning included)
 - Explore solar financing partnerships (increase battery retrofit close rate)
 - Expand to LA and Orange County with local ops partners
+- **Pursue retail partnerships** — Sunly and/or Lowe's as direct retail distribution channels
 
 ---
 
