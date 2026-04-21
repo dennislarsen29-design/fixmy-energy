@@ -348,6 +348,8 @@
   var jobPhotos = {};
   var adminLeadCat = 'fixmy';   // 'fixmy' | 'new_solar'
   var adminJobCat  = 'fixmy';
+  var schedCalView   = 'week';  // 'week' | 'month'
+  var schedCalOffset = 0;       // weeks or months from current
 
   // New Solar pipeline — status key → {label, phase:'lead'|'job', color}
   var NS_STATUSES = {
@@ -994,6 +996,180 @@
     };
   }
 
+  // ── SCHEDULE CALENDAR HELPERS ────────────────────────────────────────────────
+  function schedLocalKey(dt) {
+    return dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0');
+  }
+  function schedWeekStart(offset) {
+    var d=new Date(); d.setHours(0,0,0,0);
+    var dow=d.getDay(); d.setDate(d.getDate()-(dow===0?6:dow-1)+offset*7); return d;
+  }
+  function schedMonthStart(offset) {
+    var d=new Date(); d.setDate(1); d.setMonth(d.getMonth()+offset); d.setHours(0,0,0,0); return d;
+  }
+  var SCHED_TYPE_CLR  = {'Diagnostic Eval':'#8DC63F','Evaluation':'#4a9eff','Welcome Call':'#9b6de8','Install':'#f97316','NS Install':'#4a9eff'};
+  var SCHED_MONTHS    = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  var SCHED_DAY_SHORT = ['Su','Mo','Tu','We','Th','Fr','Sa'];
+  var SCHED_DAY_MED   = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+
+  function buildSchedCalHtml(appts, refreshCmd) {
+    var today=new Date(); today.setHours(0,0,0,0);
+    var todayKey=schedLocalKey(today);
+    var dayMap={};
+    appts.forEach(function(a){
+      var k=schedLocalKey(a.date);
+      if (!dayMap[k]) dayMap[k]=[];
+      dayMap[k].push(a);
+    });
+    var btnBase='padding:5px 14px;border:none;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;';
+    var navBtn='padding:5px 12px;border:none;border-radius:8px;font-size:0.82rem;cursor:pointer;background:rgba(255,255,255,0.07);color:#888;';
+    var html='';
+    // Toolbar
+    html+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">';
+    html+='<div style="display:flex;gap:4px;">';
+    html+='<button onclick="schedCalView=\'week\';schedCalOffset=0;'+refreshCmd+'" style="'+btnBase+'background:'+(schedCalView==='week'?'#8DC63F':'rgba(255,255,255,0.07)')+';color:'+(schedCalView==='week'?'#1A1A1A':'#888')+';">Week</button>';
+    html+='<button onclick="schedCalView=\'month\';schedCalOffset=0;'+refreshCmd+'" style="'+btnBase+'background:'+(schedCalView==='month'?'#8DC63F':'rgba(255,255,255,0.07)')+';color:'+(schedCalView==='month'?'#1A1A1A':'#888')+';">Month</button>';
+    html+='</div>';
+    var periodLabel;
+    if (schedCalView==='week') {
+      var ws=schedWeekStart(schedCalOffset);
+      var we=new Date(ws.getTime()+6*86400000);
+      periodLabel=ws.toLocaleDateString('en-US',{month:'short',day:'numeric'})+' – '+we.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+    } else {
+      var ms=schedMonthStart(schedCalOffset);
+      periodLabel=SCHED_MONTHS[ms.getMonth()]+' '+ms.getFullYear();
+    }
+    html+='<div style="display:flex;align-items:center;gap:8px;">';
+    html+='<button onclick="schedCalOffset--;'+refreshCmd+'" style="'+navBtn+'">&#8592;</button>';
+    html+='<span style="font-size:0.75rem;font-weight:700;color:#ccc;white-space:nowrap;">'+periodLabel+'</span>';
+    html+='<button onclick="schedCalOffset++;'+refreshCmd+'" style="'+navBtn+'">&#8594;</button>';
+    html+='</div></div>';
+    // Grid container
+    html+='<div style="background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.08);border-radius:12px;overflow:hidden;margin-bottom:20px;">';
+    if (schedCalView==='week') {
+      var ws2=schedWeekStart(schedCalOffset);
+      // Header row
+      html+='<div style="display:grid;grid-template-columns:repeat(7,1fr);background:rgba(255,255,255,0.03);border-bottom:1px solid rgba(255,255,255,0.07);">';
+      for (var di=0;di<7;di++) html+='<div style="padding:6px 2px;text-align:center;font-size:0.62rem;font-weight:700;color:#555;letter-spacing:0.04em;">'+SCHED_DAY_MED[di]+'</div>';
+      html+='</div>';
+      // Day cells
+      html+='<div style="display:grid;grid-template-columns:repeat(7,1fr);">';
+      for (var di=0;di<7;di++) {
+        var cellD=new Date(ws2.getTime()+di*86400000);
+        var cellK=schedLocalKey(cellD);
+        var isTd=cellK===todayKey;
+        var isPast=cellD<today;
+        var cA=dayMap[cellK]||[];
+        var isWknd=di>=5;
+        html+='<div style="min-height:82px;padding:5px 3px;border-right:1px solid rgba(255,255,255,0.05);'+(isWknd?'background:rgba(0,0,0,0.1);':'')+'">';
+        html+='<div style="text-align:center;margin-bottom:4px;">';
+        if (isTd) html+='<span style="background:#8DC63F;color:#1A1A1A;border-radius:50%;width:22px;height:22px;display:inline-flex;align-items:center;justify-content:center;font-size:0.78rem;font-weight:900;">'+cellD.getDate()+'</span>';
+        else       html+='<span style="font-size:0.78rem;font-weight:'+(cA.length?700:400)+';color:'+(isPast?'#444':cA.length?'#ccc':'#555')+';">'+cellD.getDate()+'</span>';
+        html+='</div>';
+        var extra=cA.length>3?cA.length-3:0;
+        cA.slice(0,3).forEach(function(a){
+          var tc=SCHED_TYPE_CLR[a.type]||'#888';
+          var ts=a.date.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true});
+          var fn=(a.customer.first_name||'?');
+          var df=(a.type==='Install'||a.type==='NS Install')?'install_date':'diagnostic_date';
+          html+='<div onclick="quickReschedule(\''+a.customer.id+'\',\''+df+'\',\''+fn+' '+(a.customer.last_name||'')+'\',\''+(a.customer[df]||'')+'\',\''+(a.customer.arrival_end||'')+'\')" title="'+fn+' '+(a.customer.last_name||'')+'" style="cursor:pointer;font-size:0.58rem;padding:2px 3px;border-radius:3px;background:'+tc+'22;color:'+tc+';border-left:2px solid '+tc+';margin-bottom:2px;line-height:1.3;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">'+ts+' '+fn+'</div>';
+        });
+        if (extra) html+='<div style="font-size:0.58rem;color:#555;text-align:center;">+'+extra+' more</div>';
+        html+='</div>';
+      }
+      html+='</div>';
+    } else {
+      var ms2=schedMonthStart(schedCalOffset);
+      var mY=ms2.getFullYear(), mMo=ms2.getMonth();
+      var lastDay2=new Date(mY,mMo+1,0).getDate();
+      var startDow=ms2.getDay();
+      var totalCells=Math.ceil((startDow+lastDay2)/7)*7;
+      // Header
+      html+='<div style="display:grid;grid-template-columns:repeat(7,1fr);background:rgba(255,255,255,0.03);border-bottom:1px solid rgba(255,255,255,0.07);">';
+      SCHED_DAY_SHORT.forEach(function(d){ html+='<div style="padding:6px 2px;text-align:center;font-size:0.62rem;font-weight:700;color:#555;letter-spacing:0.04em;">'+d+'</div>'; });
+      html+='</div>';
+      // Cells
+      html+='<div style="display:grid;grid-template-columns:repeat(7,1fr);">';
+      for (var ci=0;ci<totalCells;ci++) {
+        var dn=ci-startDow+1;
+        var inM=(dn>=1&&dn<=lastDay2);
+        var cd=new Date(mY,mMo,dn);
+        var ck=schedLocalKey(cd);
+        var isTd2=ck===todayKey;
+        var isPast2=inM&&cd<today;
+        var cA2=inM?(dayMap[ck]||[]):[];
+        var isWknd2=(ci%7===0)||(ci%7===6);
+        html+='<div style="min-height:56px;padding:3px;border-right:1px solid rgba(255,255,255,0.05);border-top:1px solid rgba(255,255,255,0.05);'+(!inM||isWknd2?'background:rgba(0,0,0,0.1);':'')+'">';
+        if (inM) {
+          html+='<div style="text-align:center;margin-bottom:2px;">';
+          if (isTd2) html+='<span style="background:#8DC63F;color:#1A1A1A;border-radius:50%;width:20px;height:20px;display:inline-flex;align-items:center;justify-content:center;font-size:0.68rem;font-weight:900;">'+dn+'</span>';
+          else        html+='<span style="font-size:0.7rem;font-weight:'+(cA2.length?700:400)+';color:'+(isPast2?'#444':cA2.length?'#ccc':'#555')+';">'+dn+'</span>';
+          html+='</div>';
+          var extra2=cA2.length>2?cA2.length-2:0;
+          cA2.slice(0,2).forEach(function(a){
+            var tc2=SCHED_TYPE_CLR[a.type]||'#888';
+            var fn2=(a.customer.first_name||'?');
+            var df2=(a.type==='Install'||a.type==='NS Install')?'install_date':'diagnostic_date';
+            html+='<div onclick="quickReschedule(\''+a.customer.id+'\',\''+df2+'\',\''+fn2+' '+(a.customer.last_name||'')+'\',\''+(a.customer[df2]||'')+'\',\''+(a.customer.arrival_end||'')+'\')" title="'+fn2+'" style="cursor:pointer;font-size:0.58rem;padding:2px 3px;border-radius:3px;background:'+tc2+'22;color:'+tc2+';border-left:2px solid '+tc2+';margin-bottom:2px;line-height:1.3;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">'+fn2+'</div>';
+          });
+          if (extra2) html+='<div style="font-size:0.58rem;color:#555;text-align:center;">+'+extra2+'</div>';
+        }
+        html+='</div>';
+      }
+      html+='</div>';
+    }
+    html+='</div>';
+    return html;
+  }
+
+  window.quickReschedule = function(id, dateField, name, currentISO, currentEnd) {
+    var existing=document.getElementById('qrModal'); if (existing) existing.remove();
+    var d=currentISO?new Date(currentISO):new Date();
+    var dv=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+    var tv=currentISO?d.toTimeString().slice(0,5):'09:00';
+    var ev=currentEnd||'';
+    var showEnd=(dateField==='diagnostic_date');
+    var modal=document.createElement('div');
+    modal.id='qrModal';
+    modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;';
+    modal.innerHTML=
+      '<div style="background:#141714;border:1px solid rgba(141,198,63,0.3);border-radius:16px;padding:24px;width:100%;max-width:340px;">'+
+      '<div style="font-size:0.82rem;font-weight:700;color:#8DC63F;margin-bottom:4px;">&#128197; Reschedule</div>'+
+      '<div style="font-size:0.92rem;font-weight:700;color:#ccc;margin-bottom:16px;">'+name+'</div>'+
+      '<label style="font-size:0.7rem;color:#888;display:block;margin-bottom:4px;">Date</label>'+
+      '<input type="date" id="qrDate" value="'+dv+'" style="width:100%;box-sizing:border-box;padding:9px 12px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:#fff;font-size:0.85rem;margin-bottom:12px;"/>'+
+      '<label style="font-size:0.7rem;color:#888;display:block;margin-bottom:4px;">Start Time</label>'+
+      '<input type="time" id="qrTime" value="'+tv+'" style="width:100%;box-sizing:border-box;padding:9px 12px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:#fff;font-size:0.85rem;margin-bottom:12px;"/>'+
+      (showEnd
+        ? '<label style="font-size:0.7rem;color:#888;display:block;margin-bottom:4px;">End Time (window)</label><input type="time" id="qrEnd" value="'+ev+'" style="width:100%;box-sizing:border-box;padding:9px 12px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:#fff;font-size:0.85rem;margin-bottom:16px;"/>'
+        : '<input type="hidden" id="qrEnd" value=""/>')+
+      '<div style="display:flex;gap:8px;">'+
+      '<button onclick="saveReschedule(\''+id+'\',\''+dateField+'\')" style="flex:1;padding:11px;background:#8DC63F;color:#1A1A1A;border:none;border-radius:10px;font-size:0.82rem;font-weight:700;cursor:pointer;">Save</button>'+
+      '<button onclick="document.getElementById(\'qrModal\').remove()" style="flex:1;padding:11px;background:rgba(255,255,255,0.07);color:#888;border:none;border-radius:10px;font-size:0.82rem;font-weight:700;cursor:pointer;">Cancel</button>'+
+      '</div></div>';
+    document.body.appendChild(modal);
+  };
+
+  window.saveReschedule = async function(id, dateField) {
+    var dEl=document.getElementById('qrDate'), tEl=document.getElementById('qrTime'), eEl=document.getElementById('qrEnd');
+    if (!dEl||!tEl) return;
+    var dv=dEl.value, tv=tEl.value, ev=eEl?eEl.value:'';
+    if (!dv) { alert('Please select a date.'); return; }
+    var newISO=tv?new Date(dv+'T'+tv).toISOString():new Date(dv+'T09:00').toISOString();
+    var updates={}; updates[dateField]=newISO;
+    if (dateField==='diagnostic_date') updates.arrival_end=ev||null;
+    try {
+      var sc=supabase.createClient(SUPA_URL,SUPA_KEY);
+      var {error}=await sc.from('customers').update(updates).eq('id',id);
+      if (error) throw error;
+      var idx=adminCustomers.findIndex(function(x){return x.id===id;});
+      if (idx>-1) Object.assign(adminCustomers[idx],updates);
+      var m=document.getElementById('qrModal'); if(m) m.remove();
+      if (adminView==='schedule') renderScheduleView();
+      else if (typeof window.salesRefresh==='function') window.salesRefresh();
+    } catch(e) { alert('Save failed: '+e.message); }
+  };
+
   // ── SCHEDULE TAB ─────────────────────────────────────────────────────────────
   function renderScheduleView() {
     adminView = 'schedule';
@@ -1006,55 +1182,61 @@
 
     var now = new Date();
     var past7 = new Date(now.getTime() - 7*24*60*60*1000);
-    var future60 = new Date(now.getTime() + 60*24*60*60*1000);
+    var future90 = new Date(now.getTime() + 90*24*60*60*1000);
 
+    // Build appointment list from all customers
     var appts = [];
     adminCustomers.forEach(function(c) {
       if (c.diagnostic_date) {
         var dt = new Date(c.diagnostic_date);
-        if (dt >= past7 && dt <= future60) {
+        if (dt >= past7 && dt <= future90) {
           var t = c.lead_category === 'new_solar'
-            ? ((c.solar_status === 'ns_welcome_scheduled' || c.solar_status === 'ns_welcome_rescheduled') ? 'Welcome Call' : 'Evaluation')
+            ? ((c.solar_status==='ns_welcome_scheduled'||c.solar_status==='ns_welcome_rescheduled') ? 'Welcome Call' : 'Evaluation')
             : 'Diagnostic Eval';
           appts.push({customer:c, date:dt, type:t, endTime:c.arrival_end});
         }
       }
       if (c.install_date) {
         var dt2 = new Date(c.install_date);
-        if (dt2 >= past7 && dt2 <= future60) {
+        if (dt2 >= past7 && dt2 <= future90) {
           appts.push({customer:c, date:dt2, type:c.lead_category==='new_solar'?'NS Install':'Install', endTime:null});
         }
       }
     });
     appts.sort(function(a,b){ return a.date - b.date; });
 
+    // Group by date for the list below the calendar
     var groups = {}, groupOrder = [];
     appts.forEach(function(a) {
-      var key = a.date.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'});
+      var key = schedLocalKey(a.date);
       if (!groups[key]) { groups[key]=[]; groupOrder.push(key); }
       groups[key].push(a);
     });
 
-    var typeClrMap = {'Diagnostic Eval':'#8DC63F','Evaluation':'#4a9eff','Welcome Call':'#9b6de8','Install':'#f97316','NS Install':'#4a9eff'};
+    // Build the list HTML
     var listHtml = '';
     if (!appts.length) {
-      listHtml = '<div style="text-align:center;padding:40px;color:#555;">No appointments scheduled in the next 60 days.<br/><span style="font-size:0.72rem;margin-top:8px;display:block;">Appointments appear here once a diagnostic date or install date is set on a lead.</span></div>';
+      listHtml = '<div style="text-align:center;padding:40px;color:#555;">No appointments in range.<br/><span style="font-size:0.72rem;margin-top:8px;display:block;">Set a diagnostic or install date on a lead and it will appear here.</span></div>';
     } else {
       groupOrder.forEach(function(dk) {
-        var isToday = dk === now.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'});
-        listHtml += '<div style="margin-bottom:22px;">';
-        listHtml += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:'+(isToday?'#8DC63F':'#888')+';margin-bottom:8px;">'+(isToday?'&#128197; TODAY &mdash; ':'')+dk+'</div>';
+        var dayDt = new Date(dk+'T12:00:00');
+        var isToday = dk === schedLocalKey(new Date());
+        var dayLabel = dayDt.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'});
+        listHtml += '<div style="margin-bottom:20px;">';
+        listHtml += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:'+(isToday?'#8DC63F':'#888')+';margin-bottom:8px;">'+(isToday?'&#128197; TODAY &mdash; ':'')+dayLabel+'</div>';
         groups[dk].forEach(function(a) {
           var c = a.customer;
           var timeStr = a.date.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true});
           if (a.endTime) timeStr += ' – ' + a.endTime;
           var isPast = a.date < now;
-          var tc = typeClrMap[a.type]||'#888';
+          var tc = SCHED_TYPE_CLR[a.type]||'#888';
           var bdr = isPast ? 'rgba(239,68,68,0.3)' : isToday ? 'rgba(141,198,63,0.3)' : 'rgba(255,255,255,0.1)';
+          var df = (a.type==='Install'||a.type==='NS Install')?'install_date':'diagnostic_date';
+          var name = (c.first_name||'')+' '+(c.last_name||'');
           listHtml += '<div style="background:rgba(255,255,255,0.04);border:1px solid '+bdr+';border-radius:12px;padding:14px;margin-bottom:8px;">';
           listHtml += '<div style="display:flex;justify-content:space-between;align-items:flex-start;">';
           listHtml += '<div style="flex:1;">';
-          listHtml += '<div style="font-size:0.92rem;font-weight:700;">'+(c.first_name||'')+' '+(c.last_name||'')+'</div>';
+          listHtml += '<div style="font-size:0.92rem;font-weight:700;">'+name+'</div>';
           listHtml += '<div style="font-size:0.75rem;color:#888;margin-top:2px;">'+timeStr+'</div>';
           listHtml += '<div style="font-size:0.72rem;color:#666;margin-top:2px;">'+(c.address||'No address')+'</div>';
           if (c.phone) listHtml += '<div style="font-size:0.7rem;color:#4a9eff;margin-top:2px;">'+c.phone+'</div>';
@@ -1062,7 +1244,8 @@
           listHtml += '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;">';
           listHtml += '<span style="font-size:0.65rem;font-weight:700;padding:3px 8px;border-radius:20px;background:'+tc+'22;color:'+tc+';border:1px solid '+tc+'44;">'+a.type+'</span>';
           if (isPast) listHtml += '<span style="font-size:0.62rem;color:#ef4444;font-weight:700;">Past</span>';
-          listHtml += '<button onclick="openLeadEditor(\''+c.id+'\')" style="font-size:0.68rem;padding:4px 10px;background:rgba(255,255,255,0.06);color:#aaa;border-radius:8px;border:1px solid rgba(255,255,255,0.1);cursor:pointer;font-weight:700;">&#9998; Edit</button>';
+          listHtml += '<button onclick="quickReschedule(\''+c.id+'\',\''+df+'\',\''+name+'\',\''+(c[df]||'')+'\',\''+(c.arrival_end||'')+'\')" style="font-size:0.68rem;padding:4px 10px;background:rgba(74,158,255,0.1);color:#4a9eff;border-radius:8px;border:1px solid rgba(74,158,255,0.25);cursor:pointer;font-weight:700;">&#128197; Reschedule</button>';
+          listHtml += '<button onclick="openLeadEditor(\''+c.id+'\')" style="font-size:0.68rem;padding:4px 10px;background:rgba(255,255,255,0.06);color:#aaa;border-radius:8px;border:1px solid rgba(255,255,255,0.1);cursor:pointer;font-weight:700;">&#9998; Full Edit</button>';
           if (c.phone) listHtml += '<a href="tel:'+c.phone.replace(/\D/g,'')+'" style="font-size:0.68rem;padding:4px 10px;background:rgba(141,198,63,0.1);color:#8DC63F;border-radius:8px;border:1px solid rgba(141,198,63,0.2);text-decoration:none;font-weight:700;">&#128222; Call</a>';
           listHtml += '</div></div>';
           if (c.notes) listHtml += '<div style="font-size:0.68rem;color:#555;margin-top:8px;border-top:1px solid rgba(255,255,255,0.06);padding-top:6px;">'+c.notes.substring(0,150)+(c.notes.length>150?'&hellip;':'')+'</div>';
@@ -1074,8 +1257,9 @@
 
     document.getElementById('dashBody').innerHTML = portalNav+
       '<div class="admin-header-row"><h2 style="font-size:1.1rem;font-weight:700;">Schedule</h2>'+
-      '<span style="font-size:0.72rem;color:#555;">'+appts.length+' appointment'+(appts.length!==1?'s':'')+' (next 60 days)</span></div>'+
+      '<span style="font-size:0.72rem;color:#555;">'+appts.length+' appointment'+(appts.length!==1?'s':'')+' (next 90 days)</span></div>'+
       '<div id="editorSlot"></div>'+
+      buildSchedCalHtml(appts,'renderScheduleView()')+
       '<div id="scheduleList">'+listHtml+'</div>';
   }
 
@@ -3088,11 +3272,12 @@
       else if (salesView === 'schedule') {
         var nowS = new Date();
         var past7S = new Date(nowS.getTime() - 7*24*60*60*1000);
+        var future90S = new Date(nowS.getTime() + 90*24*60*60*1000);
         var myAppts = [];
         allRecords.forEach(function(c) {
           if (c.diagnostic_date) {
             var dtS = new Date(c.diagnostic_date);
-            if (dtS >= past7S) {
+            if (dtS >= past7S && dtS <= future90S) {
               var tS = c.lead_category === 'new_solar'
                 ? ((c.solar_status==='ns_welcome_scheduled'||c.solar_status==='ns_welcome_rescheduled') ? 'Welcome Call' : 'Evaluation')
                 : 'Diagnostic Eval';
@@ -3101,47 +3286,56 @@
           }
           if (c.install_date) {
             var dtS2 = new Date(c.install_date);
-            if (dtS2 >= past7S) myAppts.push({customer:c, date:dtS2, type:c.lead_category==='new_solar'?'NS Install':'Install', endTime:null});
+            if (dtS2 >= past7S && dtS2 <= future90S) myAppts.push({customer:c, date:dtS2, type:c.lead_category==='new_solar'?'NS Install':'Install', endTime:null});
           }
         });
         myAppts.sort(function(a,b){ return a.date - b.date; });
-        var tcMapS = {'Diagnostic Eval':'#8DC63F','Evaluation':'#4a9eff','Welcome Call':'#9b6de8','Install':'#f97316','NS Install':'#4a9eff'};
+        // Calendar grid
+        h += buildSchedCalHtml(myAppts, 'salesSetView(\'schedule\')');
+        // Appointment list below calendar
         if (!myAppts.length) {
-          h += '<div style="text-align:center;padding:40px;color:#555;">No upcoming appointments.<br/><span style="font-size:0.72rem;margin-top:8px;display:block;">When you set a diagnostic or evaluation date on a lead, it will appear here.</span></div>';
+          h += '<div style="text-align:center;padding:32px;color:#555;">No upcoming appointments.<br/><span style="font-size:0.72rem;margin-top:8px;display:block;">Set a date on a lead and it will appear here.</span></div>';
         } else {
-          var lastDayS = '';
-          myAppts.forEach(function(a) {
-            var dayKeyS = a.date.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
-            var isTodayS = a.date.toDateString() === nowS.toDateString();
-            var isPastS = a.date < nowS;
-            if (dayKeyS !== lastDayS) {
-              if (lastDayS) h += '</div>';
-              h += '<div style="margin-bottom:16px;">';
-              h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:'+(isTodayS?'#8DC63F':'#888')+';margin-bottom:8px;">'+(isTodayS?'&#128197; TODAY &mdash; ':'')+dayKeyS+'</div>';
-              lastDayS = dayKeyS;
-            }
-            var c = a.customer;
-            var timeStrS = a.date.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true});
-            if (a.endTime) timeStrS += ' – ' + a.endTime;
-            var tcS = tcMapS[a.type]||'#888';
-            var bdrS = isPastS ? 'rgba(239,68,68,0.25)' : isTodayS ? 'rgba(141,198,63,0.25)' : 'rgba(255,255,255,0.1)';
-            h += '<div style="background:rgba(255,255,255,0.04);border:1px solid '+bdrS+';border-radius:12px;padding:14px;margin-bottom:8px;">';
-            h += '<div style="display:flex;justify-content:space-between;align-items:flex-start;">';
-            h += '<div style="flex:1;">';
-            h += '<div style="font-size:0.92rem;font-weight:700;">'+(c.first_name||'')+' '+(c.last_name||'')+'</div>';
-            h += '<div style="font-size:0.75rem;color:#888;margin-top:2px;">'+timeStrS+'</div>';
-            h += '<div style="font-size:0.72rem;color:#666;margin-top:2px;">'+(c.address||'No address')+'</div>';
-            h += '</div>';
-            h += '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;">';
-            h += '<span style="font-size:0.65rem;font-weight:700;padding:3px 8px;border-radius:20px;background:'+tcS+'22;color:'+tcS+';border:1px solid '+tcS+'44;">'+a.type+'</span>';
-            if (isPastS) h += '<span style="font-size:0.62rem;color:#ef4444;font-weight:700;">Past</span>';
-            if (c.phone) h += '<a href="tel:'+c.phone.replace(/\D/g,'')+'" style="font-size:0.68rem;padding:4px 10px;background:rgba(141,198,63,0.1);color:#8DC63F;border-radius:8px;border:1px solid rgba(141,198,63,0.2);text-decoration:none;font-weight:700;">&#128222; Call</a>';
-            if (c.address) h += '<a href="https://maps.apple.com/?q='+encodeURIComponent(c.address)+'" target="_blank" style="font-size:0.68rem;padding:4px 10px;background:rgba(255,255,255,0.06);color:#aaa;border-radius:8px;border:1px solid rgba(255,255,255,0.1);text-decoration:none;font-weight:700;">&#128506; Directions</a>';
-            h += '</div></div>';
-            if (c.notes) h += '<div style="font-size:0.68rem;color:#555;margin-top:8px;border-top:1px solid rgba(255,255,255,0.06);padding-top:6px;">'+c.notes.substring(0,120)+(c.notes.length>120?'…':'')+'</div>';
+          var grpS={}, grpOrdS=[];
+          myAppts.forEach(function(a){
+            var k=schedLocalKey(a.date);
+            if (!grpS[k]) { grpS[k]=[]; grpOrdS.push(k); }
+            grpS[k].push(a);
+          });
+          grpOrdS.forEach(function(dk) {
+            var dayDtS=new Date(dk+'T12:00:00');
+            var isTodayS=dk===schedLocalKey(new Date());
+            var dayLblS=dayDtS.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
+            h += '<div style="margin-bottom:18px;">';
+            h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:'+(isTodayS?'#8DC63F':'#888')+';margin-bottom:8px;">'+(isTodayS?'&#128197; TODAY &mdash; ':'')+dayLblS+'</div>';
+            grpS[dk].forEach(function(a) {
+              var c=a.customer;
+              var tStrS=a.date.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true});
+              if (a.endTime) tStrS+=' – '+a.endTime;
+              var isPastS=a.date<nowS;
+              var tcS=SCHED_TYPE_CLR[a.type]||'#888';
+              var bdrS=isPastS?'rgba(239,68,68,0.25)':isTodayS?'rgba(141,198,63,0.25)':'rgba(255,255,255,0.1)';
+              var dfS=(a.type==='Install'||a.type==='NS Install')?'install_date':'diagnostic_date';
+              var nameS=(c.first_name||'')+' '+(c.last_name||'');
+              h += '<div style="background:rgba(255,255,255,0.04);border:1px solid '+bdrS+';border-radius:12px;padding:14px;margin-bottom:8px;">';
+              h += '<div style="display:flex;justify-content:space-between;align-items:flex-start;">';
+              h += '<div style="flex:1;">';
+              h += '<div style="font-size:0.92rem;font-weight:700;">'+nameS+'</div>';
+              h += '<div style="font-size:0.75rem;color:#888;margin-top:2px;">'+tStrS+'</div>';
+              h += '<div style="font-size:0.72rem;color:#666;margin-top:2px;">'+(c.address||'No address')+'</div>';
+              h += '</div>';
+              h += '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;">';
+              h += '<span style="font-size:0.65rem;font-weight:700;padding:3px 8px;border-radius:20px;background:'+tcS+'22;color:'+tcS+';border:1px solid '+tcS+'44;">'+a.type+'</span>';
+              if (isPastS) h += '<span style="font-size:0.62rem;color:#ef4444;font-weight:700;">Past</span>';
+              h += '<button onclick="quickReschedule(\''+c.id+'\',\''+dfS+'\',\''+nameS+'\',\''+(c[dfS]||'')+'\',\''+(c.arrival_end||'')+'\')" style="font-size:0.68rem;padding:4px 10px;background:rgba(74,158,255,0.1);color:#4a9eff;border-radius:8px;border:1px solid rgba(74,158,255,0.25);cursor:pointer;font-weight:700;">&#128197; Reschedule</button>';
+              if (c.phone) h += '<a href="tel:'+c.phone.replace(/\D/g,'')+'" style="font-size:0.68rem;padding:4px 10px;background:rgba(141,198,63,0.1);color:#8DC63F;border-radius:8px;border:1px solid rgba(141,198,63,0.2);text-decoration:none;font-weight:700;">&#128222; Call</a>';
+              if (c.address) h += '<a href="https://maps.apple.com/?q='+encodeURIComponent(c.address)+'" target="_blank" style="font-size:0.68rem;padding:4px 10px;background:rgba(255,255,255,0.06);color:#aaa;border-radius:8px;border:1px solid rgba(255,255,255,0.1);text-decoration:none;font-weight:700;">&#128506; Directions</a>';
+              h += '</div></div>';
+              if (c.notes) h += '<div style="font-size:0.68rem;color:#555;margin-top:8px;border-top:1px solid rgba(255,255,255,0.06);padding-top:6px;">'+c.notes.substring(0,120)+(c.notes.length>120?'&hellip;':'')+'</div>';
+              h += '</div>';
+            });
             h += '</div>';
           });
-          if (lastDayS) h += '</div>';
         }
       }
 
