@@ -346,6 +346,25 @@
   var currentJobId = null;
   var upgradeItems = [];
   var jobPhotos = {};
+  var adminLeadCat = 'fixmy';   // 'fixmy' | 'new_solar'
+  var adminJobCat  = 'fixmy';
+
+  // New Solar pipeline — status key → {label, phase:'lead'|'job', color}
+  var NS_STATUSES = {
+    ns_eval_booked:         {label:'Eval Booked',           phase:'lead', color:'#4a9eff'},
+    ns_eval_rescheduled:    {label:'Eval Rescheduled',      phase:'lead', color:'#ffaa00'},
+    ns_eval_canceled:       {label:'Eval Canceled / Dead',  phase:'lead', color:'#ef4444'},
+    ns_welcome_scheduled:   {label:'Welcome Scheduled',     phase:'lead', color:'#9b6de8'},
+    ns_welcome_rescheduled: {label:'Welcome Rescheduled',   phase:'lead', color:'#ffaa00'},
+    ns_welcome_dead:        {label:'Welcome Call Dead',     phase:'lead', color:'#ef4444'},
+    ns_welcome_closed:      {label:'Welcome Call Closed',   phase:'job',  color:'#8DC63F'},
+    ns_button_up:           {label:'Button Up Needed',      phase:'job',  color:'#ffaa00'},
+    ns_call_dead:           {label:'Call Dead',             phase:'job',  color:'#ef4444'},
+    ns_permit_submitted:    {label:'Permit Submitted',      phase:'job',  color:'#4a9eff'},
+    ns_install_scheduled:   {label:'Install Scheduled',     phase:'job',  color:'#9b6de8'},
+    ns_pto:                 {label:'Permission to Operate', phase:'job',  color:'#8DC63F'},
+  };
+  var NS_JOB_KEYS = ['ns_welcome_closed','ns_button_up','ns_call_dead','ns_permit_submitted','ns_install_scheduled','ns_pto'];
 
   function pushLeadToWebhooks(lead) {
     var data = Object.assign({ source:'portal-admin', timestamp: new Date().toISOString() }, lead);
@@ -463,12 +482,24 @@
 
   function renderAdminView(view) {
     adminView = view;
-    var c = adminCustomers.filter(function(x){ return !x.sold_type; }); // Leads = not sold
+    // All unsold leads, split by category
+    var allLeads = adminCustomers.filter(function(x){ return !x.sold_type; });
+    var fixmyLeads = allLeads.filter(function(x){ return x.lead_category !== 'new_solar'; });
+    var nsLeads    = allLeads.filter(function(x){ return x.lead_category === 'new_solar'; });
+
+    // Active category filtered set
+    var c = adminLeadCat === 'new_solar' ? nsLeads.slice() : fixmyLeads.slice();
     if (adminSearch) { var q = adminSearch.toLowerCase(); c = c.filter(function(x){ return ((x.first_name||'')+(x.last_name||'')+(x.email||'')+(x.phone||'')+(x.address||'')).toLowerCase().includes(q); }); }
-    if (adminTechFilter) c = c.filter(function(x){ return (x.setter_name||'').toLowerCase()===adminTechFilter||(x.rep_id||'')===adminTechFilter; });
+    if (adminTechFilter) c = c.filter(function(x){ return (x.rep_id||'')===adminTechFilter; });
     if (adminOpsFilter)  c = c.filter(function(x){ return (x.assigned_ops||'')===adminOpsFilter; });
     if (adminFilter !== 'all') {
       c = c.filter(function(x){
+        if (adminLeadCat === 'new_solar') {
+          if (adminFilter==='new') return !x.solar_status || x.solar_status==='ns_eval_booked';
+          if (adminFilter==='active') return x.solar_status && x.solar_status!=='ns_eval_booked' && x.solar_status!=='ns_eval_canceled';
+          if (adminFilter==='complete') return x.solar_status==='ns_pto';
+          return true;
+        }
         if (adminFilter==='new') return !x.step||x.step<=1;
         if (adminFilter==='active') return x.step>=2&&x.step<=7;
         if (adminFilter==='complete') return x.step>=8;
@@ -477,12 +508,8 @@
         return true;
       });
     }
-    var allLeads = adminCustomers.filter(function(x){ return !x.sold_type; });
-    var total = allLeads.length;
-    var newLeads    = allLeads.filter(function(x){ return !x.step||x.step<=1; }).length;
-    var activeLeads = allLeads.filter(function(x){ return x.step>=2&&x.step<=7; }).length;
-    var invoicePending = allLeads.filter(function(x){ return x.invoice_status&&x.invoice_status!=='none'&&x.invoice_status!=='paid'; }).length;
-    var opsNeeded = allLeads.filter(function(x){ return x.ops_ready===true&&!x.assigned_ops; }).length;
+
+    var total = c.length;
     var dayAgo = Date.now() - 24*60*60*1000;
     var newSigs = adminRecentAgreements.filter(function(a){ return a.signed_at && new Date(a.signed_at).getTime() > dayAgo; });
     var teamBadge = newSigs.length ? ' <span style="display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;background:#8DC63F;color:#1A1A1A;border-radius:50%;font-size:0.6rem;font-weight:900;margin-left:4px;">'+newSigs.length+'</span>' : '';
@@ -491,6 +518,14 @@
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Team'+teamBadge+'</button>'+
     '</div>';
+
+    // Category sub-tabs
+    var catTabStyle = 'padding:7px 18px;border:none;border-radius:100px;font-size:0.78rem;font-weight:700;cursor:pointer;transition:all 0.15s;';
+    var catTabs = '<div style="display:flex;gap:8px;margin-bottom:14px;">'+
+      '<button onclick="adminLeadCat=\'fixmy\';adminFilter=\'all\';renderAdminView(adminView)" style="'+catTabStyle+'background:'+(adminLeadCat==='fixmy'?'#8DC63F':'rgba(255,255,255,0.07)')+';color:'+(adminLeadCat==='fixmy'?'#1A1A1A':'#888')+';">&#9889; FixMy.Energy ('+fixmyLeads.length+')</button>'+
+      '<button onclick="adminLeadCat=\'new_solar\';adminFilter=\'all\';renderAdminView(adminView)" style="'+catTabStyle+'background:'+(adminLeadCat==='new_solar'?'#4a9eff':'rgba(255,255,255,0.07)')+';color:'+(adminLeadCat==='new_solar'?'#fff':'#888')+';">&#9728; New Solar ('+nsLeads.length+')</button>'+
+    '</div>';
+
     var agNotifHtml = '';
     if (newSigs.length) {
       agNotifHtml = '<div style="padding:10px 14px;background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.25);border-radius:8px;font-size:0.75rem;color:#8DC63F;margin-bottom:12px;">'+
@@ -499,8 +534,22 @@
         ' &nbsp;<button onclick="renderTeamView()" style="font-size:0.7rem;padding:3px 10px;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.3);color:#8DC63F;border-radius:6px;cursor:pointer;margin-left:6px;">View Team</button>'+
       '</div>';
     }
-    var statsHtml = '<div class="admin-stats">'+adminStat(total,'All Leads','#8DC63F','all')+adminStat(newLeads,'New','#4a9eff','new')+adminStat(activeLeads,'Active','#8DC63F','active')+adminStat(invoicePending,'Invoice Due','#ffaa00','invoice')+adminStat(opsNeeded,'OPS Needed','#f97316','ops_needed')+'</div>';
-    // Build dropdowns from DB team members (with hardcoded fallback)
+
+    // Stats depend on category
+    var statsHtml;
+    if (adminLeadCat === 'new_solar') {
+      var nsNew = nsLeads.filter(function(x){ return !x.solar_status||x.solar_status==='ns_eval_booked'; }).length;
+      var nsActive = nsLeads.filter(function(x){ return x.solar_status&&x.solar_status!=='ns_eval_booked'&&x.solar_status!=='ns_eval_canceled'; }).length;
+      var nsDead = nsLeads.filter(function(x){ return x.solar_status==='ns_eval_canceled'||x.solar_status==='ns_welcome_dead'; }).length;
+      statsHtml = '<div class="admin-stats">'+adminStat(nsLeads.length,'All','#4a9eff','all')+adminStat(nsNew,'Eval Booked','#4a9eff','new')+adminStat(nsActive,'Active','#9b6de8','active')+adminStat(nsDead,'Dead / Canceled','#ef4444','complete')+'</div>';
+    } else {
+      var newL=fixmyLeads.filter(function(x){return !x.step||x.step<=1;}).length;
+      var activeL=fixmyLeads.filter(function(x){return x.step>=2&&x.step<=7;}).length;
+      var invP=fixmyLeads.filter(function(x){return x.invoice_status&&x.invoice_status!=='none'&&x.invoice_status!=='paid';}).length;
+      var opsN=fixmyLeads.filter(function(x){return x.ops_ready===true&&!x.assigned_ops;}).length;
+      statsHtml = '<div class="admin-stats">'+adminStat(fixmyLeads.length,'All Leads','#8DC63F','all')+adminStat(newL,'New','#4a9eff','new')+adminStat(activeL,'Active','#8DC63F','active')+adminStat(invP,'Invoice Due','#ffaa00','invoice')+adminStat(opsN,'OPS Needed','#f97316','ops_needed')+'</div>';
+    }
+
     var repPool = adminTeamMembers.filter(function(m){ return m.role==='rep'||m.role==='tech'||m.role==='setter'; });
     if (!repPool.length) repPool = SALES_REPS.concat(TECHS).concat(SETTERS);
     var opsPool = adminTeamMembers.filter(function(m){ return m.role==='ops'; });
@@ -509,19 +558,26 @@
     repPool.forEach(function(m){ techOpts += '<option value="'+m.id+'"'+(adminTechFilter===m.id?' selected':'')+'>'+m.name+'</option>'; });
     var opsOpts = '<option value="">All Ops</option>';
     opsPool.forEach(function(m){ opsOpts += '<option value="'+m.id+'"'+(adminOpsFilter===m.id?' selected':'')+'>'+m.name+'</option>'; });
+
+    var filterBtns = adminLeadCat === 'new_solar'
+      ? filterBtn('all','All')+filterBtn('new','Eval Booked')+filterBtn('active','Active')+filterBtn('complete','PTO')
+      : filterBtn('all','All')+filterBtn('new','New')+filterBtn('active','Active')+filterBtn('complete','Complete')+filterBtn('invoice','Invoice')+filterBtn('ops_needed','&#128295; OPS');
+
     var searchBar = '<div class="admin-toolbar">'+
       '<input type="text" id="adminSearchInput" class="admin-search" placeholder="Search leads..." value="'+adminSearch+'" oninput="adminSearch=this.value;renderAdminView(adminView)"/>'+
       '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;align-items:center;">'+
         '<select onchange="adminTechFilter=this.value;renderAdminView(adminView)" style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);color:#F3EDE3;border-radius:8px;padding:5px 10px;font-size:0.72rem;outline:none;">'+techOpts+'</select>'+
         '<select onchange="adminOpsFilter=this.value;renderAdminView(adminView)" style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);color:#F3EDE3;border-radius:8px;padding:5px 10px;font-size:0.72rem;outline:none;">'+opsOpts+'</select>'+
-        '<div class="admin-filters">'+filterBtn('all','All')+filterBtn('new','New')+filterBtn('active','Active')+filterBtn('complete','Complete')+filterBtn('invoice','Invoice')+filterBtn('ops_needed','&#128295; OPS')+'</div>'+
+        '<div class="admin-filters">'+filterBtns+'</div>'+
       '</div>'+
     '</div>';
     var actionsBar = '<div class="admin-actions-bar"><button class="admin-action-btn" onclick="openNewLead()">+ New Lead</button><button class="admin-action-btn ghost" onclick="exportCSV()">&#8681; Export CSV</button><button class="admin-action-btn ghost" onclick="loadAdminDashboard()" title="Re-pull all leads from database">&#8635; Refresh</button><a class="admin-action-btn ghost" href="/business-model.html?t=fixmybp26" target="_blank" rel="noopener" style="text-decoration:none;">&#128200; Business Model</a></div>';
     var listHtml = '';
-    if (!c.length) { listHtml = '<div style="padding:32px;text-align:center;color:#555;">No leads match this filter.</div>'; }
+    if (!c.length) { listHtml = '<div style="padding:32px;text-align:center;color:#555;">No leads in this category.</div>'; }
     else { c.forEach(function(cust) { listHtml += buildLeadCard(cust); }); }
-    document.getElementById('dashBody').innerHTML = portalNav+agNotifHtml+'<div class="admin-header-row"><h2 style="font-size:1.1rem;font-weight:700;">Leads</h2><span style="font-size:0.72rem;color:#555;">'+total+' leads total</span></div>'+statsHtml+searchBar+actionsBar+'<div id="editorSlot"></div><div id="leadList">'+listHtml+'</div>';
+    document.getElementById('dashBody').innerHTML = portalNav+agNotifHtml+
+      '<div class="admin-header-row"><h2 style="font-size:1.1rem;font-weight:700;">Leads</h2><span style="font-size:0.72rem;color:#555;">'+allLeads.length+' total</span></div>'+
+      catTabs+statsHtml+searchBar+actionsBar+'<div id="editorSlot"></div><div id="leadList">'+listHtml+'</div>';
   }
 
   function setFilter(f) { adminFilter = f; renderAdminView(adminView); }
@@ -530,30 +586,54 @@
   function renderJobsView() {
     adminView = 'jobs';
     var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab active" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab" onclick="renderTeamView()">&#128101; Team</button></div>';
-    var jobs = adminCustomers.filter(function(c){ return !!c.sold_type; });
-    var saleTypeLabel = {diagnostic:'Diagnostic',battery_retrofit:'Battery Retrofit',monitoring:'Monitoring'};
-    var saleTypeColor = {diagnostic:'#8DC63F',battery_retrofit:'#4a9eff',monitoring:'#9b6de8'};
+    var allJobs = adminCustomers.filter(function(c){ return !!c.sold_type; });
+    var fixmyJobs = allJobs.filter(function(c){ return c.lead_category !== 'new_solar'; });
+    var nsJobs    = allJobs.filter(function(c){ return c.lead_category === 'new_solar'; });
+    var jobs = adminJobCat === 'new_solar' ? nsJobs : fixmyJobs;
+
+    var catTabStyle = 'padding:7px 18px;border:none;border-radius:100px;font-size:0.78rem;font-weight:700;cursor:pointer;transition:all 0.15s;';
+    var catTabs = '<div style="display:flex;gap:8px;margin-bottom:14px;">'+
+      '<button onclick="adminJobCat=\'fixmy\';renderJobsView()" style="'+catTabStyle+'background:'+(adminJobCat==='fixmy'?'#8DC63F':'rgba(255,255,255,0.07)')+';color:'+(adminJobCat==='fixmy'?'#1A1A1A':'#888')+';">&#9889; FixMy.Energy Jobs ('+fixmyJobs.length+')</button>'+
+      '<button onclick="adminJobCat=\'new_solar\';renderJobsView()" style="'+catTabStyle+'background:'+(adminJobCat==='new_solar'?'#4a9eff':'rgba(255,255,255,0.07)')+';color:'+(adminJobCat==='new_solar'?'#fff':'#888')+';">&#9728; New Solar Jobs ('+nsJobs.length+')</button>'+
+    '</div>';
+
+    var saleTypeLabel = {diagnostic:'Diagnostic',battery_retrofit:'Battery Retrofit',monitoring:'Monitoring',new_solar:'New Solar'};
+    var saleTypeColor = {diagnostic:'#8DC63F',battery_retrofit:'#4a9eff',monitoring:'#9b6de8',new_solar:'#4a9eff'};
     var listHtml = '';
-    if (!jobs.length) { listHtml = '<div class="jobs-empty">No jobs yet. A lead moves here once marked as Sold (Diagnostic, Battery Retrofit, or Monitoring).</div>'; }
-    else {
+    if (!jobs.length) {
+      listHtml = '<div class="jobs-empty">'+(adminJobCat==='new_solar'?'No New Solar jobs yet. A lead moves here when Welcome Call is marked Closed.':'No FixMy.Energy jobs yet. A lead moves here once marked as Sold.')+'</div>';
+    } else {
       jobs.forEach(function(c) {
-        var status = c.job_status||'pending';
-        var statusLabel = {pending:'Pending Assessment',in_progress:'In Progress',ready:'Ready for Review',approved:'Approved'}[status]||status;
-        var statusColor = {pending:'#ffaa00',in_progress:'#4a9eff',ready:'#f97316',approved:'#8DC63F'}[status]||'#888';
-        var sLabel = saleTypeLabel[c.sold_type]||c.sold_type||'';
-        var sColor = saleTypeColor[c.sold_type]||'#888';
-        listHtml += '<div class="job-card" data-id="'+c.id+'" onclick="openJob(this.dataset.id)">'+
-          '<div class="job-card-top"><div class="job-name">'+(c.first_name||'')+' '+(c.last_name||'')+'</div>'+
-          '<div style="display:flex;gap:6px;align-items:center;">'+
-          '<span style="font-size:0.65rem;font-weight:700;padding:2px 7px;border-radius:20px;background:'+sColor+'22;color:'+sColor+';border:1px solid '+sColor+'44;">'+sLabel+'</span>'+
-          '<div class="job-status-pill" style="background:'+statusColor+'22;color:'+statusColor+';border:1px solid '+statusColor+'44;">'+statusLabel+'</div></div></div>'+
-          '<div class="job-addr">'+(c.address||'No address')+'</div>'+
-          '<div class="job-meta">'+(c.system_size?c.system_size+' kW system':'')+(c.utility?' &middot; '+c.utility:'')+(c.setter_name?' &middot; '+c.setter_name:'')+'</div></div>';
+        var isNSJob = c.lead_category === 'new_solar';
+        if (isNSJob) {
+          var nsRec = NS_STATUSES[c.solar_status] || {label:'New Solar', color:'#4a9eff'};
+          listHtml += '<div class="job-card" data-id="'+c.id+'" onclick="openJob(this.dataset.id)">'+
+            '<div class="job-card-top"><div class="job-name">'+(c.first_name||'')+' '+(c.last_name||'')+
+            '<span style="font-size:0.65rem;font-weight:700;padding:2px 7px;border-radius:20px;background:rgba(74,158,255,0.15);color:#4a9eff;border:1px solid rgba(74,158,255,0.3);margin-left:6px;">New Solar</span></div>'+
+            '<div class="job-status-pill" style="background:'+nsRec.color+'22;color:'+nsRec.color+';border:1px solid '+nsRec.color+'44;">'+nsRec.label+'</div></div>'+
+            '<div class="job-addr">'+(c.address||'No address')+'</div>'+
+            (c.monthly_bill?'<div class="job-meta">$'+c.monthly_bill+'/mo'+(c.utility?' &middot; '+c.utility:'')+'</div>':'')+
+          '</div>';
+        } else {
+          var status = c.job_status||'pending';
+          var statusLabel = {pending:'Pending Assessment',in_progress:'In Progress',ready:'Ready for Review',approved:'Approved'}[status]||status;
+          var statusColor = {pending:'#ffaa00',in_progress:'#4a9eff',ready:'#f97316',approved:'#8DC63F'}[status]||'#888';
+          var sLabel = saleTypeLabel[c.sold_type]||c.sold_type||'';
+          var sColor = saleTypeColor[c.sold_type]||'#888';
+          listHtml += '<div class="job-card" data-id="'+c.id+'" onclick="openJob(this.dataset.id)">'+
+            '<div class="job-card-top"><div class="job-name">'+(c.first_name||'')+' '+(c.last_name||'')+'</div>'+
+            '<div style="display:flex;gap:6px;align-items:center;">'+
+            '<span style="font-size:0.65rem;font-weight:700;padding:2px 7px;border-radius:20px;background:'+sColor+'22;color:'+sColor+';border:1px solid '+sColor+'44;">'+sLabel+'</span>'+
+            '<div class="job-status-pill" style="background:'+statusColor+'22;color:'+statusColor+';border:1px solid '+statusColor+'44;">'+statusLabel+'</div></div></div>'+
+            '<div class="job-addr">'+(c.address||'No address')+'</div>'+
+            '<div class="job-meta">'+(c.system_size?c.system_size+' kW system':'')+(c.utility?' &middot; '+c.utility:'')+'</div>'+
+          '</div>';
+        }
       });
     }
     document.getElementById('dashBody').innerHTML = portalNav+
-      '<div class="admin-header-row"><h2 style="font-size:1.1rem;font-weight:700;">Jobs</h2><span style="font-size:0.72rem;color:#555;">'+jobs.length+' sold</span></div>'+
-      '<div id="jobList">'+listHtml+'</div><div id="jobDetail" style="display:none;"></div>';
+      '<div class="admin-header-row"><h2 style="font-size:1.1rem;font-weight:700;">Jobs</h2><span style="font-size:0.72rem;color:#555;">'+allJobs.length+' total</span></div>'+
+      catTabs+'<div id="editorSlot"></div><div id="jobList">'+listHtml+'</div><div id="jobDetail" style="display:none;"></div>';
   }
 
   // ── TEAM TAB ───────────────────────────────────────────────────────────────
@@ -1654,18 +1734,43 @@
   }
 
   function buildLeadCard(c) {
-    var step = c.step||1;
-    var stepLabels = ['Eval Booked','Photos','Diagnostic','Analysis','Install','Monitoring'];
-    var stepColors = ['#666','#4a9eff','#ffaa00','#f97316','#8DC63F','#8DC63F'];
+    var isNS = c.lead_category === 'new_solar';
+    var magic = 'https://fixmy.energy/portal?email='+encodeURIComponent(c.email||'')+'&code='+encodeURIComponent(c.access_code||(c.phone||'').replace(/\D/g,''));
+    var created = c.created_at ? new Date(c.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric'}) : '';
     var invBadge = c.invoice_status&&c.invoice_status!=='none' ? '<span class="mini-badge" style="background:rgba(255,170,0,0.12);color:#ffaa00;">INV: '+c.invoice_status+'</span>' : '';
     var agBadge  = c.agreement_status&&c.agreement_status!=='none' ? '<span class="mini-badge" style="background:rgba(74,158,255,0.12);color:#4a9eff;">AGR: '+c.agreement_status+'</span>' : '';
     var opsBadge = (c.ops_ready&&!c.assigned_ops) ? '<span class="mini-badge" style="background:rgba(249,115,22,0.15);color:#f97316;">🔧 OPS NEEDED</span>' : '';
-    var magic = 'https://fixmy.energy/portal?email='+encodeURIComponent(c.email||'')+'&code='+encodeURIComponent(c.access_code||(c.phone||'').replace(/\D/g,''));
-    var created = c.created_at ? new Date(c.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric'}) : '';
+
+    var pillHtml;
+    if (isNS) {
+      var nsRec = NS_STATUSES[c.solar_status] || {label:'New Lead', color:'#4a9eff'};
+      pillHtml = '<span class="step-pill" style="background:'+nsRec.color+'22;color:'+nsRec.color+';">'+nsRec.label+'</span>';
+    } else {
+      var step = c.step||1;
+      var stepLabels = ['Eval Booked','Photos','Diagnostic','Analysis','Install','Monitoring'];
+      var stepColors = ['#666','#4a9eff','#ffaa00','#f97316','#8DC63F','#8DC63F'];
+      pillHtml = '<span class="step-pill" style="background:'+stepColors[step-1]+'22;color:'+stepColors[step-1]+'">'+stepLabels[step-1]+'</span>';
+    }
+
+    var progressHtml;
+    if (isNS) {
+      var nsKeys = Object.keys(NS_STATUSES);
+      var nsIdx = nsKeys.indexOf(c.solar_status||'ns_eval_booked');
+      progressHtml = '<div style="display:flex;align-items:center;gap:2px;padding:10px 0 2px;">';
+      nsKeys.forEach(function(k,i){
+        var s = NS_STATUSES[k]; var filled = i<=nsIdx;
+        progressHtml += '<div style="width:'+(filled?'8px':'5px')+';height:'+(filled?'8px':'5px')+';border-radius:50%;background:'+(filled?s.color:'rgba(255,255,255,0.12)')+';flex-shrink:0;transition:all 0.2s;"></div>';
+        if (i<nsKeys.length-1) progressHtml += '<div style="flex:1;height:2px;background:'+(i<nsIdx?NS_STATUSES[nsKeys[i+1]].color:'rgba(255,255,255,0.08)')+';"></div>';
+      });
+      progressHtml += '</div>';
+    } else {
+      var step2 = c.step||1;
+      progressHtml = '<div class="lead-progress">'+(function(){ var h=''; [1,2,3,4,5,6,7,8].forEach(function(n,i){ h+='<div class="'+(n<=step2?'prog-dot filled':'prog-dot')+'"></div>'; if(i<7) h+='<div class="prog-line'+(step2>n?' filled':'')+'"></div>'; }); return h; }())+'</div>';
+    }
+
     return '<div class="lead-card" id="lead-'+c.id+'">'+
       '<div class="lead-card-top"><div>'+
-        '<div class="lead-name">'+(c.first_name||'')+(c.last_name?' '+c.last_name:'')+
-          '<span class="step-pill" style="background:'+stepColors[step-1]+'22;color:'+stepColors[step-1]+'">'+stepLabels[step-1]+'</span></div>'+
+        '<div class="lead-name">'+(c.first_name||'')+(c.last_name?' '+c.last_name:'')+pillHtml+'</div>'+
         '<div class="lead-meta">'+(c.email||'')+(c.phone?' &middot; '+c.phone:'')+(created?' &middot; '+created:'')+'</div>'+
         '<div class="lead-addr">'+(c.address||'No address')+'</div>'+
         '<div style="margin-top:6px;">'+invBadge+agBadge+opsBadge+'</div></div>'+
@@ -1674,9 +1779,8 @@
         '<button class="lead-btn ghost" data-link="'+magic+'" data-email="'+c.email+'" onclick="sendMagicLink(this.dataset.link,this.dataset.email)">&#128279; Link</button>'+
         '<button class="lead-btn ghost" data-phone="'+(c.phone||'')+'" onclick="callLead(this.dataset.phone)">&#128222;</button>'+
       '</div></div>'+
-      '<div class="lead-progress">'+
-        (function(){ var h='',dots=[1,2,3,4,5,6,7,8]; dots.forEach(function(n,i){ h+='<div class="'+(n<=step?'prog-dot filled':'prog-dot')+'"></div>'; if(i<dots.length-1) h+='<div class="prog-line'+(step>n?' filled':'')+'"></div>'; }); return h; }())+
-      '</div></div>';
+      progressHtml+
+    '</div>';
   }
 
   function openLeadEditor(id) {
@@ -1693,25 +1797,37 @@
       var _h = _adt.getHours(), _m = _adt.getMinutes();
       apptTime = (_h<10?'0':'')+_h+':'+(_m<10?'0':'')+_m;
     }
+    var isNSEdit = c.lead_category === 'new_solar';
+    var nsStatusOpts = Object.keys(NS_STATUSES).map(function(k){ var s=NS_STATUSES[k]; return [k, (s.phase==='job'?'★ ':'') + s.label]; });
     slot.innerHTML = '<div class="editor-panel" id="editorPanel">'+
-      '<div class="editor-header"><div style="font-weight:700;color:#8DC63F;">Editing: '+(c.first_name||'')+' '+(c.last_name||'')+'</div>'+
+      '<div class="editor-header"><div style="font-weight:700;color:'+(isNSEdit?'#4a9eff':'#8DC63F')+';">Editing: '+(c.first_name||'')+' '+(c.last_name||'')+
+        '<span style="font-size:0.7rem;margin-left:8px;padding:2px 8px;border-radius:20px;background:'+(isNSEdit?'rgba(74,158,255,0.15)':'rgba(141,198,63,0.15)')+';color:'+(isNSEdit?'#4a9eff':'#8DC63F')+';font-weight:600;">'+(isNSEdit?'New Solar':'FixMy.Energy')+'</span></div>'+
       '<button onclick="closeLeadEditor()" style="background:none;border:none;color:#666;cursor:pointer;font-size:1.1rem;">&#10005;</button></div>'+
       '<input type="hidden" id="edId" value="'+c.id+'"/>'+
+      '<input type="hidden" id="edLeadCat" value="'+(c.lead_category||'fixmy')+'"/>'+
       '<div class="editor-section-title">Customer Info</div>'+
       '<div class="ed-grid">'+
         edField('First Name','edFirst',c.first_name||'','text')+edField('Last Name','edLast',c.last_name||'','text')+
         edField('Email','edEmail',c.email||'','email')+edField('Phone','edPhone',c.phone||'','tel')+
         edField('Address','edAddr',c.address||'','text')+edField('System Size (kW)','edSys',c.system_size||'','text')+
         edField('Utility','edUtil',c.utility||'','text')+edField('Monthly Bill ($)','edBill',c.monthly_bill||'','text')+
-        edField('NEM Status','edNem',c.nem_status||'','text')+
+        (isNSEdit ? '' : edField('NEM Status','edNem',c.nem_status||'','text'))+
       '</div>'+
-      '<div class="editor-section-title">Sale Type</div>'+
-      '<div class="ed-grid" style="margin-bottom:8px;">'+
-        edSelect('Sale Type (auto-set to Diagnostic at step 3+)','edSoldType',c.sold_type||'',[['','— Lead (Not Sold) —'],['diagnostic','Diagnostic'],['battery_retrofit','Battery Retrofit'],['monitoring','Monitoring']])+
-      '</div>'+
+      (isNSEdit ?
+        '<div class="editor-section-title">New Solar Pipeline Status</div>'+
+        '<div class="ed-grid" style="margin-bottom:8px;">'+
+          edSelect('Pipeline Status (★ = Job phase)','edSolarStatus',c.solar_status||'ns_eval_booked',nsStatusOpts)+
+        '</div>'+
+        '<div style="padding:8px 12px;background:rgba(74,158,255,0.07);border:1px solid rgba(74,158,255,0.18);border-radius:8px;font-size:0.7rem;color:#4a9eff;margin-bottom:12px;">&#9733; Statuses move this lead to <strong>New Solar Jobs</strong> automatically.</div>'
+      :
+        '<div class="editor-section-title">Sale Type</div>'+
+        '<div class="ed-grid" style="margin-bottom:8px;">'+
+          edSelect('Sale Type (auto-set to Diagnostic at step 3+)','edSoldType',c.sold_type||'',[['','— Lead (Not Sold) —'],['diagnostic','Diagnostic'],['battery_retrofit','Battery Retrofit'],['monitoring','Monitoring']])+
+        '</div>'
+      )+
       '<div class="editor-section-title">Progress & Scheduling</div>'+
       '<div class="ed-grid">'+
-        edSelect('Progress Step','edStep',c.step||1,[[1,'1 - Evaluation Booked'],[2,'2 - Photos Uploaded'],[3,'3 - Diagnostic Booked'],[4,'4 - Analysis Done'],[5,'5 - Battery Retrofit: Presentation Done, Follow Up Needed'],[6,'6 - Battery Retrofit: Presentation Done, Not Sold / Dead'],[7,'7 - Install Booked'],[8,'8 - Monitoring Online']])+
+        (isNSEdit ? '' : edSelect('Progress Step','edStep',c.step||1,[[1,'1 - Evaluation Booked'],[2,'2 - Photos Uploaded'],[3,'3 - Diagnostic Booked'],[4,'4 - Analysis Done'],[5,'5 - Battery Retrofit: Presentation Done, Follow Up Needed'],[6,'6 - Battery Retrofit: Presentation Done, Not Sold / Dead'],[7,'7 - Install Booked'],[8,'8 - Monitoring Online']]))+
         edField('Next Ops Appt Date','edApptDate',apptDate,'date')+
         '<div><label class="ed-label">Arrival Time</label><input type="time" id="edApptTime" class="ed-input" value="'+apptTime+'"/></div>'+
         '<div><label class="ed-label">Arrival Window End</label><input type="time" id="edArrivalEnd" class="ed-input" value="'+(c.arrival_end||'')+'"/></div>'+
@@ -1748,21 +1864,61 @@
 
   async function saveLeadEditor() {
     var id = document.getElementById('edId').value;
+    var leadCatVal = (document.getElementById('edLeadCat')||{}).value || 'fixmy';
+    var isNSSave = leadCatVal === 'new_solar';
     var itemsRaw = (document.getElementById('edInvItems').value||'').trim();
     var items = null;
     if (itemsRaw) { try { items=JSON.parse(itemsRaw); } catch(e){ alert('Invalid JSON in line items'); return; } }
     var apptDateVal = document.getElementById('edApptDate').value;
     var apptTimeVal = document.getElementById('edApptTime').value;
     var apptISO = (apptDateVal && apptTimeVal) ? new Date(apptDateVal+'T'+apptTimeVal).toISOString() : (apptDateVal ? new Date(apptDateVal).toISOString() : null);
-    var stepVal = parseInt(document.getElementById('edStep').value)||1;
-    var cRec = adminCustomers.find(function(x){return x.id===document.getElementById('edId').value;})||{};
-    // Route appt to correct field based on step; preserve the other field's historical value
-    var diagDate = stepVal >= 7 ? (cRec.diagnostic_date||null) : apptISO;
-    var instDate = stepVal >= 7 ? apptISO : (cRec.install_date||null);
-    var soldTypeVal = document.getElementById('edSoldType').value||null;
-    // Step 3+ (Diagnostic Booked) = revenue trigger → auto-promote to Job if no type set yet
-    if (stepVal >= 3 && !soldTypeVal) { soldTypeVal = 'diagnostic'; }
-    var updates = { sold_type:soldTypeVal, first_name:document.getElementById('edFirst').value||null, last_name:document.getElementById('edLast').value||null, email:document.getElementById('edEmail').value||null, phone:document.getElementById('edPhone').value||null, address:document.getElementById('edAddr').value||null, system_size:document.getElementById('edSys').value||null, utility:document.getElementById('edUtil').value||null, monthly_bill:document.getElementById('edBill').value||null, step:stepVal, diagnostic_date:diagDate, install_date:instDate, install_type:document.getElementById('edInstType').value||null, invoice_status:document.getElementById('edInvSt').value, invoice_number:document.getElementById('edInvNum').value||null, invoice_amount:parseFloat(document.getElementById('edInvAmt').value)||null, invoice_url:document.getElementById('edInvUrl').value||null, invoice_items:items, agreement_status:document.getElementById('edAgSt').value, agreement_url:document.getElementById('edAgUrl').value||null, notes:document.getElementById('edNotes').value||null, assigned_ops:document.getElementById('edAssignedOps').value==='none'?null:document.getElementById('edAssignedOps').value||null, arrival_end:document.getElementById('edArrivalEnd').value||null, nem_status:document.getElementById('edNem').value||null, ops_payout_status:document.getElementById('edOpsPayout').value||null };
+    var cRec = adminCustomers.find(function(x){return x.id===id;})||{};
+
+    var soldTypeVal, stepVal, diagDate, instDate, solarStatusVal;
+    if (isNSSave) {
+      solarStatusVal = document.getElementById('edSolarStatus').value || 'ns_eval_booked';
+      // Auto-promote: job-phase statuses → sold_type = 'new_solar'
+      soldTypeVal = NS_JOB_KEYS.indexOf(solarStatusVal) >= 0 ? 'new_solar' : null;
+      stepVal = cRec.step || 1;
+      diagDate = apptISO || cRec.diagnostic_date || null;
+      instDate = cRec.install_date || null;
+    } else {
+      stepVal = parseInt((document.getElementById('edStep')||{}).value)||1;
+      diagDate = stepVal >= 7 ? (cRec.diagnostic_date||null) : apptISO;
+      instDate = stepVal >= 7 ? apptISO : (cRec.install_date||null);
+      soldTypeVal = (document.getElementById('edSoldType')||{}).value||null;
+      if (stepVal >= 3 && !soldTypeVal) soldTypeVal = 'diagnostic';
+      solarStatusVal = null;
+    }
+
+    var updates = {
+      sold_type: soldTypeVal,
+      solar_status: solarStatusVal,
+      first_name: document.getElementById('edFirst').value||null,
+      last_name: document.getElementById('edLast').value||null,
+      email: document.getElementById('edEmail').value||null,
+      phone: document.getElementById('edPhone').value||null,
+      address: document.getElementById('edAddr').value||null,
+      system_size: document.getElementById('edSys').value||null,
+      utility: document.getElementById('edUtil').value||null,
+      monthly_bill: document.getElementById('edBill').value||null,
+      step: stepVal,
+      diagnostic_date: diagDate,
+      install_date: instDate,
+      install_type: document.getElementById('edInstType').value||null,
+      invoice_status: document.getElementById('edInvSt').value,
+      invoice_number: document.getElementById('edInvNum').value||null,
+      invoice_amount: parseFloat(document.getElementById('edInvAmt').value)||null,
+      invoice_url: document.getElementById('edInvUrl').value||null,
+      invoice_items: items,
+      agreement_status: document.getElementById('edAgSt').value,
+      agreement_url: document.getElementById('edAgUrl').value||null,
+      notes: document.getElementById('edNotes').value||null,
+      assigned_ops: document.getElementById('edAssignedOps').value==='none'?null:document.getElementById('edAssignedOps').value||null,
+      arrival_end: document.getElementById('edArrivalEnd').value||null,
+      nem_status: document.getElementById('edNem') ? document.getElementById('edNem').value||null : (cRec.nem_status||null),
+      ops_payout_status: document.getElementById('edOpsPayout').value||null
+    };
     try {
       var client=supabase.createClient(SUPA_URL,SUPA_KEY);
       var { error }=await client.from('customers').update(updates).eq('id',id);
@@ -1990,7 +2146,9 @@
     var trueUp=(document.getElementById('nlTrueUp')?document.getElementById('nlTrueUp').value:'').trim()||'';
     if (hasSolar) fullNotes = ['Existing solar: '+hasSolar, fullNotes].filter(Boolean).join(' | ');
     if (trueUp) fullNotes = [fullNotes, 'Annual true-up: $'+trueUp].filter(Boolean).join(' | ');
-    var newLead={first_name:first,last_name:(document.getElementById('nlLast').value||null),email:email,phone:phone,address:addr,monthly_bill:bill||null,access_code:digits,step:1,notes:fullNotes||null,rep_id:repId||null,lead_temp:'cold'};
+    var leadCat = (hasSolar === 'no') ? 'new_solar' : 'fixmy';
+    var initSolarStatus = (leadCat === 'new_solar') ? 'ns_eval_booked' : null;
+    var newLead={first_name:first,last_name:(document.getElementById('nlLast').value||null),email:email,phone:phone,address:addr,monthly_bill:bill||null,access_code:digits,step:1,notes:fullNotes||null,rep_id:repId||null,lead_temp:'cold',lead_category:leadCat,solar_status:initSolarStatus};
     var setterLabel=repName||setter||null;
     var btn=document.querySelector('#newLeadPanel .lead-btn.lime');
     if(btn){btn.textContent='Creating...';btn.disabled=true;}
@@ -2632,8 +2790,14 @@
     var allRecords = r1.data || [];
     allRecords.sort(function(a,b){ return new Date(b.created_at)-new Date(a.created_at); });
 
-    var myLeads = allRecords.filter(function(r){ return !r.sold_type; });
-    var myJobs  = allRecords.filter(function(r){ return !!r.sold_type; });
+    var myLeads      = allRecords.filter(function(r){ return !r.sold_type; });
+    var myJobs       = allRecords.filter(function(r){ return !!r.sold_type; });
+    var myFixmyLeads = myLeads.filter(function(r){ return r.lead_category !== 'new_solar'; });
+    var myNSLeads    = myLeads.filter(function(r){ return r.lead_category === 'new_solar'; });
+    var myFixmyJobs  = myJobs.filter(function(r){ return r.lead_category !== 'new_solar'; });
+    var myNSJobs     = myJobs.filter(function(r){ return r.lead_category === 'new_solar'; });
+    var salesLeadCat = sessionStorage.getItem('salesLeadCat_'+person.id) || 'fixmy';
+    var salesJobCat  = sessionStorage.getItem('salesJobCat_'+person.id)  || 'fixmy';
 
     var fieldJobs = [];
     if (showFieldJobs) {
@@ -2673,12 +2837,12 @@
       // Stats
       var cols = showFieldJobs ? 4 : 3;
       h += '<div style="display:grid;grid-template-columns:repeat('+cols+',1fr);gap:8px;margin-bottom:14px;">';
-      function sBox(v,lbl){ return '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:10px;text-align:center;"><div style="font-size:1.2rem;font-weight:800;color:#8DC63F;">'+v+'</div><div style="font-size:0.68rem;color:#888;">'+lbl+'</div></div>'; }
-      h += sBox(myLeads.length,'Leads') + sBox(myJobs.length,'Jobs');
+      function sBox(v,lbl,clr){ return '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:10px;text-align:center;"><div style="font-size:1.2rem;font-weight:800;color:'+(clr||'#8DC63F')+';">'+v+'</div><div style="font-size:0.68rem;color:#888;">'+lbl+'</div></div>'; }
+      h += sBox(myFixmyLeads.length,'FixMy Leads') + sBox(myNSLeads.length,'Solar Leads','#4a9eff') + sBox(myJobs.length,'Jobs');
       if (showFieldJobs) h += sBox(fieldJobs.length,'Field');
-      h += sBox(allRecords.length,'Total') + '</div>';
+      h += '</div>';
 
-      // Tabs
+      // Main view tabs
       function tBtn(v,lbl) {
         var a = salesView===v;
         return '<button onclick="salesSetView(\''+v+'\')" style="flex:1;padding:9px 4px;border:none;border-radius:8px;font-size:0.75rem;font-weight:700;cursor:pointer;'+(a?'background:#8DC63F;color:#1A1A1A;':'background:rgba(255,255,255,0.07);color:#888;')+'">'+lbl+'</button>';
@@ -2690,73 +2854,106 @@
       if (config.setterMode) h += tBtn('map','🗺 Map');
       h += '</div>';
 
+      // Category sub-tab helper
+      function catSubTabs(catVar, fixmyList, nsList, storageKey) {
+        var cst = 'padding:6px 14px;border:none;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;';
+        return '<div style="display:flex;gap:6px;margin-bottom:12px;">'+
+          '<button onclick="'+storageKey+'=\'fixmy\';renderSales()" style="'+cst+'background:'+(catVar==='fixmy'?'#8DC63F':'rgba(255,255,255,0.07)')+';color:'+(catVar==='fixmy'?'#1A1A1A':'#888')+';">&#9889; FixMy.Energy ('+fixmyList.length+')</button>'+
+          '<button onclick="'+storageKey+'=\'new_solar\';renderSales()" style="'+cst+'background:'+(catVar==='new_solar'?'#4a9eff':'rgba(255,255,255,0.07)')+';color:'+(catVar==='new_solar'?'#fff':'#888')+';">&#9728; New Solar ('+nsList.length+')</button>'+
+        '</div>';
+      }
+
       // ── Leads view ──────────────────────────────────────────────────────────
       if (salesView === 'leads') {
-        if (!myLeads.length) {
-          h += '<div style="text-align:center;padding:32px;color:#555;">No leads yet. Tap + New Lead to add one.</div>';
+        h += catSubTabs(salesLeadCat, myFixmyLeads, myNSLeads, 'salesLeadCat');
+        var viewLeads = salesLeadCat === 'new_solar' ? myNSLeads : myFixmyLeads;
+        if (!viewLeads.length) {
+          h += '<div style="text-align:center;padding:32px;color:#555;">No '+(salesLeadCat==='new_solar'?'New Solar':'FixMy.Energy')+' leads yet. Tap + New Lead to add one.</div>';
         } else {
-          myLeads.forEach(function(l) {
+          viewLeads.forEach(function(l) {
+            var isNSL = l.lead_category === 'new_solar';
             var temp = l.lead_temp || 'cold';
             var tClr = {cold:'#4a9eff',warm:'#ffaa00',hot:'#ef4444'};
             var tBdr = {cold:'rgba(74,158,255,0.2)',warm:'rgba(255,170,0,0.2)',hot:'rgba(239,68,68,0.2)'};
-            function tempBtn(t,lbl) {
+            function tempBtn(t,lbl2) {
               var a = temp===t;
-              return '<button onclick="setLeadTemp(\''+l.id+'\',\''+t+'\')" style="padding:3px 9px;border-radius:100px;font-size:0.62rem;font-weight:700;cursor:pointer;border:1px solid '+tClr[t]+';'+(a?'background:'+tClr[t]+';color:#fff;':'background:transparent;color:'+tClr[t]+';')+'">'+lbl+'</button>';
+              return '<button onclick="setLeadTemp(\''+l.id+'\',\''+t+'\')" style="padding:3px 9px;border-radius:100px;font-size:0.62rem;font-weight:700;cursor:pointer;border:1px solid '+tClr[t]+';'+(a?'background:'+tClr[t]+';color:#fff;':'background:transparent;color:'+tClr[t]+';')+'">'+lbl2+'</button>';
             }
-            var step = l.step||1;
             h += '<div style="background:rgba(255,255,255,0.04);border:1px solid '+tBdr[temp]+';border-radius:12px;padding:14px;margin-bottom:8px;">';
             h += '<div style="display:flex;justify-content:space-between;align-items:flex-start;">';
-            h += '<div style="flex:1;"><div style="font-size:0.92rem;font-weight:700;">'+(l.first_name||'')+' '+(l.last_name||'')+'</div>' +
-              '<div style="font-size:0.75rem;color:#888;margin-top:2px;">'+(l.phone||'No phone')+'</div>' +
-              '<div style="font-size:0.72rem;color:#666;margin-top:1px;">'+(l.address||'No address')+'</div>' +
-              (l.monthly_bill?'<div style="font-size:0.7rem;color:#8DC63F;margin-top:2px;">$'+l.monthly_bill+'/mo'+(l.utility?' &middot; '+l.utility:'')+'</div>':'') +
-            '</div>';
+            h += '<div style="flex:1;">';
+            if (isNSL) {
+              var nsRec = NS_STATUSES[l.solar_status]||{label:'New Lead',color:'#4a9eff'};
+              h += '<div style="font-size:0.92rem;font-weight:700;">'+(l.first_name||'')+' '+(l.last_name||'')+'<span style="font-size:0.62rem;margin-left:6px;padding:2px 7px;border-radius:20px;background:'+nsRec.color+'22;color:'+nsRec.color+';border:1px solid '+nsRec.color+'44;">'+nsRec.label+'</span></div>';
+            } else {
+              h += '<div style="font-size:0.92rem;font-weight:700;">'+(l.first_name||'')+' '+(l.last_name||'')+'</div>';
+            }
+            h += '<div style="font-size:0.75rem;color:#888;margin-top:2px;">'+(l.phone||'No phone')+'</div>'+
+              '<div style="font-size:0.72rem;color:#666;margin-top:1px;">'+(l.address||'No address')+'</div>'+
+              (l.monthly_bill?'<div style="font-size:0.7rem;color:#8DC63F;margin-top:2px;">$'+l.monthly_bill+'/mo'+(l.utility?' &middot; '+l.utility:'')+'</div>':'');
+            h += '</div>';
             h += '<div style="display:flex;flex-direction:column;gap:5px;align-items:flex-end;">';
             h += '<div style="display:flex;gap:3px;">'+tempBtn('cold','❄ Cold')+tempBtn('warm','☀ Warm')+tempBtn('hot','🔥 Hot')+'</div>';
             if (l.phone) h += '<a href="tel:'+l.phone.replace(/\D/g,'')+'" style="font-size:0.68rem;padding:4px 10px;background:rgba(141,198,63,0.12);color:#8DC63F;border-radius:100px;border:1px solid rgba(141,198,63,0.25);text-decoration:none;font-weight:700;">📞</a>';
             h += '</div></div>';
-            // Progress dots
-            h += '<div style="display:flex;align-items:center;gap:2px;margin-top:10px;">';
-            [1,2,3,4,5,6,7,8].forEach(function(n,i){
-              h += '<div style="width:'+(n<=step?'8px':'6px')+';height:'+(n<=step?'8px':'6px')+';border-radius:50%;background:'+(n<=step?'#8DC63F':'rgba(255,255,255,0.12)')+';flex-shrink:0;"></div>';
-              if(i<7) h += '<div style="flex:1;height:2px;background:'+(step>n?'#8DC63F':'rgba(255,255,255,0.08)')+';"></div>';
-            });
-            h += '</div></div>';
+            if (isNSL) {
+              // NS progress bar (12 steps)
+              var nsKeys = Object.keys(NS_STATUSES); var nsIdx = nsKeys.indexOf(l.solar_status||'ns_eval_booked');
+              h += '<div style="display:flex;align-items:center;gap:2px;margin-top:10px;">';
+              nsKeys.forEach(function(k,i){ var s=NS_STATUSES[k]; var filled=i<=nsIdx; h+='<div style="width:'+(filled?'7px':'4px')+';height:'+(filled?'7px':'4px')+';border-radius:50%;background:'+(filled?s.color:'rgba(255,255,255,0.12)')+';flex-shrink:0;"></div>'; if(i<nsKeys.length-1) h+='<div style="flex:1;height:2px;background:'+(i<nsIdx?NS_STATUSES[nsKeys[i+1]].color:'rgba(255,255,255,0.08)')+';"></div>'; });
+              h += '</div>';
+            } else {
+              var step = l.step||1;
+              h += '<div style="display:flex;align-items:center;gap:2px;margin-top:10px;">';
+              [1,2,3,4,5,6,7,8].forEach(function(n,i){ h+='<div style="width:'+(n<=step?'8px':'6px')+';height:'+(n<=step?'8px':'6px')+';border-radius:50%;background:'+(n<=step?'#8DC63F':'rgba(255,255,255,0.12)')+';flex-shrink:0;"></div>'; if(i<7) h+='<div style="flex:1;height:2px;background:'+(step>n?'#8DC63F':'rgba(255,255,255,0.08)')+';"></div>'; });
+              h += '</div>';
+            }
+            h += '</div>';
           });
         }
       }
 
       // ── Jobs view ───────────────────────────────────────────────────────────
       else if (salesView === 'jobs') {
-        if (!myJobs.length) {
-          h += '<div style="text-align:center;padding:32px;color:#555;">No jobs yet. Jobs appear once an invoice is created.</div>';
+        h += catSubTabs(salesJobCat, myFixmyJobs, myNSJobs, 'salesJobCat');
+        var viewJobs = salesJobCat === 'new_solar' ? myNSJobs : myFixmyJobs;
+        if (!viewJobs.length) {
+          h += '<div style="text-align:center;padding:32px;color:#555;">No '+(salesJobCat==='new_solar'?'New Solar':'FixMy.Energy')+' jobs yet.</div>';
         } else {
-          myJobs.forEach(function(j) {
-            var inv = j.invoice_status||'';
-            var iClr = inv==='paid'?'#8DC63F':inv==='overdue'?'#ef4444':'#ffaa00';
-            var iBg  = inv==='paid'?'rgba(141,198,63,0.1)':inv==='overdue'?'rgba(239,68,68,0.1)':'rgba(255,170,0,0.1)';
-            var iLbl = {paid:'✓ Paid',pending:'⏳ Payment Due',sent:'📧 Invoice Sent',overdue:'⚠ Overdue',draft:'Draft'}[inv]||inv;
-            var opsHtml = '';
-            if (j.assigned_ops && (j.diagnostic_date||j.install_date)) {
-              var partnerName = OPS_NAMES[j.assigned_ops]||j.assigned_ops;
-              var apptStr = fmtDt(j.install_date||j.diagnostic_date);
-              opsHtml = '<div style="background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.2);border-radius:8px;padding:8px 12px;margin-top:8px;font-size:0.78rem;">' +
-                '<span style="color:#8DC63F;font-weight:700;">✓ '+partnerName+' Assigned</span>' +
-                (apptStr?'<br/><span style="color:#aaa;font-size:0.72rem;">📅 '+apptStr+'</span>':'') +
-              '</div>';
-            } else if (j.ops_ready) {
-              opsHtml = '<div style="background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.2);border-radius:8px;padding:8px 12px;margin-top:8px;font-size:0.78rem;color:#ffaa00;font-weight:700;">⏳ Pending Admin Assignment</div>';
-            } else {
-              opsHtml = '<button onclick="sendToOps(\''+j.id+'\')" style="margin-top:8px;width:100%;padding:9px;background:rgba(249,115,22,0.1);border:1px solid rgba(249,115,22,0.3);border-radius:8px;color:#f97316;font-size:0.78rem;font-weight:700;cursor:pointer;">📤 Send to Ops</button>';
-            }
+          viewJobs.forEach(function(j) {
+            var isNSJ = j.lead_category === 'new_solar';
             h += '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:14px;margin-bottom:8px;">';
             h += '<div style="display:flex;justify-content:space-between;align-items:flex-start;">';
-            h += '<div style="flex:1;"><div style="font-size:0.92rem;font-weight:700;">'+(j.first_name||'')+' '+(j.last_name||'')+'</div>' +
-              '<div style="font-size:0.75rem;color:#888;margin-top:2px;">'+(j.address||'No address')+'</div>' +
-              (j.install_type?'<div style="font-size:0.7rem;color:#666;margin-top:1px;">'+j.install_type+'</div>':'') +
-            '</div>';
-            h += '<div style="background:'+iBg+';border-radius:6px;padding:4px 10px;font-size:0.72rem;font-weight:700;color:'+iClr+';">'+iLbl+'</div>';
-            h += '</div>'+opsHtml+'</div>';
+            if (isNSJ) {
+              var nsJRec = NS_STATUSES[j.solar_status]||{label:'New Solar',color:'#4a9eff'};
+              h += '<div style="flex:1;"><div style="font-size:0.92rem;font-weight:700;">'+(j.first_name||'')+' '+(j.last_name||'')+'</div>'+
+                '<div style="font-size:0.75rem;color:#888;margin-top:2px;">'+(j.address||'No address')+'</div>'+
+                (j.monthly_bill?'<div style="font-size:0.7rem;color:#8DC63F;margin-top:2px;">$'+j.monthly_bill+'/mo</div>':'')+
+              '</div>';
+              h += '<div style="background:'+nsJRec.color+'22;border-radius:6px;padding:4px 10px;font-size:0.72rem;font-weight:700;color:'+nsJRec.color+';border:1px solid '+nsJRec.color+'44;">'+nsJRec.label+'</div>';
+              h += '</div></div>';
+            } else {
+              var inv = j.invoice_status||'';
+              var iClr = inv==='paid'?'#8DC63F':inv==='overdue'?'#ef4444':'#ffaa00';
+              var iBg  = inv==='paid'?'rgba(141,198,63,0.1)':inv==='overdue'?'rgba(239,68,68,0.1)':'rgba(255,170,0,0.1)';
+              var iLbl = {paid:'✓ Paid',pending:'⏳ Payment Due',sent:'📧 Invoice Sent',overdue:'⚠ Overdue',draft:'Draft'}[inv]||inv;
+              var opsHtml = '';
+              if (j.assigned_ops && (j.diagnostic_date||j.install_date)) {
+                var partnerName = OPS_NAMES[j.assigned_ops]||j.assigned_ops;
+                var apptStr = fmtDt(j.install_date||j.diagnostic_date);
+                opsHtml = '<div style="background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.2);border-radius:8px;padding:8px 12px;margin-top:8px;font-size:0.78rem;"><span style="color:#8DC63F;font-weight:700;">&#10003; '+partnerName+' Assigned</span>'+(apptStr?'<br/><span style="color:#aaa;font-size:0.72rem;">&#128197; '+apptStr+'</span>':'')+'</div>';
+              } else if (j.ops_ready) {
+                opsHtml = '<div style="background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.2);border-radius:8px;padding:8px 12px;margin-top:8px;font-size:0.78rem;color:#ffaa00;font-weight:700;">&#9203; Pending Admin Assignment</div>';
+              } else {
+                opsHtml = '<button onclick="sendToOps(\''+j.id+'\')" style="margin-top:8px;width:100%;padding:9px;background:rgba(249,115,22,0.1);border:1px solid rgba(249,115,22,0.3);border-radius:8px;color:#f97316;font-size:0.78rem;font-weight:700;cursor:pointer;">&#128228; Send to Ops</button>';
+              }
+              h += '<div style="flex:1;"><div style="font-size:0.92rem;font-weight:700;">'+(j.first_name||'')+' '+(j.last_name||'')+'</div>'+
+                '<div style="font-size:0.75rem;color:#888;margin-top:2px;">'+(j.address||'No address')+'</div>'+
+                (j.install_type?'<div style="font-size:0.7rem;color:#666;margin-top:1px;">'+j.install_type+'</div>':'')+
+              '</div>';
+              h += '<div style="background:'+iBg+';border-radius:6px;padding:4px 10px;font-size:0.72rem;font-weight:700;color:'+iClr+';">'+iLbl+'</div>';
+              h += '</div>'+opsHtml+'</div>';
+            }
           });
         }
       }
@@ -2807,6 +3004,9 @@
       openNewLead(person.id, person.name, config.setterMode);
     };
     window.salesSetView = function(v) { salesView=v; sessionStorage.setItem('salesView_'+person.id,v); renderSales(); };
+    // Sub-category setters — called from inline onclick in catSubTabs
+    Object.defineProperty(window, 'salesLeadCat', { get: function(){ return salesLeadCat; }, set: function(v){ salesLeadCat=v; try{sessionStorage.setItem('salesLeadCat_'+person.id,v);}catch(e){} }, configurable:true });
+    Object.defineProperty(window, 'salesJobCat',  { get: function(){ return salesJobCat;  }, set: function(v){ salesJobCat=v;  try{sessionStorage.setItem('salesJobCat_'+person.id,v); }catch(e){} }, configurable:true });
     window.setLeadTemp = async function(id, temp) {
       var c2=supabase.createClient(SUPA_URL,SUPA_KEY);
       await c2.from('customers').update({lead_temp:temp}).eq('id',id);
