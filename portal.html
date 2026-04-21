@@ -517,6 +517,7 @@
       '<button class="portal-tab active" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Team'+teamBadge+'</button>'+
+      '<button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button>'+
     '</div>';
 
     // Category sub-tabs
@@ -585,7 +586,7 @@
   // ── JOBS TAB ───────────────────────────────────────────────────────────────
   function renderJobsView() {
     adminView = 'jobs';
-    var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab active" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab" onclick="renderTeamView()">&#128101; Team</button></div>';
+    var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab active" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab" onclick="renderTeamView()">&#128101; Team</button><button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button></div>';
     var allJobs = adminCustomers.filter(function(c){ return !!c.sold_type; });
     var fixmyJobs = allJobs.filter(function(c){ return c.lead_category !== 'new_solar'; });
     var nsJobs    = allJobs.filter(function(c){ return c.lead_category === 'new_solar'; });
@@ -639,7 +640,7 @@
   // ── TEAM TAB ───────────────────────────────────────────────────────────────
   async function renderTeamView() {
     adminView = 'team';
-    var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab active" onclick="renderTeamView()">&#128101; Team</button></div>';
+    var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab active" onclick="renderTeamView()">&#128101; Team</button><button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button></div>';
     document.getElementById('dashBody').innerHTML = portalNav + '<p style="color:#aaa;padding:20px 0;">Loading team data...</p>';
 
     // Fetch agreement records and credential overrides from Supabase
@@ -991,6 +992,91 @@
         renderTeamView();
       } catch(e) { alert('Add failed: '+e.message); }
     };
+  }
+
+  // ── SCHEDULE TAB ─────────────────────────────────────────────────────────────
+  function renderScheduleView() {
+    adminView = 'schedule';
+    var portalNav = '<div class="portal-tab-nav">'+
+      '<button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
+      '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
+      '<button class="portal-tab" onclick="renderTeamView()">&#128101; Team</button>'+
+      '<button class="portal-tab active" onclick="renderScheduleView()">&#128197; Schedule</button>'+
+    '</div>';
+
+    var now = new Date();
+    var past7 = new Date(now.getTime() - 7*24*60*60*1000);
+    var future60 = new Date(now.getTime() + 60*24*60*60*1000);
+
+    var appts = [];
+    adminCustomers.forEach(function(c) {
+      if (c.diagnostic_date) {
+        var dt = new Date(c.diagnostic_date);
+        if (dt >= past7 && dt <= future60) {
+          var t = c.lead_category === 'new_solar'
+            ? ((c.solar_status === 'ns_welcome_scheduled' || c.solar_status === 'ns_welcome_rescheduled') ? 'Welcome Call' : 'Evaluation')
+            : 'Diagnostic Eval';
+          appts.push({customer:c, date:dt, type:t, endTime:c.arrival_end});
+        }
+      }
+      if (c.install_date) {
+        var dt2 = new Date(c.install_date);
+        if (dt2 >= past7 && dt2 <= future60) {
+          appts.push({customer:c, date:dt2, type:c.lead_category==='new_solar'?'NS Install':'Install', endTime:null});
+        }
+      }
+    });
+    appts.sort(function(a,b){ return a.date - b.date; });
+
+    var groups = {}, groupOrder = [];
+    appts.forEach(function(a) {
+      var key = a.date.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'});
+      if (!groups[key]) { groups[key]=[]; groupOrder.push(key); }
+      groups[key].push(a);
+    });
+
+    var typeClrMap = {'Diagnostic Eval':'#8DC63F','Evaluation':'#4a9eff','Welcome Call':'#9b6de8','Install':'#f97316','NS Install':'#4a9eff'};
+    var listHtml = '';
+    if (!appts.length) {
+      listHtml = '<div style="text-align:center;padding:40px;color:#555;">No appointments scheduled in the next 60 days.<br/><span style="font-size:0.72rem;margin-top:8px;display:block;">Appointments appear here once a diagnostic date or install date is set on a lead.</span></div>';
+    } else {
+      groupOrder.forEach(function(dk) {
+        var isToday = dk === now.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'});
+        listHtml += '<div style="margin-bottom:22px;">';
+        listHtml += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:'+(isToday?'#8DC63F':'#888')+';margin-bottom:8px;">'+(isToday?'&#128197; TODAY &mdash; ':'')+dk+'</div>';
+        groups[dk].forEach(function(a) {
+          var c = a.customer;
+          var timeStr = a.date.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true});
+          if (a.endTime) timeStr += ' – ' + a.endTime;
+          var isPast = a.date < now;
+          var tc = typeClrMap[a.type]||'#888';
+          var bdr = isPast ? 'rgba(239,68,68,0.3)' : isToday ? 'rgba(141,198,63,0.3)' : 'rgba(255,255,255,0.1)';
+          listHtml += '<div style="background:rgba(255,255,255,0.04);border:1px solid '+bdr+';border-radius:12px;padding:14px;margin-bottom:8px;">';
+          listHtml += '<div style="display:flex;justify-content:space-between;align-items:flex-start;">';
+          listHtml += '<div style="flex:1;">';
+          listHtml += '<div style="font-size:0.92rem;font-weight:700;">'+(c.first_name||'')+' '+(c.last_name||'')+'</div>';
+          listHtml += '<div style="font-size:0.75rem;color:#888;margin-top:2px;">'+timeStr+'</div>';
+          listHtml += '<div style="font-size:0.72rem;color:#666;margin-top:2px;">'+(c.address||'No address')+'</div>';
+          if (c.phone) listHtml += '<div style="font-size:0.7rem;color:#4a9eff;margin-top:2px;">'+c.phone+'</div>';
+          listHtml += '</div>';
+          listHtml += '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;">';
+          listHtml += '<span style="font-size:0.65rem;font-weight:700;padding:3px 8px;border-radius:20px;background:'+tc+'22;color:'+tc+';border:1px solid '+tc+'44;">'+a.type+'</span>';
+          if (isPast) listHtml += '<span style="font-size:0.62rem;color:#ef4444;font-weight:700;">Past</span>';
+          listHtml += '<button onclick="openLeadEditor(\''+c.id+'\')" style="font-size:0.68rem;padding:4px 10px;background:rgba(255,255,255,0.06);color:#aaa;border-radius:8px;border:1px solid rgba(255,255,255,0.1);cursor:pointer;font-weight:700;">&#9998; Edit</button>';
+          if (c.phone) listHtml += '<a href="tel:'+c.phone.replace(/\D/g,'')+'" style="font-size:0.68rem;padding:4px 10px;background:rgba(141,198,63,0.1);color:#8DC63F;border-radius:8px;border:1px solid rgba(141,198,63,0.2);text-decoration:none;font-weight:700;">&#128222; Call</a>';
+          listHtml += '</div></div>';
+          if (c.notes) listHtml += '<div style="font-size:0.68rem;color:#555;margin-top:8px;border-top:1px solid rgba(255,255,255,0.06);padding-top:6px;">'+c.notes.substring(0,150)+(c.notes.length>150?'&hellip;':'')+'</div>';
+          listHtml += '</div>';
+        });
+        listHtml += '</div>';
+      });
+    }
+
+    document.getElementById('dashBody').innerHTML = portalNav+
+      '<div class="admin-header-row"><h2 style="font-size:1.1rem;font-weight:700;">Schedule</h2>'+
+      '<span style="font-size:0.72rem;color:#555;">'+appts.length+' appointment'+(appts.length!==1?'s':'')+' (next 60 days)</span></div>'+
+      '<div id="editorSlot"></div>'+
+      '<div id="scheduleList">'+listHtml+'</div>';
   }
 
   function openJob(id) {
@@ -2008,8 +2094,14 @@
         '<div style="margin-bottom:16px;"><textarea id="nlNotes" class="ed-input" rows="3" style="resize:vertical;" placeholder="Gate code, concerns, system issues..." oninput="nlUpdateCal()"></textarea></div>'+
         (isSetterForm ?
           '<div class="editor-section-title">Book Appointment</div>'+
-          '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:12px;overflow:hidden;margin-bottom:16px;">'+
+          '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:12px;overflow:hidden;margin-bottom:12px;">'+
             '<iframe id="nlCalFrame" src="'+GHL_BOOKING+'" width="100%" height="600" frameborder="0" style="border:none;display:block;"></iframe>'+
+          '</div>'+
+          '<div style="padding:10px 14px;background:rgba(74,158,255,0.06);border:1px solid rgba(74,158,255,0.2);border-radius:8px;margin-bottom:12px;font-size:0.7rem;color:#4a9eff;">&#8505; After booking above, enter the confirmed date &amp; time below so it saves to the portal.</div>'+
+          '<div class="ed-grid" style="margin-bottom:16px;">'+
+            '<div><label class="ed-label">Appt Date</label><input type="date" id="nlApptDate" class="ed-input"/></div>'+
+            '<div><label class="ed-label">Start Time</label><input type="time" id="nlApptTime" class="ed-input"/></div>'+
+            '<div><label class="ed-label">End Time</label><input type="time" id="nlApptEnd" class="ed-input"/></div>'+
           '</div>'
         : '')+
         '<div class="editor-footer">'+
@@ -2153,7 +2245,10 @@
     if (trueUp) fullNotes = [fullNotes, 'Annual true-up: $'+trueUp].filter(Boolean).join(' | ');
     var leadCat = (hasSolar === 'no') ? 'new_solar' : 'fixmy';
     var initSolarStatus = (leadCat === 'new_solar') ? 'ns_eval_booked' : null;
-    var newLead={first_name:first,last_name:(document.getElementById('nlLast').value||null),email:email,phone:phone,address:addr,monthly_bill:bill||null,access_code:digits,step:1,notes:fullNotes||null,rep_id:repId||null,lead_temp:'cold',lead_category:leadCat,solar_status:initSolarStatus};
+    var nlDateEl=document.getElementById('nlApptDate'), nlTimeEl=document.getElementById('nlApptTime'), nlEndEl=document.getElementById('nlApptEnd');
+    var nlApptDate=nlDateEl?nlDateEl.value:'', nlApptTime=nlTimeEl?nlTimeEl.value:'', nlApptEnd=nlEndEl?nlEndEl.value:'';
+    var apptISO=(nlApptDate&&nlApptTime)?new Date(nlApptDate+'T'+nlApptTime).toISOString():(nlApptDate?new Date(nlApptDate+'T09:00').toISOString():null);
+    var newLead={first_name:first,last_name:(document.getElementById('nlLast').value||null),email:email,phone:phone,address:addr,monthly_bill:bill||null,access_code:digits,step:1,notes:fullNotes||null,rep_id:repId||null,lead_temp:'cold',lead_category:leadCat,solar_status:initSolarStatus,diagnostic_date:apptISO,arrival_end:nlApptEnd||null};
     var setterLabel=repName||setter||null;
     var btn=document.querySelector('#newLeadPanel .lead-btn.lime');
     if(btn){btn.textContent='Creating...';btn.disabled=true;}
@@ -2852,10 +2947,13 @@
         var a = salesView===v;
         return '<button onclick="salesSetView(\''+v+'\')" style="flex:1;padding:9px 4px;border:none;border-radius:8px;font-size:0.75rem;font-weight:700;cursor:pointer;'+(a?'background:#8DC63F;color:#1A1A1A;':'background:rgba(255,255,255,0.07);color:#888;')+'">'+lbl+'</button>';
       }
+      var nowTs = Date.now();
+      var myApptCount = allRecords.filter(function(r){ return (r.diagnostic_date&&new Date(r.diagnostic_date).getTime()>nowTs-7*86400000)||(r.install_date&&new Date(r.install_date).getTime()>nowTs-7*86400000); }).length;
       h += '<div style="display:flex;gap:6px;margin-bottom:16px;">';
       h += tBtn('leads','📋 Leads ('+myLeads.length+')');
       h += tBtn('jobs','💼 Jobs ('+myJobs.length+')');
       if (showFieldJobs) h += tBtn('field','🔧 Field ('+fieldJobs.length+')');
+      h += tBtn('schedule','📅 Appts'+(myApptCount?'  ('+myApptCount+')':''));
       if (config.setterMode) h += tBtn('map','🗺 Map');
       h += '</div>';
 
@@ -2983,6 +3081,67 @@
             if (j.address) h += '<a href="https://maps.apple.com/?q='+encodeURIComponent(j.address)+'" target="_blank" style="font-size:0.72rem;padding:5px 12px;background:rgba(255,255,255,0.06);color:#aaa;border-radius:100px;border:1px solid rgba(255,255,255,0.1);text-decoration:none;font-weight:700;">🗺 Directions</a>';
             h += '</div></div>';
           });
+        }
+      }
+
+      // ── Schedule / Appointments view ────────────────────────────────────────
+      else if (salesView === 'schedule') {
+        var nowS = new Date();
+        var past7S = new Date(nowS.getTime() - 7*24*60*60*1000);
+        var myAppts = [];
+        allRecords.forEach(function(c) {
+          if (c.diagnostic_date) {
+            var dtS = new Date(c.diagnostic_date);
+            if (dtS >= past7S) {
+              var tS = c.lead_category === 'new_solar'
+                ? ((c.solar_status==='ns_welcome_scheduled'||c.solar_status==='ns_welcome_rescheduled') ? 'Welcome Call' : 'Evaluation')
+                : 'Diagnostic Eval';
+              myAppts.push({customer:c, date:dtS, type:tS, endTime:c.arrival_end});
+            }
+          }
+          if (c.install_date) {
+            var dtS2 = new Date(c.install_date);
+            if (dtS2 >= past7S) myAppts.push({customer:c, date:dtS2, type:c.lead_category==='new_solar'?'NS Install':'Install', endTime:null});
+          }
+        });
+        myAppts.sort(function(a,b){ return a.date - b.date; });
+        var tcMapS = {'Diagnostic Eval':'#8DC63F','Evaluation':'#4a9eff','Welcome Call':'#9b6de8','Install':'#f97316','NS Install':'#4a9eff'};
+        if (!myAppts.length) {
+          h += '<div style="text-align:center;padding:40px;color:#555;">No upcoming appointments.<br/><span style="font-size:0.72rem;margin-top:8px;display:block;">When you set a diagnostic or evaluation date on a lead, it will appear here.</span></div>';
+        } else {
+          var lastDayS = '';
+          myAppts.forEach(function(a) {
+            var dayKeyS = a.date.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
+            var isTodayS = a.date.toDateString() === nowS.toDateString();
+            var isPastS = a.date < nowS;
+            if (dayKeyS !== lastDayS) {
+              if (lastDayS) h += '</div>';
+              h += '<div style="margin-bottom:16px;">';
+              h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:'+(isTodayS?'#8DC63F':'#888')+';margin-bottom:8px;">'+(isTodayS?'&#128197; TODAY &mdash; ':'')+dayKeyS+'</div>';
+              lastDayS = dayKeyS;
+            }
+            var c = a.customer;
+            var timeStrS = a.date.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true});
+            if (a.endTime) timeStrS += ' – ' + a.endTime;
+            var tcS = tcMapS[a.type]||'#888';
+            var bdrS = isPastS ? 'rgba(239,68,68,0.25)' : isTodayS ? 'rgba(141,198,63,0.25)' : 'rgba(255,255,255,0.1)';
+            h += '<div style="background:rgba(255,255,255,0.04);border:1px solid '+bdrS+';border-radius:12px;padding:14px;margin-bottom:8px;">';
+            h += '<div style="display:flex;justify-content:space-between;align-items:flex-start;">';
+            h += '<div style="flex:1;">';
+            h += '<div style="font-size:0.92rem;font-weight:700;">'+(c.first_name||'')+' '+(c.last_name||'')+'</div>';
+            h += '<div style="font-size:0.75rem;color:#888;margin-top:2px;">'+timeStrS+'</div>';
+            h += '<div style="font-size:0.72rem;color:#666;margin-top:2px;">'+(c.address||'No address')+'</div>';
+            h += '</div>';
+            h += '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;">';
+            h += '<span style="font-size:0.65rem;font-weight:700;padding:3px 8px;border-radius:20px;background:'+tcS+'22;color:'+tcS+';border:1px solid '+tcS+'44;">'+a.type+'</span>';
+            if (isPastS) h += '<span style="font-size:0.62rem;color:#ef4444;font-weight:700;">Past</span>';
+            if (c.phone) h += '<a href="tel:'+c.phone.replace(/\D/g,'')+'" style="font-size:0.68rem;padding:4px 10px;background:rgba(141,198,63,0.1);color:#8DC63F;border-radius:8px;border:1px solid rgba(141,198,63,0.2);text-decoration:none;font-weight:700;">&#128222; Call</a>';
+            if (c.address) h += '<a href="https://maps.apple.com/?q='+encodeURIComponent(c.address)+'" target="_blank" style="font-size:0.68rem;padding:4px 10px;background:rgba(255,255,255,0.06);color:#aaa;border-radius:8px;border:1px solid rgba(255,255,255,0.1);text-decoration:none;font-weight:700;">&#128506; Directions</a>';
+            h += '</div></div>';
+            if (c.notes) h += '<div style="font-size:0.68rem;color:#555;margin-top:8px;border-top:1px solid rgba(255,255,255,0.06);padding-top:6px;">'+c.notes.substring(0,120)+(c.notes.length>120?'…':'')+'</div>';
+            h += '</div>';
+          });
+          if (lastDayS) h += '</div>';
         }
       }
 
