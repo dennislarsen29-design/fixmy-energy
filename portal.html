@@ -350,6 +350,7 @@
   var adminJobCat  = 'fixmy';
   var schedCalView   = 'week';  // 'week' | 'month'
   var schedCalOffset = 0;       // weeks or months from current
+  var adminMarketingExpenses = [];
 
   // New Solar pipeline — status key → {label, phase:'lead'|'job', color}
   var NS_STATUSES = {
@@ -479,6 +480,7 @@
     adminCustomers = resp.data || [];
     try { var agResp = await client.from('rep_agreements').select('*').order('signed_at',{ascending:false}); adminRecentAgreements = agResp.data || []; } catch(e) { adminRecentAgreements = []; }
     try { var tmResp = await client.from('team_members').select('*').order('created_at',{ascending:true}); adminTeamMembers = tmResp.data || []; } catch(e) { adminTeamMembers = []; }
+    try { var mktResp = await client.from('marketing_expenses').select('*').order('expense_date',{ascending:false}); adminMarketingExpenses = mktResp.data || []; } catch(e) { adminMarketingExpenses = []; }
     renderAdminView('dashboard');
   }
 
@@ -520,6 +522,7 @@
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Team'+teamBadge+'</button>'+
       '<button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button>'+
+      '<button class="portal-tab" onclick="renderMarketingView()">&#128200; Marketing</button>'+
     '</div>';
 
     // Category sub-tabs
@@ -588,7 +591,7 @@
   // ── JOBS TAB ───────────────────────────────────────────────────────────────
   function renderJobsView() {
     adminView = 'jobs';
-    var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab active" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab" onclick="renderTeamView()">&#128101; Team</button><button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button></div>';
+    var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab active" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab" onclick="renderTeamView()">&#128101; Team</button><button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button><button class="portal-tab" onclick="renderMarketingView()">&#128200; Marketing</button></div>';
     var allJobs = adminCustomers.filter(function(c){ return !!c.sold_type; });
     var fixmyJobs = allJobs.filter(function(c){ return c.lead_category !== 'new_solar'; });
     var nsJobs    = allJobs.filter(function(c){ return c.lead_category === 'new_solar'; });
@@ -642,7 +645,7 @@
   // ── TEAM TAB ───────────────────────────────────────────────────────────────
   async function renderTeamView() {
     adminView = 'team';
-    var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab active" onclick="renderTeamView()">&#128101; Team</button><button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button></div>';
+    var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab active" onclick="renderTeamView()">&#128101; Team</button><button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button><button class="portal-tab" onclick="renderMarketingView()">&#128200; Marketing</button></div>';
     document.getElementById('dashBody').innerHTML = portalNav + '<p style="color:#aaa;padding:20px 0;">Loading team data...</p>';
 
     // Fetch agreement records and credential overrides from Supabase
@@ -1178,6 +1181,7 @@
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Team</button>'+
       '<button class="portal-tab active" onclick="renderScheduleView()">&#128197; Schedule</button>'+
+      '<button class="portal-tab" onclick="renderMarketingView()">&#128200; Marketing</button>'+
     '</div>';
 
     var now = new Date();
@@ -1261,6 +1265,255 @@
       '<div id="editorSlot"></div>'+
       buildSchedCalHtml(appts,'renderScheduleView()')+
       '<div id="scheduleList">'+listHtml+'</div>';
+  }
+
+  // ── MARKETING ACCOUNTING TAB ──────────────────────────────────────────────────
+  function extractZip(address) {
+    if (!address) return null;
+    var m = address.match(/\b(\d{5})(?:-\d{4})?\b/g);
+    return m ? m[m.length-1] : null;
+  }
+
+  function renderMarketingView() {
+    adminView = 'marketing';
+    var portalNav = '<div class="portal-tab-nav">'+
+      '<button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
+      '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
+      '<button class="portal-tab" onclick="renderTeamView()">&#128101; Team</button>'+
+      '<button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button>'+
+      '<button class="portal-tab active" onclick="renderMarketingView()">&#128200; Marketing</button>'+
+    '</div>';
+
+    // ── Compute summary stats ──
+    var totalSpend = adminMarketingExpenses.reduce(function(s,e){ return s+parseFloat(e.amount||0); },0);
+    var allMailedZips = new Set();
+    adminMarketingExpenses.forEach(function(e){
+      (e.mailed_zips||'').split(',').map(function(z){ return z.trim(); }).filter(Boolean).forEach(function(z){ allMailedZips.add(z); });
+    });
+    var matchedCust = adminCustomers.filter(function(c){ var z=extractZip(c.address); return z&&allMailedZips.has(z); });
+    var mailRevTotal = matchedCust.filter(function(c){ return c.invoice_status==='paid'&&c.lead_source==='direct_mail'; })
+      .reduce(function(s,c){ return s+(parseFloat(c.invoice_amount)||0); },0);
+    var allZipRevTotal = matchedCust.filter(function(c){ return c.invoice_status==='paid'; })
+      .reduce(function(s,c){ return s+(parseFloat(c.invoice_amount)||0); },0);
+    var roi = totalSpend>0 ? ((mailRevTotal-totalSpend)/totalSpend*100).toFixed(0) : 0;
+    var roiClr = roi>=0?'#8DC63F':'#ef4444';
+
+    // ── Summary boxes ──
+    function mBox(v,lbl,clr,sub) {
+      return '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:12px;text-align:center;">'+
+        '<div style="font-size:1.2rem;font-weight:800;color:'+(clr||'#8DC63F')+';">'+v+'</div>'+
+        '<div style="font-size:0.68rem;color:#888;">'+lbl+'</div>'+
+        (sub?'<div style="font-size:0.62rem;color:#555;margin-top:2px;">'+sub+'</div>':'')+
+      '</div>';
+    }
+    var summaryHtml =
+      '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:18px;">'+
+      mBox('$'+totalSpend.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}),'Total Spend','#ffaa00')+
+      mBox('$'+mailRevTotal.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}),'Mail Revenue (paid)','#8DC63F','from Direct Mail tagged jobs')+
+      mBox((roi>=0?'+':'')+roi+'%','ROI',roiClr,'mail rev vs spend')+
+      mBox(matchedCust.length,'Leads in Mailed Zips','#4a9eff')+
+      '</div>';
+
+    // ── Per-expense card list ──
+    var expHtml = '';
+    if (!adminMarketingExpenses.length) {
+      expHtml = '<div style="text-align:center;padding:32px;color:#555;">No expenses logged yet. Click + Add Expense to get started.</div>';
+    } else {
+      adminMarketingExpenses.forEach(function(e) {
+        var zips = (e.mailed_zips||'').split(',').map(function(z){ return z.trim(); }).filter(Boolean);
+        var matches = zips.length ? adminCustomers.filter(function(c){ var z=extractZip(c.address); return z&&zips.indexOf(z)>=0; }) : [];
+        var expRev = matches.filter(function(c){ return c.invoice_status==='paid'; }).reduce(function(s,c){ return s+(parseFloat(c.invoice_amount)||0); },0);
+        var mailMatchRev = matches.filter(function(c){ return c.invoice_status==='paid'&&c.lead_source==='direct_mail'; }).reduce(function(s,c){ return s+(parseFloat(c.invoice_amount)||0); },0);
+        var dateStr = e.expense_date ? new Date(e.expense_date+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '—';
+        var catClr = e.category==='USPS Charges'?'#4a9eff':e.category==='Digital Ads'?'#9b6de8':'#8DC63F';
+        expHtml += '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:14px;margin-bottom:10px;">';
+        // Card header row
+        expHtml += '<div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;">';
+        expHtml += '<div style="flex:1;">';
+        expHtml += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">';
+        expHtml += '<span style="font-size:0.72rem;color:#888;">'+dateStr+'</span>';
+        expHtml += '<span style="font-size:0.65rem;font-weight:700;padding:2px 8px;border-radius:20px;background:'+catClr+'22;color:'+catClr+';border:1px solid '+catClr+'44;">'+(e.category||'Other')+'</span>';
+        expHtml += '</div>';
+        expHtml += '<div style="font-size:1rem;font-weight:800;color:#fff;">$'+parseFloat(e.amount||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})+'</div>';
+        if (e.description) expHtml += '<div style="font-size:0.72rem;color:#666;margin-top:2px;">'+e.description+'</div>';
+        if (zips.length) expHtml += '<div style="font-size:0.68rem;color:#555;margin-top:4px;">Zips: '+zips.join(', ')+'</div>';
+        expHtml += '</div>';
+        // Action buttons
+        expHtml += '<div style="display:flex;flex-direction:column;gap:5px;align-items:flex-end;">';
+        if (matches.length) expHtml += '<button onclick="toggleMktExpand(\''+e.id+'\')" style="font-size:0.68rem;padding:4px 10px;background:rgba(74,158,255,0.1);color:#4a9eff;border-radius:8px;border:1px solid rgba(74,158,255,0.25);cursor:pointer;font-weight:700;">&#9660; '+matches.length+' Lead'+(matches.length!==1?'s':'')+'</button>';
+        expHtml += '<button onclick="openMarketingExpenseForm(\''+e.id+'\')" style="font-size:0.68rem;padding:4px 10px;background:rgba(255,255,255,0.06);color:#aaa;border-radius:8px;border:1px solid rgba(255,255,255,0.1);cursor:pointer;font-weight:700;">&#9998; Edit</button>';
+        expHtml += '<button onclick="deleteMarketingExpense(\''+e.id+'\')" style="font-size:0.68rem;padding:4px 10px;background:rgba(239,68,68,0.08);color:#ef4444;border-radius:8px;border:1px solid rgba(239,68,68,0.2);cursor:pointer;font-weight:700;">&#128465; Delete</button>';
+        expHtml += '</div></div>';
+        // Revenue mini-summary
+        if (matches.length) {
+          expHtml += '<div style="display:flex;gap:12px;margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.06);flex-wrap:wrap;">';
+          expHtml += '<span style="font-size:0.7rem;color:#888;">'+matches.length+' leads in zips</span>';
+          expHtml += '<span style="font-size:0.7rem;color:#8DC63F;">$'+expRev.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})+' total paid rev</span>';
+          if (mailMatchRev>0) expHtml += '<span style="font-size:0.7rem;color:#8DC63F;font-weight:700;">$'+mailMatchRev.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})+' direct mail rev</span>';
+          expHtml += '</div>';
+        }
+        // Expand panel — matched leads table
+        expHtml += '<div id="mktExpand-'+e.id+'" style="display:none;margin-top:10px;">';
+        if (matches.length) {
+          expHtml += '<div style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#555;margin-bottom:6px;">Leads in mailed zip codes</div>';
+          expHtml += '<div style="overflow-x:auto;">';
+          expHtml += '<table style="width:100%;border-collapse:collapse;font-size:0.7rem;">';
+          expHtml += '<thead><tr style="border-bottom:1px solid rgba(255,255,255,0.08);">';
+          ['Name','Zip','Source','Status','Inv Amt'].forEach(function(h2){ expHtml += '<th style="text-align:left;padding:4px 6px;color:#555;font-weight:700;">'+h2+'</th>'; });
+          expHtml += '</tr></thead><tbody>';
+          matches.forEach(function(c) {
+            var srcLbl = {direct_mail:'✉ Mail',self_generated:'🚶 Canvass',referral:'👥 Referral',inbound_web:'🌐 Web'}[c.lead_source]||'—';
+            var stLbl = c.sold_type ? 'Job' : 'Lead';
+            var stClr = c.sold_type ? '#8DC63F' : '#4a9eff';
+            expHtml += '<tr style="border-bottom:1px solid rgba(255,255,255,0.04);">';
+            expHtml += '<td style="padding:5px 6px;color:#ccc;">'+(c.first_name||'')+' '+(c.last_name||'')+'</td>';
+            expHtml += '<td style="padding:5px 6px;color:#888;">'+(extractZip(c.address)||'—')+'</td>';
+            expHtml += '<td style="padding:5px 6px;color:#888;">'+srcLbl+'</td>';
+            expHtml += '<td style="padding:5px 6px;"><span style="color:'+stClr+';font-weight:700;">'+stLbl+'</span></td>';
+            expHtml += '<td style="padding:5px 6px;color:'+(c.invoice_status==='paid'?'#8DC63F':'#555')+';">'+(c.invoice_amount?'$'+parseFloat(c.invoice_amount).toLocaleString('en-US',{minimumFractionDigits:2}):'—')+'</td>';
+            expHtml += '</tr>';
+          });
+          expHtml += '</tbody></table></div>';
+        }
+        expHtml += '</div>';
+        expHtml += '</div>';
+      });
+    }
+
+    // ── Zip breakdown table ──
+    var zipStats = {};
+    allMailedZips.forEach(function(z){
+      var m = adminCustomers.filter(function(c){ return extractZip(c.address)===z; });
+      zipStats[z] = {
+        leads:      m.filter(function(c){ return !c.sold_type; }).length,
+        jobs:       m.filter(function(c){ return !!c.sold_type; }).length,
+        fromMail:   m.filter(function(c){ return c.lead_source==='direct_mail'; }).length,
+        fromCanv:   m.filter(function(c){ return c.lead_source==='self_generated'; }).length,
+        fromRef:    m.filter(function(c){ return c.lead_source==='referral'; }).length,
+        revenue:    m.filter(function(c){ return c.invoice_status==='paid'; }).reduce(function(s,c){ return s+(parseFloat(c.invoice_amount)||0); },0),
+        mailRevenue:m.filter(function(c){ return c.invoice_status==='paid'&&c.lead_source==='direct_mail'; }).reduce(function(s,c){ return s+(parseFloat(c.invoice_amount)||0); },0)
+      };
+    });
+    var zipTableHtml = '';
+    if (allMailedZips.size) {
+      zipTableHtml = '<div class="editor-section-title" style="margin-top:24px;">Zip Code Breakdown</div>';
+      zipTableHtml += '<div style="overflow-x:auto;margin-bottom:16px;">';
+      zipTableHtml += '<table style="width:100%;border-collapse:collapse;font-size:0.72rem;">';
+      zipTableHtml += '<thead><tr style="border-bottom:1px solid rgba(255,255,255,0.1);">';
+      ['Zip','Leads','Jobs','✉ Mail Resp','🚶 Canvass','👥 Referral','Total Rev (paid)','Mail Rev (paid)'].forEach(function(h2){
+        zipTableHtml += '<th style="text-align:left;padding:6px 8px;color:#555;font-weight:700;white-space:nowrap;">'+h2+'</th>';
+      });
+      zipTableHtml += '</tr></thead><tbody>';
+      var sortedZips = Array.from(allMailedZips).sort();
+      sortedZips.forEach(function(z){
+        var s = zipStats[z];
+        zipTableHtml += '<tr style="border-bottom:1px solid rgba(255,255,255,0.04);">';
+        zipTableHtml += '<td style="padding:6px 8px;color:#ccc;font-weight:700;">'+z+'</td>';
+        zipTableHtml += '<td style="padding:6px 8px;color:#4a9eff;">'+s.leads+'</td>';
+        zipTableHtml += '<td style="padding:6px 8px;color:#8DC63F;">'+s.jobs+'</td>';
+        zipTableHtml += '<td style="padding:6px 8px;color:#8DC63F;">'+s.fromMail+'</td>';
+        zipTableHtml += '<td style="padding:6px 8px;color:#888;">'+s.fromCanv+'</td>';
+        zipTableHtml += '<td style="padding:6px 8px;color:#888;">'+s.fromRef+'</td>';
+        zipTableHtml += '<td style="padding:6px 8px;color:'+(s.revenue>0?'#8DC63F':'#555')+';">'+(s.revenue>0?'$'+s.revenue.toLocaleString('en-US',{minimumFractionDigits:2}):'—')+'</td>';
+        var mrClr = s.mailRevenue>0 ? '#8DC63F' : '#555';
+        var mrWt  = s.mailRevenue>0 ? 700 : 400;
+        zipTableHtml += '<td style="padding:6px 8px;color:'+mrClr+';font-weight:'+mrWt+';">'+(s.mailRevenue>0?'$'+s.mailRevenue.toLocaleString('en-US',{minimumFractionDigits:2}):'—')+'</td>';
+        zipTableHtml += '</tr>';
+      });
+      zipTableHtml += '</tbody></table></div>';
+    }
+
+    document.getElementById('dashBody').innerHTML = portalNav+
+      '<div class="admin-header-row">'+
+        '<h2 style="font-size:1.1rem;font-weight:700;">Marketing Spend &amp; ROI</h2>'+
+        '<button onclick="openMarketingExpenseForm()" class="lead-btn lime" style="padding:9px 18px;font-size:0.78rem;">+ Add Expense</button>'+
+      '</div>'+
+      '<div id="editorSlot"></div>'+
+      summaryHtml+
+      '<div id="mktList">'+expHtml+'</div>'+
+      zipTableHtml;
+
+    window.toggleMktExpand = function(id) {
+      var el = document.getElementById('mktExpand-'+id);
+      if (el) el.style.display = el.style.display==='none' ? 'block' : 'none';
+    };
+  }
+
+  function openMarketingExpenseForm(id) {
+    var slot = document.getElementById('editorSlot');
+    if (!slot) return;
+    var rec = id ? adminMarketingExpenses.find(function(x){ return x.id===id; }) : null;
+    var today = new Date().toISOString().slice(0,10);
+    slot.innerHTML =
+      '<div class="editor-panel" style="margin-bottom:16px;">'+
+      '<div class="editor-header">'+
+        '<div style="font-weight:700;color:#8DC63F;font-size:1rem;">'+(id?'Edit':'+ New')+' Marketing Expense</div>'+
+        '<button onclick="closeLeadEditor()" style="background:none;border:none;color:#666;cursor:pointer;font-size:1.1rem;">&#10005;</button>'+
+      '</div>'+
+      '<input type="hidden" id="mktExpId" value="'+(id||'')+'"/>'+
+      '<div class="editor-section-title">Expense Details</div>'+
+      '<div class="ed-grid">'+
+        '<div><label class="ed-label">Date *</label><input type="date" id="mktDate" class="ed-input" value="'+(rec?rec.expense_date:today)+'"/></div>'+
+        '<div><label class="ed-label">Amount ($) *</label><input type="number" id="mktAmount" class="ed-input" step="0.01" placeholder="0.00" value="'+(rec?rec.amount:'')+'"/></div>'+
+        '<div><label class="ed-label">Category</label><select id="mktCategory" class="ed-input">'+
+          ['Direct Mail Print','USPS Charges','Digital Ads','Other'].map(function(c){ return '<option value="'+c+'"'+(rec&&rec.category===c?' selected':'')+'>'+c+'</option>'; }).join('')+
+        '</select></div>'+
+        '<div><label class="ed-label">Description / Notes</label><input type="text" id="mktDesc" class="ed-input" placeholder="e.g. Apr batch, 5000 postcards" value="'+(rec&&rec.description?rec.description:'')+'"/></div>'+
+      '</div>'+
+      '<div class="editor-section-title">Zip Code Targeting</div>'+
+      '<div class="ed-full" style="margin-bottom:16px;">'+
+        '<label class="ed-label">Mailed Zip Codes (comma-separated)</label>'+
+        '<input type="text" id="mktZips" class="ed-input" placeholder="92126, 92131, 92130, 91942" value="'+(rec&&rec.mailed_zips?rec.mailed_zips:'')+'"/>'+
+        '<div style="font-size:0.68rem;color:#555;margin-top:4px;">Leads and jobs with addresses in these zips will be counted as potential mail-attributable revenue.</div>'+
+      '</div>'+
+      '<div class="editor-footer">'+
+        '<button class="lead-btn lime" style="padding:12px 28px;" onclick="saveMarketingExpense()">Save Expense</button>'+
+        '<button class="lead-btn ghost" style="padding:12px 20px;" onclick="closeLeadEditor()">Cancel</button>'+
+        '<span id="mktSaved" style="display:none;font-size:0.72rem;color:#8DC63F;margin-left:10px;">&#10003; Saved</span>'+
+      '</div></div>';
+    slot.scrollIntoView({behavior:'smooth',block:'start'});
+  }
+
+  async function saveMarketingExpense() {
+    var id = document.getElementById('mktExpId').value;
+    var dateVal = document.getElementById('mktDate').value;
+    var amtVal  = parseFloat(document.getElementById('mktAmount').value)||0;
+    if (!dateVal) { alert('Date is required.'); return; }
+    if (!amtVal)  { alert('Amount is required.'); return; }
+    var rawZips = (document.getElementById('mktZips').value||'').replace(/\s+/g,'').replace(/,+/g,',').replace(/^,|,$/g,'');
+    var payload = {
+      expense_date: dateVal,
+      amount: amtVal,
+      category: document.getElementById('mktCategory').value||null,
+      description: document.getElementById('mktDesc').value||null,
+      mailed_zips: rawZips||null
+    };
+    try {
+      var sc = supabase.createClient(SUPA_URL, SUPA_KEY);
+      if (id) {
+        var {error: uErr} = await sc.from('marketing_expenses').update(payload).eq('id',id);
+        if (uErr) throw uErr;
+        var idx = adminMarketingExpenses.findIndex(function(x){ return x.id===id; });
+        if (idx>-1) adminMarketingExpenses[idx] = Object.assign(adminMarketingExpenses[idx], payload);
+      } else {
+        var {data: ins, error: iErr} = await sc.from('marketing_expenses').insert(payload).select().single();
+        if (iErr) throw iErr;
+        adminMarketingExpenses.unshift(ins);
+      }
+      closeLeadEditor();
+      renderMarketingView();
+    } catch(e) { alert('Save failed: '+e.message); }
+  }
+
+  async function deleteMarketingExpense(id) {
+    if (!confirm('Delete this expense entry? This cannot be undone.')) return;
+    try {
+      var sc = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var {error} = await sc.from('marketing_expenses').delete().eq('id',id);
+      if (error) throw error;
+      adminMarketingExpenses = adminMarketingExpenses.filter(function(x){ return x.id!==id; });
+      renderMarketingView();
+    } catch(e) { alert('Delete failed: '+e.message); }
   }
 
   function openJob(id) {
@@ -2122,6 +2375,7 @@
       '<div class="ed-grid">'+
         edSelect('Assign Ops','edAssignedOps',c.assigned_ops||'none',[['none','— Unassigned —'],['ops1','Jon Klos'],['ops2','John Espinoza'],['ops3','Cosmic Solar'],['dennis','Dennis (Self)']])+
         edSelect('Ops Payout','edOpsPayout',c.ops_payout_status||'pending',[['pending','Pending'],['paid','Paid']])+
+        edSelect('Lead Source','edLeadSource',c.lead_source||'',[['','— Unknown —'],['direct_mail','Direct Mail Response'],['self_generated','Self-Generated (Canvassing)'],['referral','Referral'],['inbound_web','Inbound / Web']])+
       '</div>'+
       '<div class="ed-full"><label class="ed-label">Internal Notes</label><textarea id="edNotes" class="ed-input" rows="2" placeholder="Tech notes...">'+(c.notes||'')+'</textarea></div>'+
       '<div class="editor-footer">'+
@@ -2192,7 +2446,8 @@
       assigned_ops: document.getElementById('edAssignedOps').value==='none'?null:document.getElementById('edAssignedOps').value||null,
       arrival_end: document.getElementById('edArrivalEnd').value||null,
       nem_status: document.getElementById('edNem') ? document.getElementById('edNem').value||null : (cRec.nem_status||null),
-      ops_payout_status: document.getElementById('edOpsPayout').value||null
+      ops_payout_status: document.getElementById('edOpsPayout').value||null,
+      lead_source: document.getElementById('edLeadSource').value||null
     };
     try {
       var client=supabase.createClient(SUPA_URL,SUPA_KEY);
@@ -2276,6 +2531,8 @@
         : '')+
         '<div class="editor-section-title">Note to Tech</div>'+
         '<div style="margin-bottom:16px;"><textarea id="nlNotes" class="ed-input" rows="3" style="resize:vertical;" placeholder="Gate code, concerns, system issues..." oninput="nlUpdateCal()"></textarea></div>'+
+        '<div class="editor-section-title">Lead Source</div>'+
+        '<div class="ed-grid" style="margin-bottom:16px;"><div><label class="ed-label">How did this lead come in?</label><select id="nlLeadSource" class="ed-input"><option value="">— Unknown —</option><option value="self_generated">Self-Generated (Canvassing)</option><option value="referral">Referral</option><option value="inbound_web">Inbound / Web</option></select></div></div>'+
         (isSetterForm ?
           '<div class="editor-section-title">Book Appointment</div>'+
           '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:12px;overflow:hidden;margin-bottom:12px;">'+
@@ -2432,7 +2689,8 @@
     var nlDateEl=document.getElementById('nlApptDate'), nlTimeEl=document.getElementById('nlApptTime'), nlEndEl=document.getElementById('nlApptEnd');
     var nlApptDate=nlDateEl?nlDateEl.value:'', nlApptTime=nlTimeEl?nlTimeEl.value:'', nlApptEnd=nlEndEl?nlEndEl.value:'';
     var apptISO=(nlApptDate&&nlApptTime)?new Date(nlApptDate+'T'+nlApptTime).toISOString():(nlApptDate?new Date(nlApptDate+'T09:00').toISOString():null);
-    var newLead={first_name:first,last_name:(document.getElementById('nlLast').value||null),email:email,phone:phone,address:addr,monthly_bill:bill||null,access_code:digits,step:1,notes:fullNotes||null,rep_id:repId||null,lead_temp:'cold',lead_category:leadCat,solar_status:initSolarStatus,diagnostic_date:apptISO,arrival_end:nlApptEnd||null};
+    var nlLeadSrcEl=document.getElementById('nlLeadSource');
+    var newLead={first_name:first,last_name:(document.getElementById('nlLast').value||null),email:email,phone:phone,address:addr,monthly_bill:bill||null,access_code:digits,step:1,notes:fullNotes||null,rep_id:repId||null,lead_temp:'cold',lead_category:leadCat,solar_status:initSolarStatus,diagnostic_date:apptISO,arrival_end:nlApptEnd||null,lead_source:nlLeadSrcEl?nlLeadSrcEl.value||null:null};
     var setterLabel=repName||setter||null;
     var btn=document.querySelector('#newLeadPanel .lead-btn.lime');
     if(btn){btn.textContent='Creating...';btn.disabled=true;}
@@ -3393,6 +3651,8 @@
         '</div>'+
         '<div class="editor-section-title">Notes</div>'+
         '<textarea id="seNotes" class="ed-input" rows="2" style="margin-bottom:14px;">'+(l.notes||'')+'</textarea>'+
+        '<div class="editor-section-title">Lead Source</div>'+
+        '<select id="seLeadSource" class="ed-input" style="margin-bottom:14px;"><option value="">— Unknown —</option><option value="self_generated"'+(l.lead_source==='self_generated'?' selected':'')+'>Self-Generated (Canvassing)</option><option value="referral"'+(l.lead_source==='referral'?' selected':'')+'>Referral</option><option value="inbound_web"'+(l.lead_source==='inbound_web'?' selected':'')+'>Inbound / Web</option></select>'+
         '<div class="editor-footer">'+
           '<button class="lead-btn lime" style="padding:12px 28px;" onclick="savesSalesEdit()">Save Changes</button>'+
           '<button class="lead-btn ghost" style="padding:12px 20px;" onclick="document.getElementById(\'editorSlot\').innerHTML=\'\'">Cancel</button>'+
@@ -3430,6 +3690,7 @@
           address: document.getElementById('seAddr').value || null,
           monthly_bill: billRaw ? parseFloat(billRaw) : null,
           notes: document.getElementById('seNotes').value || null,
+          lead_source: (document.getElementById('seLeadSource')||{}).value || null,
         };
         var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
         var res = await c2.from('customers').update(updates).eq('id', id);
