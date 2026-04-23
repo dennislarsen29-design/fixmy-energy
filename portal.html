@@ -334,6 +334,7 @@
   var SUPA_URL      = 'https://kbtobyoumvbcxfbugsid.supabase.co';
   var SUPA_KEY      = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtidG9ieW91bXZiY3hmYnVnc2lkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ1NjY5MDcsImV4cCI6MjA5MDE0MjkwN30.nLE0TlMu43E4dNRxxjoc6P1OQMjfwXgonbA2MrCCrhk';
   var GKEY          = 'AIzaSyBedpPe3461c1mYiD8yxjDMkYvrJ4MQQpc';
+  var REGRID_KEY    = 'eyJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJyZWdyaWQuY29tIiwiaWF0IjoxNzc2OTcyODY0LCJleHAiOjE3Nzk1NjQ4NjQsInUiOjc2NjM2MCwiZyI6MjMxNTMsImNhcCI6InBhOnRzOnBzOmJmOm1hOnR5OmVvOnpvOnNiIn0.Ey6IlSxICW7uiVZQiPbCPzeBRztL4ntHkp6LI87HEzA';
 
   var currentUser = null;
   var adminView = 'dashboard';
@@ -2393,6 +2394,16 @@
         edField('Address','edAddr',c.address||'','text')+(isNSEdit?'':edField('System Size (kW)','edSys',c.system_size||'','text'))+
         edField('Utility','edUtil',c.utility||'','text')+edField('Monthly Bill ($)','edBill',c.monthly_bill||'','text')+
         (isNSEdit ? '' : edField('NEM Status','edNem',c.nem_status||'','text'))+
+        edField('Owner on Title','edTitleOwner',c.title_owner||'','text')+
+        edField('APN','edApn',c.apn||'','text')+
+        (c.title_owner?
+          '<div style="grid-column:1/-1;padding:8px 12px;background:rgba(141,198,63,0.06);border:1px solid rgba(141,198,63,0.18);border-radius:8px;font-size:0.72rem;">'+
+            '<span style="color:#555;font-size:0.62rem;text-transform:uppercase;letter-spacing:0.06em;">Title Status</span>&nbsp;&nbsp;'+
+            (c.title_confirmed===true?'<span style="color:#8DC63F;font-weight:700;">&#10003; Confirmed on Title</span>':
+             c.title_confirmed===false?'<span style="color:#ef4444;font-weight:700;">&#10005; Mismatch noted</span>':
+             '<span style="color:#555;">Not verified</span>')+
+          '</div>'
+        :'')+
       '</div>'+
       (isNSEdit ?
         '<div class="editor-section-title">New Solar Pipeline Status</div>'+
@@ -2501,7 +2512,9 @@
       arrival_end: document.getElementById('edArrivalEnd').value||null,
       nem_status: document.getElementById('edNem') ? document.getElementById('edNem').value||null : (cRec.nem_status||null),
       ops_payout_status: document.getElementById('edOpsPayout').value||null,
-      lead_source: document.getElementById('edLeadSource').value||null
+      lead_source: document.getElementById('edLeadSource').value||null,
+      title_owner: (document.getElementById('edTitleOwner')||{}).value||null,
+      apn: (document.getElementById('edApn')||{}).value||null
     };
     try {
       var client=supabase.createClient(SUPA_URL,SUPA_KEY);
@@ -2566,6 +2579,13 @@
             '<div id="nlBillHint" style="font-size:0.7rem;color:#8DC63F;margin-bottom:6px;min-height:14px;"></div>'+
             '<div style="padding:8px 12px;background:rgba(74,158,255,0.07);border:1px solid rgba(74,158,255,0.2);border-radius:8px;font-size:0.7rem;color:#4a9eff;line-height:1.4;">&#8505; This amount should <strong>not</strong> include any solar lease or loan payments. Enter only what you pay directly to the utility (SDG&amp;E / SCE).</div>'+
           '</div>'+
+          '<div id="nlTitleWrap" style="display:none;margin-top:12px;padding:12px 14px;background:rgba(141,198,63,0.06);border:1px solid rgba(141,198,63,0.2);border-radius:10px;">'+
+            '<div style="font-size:0.68rem;font-weight:700;color:#8DC63F;margin-bottom:8px;">&#128203; Title / Ownership</div>'+
+            '<div id="nlTitleBody"><span style="font-size:0.75rem;color:#888;">Checking parcel data…</span></div>'+
+          '</div>'+
+          '<input type="hidden" id="nlTitleOwner" value=""/>'+
+          '<input type="hidden" id="nlTitleApn" value=""/>'+
+          '<input type="hidden" id="nlTitleConfirmed" value=""/>'+
         '</div>'+
         '<div class="editor-section-title">Customer Info</div>'+
         '<div class="ed-grid">'+
@@ -2710,14 +2730,93 @@
     if (!input||nlPlacesInit||typeof google==='undefined') return;
     nlPlacesInit = true;
     var ac = new google.maps.places.Autocomplete(input,{types:['address'],componentRestrictions:{country:'us'}});
-    ac.addListener('place_changed',function(){ var place=ac.getPlace(); if(!place.geometry) return; loadNlSatellite(place.formatted_address||input.value); loadNlSolar(place.geometry.location.lat(),place.geometry.location.lng()); });
+    ac.addListener('place_changed',function(){ var place=ac.getPlace(); if(!place.geometry) return; var fa=place.formatted_address||input.value; loadNlSatellite(fa); loadNlSolar(place.geometry.location.lat(),place.geometry.location.lng()); checkTitleOwner(fa); });
   }
-  function nlAddrChanged(){ nlPlacesInit=false; var s=document.getElementById('nlSatWrap'),o=document.getElementById('nlSolarWrap'); if(s) s.style.display='none'; if(o) o.style.display='none'; setTimeout(initNlPlaces,300); }
+  function nlAddrChanged(){ nlPlacesInit=false; var s=document.getElementById('nlSatWrap'),o=document.getElementById('nlSolarWrap'),t=document.getElementById('nlTitleWrap'); if(s) s.style.display='none'; if(o) o.style.display='none'; if(t) t.style.display='none'; setTimeout(initNlPlaces,300); }
   function loadNlSatellite(addr){ var wrap=document.getElementById('nlSatWrap'),img=document.getElementById('nlSatImg'); if(!wrap||!img) return; img.src='https://maps.googleapis.com/maps/api/staticmap?center='+encodeURIComponent(addr)+'&zoom=19&size=700x200&maptype=satellite&key='+GKEY; wrap.style.display='block'; }
   async function loadNlSolar(lat,lng){
     var wrap=document.getElementById('nlSolarWrap');if(!wrap) return;
     try{ var r=await fetch('https://solar.googleapis.com/v1/buildingInsights:findClosest?location.latitude='+lat+'&location.longitude='+lng+'&requiredQuality=LOW&key='+GKEY); if(r.status!==200) return; var d=await r.json(); var s=d.solarPotential; if(!s) return; var kw=s.maxArrayPanelsCount?(s.maxArrayPanelsCount*0.4).toFixed(1):'--'; var hrs=s.maxSunshineHoursPerYear?Math.round(s.maxSunshineHoursPerYear):'--'; document.getElementById('nlS1').innerHTML='<div class="ssv">'+(s.maxArrayPanelsCount||'--')+'</div><div class="ssl">Max Panels</div>'; document.getElementById('nlS2').innerHTML='<div class="ssv">'+kw+' kW</div><div class="ssl">Max Capacity</div>'; document.getElementById('nlS3').innerHTML='<div class="ssv">'+hrs+' hrs</div><div class="ssl">Peak Sun/Yr</div>'; wrap.style.display='block'; }catch(e){}
   }
+
+  async function checkTitleOwner(address) {
+    var wrap = document.getElementById('nlTitleWrap');
+    var body = document.getElementById('nlTitleBody');
+    if (!wrap || !body || !address) return;
+    wrap.style.display = 'block';
+    body.innerHTML = '<span style="font-size:0.75rem;color:#888;">Checking parcel data…</span>';
+    document.getElementById('nlTitleOwner').value = '';
+    document.getElementById('nlTitleApn').value   = '';
+    document.getElementById('nlTitleConfirmed').value = '';
+    var owner = null, apn = null, source = '';
+    // 1 — SD County Assessor (SANDAG ArcGIS, free, no key)
+    try {
+      var addrUpper = address.toUpperCase().replace(/,.*/, '').trim();
+      var parts = addrUpper.split(' ').slice(0, 3).join(' ');
+      var sanUrl = 'https://arcgis.sandag.org/sdgis/rest/services/REGIS/Parcels/MapServer/0/query?where=' +
+        encodeURIComponent("SITEADDR LIKE '" + parts + "%'") +
+        '&outFields=SITEADDR,OWNER,OWNADDR,APN&f=json&resultRecordCount=1';
+      var sanResp = await fetch(sanUrl);
+      if (sanResp.ok) {
+        var sanData = await sanResp.json();
+        if (sanData.features && sanData.features.length) {
+          var attr = sanData.features[0].attributes;
+          owner = attr.OWNER || null;
+          apn   = attr.APN   || null;
+          source = 'SD County Assessor';
+        }
+      }
+    } catch(e) {}
+    // 2 — Regrid fallback
+    if (!owner) {
+      try {
+        var rgUrl = 'https://app.regrid.com/api/v2/query?query=' +
+          encodeURIComponent(address) + '&token=' + REGRID_KEY + '&return_custom=false&limit=1';
+        var rgResp = await fetch(rgUrl);
+        if (rgResp.ok) {
+          var rgData = await rgResp.json();
+          var feat = rgData.parcels && rgData.parcels.features && rgData.parcels.features[0];
+          if (feat && feat.properties && feat.properties.fields) {
+            var f = feat.properties.fields;
+            owner = f.owner || f.owner2 || null;
+            apn   = f.parcelnumb || null;
+            source = 'Regrid';
+          }
+        }
+      } catch(e) {}
+    }
+    // Render
+    if (owner) {
+      document.getElementById('nlTitleOwner').value = owner;
+      document.getElementById('nlTitleApn').value   = apn || '';
+      body.innerHTML =
+        '<div style="font-size:0.82rem;font-weight:700;color:#F3EDE3;margin-bottom:6px;">' + owner + '</div>' +
+        (apn ? '<div style="font-size:0.68rem;color:#666;margin-bottom:8px;">APN: ' + apn +
+          ' &nbsp;&middot;&nbsp; <span style="color:#555;">' + source + '</span></div>' : '') +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+          '<button type="button" onclick="nlTitleConfirm(true)" id="nlTitleConfirmBtn" ' +
+            'style="padding:5px 14px;border:none;border-radius:100px;background:#8DC63F;color:#1A1A1A;font-size:0.72rem;font-weight:700;cursor:pointer;">&#10003; Confirmed on Title</button>' +
+          '<button type="button" onclick="nlTitleConfirm(false)" ' +
+            'style="padding:5px 14px;border:1px solid rgba(239,68,68,0.4);border-radius:100px;background:transparent;color:#ef4444;font-size:0.72rem;font-weight:700;cursor:pointer;">&#10005; Mismatch — Note</button>' +
+        '</div>' +
+        '<div id="nlTitleNote" style="display:none;margin-top:8px;">' +
+          '<input type="text" id="nlTitleNoteText" placeholder="e.g. Spouse name, trust, different owner" ' +
+            'style="width:100%;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:8px 10px;color:#F3EDE3;font-size:0.78rem;outline:none;"/>' +
+        '</div>';
+    } else {
+      body.innerHTML = '<span style="font-size:0.75rem;color:#666;">No parcel record found — verify manually with LandGlide.</span>';
+    }
+  }
+  window.nlTitleConfirm = function(isMatch) {
+    document.getElementById('nlTitleConfirmed').value = isMatch ? 'true' : 'false';
+    var btn = document.getElementById('nlTitleConfirmBtn');
+    if (isMatch) {
+      if (btn) btn.style.background = '#5a9e20';
+      var tn = document.getElementById('nlTitleNote'); if (tn) tn.style.display = 'none';
+    } else {
+      var tn2 = document.getElementById('nlTitleNote'); if (tn2) tn2.style.display = 'block';
+    }
+  };
 
   async function createNewLead() {
     var phone=(document.getElementById('nlPhone').value||'').trim();
@@ -2757,7 +2856,14 @@
     var nlApptDate=nlDateEl?nlDateEl.value:'', nlApptTime=nlTimeEl?nlTimeEl.value:'', nlApptEnd=nlEndEl?nlEndEl.value:'';
     var apptISO=(nlApptDate&&nlApptTime)?new Date(nlApptDate+'T'+nlApptTime).toISOString():(nlApptDate?new Date(nlApptDate+'T09:00').toISOString():null);
     var nlLeadSrcEl=document.getElementById('nlLeadSource');
-    var newLead={first_name:first,last_name:(document.getElementById('nlLast').value||null),email:email,phone:phone,address:addr,monthly_bill:bill||null,access_code:digits,step:1,notes:fullNotes||null,rep_id:repId||null,lead_temp:'cold',lead_category:leadCat,solar_status:initSolarStatus,diagnostic_date:apptISO,arrival_end:nlApptEnd||null,lead_source:nlLeadSrcEl?nlLeadSrcEl.value||null:null};
+    var titleNoteEl=document.getElementById('nlTitleNoteText');
+    var titleNote=(titleNoteEl?titleNoteEl.value:'').trim();
+    if(titleNote) fullNotes=[fullNotes,'Title mismatch: '+titleNote].filter(Boolean).join(' | ');
+    var titleOwnerVal=(document.getElementById('nlTitleOwner')||{}).value||null;
+    var titleApnVal=(document.getElementById('nlTitleApn')||{}).value||null;
+    var titleConfRaw=(document.getElementById('nlTitleConfirmed')||{}).value||'';
+    var titleConfVal=titleConfRaw==='true'?true:titleConfRaw==='false'?false:null;
+    var newLead={first_name:first,last_name:(document.getElementById('nlLast').value||null),email:email,phone:phone,address:addr,monthly_bill:bill||null,access_code:digits,step:1,notes:fullNotes||null,rep_id:repId||null,lead_temp:'cold',lead_category:leadCat,solar_status:initSolarStatus,diagnostic_date:apptISO,arrival_end:nlApptEnd||null,lead_source:nlLeadSrcEl?nlLeadSrcEl.value||null:null,title_owner:titleOwnerVal,apn:titleApnVal,title_confirmed:titleConfVal};
     var setterLabel=repName||setter||null;
     var btn=document.querySelector('#newLeadPanel .lead-btn.lime');
     if(btn){btn.textContent='Creating...';btn.disabled=true;}
