@@ -52,25 +52,47 @@ exports.handler = async function(event) {
     return owner ? { owner, apn } : null;
   }
 
-  // ── 1. Regrid by lat/lon — most precise, skips address-string matching ────
+  // ── 1. Regrid search by lat/lon — most precise, skips string matching ────
   if (lat != null && lng != null) {
     try {
-      const url = 'https://app.regrid.com/api/v1/parcel.json?lat=' + lat +
-        '&lon=' + lng + '&token=' + encodeURIComponent(key);
+      const url = 'https://app.regrid.com/api/v1/search.json?lat=' + lat +
+        '&lon=' + lng + '&radius=0&token=' + encodeURIComponent(key);
       const resp = await fetch(url, { headers: regridHeaders });
       if (resp.ok) {
         const data = await resp.json();
-        // Response: { parcels: { features: [...] } } or { results: [...] }
-        const features = (data.parcels && data.parcels.features) || data.results || [];
+        const features = (data.parcels && data.parcels.features) ||
+                         (data.results && data.results.features) ||
+                         data.results || data.features || [];
         const parsed = parseRegridFeature(Array.isArray(features) ? features[0] : null);
         if (parsed) {
           return { statusCode: 200, headers: ok, body: JSON.stringify({ ...parsed, source: 'regrid_latlon' }) };
         }
+      } else {
+        console.error('Regrid lat/lon HTTP', resp.status, await resp.text().catch(()=>''));
       }
     } catch(e) { console.error('Regrid lat/lon error:', e.message); }
   }
 
-  // ── 2. Regrid typeahead by address ────────────────────────────────────────
+  // ── 2. Regrid search by address ───────────────────────────────────────────
+  try {
+    const url = 'https://app.regrid.com/api/v1/search.json?query=' +
+      encodeURIComponent(address) + '&token=' + encodeURIComponent(key) + '&limit=3';
+    const resp = await fetch(url, { headers: regridHeaders });
+    if (resp.ok) {
+      const data = await resp.json();
+      const features = (data.parcels && data.parcels.features) ||
+                       (data.results && data.results.features) ||
+                       data.results || data.features || [];
+      const parsed = parseRegridFeature(Array.isArray(features) ? features[0] : null);
+      if (parsed) {
+        return { statusCode: 200, headers: ok, body: JSON.stringify({ ...parsed, source: 'regrid_search' }) };
+      }
+    } else {
+      console.error('Regrid search HTTP', resp.status, await resp.text().catch(()=>''));
+    }
+  } catch(e) { console.error('Regrid search error:', e.message); }
+
+  // ── 3. Regrid typeahead fallback ──────────────────────────────────────────
   try {
     const url = 'https://app.regrid.com/api/v1/typeahead.json?query=' +
       encodeURIComponent(address) + '&token=' + encodeURIComponent(key) + '&limit=3';
@@ -80,7 +102,7 @@ exports.handler = async function(event) {
       const results = data.results || [];
       const parsed = parseRegridFeature(Array.isArray(results) ? results[0] : null);
       if (parsed) {
-        return { statusCode: 200, headers: ok, body: JSON.stringify({ ...parsed, source: 'regrid_v1' }) };
+        return { statusCode: 200, headers: ok, body: JSON.stringify({ ...parsed, source: 'regrid_typeahead' }) };
       }
     }
   } catch(e) { console.error('Regrid typeahead error:', e.message); }
