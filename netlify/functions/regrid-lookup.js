@@ -15,13 +15,11 @@ exports.handler = async function(event) {
     return { statusCode: 405, body: 'Method Not Allowed' };
   }
 
+  const corsHeaders = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' };
+
   const key = process.env.REGRID_KEY;
   if (!key) {
-    return {
-      statusCode: 500,
-      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-      body: JSON.stringify({ error: 'REGRID_KEY env var not set' })
-    };
+    return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: 'REGRID_KEY env var not set' }) };
   }
 
   let address, lat, lng;
@@ -32,16 +30,10 @@ exports.handler = async function(event) {
     lng = body.lng;
   } catch(e) {}
   if (!address) {
-    return {
-      statusCode: 400,
-      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-      body: JSON.stringify({ error: 'address required' })
-    };
+    return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'address required' }) };
   }
 
-  const ok = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' };
-  const empty = { statusCode: 200, headers: ok, body: JSON.stringify({ owner: null, apn: null }) };
-
+  const empty = { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner: null, apn: null }) };
   const regridHeaders = { 'Authorization': 'Bearer ' + key, 'Accept': 'application/json' };
 
   function parseRegridFeature(feat) {
@@ -52,7 +44,7 @@ exports.handler = async function(event) {
     return owner ? { owner, apn } : null;
   }
 
-  // ── 1. Regrid search by lat/lon — most precise, skips string matching ────
+  // ── 1. Regrid search by lat/lon — most precise, skips string matching ─────
   if (lat != null && lng != null) {
     try {
       const url = 'https://app.regrid.com/api/v1/search.json?lat=' + lat +
@@ -65,7 +57,7 @@ exports.handler = async function(event) {
                          data.results || data.features || [];
         const parsed = parseRegridFeature(Array.isArray(features) ? features[0] : null);
         if (parsed) {
-          return { statusCode: 200, headers: ok, body: JSON.stringify({ ...parsed, source: 'regrid_latlon' }) };
+          return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ ...parsed, source: 'regrid_latlon' }) };
         }
       } else {
         console.error('Regrid lat/lon HTTP', resp.status, await resp.text().catch(()=>''));
@@ -85,7 +77,7 @@ exports.handler = async function(event) {
                        data.results || data.features || [];
       const parsed = parseRegridFeature(Array.isArray(features) ? features[0] : null);
       if (parsed) {
-        return { statusCode: 200, headers: ok, body: JSON.stringify({ ...parsed, source: 'regrid_search' }) };
+        return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ ...parsed, source: 'regrid_search' }) };
       }
     } else {
       console.error('Regrid search HTTP', resp.status, await resp.text().catch(()=>''));
@@ -102,15 +94,15 @@ exports.handler = async function(event) {
       const results = data.results || [];
       const parsed = parseRegridFeature(Array.isArray(results) ? results[0] : null);
       if (parsed) {
-        return { statusCode: 200, headers: ok, body: JSON.stringify({ ...parsed, source: 'regrid_typeahead' }) };
+        return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ ...parsed, source: 'regrid_typeahead' }) };
       }
     }
   } catch(e) { console.error('Regrid typeahead error:', e.message); }
 
-  // ── 3. SANDAG ArcGIS Parcels ──────────────────────────────────────────────
+  // ── 4. SANDAG ArcGIS Parcels ──────────────────────────────────────────────
   try {
     const addrUpper = address.toUpperCase().replace(/,.*/, '').trim();
-    const parts = addrUpper.split(' ').slice(0, 3).join(' ');
+    const parts = addrUpper.split(' ').slice(0, 4).join(' ');
     const url = 'https://geo.sandag.org/server/rest/services/Hosted/Parcels/FeatureServer/0/query?where=' +
       encodeURIComponent("SITUS_ADDRESS LIKE '" + parts + "%'") +
       '&outFields=SITUS_ADDRESS,OWNER_NAME,ASSESSOR_PARCEL_NUMBER&f=json&resultRecordCount=1';
@@ -122,16 +114,16 @@ exports.handler = async function(event) {
         const owner = attr.OWNER_NAME || null;
         const apn   = attr.ASSESSOR_PARCEL_NUMBER || null;
         if (owner) {
-          return { statusCode: 200, headers: ok, body: JSON.stringify({ owner, apn, source: 'sandag' }) };
+          return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner, apn, source: 'sandag' }) };
         }
       }
     }
   } catch(e) { console.error('SANDAG error:', e.message); }
 
-  // ── 4. SD County public parcels (fallback) ────────────────────────────────
+  // ── 5. SD County public parcels ───────────────────────────────────────────
   try {
     const addrUpper = address.toUpperCase().replace(/,.*/, '').trim();
-    const parts = addrUpper.split(' ').slice(0, 3).join(' ');
+    const parts = addrUpper.split(' ').slice(0, 4).join(' ');
     const url = 'https://gis-public.sandiegocounty.gov/arcgis/rest/services/sdep_warehouse/PARCELS_ALL/MapServer/0/query?where=' +
       encodeURIComponent("SITUS_ADDR LIKE '" + parts + "%'") +
       '&outFields=SITUS_ADDR,OWNER_NAME,APN&f=json&resultRecordCount=1';
@@ -143,7 +135,7 @@ exports.handler = async function(event) {
         const owner = attr.OWNER_NAME || null;
         const apn   = attr.APN       || null;
         if (owner) {
-          return { statusCode: 200, headers: ok, body: JSON.stringify({ owner, apn, source: 'sd_county' }) };
+          return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner, apn, source: 'sd_county' }) };
         }
       }
     }
