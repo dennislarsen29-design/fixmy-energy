@@ -29,8 +29,13 @@ exports.handler = async function(event) {
 
   const firstName = (contact.firstName || contact.first_name || '').trim();
   const lastName  = (contact.lastName  || contact.last_name  || '').trim();
-  const email     = (contact.email || '').toLowerCase().trim();
-  const rawPhone  = contact.phone || contact.phone_raw || '';
+  // GHL may use 'email', 'email_address', or top-level payload.email
+  const email     = (contact.email || contact.email_address || payload.email || '').toLowerCase().trim();
+  const rawPhone  = contact.phone || contact.phone_raw || contact.phoneRaw || payload.phone || '';
+
+  console.log('GHL inbound payload keys:', Object.keys(payload).join(','));
+  console.log('GHL contact keys:', Object.keys(contact).join(','));
+  console.log('Parsed email:', email, '| phone:', rawPhone);
 
   // Clean phone to 10 digits (used as access_code)
   let digits = rawPhone.replace(/[^0-9]/g, '');
@@ -143,6 +148,16 @@ exports.handler = async function(event) {
       statusCode: 500,
       headers: corsHeaders,
       body: JSON.stringify({ error: 'Supabase write failed', detail: resultBody })
+    };
+  }
+
+  // Detect silent RLS failure — Supabase returns 200 with empty array when INSERT is blocked by RLS
+  if (!existingId && (resultBody === '[]' || resultBody === 'null' || resultBody === '')) {
+    console.error('Supabase silent RLS failure — INSERT returned empty. email:', email, 'phone:', rawPhone);
+    return {
+      statusCode: 500,
+      headers: corsHeaders,
+      body: JSON.stringify({ error: 'Supabase insert silently blocked (RLS?)', email, phone: rawPhone })
     };
   }
 

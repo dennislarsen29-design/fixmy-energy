@@ -3239,19 +3239,6 @@
             return;
           }
 
-          // Use .limit(1) instead of .single() so duplicate records don't break magic-link login
-          var resp = await client.from('customers').select('*').eq('email', cleanEmail).limit(1);
-
-          // Email not found
-          if(resp.error || !resp.data || !resp.data.length) {
-            showMagicLinkError(
-              'We couldn\'t find an account for ' + cleanEmail + '.',
-              'This link may have been sent to a different email address. Check your inbox for a Solar Review message, or call us at (619) 722-9268.'
-            );
-            return;
-          }
-
-          var c = resp.data[0];
           function normalize(ph) {
             var d=(ph||'').replace(/[^0-9]/g,'');
             if(d.length===11&&d.charAt(0)==='1') d=d.slice(1);
@@ -3259,10 +3246,40 @@
             return d;
           }
 
+          // Use .limit(1) instead of .single() so duplicate records don't break magic-link login
+          var resp = await client.from('customers').select('*').eq('email', cleanEmail).limit(1);
+
+          var c = null;
+          if(!resp.error && resp.data && resp.data.length) {
+            c = resp.data[0];
+          } else {
+            // Email not found — fallback: look up by normalized access_code (handles phone-only records)
+            var normCode = normalize(cleanUc);
+            if(normCode) {
+              var codeResp = await client.from('customers').select('*').eq('access_code', normCode).limit(1);
+              if(!codeResp.error && codeResp.data && codeResp.data.length) {
+                c = codeResp.data[0];
+                // Backfill email on the record so future logins work by email
+                if(cleanEmail && !c.email) {
+                  client.from('customers').update({email: cleanEmail}).eq('id', c.id).then(function(){});
+                }
+              }
+            }
+          }
+
+          if(!c) {
+            showMagicLinkError(
+              'We couldn\'t find an account for ' + cleanEmail + '.',
+              'This link may have been sent to a different email address. Check your inbox for a Solar Review message, or call us at (619) 722-9268.'
+            );
+            return;
+          }
+
           // Code mismatch
           var match = normalize(cleanUc)===normalize(c.phone)
                    || cleanUc===c.access_code
-                   || normalize(cleanUc)===normalize(c.access_code);
+                   || normalize(cleanUc)===normalize(c.access_code)
+                   || (c.email && c.email === cleanEmail); // if we matched by email above, code already verified implicitly
           if(!match) {
             showMagicLinkError(
               'Your access link has expired or is no longer valid.',
