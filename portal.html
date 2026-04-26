@@ -2240,9 +2240,27 @@
         return;
       }
       if (!data || !data.length) {
-        statusEl.style.color = '#888';
-        statusEl.textContent = 'No photos uploaded yet.';
-        return;
+        // Fall back to scanning storage bucket directly (catches pre-fix uploads)
+        var listResult = await client.storage.from('job_photos').list('jobs/' + String(custId), { limit: 100 });
+        if (listResult.error || !listResult.data || !listResult.data.length) {
+          statusEl.style.color = '#888';
+          statusEl.textContent = 'No photos uploaded yet.';
+          return;
+        }
+        data = listResult.data
+          .filter(function(f){ return f.name && f.name !== '.emptyFolderPlaceholder'; })
+          .map(function(f){
+            var path = 'jobs/' + String(custId) + '/' + f.name;
+            var url  = client.storage.from('job_photos').getPublicUrl(path).data.publicUrl;
+            // Backfill into job_photos table so future loads use DB
+            client.from('job_photos').insert({ job_id: String(custId), customer_id: String(custId), url: url, path: path, label: 'Additional Photos', uploaded_by: 'customer' }).then(function(){});
+            return { url: url, label: 'Additional Photos', uploaded_by: 'customer', quality_flag: null };
+          });
+        if (!data.length) {
+          statusEl.style.color = '#888';
+          statusEl.textContent = 'No photos uploaded yet.';
+          return;
+        }
       }
       statusEl.textContent = '';
       gridEl.innerHTML = data.map(function(p) {
