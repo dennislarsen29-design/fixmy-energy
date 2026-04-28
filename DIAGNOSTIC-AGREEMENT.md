@@ -52,7 +52,7 @@ The full diagnostic fee may be credited toward a qualifying work order when the 
 
 - Customer authorizes a qualifying upgrade through Solar Review Corp — including but not limited to panel upgrade, inverter replacement, battery storage, system expansion, or remove/reroof/reinstall (Powerwall, Enphase, Franklin WH, etc.)
 
-Credit is valid for 12 months from the date of this agreement. Non-transferable and non-redeemable for cash.
+Credit is valid for 6 months from the date of this agreement. Non-transferable and non-redeemable for cash.
 
 ---
 
