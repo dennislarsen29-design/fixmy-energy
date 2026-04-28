@@ -257,4 +257,42 @@ The portal tracks every lead through 8 stages:
 
 ---
 
-*This document is maintained in the fixmy-energy repo and referenced during development sessions to ensure all technical work aligns with business priorities.*
+---
+
+## 13. Future Business Vertical — Small Commercial
+
+### Overview
+Small commercial solar represents a natural expansion from residential diagnostics and retrofits. Target customers are small business owners (retail, office, light industrial, HOAs) with existing commercial solar installations or interest in new systems — the same core value proposition as residential but with higher ticket sizes and longer-term relationships.
+
+### Target Customers
+- Small businesses (5,000–50,000 sq ft) in San Diego / Southern California
+- Strip malls, retail centers, restaurants, warehouses, light industrial
+- HOAs and multi-family (2–4 unit) properties
+- Businesses with existing solar (installed 2012–2022) that are underperforming or need battery backup for demand charge reduction
+
+### Services
+| Service | Est. Price Range | Notes |
+|---------|-----------------|-------|
+| Commercial Diagnostic | $499–$1,499 | More complex systems, longer eval |
+| Battery / Demand Charge System | $25K–$150K | Tesla Powerwall commercial, Powerpack |
+| Panel Expansion / Retrofit | Per quote | Higher panel count, commercial racking |
+| Monitoring Subscription | $99–$299/mo | Annual contract, includes panel cleaning |
+| New Commercial Solar | Per quote | Requires C-46 or partnership |
+
+### Why This Vertical
+- **Higher margin per job** — commercial ticket sizes are 3–10× residential
+- **Less competition** — most solar companies focus on residential; small commercial is underserved
+- **Demand charge reduction** is a compelling ROI story for businesses (easier sell than residential)
+- **Repeat/referral network** — one commercial property manager can refer multiple properties
+- **Leverages existing ops** — same Tesla product stack, same ops partners, larger scope
+
+### Requirements Before Launching
+- [ ] C-10 or C-46 license (own or via RME partnership — e.g., Freedom Forever license 1124448)
+- [ ] General liability policy with commercial rider ($2M+ recommended)
+- [ ] Commercial proposal template in portal (separate from residential)
+- [ ] Commercial financing relationship (PACE, C-PACE, or commercial loan partner)
+- [ ] At least one completed commercial reference job
+
+### Timeline
+**Target launch: Phase 3 (Month 6+)** — after residential operations are systematized and generating consistent revenue. First commercial job likely sourced through an existing residential customer referral or direct outreach to a commercial property the team already services.
+
