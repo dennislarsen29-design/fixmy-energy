@@ -17,7 +17,7 @@ License #: 117450
 **Email:** {{contact.email}}
 **Date:** {{current_date}}
 **Agreement #:** {{invoice.number}}
-**Service Fee:** ${{custom_field.diagnostic_fee}}
+**Service Fee:** ${{contact.diagnostic_fee}}
 
 ---
 
@@ -35,7 +35,7 @@ Customer agrees to provide safe, unobstructed access to all system components an
 
 ## 02. Diagnostic Service Fee
 
-The Diagnostic Service Fee of **${{custom_field.diagnostic_fee}}** covers one (1) on-site visit including:
+The Diagnostic Service Fee of **${{contact.diagnostic_fee}}** covers one (1) on-site visit including:
 
 - Full system inspection
 - Inverter string testing and monitoring review
