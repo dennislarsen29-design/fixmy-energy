@@ -6,7 +6,7 @@
 # SOLAR INVERTER REPLACEMENT AGREEMENT
 
 **Solar Review Corp** (DBA: FIXMy.Energy)
-License #: [CSLB License Number]
+License #: 117450
 (619) 777-6527 | fixmy.energy
 
 ---
