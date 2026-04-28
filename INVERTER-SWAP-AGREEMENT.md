@@ -76,6 +76,9 @@ Solar Review Corp assumes no liability for any pre-existing equipment including 
 **5.4 System Performance**
 Post-installation system production levels depend on the condition of the existing solar panels, shading, orientation, and other factors outside Solar Review Corp's control. Solar Review Corp does not guarantee that production levels will match original installation specifications.
 
+**5.5 Prior Financing, Loan & Solar Agreement Terms**
+Solar Review Corp is not a party to, and assumes no responsibility for, any previously arranged financing agreements, solar loan agreements, power purchase agreements (PPAs), solar lease agreements, PACE obligations, or any other financial instruments entered into by the Customer with any prior solar company, lender, or financing provider. All obligations under such agreements remain solely the responsibility of the homeowner. Additionally, any prior repairs, battery retrofits, system upgrades, or other work previously performed by Solar Review Corp under separate agreements remains the sole responsibility of the homeowner and is not covered under the warranty or scope of work described in this agreement unless explicitly stated herein.
+
 ---
 
 ## 6. Customer Responsibilities
