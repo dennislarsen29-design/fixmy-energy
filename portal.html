@@ -593,7 +593,7 @@
         '<div class="admin-filters">'+filterBtns+'</div>'+
       '</div>'+
     '</div>';
-    var actionsBar = '<div class="admin-actions-bar"><button class="admin-action-btn" onclick="openNewLead()">+ New Lead</button><button class="admin-action-btn ghost" onclick="exportCSV()">&#8681; Export CSV</button><button class="admin-action-btn ghost" onclick="loadAdminDashboard()" title="Re-pull all leads from database">&#8635; Refresh</button></div>';
+    var actionsBar = '<div class="admin-actions-bar"><button class="admin-action-btn" onclick="openNewLead()">+ New Lead</button><button class="admin-action-btn ghost" onclick="exportCSV()">&#8681; Export CSV</button><button class="admin-action-btn ghost" onclick="openReassignModal()">&#128257; Reassign</button><button class="admin-action-btn ghost" onclick="loadAdminDashboard()" title="Re-pull all leads from database">&#8635; Refresh</button></div>';
     var listHtml = '';
     if (!c.length) { listHtml = '<div style="padding:32px;text-align:center;color:#555;">No leads in this category.</div>'; }
     else { c.forEach(function(cust) { listHtml += buildLeadCard(cust); }); }
@@ -603,6 +603,72 @@
   }
 
   function setFilter(f) { adminFilter = f; renderAdminView(adminView); }
+
+  // ── BULK REASSIGN ─────────────────────────────────────────────────────────
+  function openReassignModal() {
+    var existing = document.getElementById('reassignModal');
+    if (existing) { existing.remove(); return; }
+
+    var repPool = [];
+    TECHS.forEach(function(t){ repPool.push({id:t.id,name:t.name,role:'tech'}); });
+    SALES_REPS.forEach(function(r){ repPool.push({id:r.id,name:r.name,role:'rep'}); });
+    SETTERS.forEach(function(s){ repPool.push({id:s.id,name:s.name,role:'setter'}); });
+    adminTeamMembers.forEach(function(m){
+      if (!repPool.find(function(x){ return x.id===m.id; })) repPool.push(m);
+    });
+
+    var opts = repPool.map(function(m){
+      return '<option value="'+m.id+'">'+m.name+' ('+m.role+')</option>';
+    }).join('');
+
+    var unassigned = adminCustomers.filter(function(c){ return !c.rep_id; }).length;
+    var total = adminCustomers.length;
+
+    var modal = document.createElement('div');
+    modal.id = 'reassignModal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;padding:24px;';
+    modal.innerHTML =
+      '<div style="background:#1e1e1e;border:1px solid rgba(255,255,255,0.12);border-radius:16px;padding:28px;width:100%;max-width:420px;">'+
+        '<div style="font-size:1rem;font-weight:800;margin-bottom:4px;">&#128257; Bulk Reassign</div>'+
+        '<div style="font-size:0.75rem;color:#888;margin-bottom:20px;">Assign a tech/rep to multiple leads at once. Use this to ensure leads appear in the correct tech portal.</div>'+
+        '<label style="font-size:0.65rem;text-transform:uppercase;letter-spacing:0.08em;color:#666;display:block;margin-bottom:5px;">Assign To</label>'+
+        '<select id="reassignTarget" style="width:100%;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:10px;padding:11px 12px;color:#F3EDE3;font-size:0.88rem;margin-bottom:16px;outline:none;">'+opts+'</select>'+
+        '<label style="font-size:0.65rem;text-transform:uppercase;letter-spacing:0.08em;color:#666;display:block;margin-bottom:8px;">Which leads?</label>'+
+        '<div style="display:flex;flex-direction:column;gap:8px;margin-bottom:20px;">'+
+          '<button onclick="runBulkReassign(\'unassigned\')" style="background:rgba(141,198,63,0.12);border:1px solid rgba(141,198,63,0.3);color:#8DC63F;border-radius:10px;padding:12px;font-size:0.82rem;font-weight:700;cursor:pointer;text-align:left;">'+
+            '&#10003; Unassigned only <span style="float:right;opacity:0.6;font-weight:400;">'+unassigned+' leads</span></button>'+
+          '<button onclick="runBulkReassign(\'all\')" style="background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.25);color:#ffaa00;border-radius:10px;padding:12px;font-size:0.82rem;font-weight:700;cursor:pointer;text-align:left;">'+
+            '&#9888; All leads (overwrite existing) <span style="float:right;opacity:0.6;font-weight:400;">'+total+' leads</span></button>'+
+        '</div>'+
+        '<div id="reassignStatus" style="font-size:0.75rem;color:#888;min-height:18px;margin-bottom:12px;"></div>'+
+        '<button onclick="document.getElementById(\'reassignModal\').remove()" style="width:100%;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);color:#888;border-radius:10px;padding:11px;font-size:0.82rem;cursor:pointer;">Cancel</button>'+
+      '</div>';
+    document.body.appendChild(modal);
+    modal.addEventListener('click', function(e){ if (e.target===modal) modal.remove(); });
+  }
+
+  async function runBulkReassign(scope) {
+    var repId = (document.getElementById('reassignTarget')||{}).value;
+    if (!repId) return;
+    var statusEl = document.getElementById('reassignStatus');
+    if (statusEl) statusEl.textContent = 'Updating…';
+    try {
+      var sc = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var q = sc.from('customers').update({rep_id: repId});
+      if (scope === 'unassigned') q = q.or('rep_id.is.null,rep_id.eq.');
+      var {error} = await q;
+      if (error) throw error;
+      // Update in-memory cache
+      adminCustomers.forEach(function(c){
+        if (scope === 'all' || !c.rep_id) c.rep_id = repId;
+      });
+      var repName = (TECHS.concat(SALES_REPS).concat(SETTERS).find(function(x){ return x.id===repId; })||{}).name || repId;
+      if (statusEl) statusEl.innerHTML = '<span style="color:#8DC63F;">&#10003; Done — assigned to '+repName+'</span>';
+      setTimeout(function(){ var m=document.getElementById('reassignModal'); if(m) m.remove(); }, 1800);
+    } catch(e) {
+      if (statusEl) statusEl.innerHTML = '<span style="color:#ef4444;">Error: '+e.message+'</span>';
+    }
+  }
 
   // ── JOBS TAB ───────────────────────────────────────────────────────────────
   function renderJobsView() {
@@ -3058,6 +3124,7 @@
       '</div>'+
       '<div class="editor-section-title">Assignment</div>'+
       '<div class="ed-grid">'+
+        edSelect('Assigned Tech / Rep','edRepId',c.rep_id||'none',[['none','— Unassigned —'],['tech4','Dennis Larsen'],['rep1','Ronda'],['setter1','Setter']])+
         edSelect('Assign Ops','edAssignedOps',c.assigned_ops||'none',[['none','— Unassigned —'],['ops1','Jon Klos'],['ops2','John Espinoza'],['ops3','Cosmic Solar'],['ops4','Axia'],['dennis','Dennis (Self)']])+
         edSelect('Ops Payout','edOpsPayout',c.ops_payout_status||'pending',[['pending','Pending'],['paid','Paid']])+
         edSelect('Lead Source','edLeadSource',c.lead_source||'',[['','— Unknown —'],['direct_mail','Direct Mail Response'],['self_generated','Self-Generated (Canvassing)'],['referral','Referral'],['inbound_web','Inbound / Web']])+
@@ -3134,6 +3201,7 @@
       agreement_status: document.getElementById('edAgSt').value,
       agreement_url: document.getElementById('edAgUrl').value||null,
       notes: document.getElementById('edNotes').value||null,
+      rep_id: document.getElementById('edRepId').value==='none'?null:document.getElementById('edRepId').value||null,
       assigned_ops: document.getElementById('edAssignedOps').value==='none'?null:document.getElementById('edAssignedOps').value||null,
       arrival_end: document.getElementById('edArrivalEnd').value||null,
       nem_status: document.getElementById('edNem') ? document.getElementById('edNem').value||null : (cRec.nem_status||null),
@@ -4279,8 +4347,10 @@
     try { client = supabase.createClient(SUPA_URL, SUPA_KEY); }
     catch(e) { document.getElementById('dashBody').innerHTML = '<p style="color:#ef4444;">Database error.</p>'; return; }
 
-    // Fetch this person's accounts by rep_id
-    var r1 = await client.from('customers').select('*').eq('rep_id', person.id).order('created_at', {ascending:false});
+    // Fetch accounts — Dennis (tech4) is owner so sees all; others see only their own
+    var r1 = person.id === 'tech4'
+      ? await client.from('customers').select('*').order('created_at', {ascending:false})
+      : await client.from('customers').select('*').eq('rep_id', person.id).order('created_at', {ascending:false});
     var allRecords = r1.data || [];
     allRecords.sort(function(a,b){ return new Date(b.created_at)-new Date(a.created_at); });
 
