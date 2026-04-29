@@ -19,7 +19,7 @@ exports.handler = async function(event) {
 
   const key = process.env.REGRID_KEY;
   if (!key) {
-    return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ error: 'REGRID_KEY env var not set' }) };
+    return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner: null, apn: null, debug: 'REGRID_KEY env var not set' }) };
   }
 
   let address, lat, lng;
@@ -33,7 +33,7 @@ exports.handler = async function(event) {
     return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'address required' }) };
   }
 
-  const empty = { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner: null, apn: null }) };
+  const tried = [];
   const regridHeaders = { 'Authorization': 'Bearer ' + key, 'Accept': 'application/json' };
 
   function parseRegridFeature(feat) {
@@ -59,10 +59,16 @@ exports.handler = async function(event) {
         if (parsed) {
           return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ ...parsed, source: 'regrid_latlon' }) };
         }
+        tried.push('regrid_latlon:ok_no_data');
       } else {
-        console.error('Regrid lat/lon HTTP', resp.status, await resp.text().catch(()=>''));
+        const errText = await resp.text().catch(()=>'');
+        tried.push('regrid_latlon:' + resp.status + ' ' + errText.slice(0,80));
+        console.error('Regrid lat/lon HTTP', resp.status, errText);
       }
-    } catch(e) { console.error('Regrid lat/lon error:', e.message); }
+    } catch(e) {
+      tried.push('regrid_latlon:err:' + e.message);
+      console.error('Regrid lat/lon error:', e.message);
+    }
   }
 
   // ── 2. Regrid search by address ───────────────────────────────────────────
@@ -79,10 +85,16 @@ exports.handler = async function(event) {
       if (parsed) {
         return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ ...parsed, source: 'regrid_search' }) };
       }
+      tried.push('regrid_search:ok_no_data');
     } else {
-      console.error('Regrid search HTTP', resp.status, await resp.text().catch(()=>''));
+      const errText = await resp.text().catch(()=>'');
+      tried.push('regrid_search:' + resp.status + ' ' + errText.slice(0,80));
+      console.error('Regrid search HTTP', resp.status, errText);
     }
-  } catch(e) { console.error('Regrid search error:', e.message); }
+  } catch(e) {
+    tried.push('regrid_search:err:' + e.message);
+    console.error('Regrid search error:', e.message);
+  }
 
   // ── 3. Regrid typeahead fallback ──────────────────────────────────────────
   try {
@@ -96,8 +108,14 @@ exports.handler = async function(event) {
       if (parsed) {
         return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ ...parsed, source: 'regrid_typeahead' }) };
       }
+      tried.push('regrid_typeahead:ok_no_data');
+    } else {
+      const errText = await resp.text().catch(()=>'');
+      tried.push('regrid_typeahead:' + resp.status + ' ' + errText.slice(0,80));
     }
-  } catch(e) { console.error('Regrid typeahead error:', e.message); }
+  } catch(e) {
+    tried.push('regrid_typeahead:err:' + e.message);
+  }
 
   // ── 4. SANDAG ArcGIS Parcels ──────────────────────────────────────────────
   try {
@@ -117,8 +135,14 @@ exports.handler = async function(event) {
           return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner, apn, source: 'sandag' }) };
         }
       }
+      tried.push('sandag:ok_no_data');
+    } else {
+      tried.push('sandag:' + resp.status);
     }
-  } catch(e) { console.error('SANDAG error:', e.message); }
+  } catch(e) {
+    tried.push('sandag:err:' + e.message);
+    console.error('SANDAG error:', e.message);
+  }
 
   // ── 5. SD County public parcels ───────────────────────────────────────────
   try {
@@ -138,8 +162,14 @@ exports.handler = async function(event) {
           return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner, apn, source: 'sd_county' }) };
         }
       }
+      tried.push('sd_county:ok_no_data');
+    } else {
+      tried.push('sd_county:' + resp.status);
     }
-  } catch(e) { console.error('SD County GIS error:', e.message); }
+  } catch(e) {
+    tried.push('sd_county:err:' + e.message);
+    console.error('SD County GIS error:', e.message);
+  }
 
-  return empty;
+  return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner: null, apn: null, debug: tried.join(' | ') }) };
 };
