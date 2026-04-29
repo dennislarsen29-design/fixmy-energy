@@ -117,16 +117,24 @@ exports.handler = async function(event) {
     tried.push('regrid_typeahead:err:' + e.message);
   }
 
+  // ── Helper: ArcGIS spatial point query params (most reliable when lat/lng known) ──
+  function arcgisPointParams(lat, lng, outFields) {
+    return '&geometry=' + encodeURIComponent(JSON.stringify({ x: lng, y: lat })) +
+      '&geometryType=esriGeometryPoint&spatialRel=esriSpatialRelIntersects&inSR=4326' +
+      '&outFields=' + outFields + '&f=json&resultRecordCount=1';
+  }
+
   // ── Helper: strip city/state/zip, take first 4 words for LIKE matching ────
   const addrUpper = address.toUpperCase().replace(/,.*/, '').trim();
   const addrParts = addrUpper.split(' ').slice(0, 4).join(' ');
 
-  // ── 4. SANDAG geo.sandag.org (corrected field names + Referer) ───────────
+  // ── 4. SANDAG geo.sandag.org — spatial if lat/lng available, text fallback ─
   try {
-    const url = 'https://geo.sandag.org/server/rest/services/Hosted/Parcels/FeatureServer/0/query?where=' +
-      encodeURIComponent("SITUS_ADDRESS LIKE '" + addrParts + "%'") +
-      '&outFields=SITUS_ADDRESS,OWN_NAME1,APN_8&f=json&resultRecordCount=1';
-    const resp = await fetch(url, {
+    const baseUrl = 'https://geo.sandag.org/server/rest/services/Hosted/Parcels/FeatureServer/0/query?';
+    const query = (lat != null && lng != null)
+      ? 'where=1%3D1' + arcgisPointParams(lat, lng, 'SITUS_ADDRESS,OWN_NAME1,APN_8')
+      : 'where=' + encodeURIComponent("SITUS_ADDRESS LIKE '" + addrParts + "%'") + '&outFields=SITUS_ADDRESS,OWN_NAME1,APN_8&f=json&resultRecordCount=1';
+    const resp = await fetch(baseUrl + query, {
       headers: { 'Accept': 'application/json', 'Referer': 'https://sdgis.sandag.org/' }
     });
     if (resp.ok) {
@@ -148,12 +156,13 @@ exports.handler = async function(event) {
     console.error('SANDAG error:', e.message);
   }
 
-  // ── 5. SANDAG Parcels_South fallback ─────────────────────────────────────
+  // ── 5. SANDAG Parcels_South — spatial if lat/lng available ───────────────
   try {
-    const url = 'https://geo.sandag.org/server/rest/services/Hosted/Parcels_South/FeatureServer/0/query?where=' +
-      encodeURIComponent("SITUS_ADDRESS LIKE '" + addrParts + "%'") +
-      '&outFields=SITUS_ADDRESS,OWN_NAME1,APN_8&f=json&resultRecordCount=1';
-    const resp = await fetch(url, {
+    const baseUrl = 'https://geo.sandag.org/server/rest/services/Hosted/Parcels_South/FeatureServer/0/query?';
+    const query = (lat != null && lng != null)
+      ? 'where=1%3D1' + arcgisPointParams(lat, lng, 'SITUS_ADDRESS,OWN_NAME1,APN_8')
+      : 'where=' + encodeURIComponent("SITUS_ADDRESS LIKE '" + addrParts + "%'") + '&outFields=SITUS_ADDRESS,OWN_NAME1,APN_8&f=json&resultRecordCount=1';
+    const resp = await fetch(baseUrl + query, {
       headers: { 'Accept': 'application/json', 'Referer': 'https://sdgis.sandag.org/' }
     });
     if (resp.ok) {
@@ -174,11 +183,13 @@ exports.handler = async function(event) {
     tried.push('sandag_south:err:' + e.message);
   }
 
-  // ── 6. City of SD — webmaps.sandiego.gov GeocoderMerged (replaces broken SD County host) ──
+  // ── 6. City of SD — webmaps.sandiego.gov GeocoderMerged — spatial if lat/lng ──
   try {
-    const url = 'https://webmaps.sandiego.gov/arcgis/rest/services/GeocoderMerged/MapServer/1/query?where=' +
-      encodeURIComponent("SITUS_STREET LIKE '" + addrParts + "%'") +
-      '&outFields=SITUS_STREET,OWN_NAME1,APN_8&f=json&resultRecordCount=1';
+    const baseUrl = 'https://webmaps.sandiego.gov/arcgis/rest/services/GeocoderMerged/MapServer/1/query?';
+    const query = (lat != null && lng != null)
+      ? 'where=1%3D1' + arcgisPointParams(lat, lng, 'SITUS_STREET,OWN_NAME1,APN_8')
+      : 'where=' + encodeURIComponent("SITUS_STREET LIKE '" + addrParts + "%'") + '&outFields=SITUS_STREET,OWN_NAME1,APN_8&f=json&resultRecordCount=1';
+    const url = baseUrl + query;
     const resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
     if (resp.ok) {
       const data = await resp.json();
