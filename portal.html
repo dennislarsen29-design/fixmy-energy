@@ -2973,6 +2973,16 @@
           '</div>'+
           '<div id="nlAutoNote" style="padding:8px 14px;background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.2);border-radius:8px;font-size:0.72rem;color:#ffaa00;margin-bottom:16px;">&#128222; <strong>Setter lead:</strong> No confirmation SMS/email will be sent.</div>'
         : '')+
+        '<div class="editor-section-title">Business Line</div>'+
+        '<div style="display:flex;gap:8px;margin-bottom:16px;">'+
+          '<button id="nlCatFixmy" onclick="nlSetCat(\'fixmy\')" style="flex:1;padding:9px;border:none;border-radius:8px;background:#8DC63F;color:#1A1A1A;font-size:0.8rem;font-weight:700;cursor:pointer;">&#9889; FixMy.Energy</button>'+
+          '<button id="nlCatNS"    onclick="nlSetCat(\'new_solar\')" style="flex:1;padding:9px;border:1px solid rgba(255,255,255,0.15);border-radius:8px;background:rgba(255,255,255,0.06);color:#888;font-size:0.8rem;font-weight:700;cursor:pointer;">&#9728; New Solar</button>'+
+        '</div>'+
+        '<div id="nlNsStatusWrap" style="display:none;margin-bottom:14px;">'+
+          '<label class="ed-label">New Solar Status</label>'+
+          '<select id="nlNsStatus" class="ed-input"><option value="ns_eval_booked">Eval Booked</option><option value="ns_eval_rescheduled">Eval Rescheduled</option><option value="ns_eval_canceled">Eval Canceled</option></select>'+
+        '</div>'+
+        '<input type="hidden" id="nlLeadCat" value="fixmy"/>'+
         '<input type="hidden" id="nlType" value="setter-ronda"/>'+
         '<input type="hidden" id="nlRepId" value="'+(repId||'')+'"/>'+
         '<input type="hidden" id="nlRepName" value="'+(repName||'')+'"/>'+
@@ -3060,6 +3070,14 @@
       '</div>';
     slot.scrollIntoView({behavior:'smooth',block:'start'});
     setTimeout(function(){ initNlPlaces(); }, 400);
+  }
+
+  function nlSetCat(cat) {
+    document.getElementById('nlLeadCat').value = cat;
+    var fw = document.getElementById('nlCatFixmy'), ns = document.getElementById('nlCatNS'), sw = document.getElementById('nlNsStatusWrap');
+    if (fw) { fw.style.background = cat==='fixmy'?'#8DC63F':'rgba(255,255,255,0.06)'; fw.style.color = cat==='fixmy'?'#1A1A1A':'#888'; fw.style.border = cat==='fixmy'?'none':'1px solid rgba(255,255,255,0.15)'; }
+    if (ns) { ns.style.background = cat==='new_solar'?'#4a9eff':'rgba(255,255,255,0.06)'; ns.style.color = cat==='new_solar'?'#fff':'#888'; ns.style.border = cat==='new_solar'?'none':'1px solid rgba(255,255,255,0.15)'; }
+    if (sw) sw.style.display = cat==='new_solar'?'block':'none';
   }
 
   function setLeadType(btn) {
@@ -3276,8 +3294,10 @@
     var referredByEl = document.getElementById('nlReferredBy');
     var referredBy = referredByEl ? referredByEl.value.trim() : '';
     if (referredBy) fullNotes = [fullNotes, 'Referred by: '+referredBy+' ($1,000 incentive pending close)'].filter(Boolean).join(' | ');
-    var leadCat = (hasSolar === 'no') ? 'new_solar' : 'fixmy';
-    var initSolarStatus = (leadCat === 'new_solar') ? 'ns_eval_booked' : null;
+    var nlCatEl = document.getElementById('nlLeadCat');
+    var leadCat = nlCatEl ? (nlCatEl.value || 'fixmy') : ((hasSolar === 'no') ? 'new_solar' : 'fixmy');
+    var nlNsStatusEl = document.getElementById('nlNsStatus');
+    var initSolarStatus = (leadCat === 'new_solar') ? (nlNsStatusEl ? nlNsStatusEl.value : 'ns_eval_booked') : null;
     var nlDateEl=document.getElementById('nlApptDate'), nlTimeEl=document.getElementById('nlApptTime'), nlEndEl=document.getElementById('nlApptEnd');
     var nlApptDate=nlDateEl?nlDateEl.value:'', nlApptTime=nlTimeEl?nlTimeEl.value:'', nlApptEnd=nlEndEl?nlEndEl.value:'';
     var apptISO=(nlApptDate&&nlApptTime)?new Date(nlApptDate+'T'+nlApptTime).toISOString():(nlApptDate?new Date(nlApptDate+'T09:00').toISOString():null);
@@ -3500,13 +3520,6 @@
             el.className='upload-status ok';
           }
         });
-      } else {
-        // Fall back to uploads table
-        var resp2=await client.from('uploads').select('upload_type,status').eq('customer_id',custId);
-        if(resp2.data) resp2.data.forEach(function(u){
-          var el=document.getElementById('ust-'+u.upload_type);
-          if(el){el.textContent='&#10003; Uploaded';el.className='upload-status ok';}
-        });
       }
     }catch(e){ console.warn('loadUploadStatus error:', e); }
   }
@@ -3554,13 +3567,6 @@
         quality_note: aiResult.note
       });
 
-      // 5 — Also update uploads table for status tracking
-      await client.from('uploads').upsert({
-        customer_id:  currentUser.id,
-        upload_type:  type,
-        file_name:    file.name,
-        status:       aiResult.flag === 'good' ? 'uploaded' : 'needs_retake'
-      },{onConflict:'customer_id,upload_type'});
 
       // 6 — Show result with quality feedback
       if(el){
@@ -4062,6 +4068,16 @@
       fieldJobs = fr.data || [];
     }
 
+    // Fetch customer-uploaded photo counts for all this rep's records (batch — one query)
+    var custPhotoMap = {};
+    try {
+      var allIds = allRecords.map(function(r){ return String(r.id); });
+      if (allIds.length) {
+        var cpResp = await client.from('job_photos').select('customer_id').eq('uploaded_by','customer').in('customer_id', allIds);
+        (cpResp.data||[]).forEach(function(p){ custPhotoMap[p.customer_id] = (custPhotoMap[p.customer_id]||0)+1; });
+      }
+    } catch(e) {}
+
     var salesView = sessionStorage.getItem('salesView_'+person.id) || 'leads';
     var OPS_NAMES = {ops1:'Jon Klos',ops2:'John Espinoza',ops3:'Cosmic Solar',ops4:'Axia',dennis:'Dennis'};
 
@@ -4161,8 +4177,11 @@
             h += '<div style="display:flex;gap:3px;">'+tempBtn('cold','❄ Cold')+tempBtn('warm','☀ Warm')+tempBtn('hot','🔥 Hot')+'</div>';
             h += '<div style="display:flex;gap:4px;">';
             if (l.phone) h += '<a href="tel:'+l.phone.replace(/\D/g,'')+'" style="font-size:0.68rem;padding:4px 10px;background:rgba(141,198,63,0.12);color:#8DC63F;border-radius:100px;border:1px solid rgba(141,198,63,0.25);text-decoration:none;font-weight:700;">📞</a>';
+            if (l.email) { var mlLink='https://fixmy.energy/portal?email='+encodeURIComponent(l.email)+'&code='+(l.phone||'').replace(/\D/g,'').slice(-10); h += '<button onclick="sendMagicLink(\''+mlLink+'\',\''+l.email+'\')" style="font-size:0.68rem;padding:4px 10px;background:rgba(74,158,255,0.08);color:#4a9eff;border-radius:100px;border:1px solid rgba(74,158,255,0.25);cursor:pointer;font-weight:700;">🔗 Link</button>'; }
             h += '<button onclick="salesEditLead(\''+l.id+'\')" style="font-size:0.68rem;padding:4px 10px;background:rgba(255,255,255,0.06);color:#aaa;border-radius:100px;border:1px solid rgba(255,255,255,0.12);cursor:pointer;font-weight:700;">✏ Edit</button>';
             h += '</div></div></div>';
+            var cpCount = custPhotoMap[String(l.id)]||0;
+            if (cpCount) h += '<div style="margin-top:6px;font-size:0.7rem;color:#4a9eff;">📷 '+cpCount+' customer photo'+(cpCount>1?'s':'')+' uploaded</div>';
             if (isNSL) {
               // NS progress bar (12 steps)
               var nsKeys = Object.keys(NS_STATUSES); var nsIdx = nsKeys.indexOf(l.solar_status||'ns_eval_booked');
@@ -4224,8 +4243,16 @@
                 '<div style="font-size:0.75rem;color:#888;margin-top:2px;">'+(j.address||'No address')+'</div>'+
                 (j.install_type?'<div style="font-size:0.7rem;color:#666;margin-top:1px;">'+j.install_type+'</div>':'')+
               '</div>';
+              var propStatus = (j.proposal&&j.proposal.status)||'';
+              var propBadge = propStatus==='accepted' ? '<span style="font-size:0.65rem;padding:2px 7px;border-radius:20px;background:rgba(141,198,63,0.15);color:#8DC63F;border:1px solid rgba(141,198,63,0.3);margin-left:6px;">✓ Accepted</span>'
+                : propStatus==='sent' ? '<span style="font-size:0.65rem;padding:2px 7px;border-radius:20px;background:rgba(74,158,255,0.1);color:#4a9eff;border:1px solid rgba(74,158,255,0.25);margin-left:6px;">Proposal Sent</span>' : '';
+              h += '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">';
               h += '<div style="background:'+iBg+';border-radius:6px;padding:4px 10px;font-size:0.72rem;font-weight:700;color:'+iClr+';">'+iLbl+'</div>';
-              h += '</div>'+opsHtml+'</div>';
+              h += '<button onclick="openProposalBuilder(\''+j.id+'\')" style="font-size:0.65rem;padding:4px 10px;background:rgba(141,198,63,0.08);color:#8DC63F;border-radius:100px;border:1px solid rgba(141,198,63,0.25);cursor:pointer;font-weight:700;">📄 Proposal</button>';
+              h += '</div>';
+              h += '</div>';
+              if (propBadge) h += '<div style="margin-top:6px;">'+propBadge+'</div>';
+              h += opsHtml+'</div>';
             }
           });
         }
@@ -4556,60 +4583,6 @@
   }
 
 
-  // ── (legacy rep view removed — replaced by loadSalesDashboard) ──────────────
-  async function loadRepDashboard_UNUSED(rep) { /* replaced by loadSalesDashboard */
-    var leads = []; var repView = 'leads';
-
-    function renderRepView() {
-      var newLeads     = leads.filter(function(l){ return !l.step || l.step <= 1; });
-      var activeLeads  = leads.filter(function(l){ return l.step >= 2 && l.step < 8; });
-      var closedLeads  = leads.filter(function(l){ return l.step >= 8; });
-      var totalComm    = closedLeads.reduce(function(s, l){ return s + calcRepCommission(l); }, 0);
-      var pendingComm  = activeLeads.reduce(function(s, l){ return s + calcRepCommission(l); }, 0);
-
-      var listLeads = repView === 'leads' ? leads : closedLeads;
-
-      var html = '<div class="rep-header">' +
-        '<div><div class="rep-name">' + rep.name + '</div><div style="font-size:0.72rem;color:#666;">Sales Representative</div></div>' +
-        '<div class="rep-stats">' +
-          '<div class="rep-stat"><div class="rep-stat-val">' + leads.length + '</div><div class="rep-stat-lbl">Total</div></div>' +
-          '<div class="rep-stat"><div class="rep-stat-val">' + activeLeads.length + '</div><div class="rep-stat-lbl">Active</div></div>' +
-          '<div class="rep-stat"><div class="rep-stat-val">' + closedLeads.length + '</div><div class="rep-stat-lbl">Closed</div></div>' +
-        '</div></div>' +
-
-        '<div class="rep-tabs">' +
-          '<div class="rep-tab ' + (repView==='leads'?'active':'') + '" onclick="repViewSwitch(\'leads\')">My Leads</div>' +
-          '<div class="rep-tab ' + (repView==='commissions'?'active':'') + '" onclick="repViewSwitch(\'commissions\')">Commissions</div>' +
-        '</div>';
-
-      if (repView === 'commissions') {
-        html += '<div class="rep-commission-bar">' +
-          '<div class="rep-comm-row"><span class="rep-comm-label">Closed Jobs</span><span>' + closedLeads.length + '</span></div>' +
-          '<div class="rep-comm-row"><span class="rep-comm-label">Earned (Paid)</span><span>$' + totalComm.toLocaleString() + '</span></div>' +
-          '<div class="rep-comm-row"><span class="rep-comm-label">Pending (Active)</span><span>$' + pendingComm.toLocaleString() + '</span></div>' +
-          '<div class="rep-comm-row"><span class="rep-comm-label">Total Pipeline Value</span><span>$' + (totalComm + pendingComm).toLocaleString() + '</span></div>' +
-        '</div>';
-        listLeads = closedLeads;
-      }
-
-      html += '<div class="rep-pipeline">';
-      if (!listLeads.length) {
-        html += '<div style="text-align:center;padding:32px;color:#555;">No leads yet. Start adding!</div>';
-      } else {
-        listLeads.forEach(function(l) {
-          var stageLbl = l.step<=1?'New':l.step<=3?'Evaluation':l.step<=7?'Battery Retrofit':l.step<=8?'Active Job':'Complete';
-          var stageCls = l.step<=1?'stage-new':l.step<=3?'stage-active':l.step<=7?'stage-active':'stage-complete';
-          var comm = calcRepCommission(l);
-          html += '<div class="rep-lead-card">' +
-            '<div><div class="rep-lead-name">' + (l.first_name||'') + ' ' + (l.last_name||'') + '</div>' +
-            '<div class="rep-lead-detail">' + (l.address||l.phone||'No address') + ' · ' + (l.utility||'') + '</div>' +
-            '<div class="rep-lead-detail" style="color:#8DC63F;margin-top:4px;">Commission: $' + comm.toLocaleString() + '</div></div>' +
-            '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;">' +
-            '<span class="rep-lead-stage ' + stageCls + '">' + stageLbl + '</span>' +
-            (l.phone ? '<a href="tel:' + l.phone.replace(/\D/g,'') + '" class="tech-btn tech-btn-call" style="font-size:0.68rem;padding:5px 12px;">Call</a>' : '') +
-            '</div></div>';
-        });
-      }
       html += '</div>';
       document.getElementById('dashBody').innerHTML = html;
     }
@@ -4622,33 +4595,6 @@
     return loadSalesDashboard(tech, {roleLabel: 'Tech \xB7 Sales', showFieldJobs: false, setterMode: false});
   }
 
-  async function loadTechDashboard_FIELD(tech) {
-    document.getElementById('loginBox').style.display = 'none';
-    document.getElementById('dashboard').style.display = 'block';
-    document.getElementById('userName').textContent = tech.name + ' \xB7 Tech';
-    document.getElementById('dashBody').innerHTML = '<p style="color:#aaa;padding:20px 0;">Loading your jobs...</p>';
-
-    var client;
-    try { client = supabase.createClient(SUPA_URL, SUPA_KEY); }
-    catch(e) { document.getElementById('dashBody').innerHTML = '<p style="color:#ef4444;">Database error.</p>'; return; }
-
-    // UNUSED — legacy field view (fetched all jobs, replaced by loadSalesDashboard with own-records-only filter)
-    var resp = await client.from('customers').select('*')
-      .gte('step', 2).order('diagnostic_date', {ascending:true});
-    var jobs = resp.data || [];
-    var activeJobId = null;
-    var checklistState = JSON.parse(sessionStorage.getItem('checklist_' + tech.id) || '{}');
-
-    function renderTechView() {
-      var html = '<div class="tech-portal-wrap"><div class="tech-header">' +
-        '<div><div class="tech-name">👷 ' + tech.name + '</div><div style="font-size:0.72rem;color:#888;margin-top:3px;">' + jobs.length + ' active job' + (jobs.length!==1?'s':'') + '</div></div>' +
-        '<span class="tech-badge">Tech · Sales</span></div>';
-
-      if (!jobs.length) {
-        html += '<div class="tech-no-jobs">✅ No active jobs right now.<br/>Check back after new evaluations are scheduled.</div>';
-        document.getElementById('dashBody').innerHTML = html;
-        return;
-      }
 
       jobs.forEach(function(job) {
         var jid = job.id;
@@ -4818,92 +4764,6 @@
     return loadSalesDashboard(setter, {roleLabel: 'Setter', showFieldJobs: false, setterMode: true});
   }
 
-  async function loadSetterDashboard_LEGACY(setter) {
-    document.getElementById('loginBox').style.display = 'none';
-    document.getElementById('dashboard').style.display = 'block';
-    document.getElementById('userName').textContent = setter.name + ' \xB7 Setter';
-    document.getElementById('dashBody').innerHTML = '<p style="color:#aaa;padding:20px 0;">Loading...</p>';
-
-    var client;
-    try { client = supabase.createClient(SUPA_URL, SUPA_KEY); }
-    catch(e) { document.getElementById('dashBody').innerHTML = '<p style="color:#ef4444;">Database error.</p>'; return; }
-
-    var resp = await client.from('customers').select('*').eq('rep_id', setter.id).order('created_at', {ascending:false});
-    var leads = resp.data || [];
-
-    var setterFilter = 'all'; // all | callback | booked | new
-
-    function renderSetter() {
-      var newLeads      = leads.filter(function(l){ return !l.step || l.step < 1; });
-      var bookedLeads   = leads.filter(function(l){ return l.step >= 1 && l.step < 8; });
-      var callbackLeads = leads.filter(function(l){ return !l.diagnostic_date && (!l.step || l.step <= 1); });
-      var closedLeads   = leads.filter(function(l){ return l.step >= 8; });
-
-      var filterList = setterFilter === 'callback' ? callbackLeads
-                     : setterFilter === 'booked'   ? bookedLeads
-                     : setterFilter === 'new'       ? newLeads
-                     : leads;
-
-      var h = '<div class="rep-header">' +
-        '<div>' +
-          '<div class="rep-name">' + setter.name + '</div>' +
-          '<div style="font-size:0.72rem;color:#666;">Setter · Phone & Online</div>' +
-        '</div>' +
-        '<div class="rep-stats">' +
-          '<div class="rep-stat"><div class="rep-stat-val">' + leads.length + '</div><div class="rep-stat-lbl">Total</div></div>' +
-          '<div class="rep-stat"><div class="rep-stat-val">' + callbackLeads.length + '</div><div class="rep-stat-lbl">Call Back</div></div>' +
-          '<div class="rep-stat"><div class="rep-stat-val">' + bookedLeads.length + '</div><div class="rep-stat-lbl">Booked</div></div>' +
-          '<div class="rep-stat"><div class="rep-stat-val">' + closedLeads.length + '</div><div class="rep-stat-lbl">Closed</div></div>' +
-        '</div></div>';
-
-      // Filter tabs + new lead button
-      h += '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:16px;">' +
-        '<div class="rep-tabs" style="margin-bottom:0;">' +
-          '<div class="rep-tab ' + (setterFilter==='all'?'active':'') + '" onclick="setterFilterSwitch(\'all\')">All</div>' +
-          '<div class="rep-tab ' + (setterFilter==='callback'?'active':'') + '" onclick="setterFilterSwitch(\'callback\')">📞 Call Back (' + callbackLeads.length + ')</div>' +
-          '<div class="rep-tab ' + (setterFilter==='booked'?'active':'') + '" onclick="setterFilterSwitch(\'booked\')">📅 Booked</div>' +
-        '</div>' +
-        '<button class="rep-new-lead-btn" onclick="openNewLead()">+ New Lead</button>' +
-      '</div>';
-
-      h += '<div class="rep-pipeline">';
-      if (!filterList.length) {
-        h += '<div style="text-align:center;padding:32px;color:#555;">' +
-          (setterFilter === 'callback' ? '✅ No callbacks pending!' : 'No leads in this view.') +
-          '</div>';
-      } else {
-        filterList.forEach(function(l) {
-          var stageLbl = !l.step||l.step<1 ? 'New'
-                       : l.step>=8          ? 'Complete'
-                       : l.step>=5          ? 'Battery Retrofit'
-                       : l.diagnostic_date  ? 'Booked'
-                       : l.step>=2          ? 'Active'
-                       : 'Needs Booking';
-          var stageCls = stageLbl==='New'||stageLbl==='Needs Booking' ? 'stage-new'
-                       : stageLbl==='Complete' ? 'stage-complete' : 'stage-active';
-          var diagDate = l.diagnostic_date
-            ? '📅 ' + new Date(l.diagnostic_date).toLocaleDateString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})
-            : '';
-          var needsCall = !l.diagnostic_date && (!l.step || l.step <= 1);
-
-          h += '<div class="rep-lead-card" style="' + (needsCall ? 'border-color:rgba(100,180,255,0.3);' : '') + '">' +
-            '<div style="flex:1;">' +
-              '<div class="rep-lead-name">' + (l.first_name||'') + ' ' + (l.last_name||'') + '</div>' +
-              '<div class="rep-lead-detail">' + (l.phone||'No phone') + ' · ' + (l.address||'No address') + '</div>' +
-              '<div class="rep-lead-detail" style="color:#aaa;margin-top:2px;">' +
-                (l.monthly_bill ? '$'+l.monthly_bill+'/mo' : '') +
-                (l.utility ? ' · '+l.utility : '') +
-                (diagDate ? ' · <span style="color:#8DC63F;">'+diagDate+'</span>' : '') +
-              '</div>' +
-              (needsCall ? '<div style="font-size:0.65rem;color:#64b4ff;margin-top:4px;font-weight:600;">📞 Needs follow-up call</div>' : '') +
-            '</div>' +
-            '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex-shrink:0;">' +
-              '<span class="rep-lead-stage ' + stageCls + '">' + stageLbl + '</span>' +
-              (l.phone ? '<a href="tel:' + l.phone.replace(/[^0-9]/g,'') + '" class="tech-btn tech-btn-call" style="font-size:0.68rem;padding:5px 12px;">📞 Call</a>' : '') +
-            '</div>' +
-          '</div>';
-        });
-      }
       h += '</div>';
       document.getElementById('dashBody').innerHTML = h;
     }
