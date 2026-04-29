@@ -4142,7 +4142,11 @@
               var nsRec = NS_STATUSES[l.solar_status]||{label:'New Lead',color:'#4a9eff'};
               h += '<div style="font-size:0.92rem;font-weight:700;">'+(l.first_name||'')+' '+(l.last_name||'')+'<span style="font-size:0.62rem;margin-left:6px;padding:2px 7px;border-radius:20px;background:'+nsRec.color+'22;color:'+nsRec.color+';border:1px solid '+nsRec.color+'44;">'+nsRec.label+'</span></div>';
             } else {
-              h += '<div style="font-size:0.92rem;font-weight:700;">'+(l.first_name||'')+' '+(l.last_name||'')+'</div>';
+              var cardStep = l.step||1;
+              var cardStepLabels = ['Eval Booked','Photos','Diagnostic','Analysis','Follow Up','BR Sold','Dead','Install','Monitoring'];
+              var cardStepColors = ['#666','#4a9eff','#ffaa00','#f97316','#9b6de8','#8DC63F','#ef4444','#8DC63F','#8DC63F'];
+              var csClr = cardStepColors[cardStep-1]||'#666';
+              h += '<div style="font-size:0.92rem;font-weight:700;">'+(l.first_name||'')+' '+(l.last_name||'')+'<span style="font-size:0.62rem;margin-left:6px;padding:2px 7px;border-radius:20px;background:'+csClr+'22;color:'+csClr+';border:1px solid '+csClr+'44;">'+(cardStepLabels[cardStep-1]||'Step '+cardStep)+'</span></div>';
             }
             h += '<div style="font-size:0.75rem;color:#888;margin-top:2px;">'+(l.phone||'No phone')+'</div>'+
               '<div style="font-size:0.72rem;color:#666;margin-top:1px;">'+(l.address||'No address')+'</div>'+
@@ -4165,6 +4169,12 @@
               h += '<div style="display:flex;align-items:center;gap:2px;margin-top:10px;">';
               [1,2,3,4,5,6,7,8].forEach(function(n,i){ h+='<div style="width:'+(n<=step?'8px':'6px')+';height:'+(n<=step?'8px':'6px')+';border-radius:50%;background:'+(n<=step?'#8DC63F':'rgba(255,255,255,0.12)')+';flex-shrink:0;"></div>'; if(i<7) h+='<div style="flex:1;height:2px;background:'+(step>n?'#8DC63F':'rgba(255,255,255,0.08)')+';"></div>'; });
               h += '</div>';
+              var sLabels = ['Eval Booked','Photos','Diagnostic','Analysis','Follow Up','BR Sold','Dead','Install','Monitoring'];
+              var sOpts = sLabels.map(function(lbl,i){ return '<option value="'+(i+1)+'"'+(step===i+1?' selected':'')+'>'+lbl+'</option>'; }).join('');
+              h += '<div style="margin-top:10px;display:flex;align-items:center;gap:8px;">'+
+                '<span style="font-size:0.65rem;color:#666;white-space:nowrap;">Update Status:</span>'+
+                '<select onchange="setLeadStep(\''+l.id+'\',this.value)" style="flex:1;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:#ccc;font-size:0.75rem;padding:5px 8px;cursor:pointer;">'+sOpts+'</select>'+
+              '</div>';
             }
             h += '</div>';
           });
@@ -4429,6 +4439,81 @@
       await c2.from('customers').update({lead_temp:temp}).eq('id',id);
       var rec=allRecords.find(function(r){return r.id===id;}); if(rec) rec.lead_temp=temp;
       renderSales();
+    };
+    window.setLeadStep = async function(id, newStep) {
+      newStep = parseInt(newStep); if (!newStep) return;
+      var rec = allRecords.find(function(r){ return r.id === id; });
+      if (!rec) return;
+      if (newStep === 3 && (rec.step||1) < 3 && !rec.invoice_amount) {
+        openSalesDiagModal(id, rec);
+        return;
+      }
+      var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+      await c2.from('customers').update({step: newStep}).eq('id', id);
+      rec.step = newStep;
+      renderSales();
+    };
+    function openSalesDiagModal(id, rec) {
+      var presets = [250, 349, 449, 499, 599];
+      var existing = rec.invoice_amount ? parseFloat(rec.invoice_amount) : 349;
+      var presetsHtml = presets.map(function(fee) {
+        var active = fee === existing;
+        return '<button onclick="salesDiagFeeSelect('+fee+')" id="sDiagBtn_'+fee+'" style="flex:1;min-width:70px;padding:11px 4px;background:'+(active?'rgba(141,198,63,0.15)':'rgba(255,255,255,0.04)')+';border:1px solid '+(active?'rgba(141,198,63,0.4)':'rgba(255,255,255,0.1)')+';border-radius:10px;color:'+(active?'#8DC63F':'#aaa')+';cursor:pointer;text-align:center;font-weight:700;font-size:0.9rem;">$'+fee+'</button>';
+      }).join('');
+      var modal = document.createElement('div');
+      modal.id = 'salesDiagModal';
+      modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;';
+      modal.innerHTML =
+        '<div style="background:#1a1c17;border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:26px;max-width:420px;width:100%;">'+
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">'+
+          '<div style="font-size:0.62rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#ffaa00;">Set Diagnostic Fee</div>'+
+          '<button onclick="document.getElementById(\'salesDiagModal\').remove()" style="background:none;border:none;color:#666;cursor:pointer;font-size:1.1rem;">&#10005;</button>'+
+        '</div>'+
+        '<div style="font-weight:700;font-size:1rem;margin-bottom:16px;">'+(rec.first_name||'')+' '+(rec.last_name||'')+'</div>'+
+        '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;" id="sDiagPresets">'+presetsHtml+'</div>'+
+        '<div style="margin-bottom:18px;">'+
+          '<label style="font-size:0.68rem;color:#666;display:block;margin-bottom:6px;">Custom Amount ($)</label>'+
+          '<input type="number" id="sDiagCustom" min="149" max="999" step="1" value="'+existing+'" oninput="window._sDiagFee=parseFloat(this.value)||349;[250,349,449,499,599].forEach(function(f){var b=document.getElementById(\'sDiagBtn_\'+f);if(b){b.style.background=\'rgba(255,255,255,0.04)\';b.style.borderColor=\'rgba(255,255,255,0.1)\';b.style.color=\'#aaa\';}});" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:9px 12px;font-size:0.9rem;box-sizing:border-box;"/>'+
+        '</div>'+
+        '<div style="display:flex;gap:10px;justify-content:flex-end;">'+
+          '<button onclick="document.getElementById(\'salesDiagModal\').remove()" style="padding:10px 18px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:100px;color:#aaa;cursor:pointer;font-size:0.85rem;">Cancel</button>'+
+          '<button onclick="confirmSalesDiagFee(\''+id+'\')" style="padding:10px 22px;background:#8DC63F;color:#000;border:none;border-radius:100px;font-weight:700;cursor:pointer;font-size:0.85rem;">&#9889; Confirm &amp; Send</button>'+
+        '</div></div>';
+      document.body.appendChild(modal);
+      window._sDiagFee = existing;
+      window._sDiagRec = rec;
+    }
+    window.salesDiagFeeSelect = function(fee) {
+      window._sDiagFee = fee;
+      document.getElementById('sDiagCustom').value = fee;
+      [250,349,449,499,599].forEach(function(f){
+        var b = document.getElementById('sDiagBtn_'+f);
+        if (!b) return;
+        var a = f === fee;
+        b.style.background   = a ? 'rgba(141,198,63,0.15)' : 'rgba(255,255,255,0.04)';
+        b.style.borderColor  = a ? 'rgba(141,198,63,0.4)'  : 'rgba(255,255,255,0.1)';
+        b.style.color        = a ? '#8DC63F' : '#aaa';
+      });
+    };
+    window.confirmSalesDiagFee = async function(id) {
+      var fee = window._sDiagFee || 349;
+      var rec = window._sDiagRec;
+      if (!rec) return;
+      var updates = { step: 3, invoice_amount: fee, invoice_status: 'sent' };
+      try {
+        var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+        var { error } = await c2.from('customers').update(updates).eq('id', id);
+        if (error) throw error;
+        Object.assign(rec, updates);
+        var payload = {
+          email: rec.email||'', full_name: ((rec.first_name||'')+' '+(rec.last_name||'')).trim(),
+          phone: rec.phone||'', address: rec.address||'',
+          diagnostic_fee: fee, rep_name: rec.setter_name||person.name
+        };
+        if (GHL_DIAG_AGREEMENT_WEBHOOK) fetch(GHL_DIAG_AGREEMENT_WEBHOOK, {method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}).catch(function(){});
+        document.getElementById('salesDiagModal').remove();
+        renderSales();
+      } catch(e) { alert('Save failed: '+e.message); }
     };
     window.sendToOps = async function(id) {
       if(!confirm('Send this job to Admin for Ops scheduling?\nAdmin will assign a partner and set the appointment time.')) return;
