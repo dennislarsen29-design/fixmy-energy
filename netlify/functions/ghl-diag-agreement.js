@@ -19,7 +19,13 @@ exports.handler = async function(event) {
   try {
     const resp = await fetch(GHL_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/plain, */*',
+        'User-Agent': 'Mozilla/5.0 (compatible; FixMyEnergy/1.0)',
+        'Origin': 'https://fixmy.energy',
+        'Referer': 'https://fixmy.energy/'
+      },
       body: JSON.stringify(payload)
     });
     ghlStatus = resp.status;
@@ -32,7 +38,7 @@ exports.handler = async function(event) {
   console.log('GHL response:', ghlStatus, ghlBody);
 
   return {
-    statusCode: ghlStatus < 500 ? 200 : 502,
+    statusCode: 200,
     headers: cors,
     body: JSON.stringify({ ghlStatus, ghlBody })
   };
