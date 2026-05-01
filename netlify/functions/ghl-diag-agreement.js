@@ -1,45 +1,103 @@
-// Proxies the diagnostic agreement webhook to GHL server-side,
-// avoiding browser no-cors header stripping and enabling server logs.
+// Creates/updates the GHL contact directly via API, then adds a tag to trigger
+// the "send-diag-agreement" workflow — bypasses the broken Inbound Webhook
+// Mapping Reference that prevents trigger.body.* variables from resolving.
 exports.handler = async function(event) {
   const cors = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' };
 
   if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers: cors, body: '' };
   if (event.httpMethod !== 'POST') return { statusCode: 405, headers: cors, body: 'Method Not Allowed' };
 
-  const GHL_URL = 'https://services.leadconnectorhq.com/hooks/gXWwbOVymY0iRfj7c1It/webhook-trigger/6eecc115-3c45-4c6d-9f3b-e785e94292dc';
+  const GHL_API_KEY    = process.env.GHL_API_KEY;
+  const GHL_LOCATION_ID = 'gXWwbOVymY0iRfj7c1It';
+  const TRIGGER_TAG     = 'send-diag-agreement';
+
+  if (!GHL_API_KEY) {
+    console.error('GHL_API_KEY env var not set');
+    return { statusCode: 500, headers: cors, body: JSON.stringify({ error: 'GHL_API_KEY not configured' }) };
+  }
 
   let payload;
   try { payload = JSON.parse(event.body); } catch(e) {
     return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Invalid JSON' }) };
   }
 
-  console.log('GHL diag-agreement → sending for:', payload.email, payload.phone, 'fee:', payload.diagnostic_fee);
+  console.log('GHL diag-agreement → upserting contact:', payload.email, payload.phone, 'fee:', payload.diagnostic_fee);
 
-  let ghlStatus, ghlBody;
+  const ghlHeaders = {
+    'Authorization': 'Bearer ' + GHL_API_KEY,
+    'Content-Type':  'application/json',
+    'Version':       '2021-07-28'
+  };
+
+  // Step 1: Upsert contact
+  let contactId;
   try {
-    const resp = await fetch(GHL_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json, text/plain, */*',
-        'User-Agent': 'Mozilla/5.0 (compatible; FixMyEnergy/1.0)',
-        'Origin': 'https://fixmy.energy',
-        'Referer': 'https://fixmy.energy/'
-      },
-      body: JSON.stringify(payload)
+    const upsertBody = {
+      locationId: GHL_LOCATION_ID,
+      email:      payload.email      || undefined,
+      phone:      payload.phone      || undefined,
+      firstName:  payload.firstName  || undefined,
+      lastName:   payload.lastName   || undefined,
+      address1:   payload.address1   || undefined
+    };
+
+    const upsertResp = await fetch('https://services.leadconnectorhq.com/contacts/upsert', {
+      method:  'POST',
+      headers: ghlHeaders,
+      body:    JSON.stringify(upsertBody)
     });
-    ghlStatus = resp.status;
-    ghlBody   = await resp.text();
+
+    const upsertData = await upsertResp.json();
+    console.log('GHL upsert status:', upsertResp.status, JSON.stringify(upsertData).slice(0, 200));
+
+    if (!upsertResp.ok) {
+      return {
+        statusCode: 502,
+        headers: cors,
+        body: JSON.stringify({ error: 'GHL contact upsert failed', detail: upsertData })
+      };
+    }
+
+    contactId = upsertData.contact && upsertData.contact.id;
   } catch(e) {
-    console.error('GHL fetch error:', e.message);
-    return { statusCode: 502, headers: cors, body: JSON.stringify({ error: 'GHL unreachable', detail: e.message }) };
+    console.error('GHL upsert error:', e.message);
+    return { statusCode: 502, headers: cors, body: JSON.stringify({ error: 'GHL upsert error', detail: e.message }) };
   }
 
-  console.log('GHL response:', ghlStatus, ghlBody);
+  if (!contactId) {
+    return { statusCode: 502, headers: cors, body: JSON.stringify({ error: 'GHL upsert returned no contact id' }) };
+  }
+
+  // Step 2: Remove tag first so "Tag Added" fires even on re-runs for the same contact
+  try {
+    await fetch('https://services.leadconnectorhq.com/contacts/' + contactId + '/tags', {
+      method:  'DELETE',
+      headers: ghlHeaders,
+      body:    JSON.stringify({ tags: [TRIGGER_TAG] })
+    });
+  } catch(e) {
+    console.warn('GHL tag removal (pre-clean) error (non-fatal):', e.message);
+  }
+
+  // Step 3: Add trigger tag — fires "Tag Added: send-diag-agreement" workflow in GHL
+  let tagStatus;
+  try {
+    const tagResp = await fetch('https://services.leadconnectorhq.com/contacts/' + contactId + '/tags', {
+      method:  'POST',
+      headers: ghlHeaders,
+      body:    JSON.stringify({ tags: [TRIGGER_TAG] })
+    });
+    tagStatus = tagResp.status;
+    const tagBody = await tagResp.text();
+    console.log('GHL tag add status:', tagStatus, tagBody);
+  } catch(e) {
+    console.error('GHL tag add error:', e.message);
+    return { statusCode: 502, headers: cors, body: JSON.stringify({ error: 'GHL tag add error', detail: e.message }) };
+  }
 
   return {
     statusCode: 200,
     headers: cors,
-    body: JSON.stringify({ ghlStatus, ghlBody })
+    body: JSON.stringify({ success: true, contactId, tagStatus })
   };
 };
