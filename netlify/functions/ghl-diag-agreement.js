@@ -6,7 +6,7 @@ exports.handler = async function(event) {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers: cors, body: '' };
   if (event.httpMethod !== 'POST') return { statusCode: 405, headers: cors, body: 'Method Not Allowed' };
 
-  const GHL_URL = 'https://services.leadconnectorhq.com/hooks/gXWwbOVymY0iRfj7c1It/webhook-trigger/3d688c42-03ed-4960-ad82-64d2467ddaf1';
+  const GHL_URL = 'https://services.leadconnectorhq.com/hooks/gXWwbOVymY0iRfj7c1It/webhook-trigger/6eecc115-3c45-4c6d-9f3b-e785e94292dc';
 
   let payload;
   try { payload = JSON.parse(event.body); } catch(e) {
