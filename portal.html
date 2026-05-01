@@ -384,6 +384,22 @@
   var NS_JOB_KEYS = ['ns_welcome_closed','ns_button_up','ns_call_dead','ns_permit_submitted','ns_install_scheduled','ns_pto'];
   var AURORA_ELIGIBLE = ['ns_welcome_scheduled','ns_welcome_rescheduled','ns_welcome_closed','ns_button_up','ns_call_dead','ns_permit_submitted','ns_install_scheduled','ns_pto'];
 
+  var FIXMY_STEP_LABELS = [
+    'Eval Booked','Photos Uploaded','Diagnostic Launch','Analysis Launch',
+    'Upgrade Launch','Follow Up Needed','Not Sold / Dead',
+    'Booked, Pending Ops','Permit Submitted','Install Booked','Install Complete'
+  ];
+  var FIXMY_STEP_COLORS = [
+    '#666','#4a9eff','#ffaa00','#f97316',
+    '#9b6de8','#9b6de8','#ef4444',
+    '#8DC63F','#8DC63F','#8DC63F','#8DC63F'
+  ];
+  var FIXMY_JOB_STEPS = [8,9,10,11];
+  function fixmyStepSoldType(step) {
+    if (FIXMY_JOB_STEPS.indexOf(step) >= 0) return 'battery_retrofit';
+    return null;
+  }
+
   function pushLeadToWebhooks(lead) {
     var data = Object.assign({ source:'portal-admin', timestamp: new Date().toISOString() }, lead);
     fetch(GHL_WEBHOOK, { method:'POST', mode:'no-cors', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data) }).catch(function(e){ console.warn('GHL:', e); });
@@ -719,8 +735,9 @@
           var status = c.job_status||'pending';
           var statusLabel = {pending:'Pending Assessment',in_progress:'In Progress',ready:'Ready for Review',approved:'Approved'}[status]||status;
           var statusColor = {pending:'#ffaa00',in_progress:'#4a9eff',ready:'#f97316',approved:'#8DC63F'}[status]||'#888';
-          var sLabel = saleTypeLabel[c.sold_type]||c.sold_type||'';
-          var sColor = saleTypeColor[c.sold_type]||'#888';
+          var _fStep = (c.step||8) - 1;
+          var sLabel = FIXMY_STEP_LABELS[_fStep] || (c.sold_type||'');
+          var sColor = FIXMY_STEP_COLORS[_fStep] || '#888';
           var jobMagic = 'https://fixmy.energy/portal?email='+encodeURIComponent(c.email||'')+'&code='+encodeURIComponent(c.access_code||(c.phone||'').replace(/\D/g,''));
           listHtml += '<div class="job-card" data-id="'+c.id+'" onclick="openJob(this.dataset.id)">'+
             '<div class="job-card-top"><div class="job-name">'+(c.first_name||'')+' '+(c.last_name||'')+'</div>'+
@@ -1842,9 +1859,11 @@
         '<div style="'+cardStyle+'">'+
           '<div style="'+secHdr+'">System Configuration</div>'+
           '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:12px;">'+
-            '<div>'+
-              '<label style="'+labelStyle+'">Customer Name</label>'+
-              '<input type="text" id="bc_name" placeholder="e.g. Michael Flint" style="width:100%;'+inpSmStyle+'box-sizing:border-box;" oninput="bcUpdate()"/>'+
+            '<div style="position:relative;">'+
+              '<label style="'+labelStyle+'">Customer Name <span style="color:#555;font-weight:400;font-size:0.55rem;">(search to link)</span></label>'+
+              '<input type="text" id="bc_name" placeholder="Type name to search..." style="width:100%;'+inpSmStyle+'box-sizing:border-box;" oninput="bcNameSearch(this.value)" autocomplete="off"/>'+
+              '<input type="hidden" id="bc_customer_id"/>'+
+              '<div id="bc_name_dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:200;background:#1a1c17;border:1px solid rgba(255,255,255,0.15);border-radius:8px;max-height:180px;overflow-y:auto;margin-top:2px;"></div>'+
             '</div>'+
             '<div>'+
               '<label style="'+labelStyle+'">Existing Solar</label>'+
@@ -1920,6 +1939,36 @@
           '</div>'+
         '</div>'+
 
+        // SDCP incentive
+        '<div style="'+cardStyle+'">'+
+          '<div style="'+secHdr+'">SDCP Battery Incentive (One-Time)</div>'+
+          '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;align-items:end;">'+
+            '<div>'+
+              '<label style="'+labelStyle+'">Solar Type</label>'+
+              '<div style="display:flex;flex-direction:column;gap:6px;margin-top:2px;">'+
+                '<label style="display:flex;align-items:center;gap:6px;font-size:0.72rem;color:#aaa;cursor:pointer;">'+
+                  '<input type="radio" name="bc_sdcp_type" value="existing" checked onchange="bcUpdate()" style="accent-color:#8DC63F;"/> Existing Solar &mdash; $250/kWh'+
+                '</label>'+
+                '<label style="display:flex;align-items:center;gap:6px;font-size:0.72rem;color:#aaa;cursor:pointer;">'+
+                  '<input type="radio" name="bc_sdcp_type" value="new_solar" onchange="bcUpdate()" style="accent-color:#8DC63F;"/> New Solar &mdash; $350/kWh'+
+                '</label>'+
+              '</div>'+
+            '</div>'+
+            '<div>'+
+              '<label style="'+labelStyle+'">Battery Capacity</label>'+
+              '<div style="display:flex;align-items:center;gap:4px;">'+
+                '<input type="number" id="bc_batt_kwh" value="13.5" min="1" max="100" step="0.5" style="width:65px;'+inpSmStyle+'" oninput="bcUpdate()"/>'+
+                '<span style="font-size:0.72rem;color:#888;">kWh</span>'+
+              '</div>'+
+            '</div>'+
+            '<div id="bc_sdcp_display" style="text-align:center;background:rgba(155,109,232,0.08);border:1px solid rgba(155,109,232,0.25);border-radius:8px;padding:10px;">'+
+              '<div style="font-size:1.1rem;font-weight:800;color:#9b6de8;" id="bc_sdcp_amt">$3,375</div>'+
+              '<div style="font-size:0.58rem;color:#888;margin-top:2px;">SDCP One-Time Incentive</div>'+
+            '</div>'+
+          '</div>'+
+          '<div style="margin-top:8px;font-size:0.62rem;color:#555;line-height:1.5;">San Diego Community Power incentive: $250/kWh for existing solar, $350/kWh for new solar. Powerwall 3 = 13.5 kWh.</div>'+
+        '</div>'+
+
         // System cost
         '<div style="'+cardStyle+'margin-bottom:0;">'+
           '<div style="'+secHdr+'">System Cost &amp; Payback</div>'+
@@ -1943,7 +1992,11 @@
 
       // ── RIGHT COLUMN: Live Results ────────────────────────────────────────────
       '<div id="bc_results" style="'+cardStyle+'margin-bottom:0;display:flex;flex-direction:column;gap:14px;">'+
-        '<div style="'+secHdr+'margin-bottom:0;">Savings Analysis</div>'+
+        '<div style="display:flex;justify-content:space-between;align-items:center;">'+
+          '<div style="'+secHdr+'margin-bottom:0;">Savings Analysis</div>'+
+          '<button onclick="bcSaveToCustomer()" style="font-size:0.7rem;padding:6px 14px;background:rgba(141,198,63,0.12);border:1px solid rgba(141,198,63,0.35);border-radius:100px;color:#8DC63F;cursor:pointer;font-weight:700;" id="bc_save_btn">&#128190; Save to Customer</button>'+
+        '</div>'+
+        '<div id="bc_save_msg" style="display:none;font-size:0.7rem;color:#8DC63F;text-align:center;">&#10003; Saved to customer record</div>'+
         '<div id="bc_result_body" style="color:#888;font-size:0.8rem;">Calculating...</div>'+
       '</div>'+
 
@@ -1992,10 +2045,18 @@
         annualTOU += moSavings;
       }
 
+      var battKwh  = parseFloat((document.getElementById('bc_batt_kwh')||{}).value) || 13.5;
+      var sdcpTypeEl = document.querySelector('input[name="bc_sdcp_type"]:checked');
+      var sdcpType = sdcpTypeEl ? sdcpTypeEl.value : 'existing';
+      var sdcpRate = sdcpType === 'new_solar' ? 350 : 250;
+      var sdcpAmt  = battKwh * sdcpRate;
+      var sdcpEl = document.getElementById('bc_sdcp_amt');
+      if (sdcpEl) sdcpEl.textContent = '$'+Math.round(sdcpAmt).toLocaleString();
+
       var vppMid   = (vppLo + vppHi) / 2;
       var annTotal = annualTOU + vppMid;
       var itcAmt   = gross * (itcPct / 100);
-      var netCost  = gross - itcAmt;
+      var netCost  = gross - itcAmt - sdcpAmt;
       var payback  = annTotal > 0 ? (netCost / annTotal) : 0;
       var annShift = monthData.reduce(function(s,m){return s+m.shifted;},0);
 
@@ -2041,7 +2102,7 @@
           '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:10px;text-align:center;">'+
             '<div style="font-size:1.3rem;font-weight:800;color:#ccc;line-height:1.1;">'+payback.toFixed(1)+'y</div>'+
             '<div style="font-size:0.58rem;color:#888;margin-top:3px;">Payback Period</div>'+
-            '<div style="font-size:0.56rem;color:#666;margin-top:2px;">after '+itcPct+'% ITC</div>'+
+            '<div style="font-size:0.56rem;color:#666;margin-top:2px;">after ITC + SDCP</div>'+
           '</div>'+
         '</div>'+
 
@@ -2049,7 +2110,8 @@
           '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#888;margin-bottom:8px;">Investment Summary</div>'+
           '<div style="display:flex;justify-content:space-between;font-size:0.74rem;margin-bottom:4px;"><span style="color:#aaa;">Gross System Cost</span><span style="color:#F3EDE3;">$'+Math.round(gross).toLocaleString()+'</span></div>'+
           '<div style="display:flex;justify-content:space-between;font-size:0.74rem;margin-bottom:4px;"><span style="color:#aaa;">Federal ITC ('+itcPct+'%)</span><span style="color:#8DC63F;">&minus;$'+Math.round(itcAmt).toLocaleString()+'</span></div>'+
-          '<div style="display:flex;justify-content:space-between;font-size:0.74rem;padding-top:6px;border-top:1px solid rgba(255,255,255,0.08);"><span style="color:#F3EDE3;font-weight:700;">Net Cost After Tax Credit</span><span style="color:#F3EDE3;font-weight:700;">$'+Math.round(netCost).toLocaleString()+'</span></div>'+
+          '<div style="display:flex;justify-content:space-between;font-size:0.74rem;margin-bottom:4px;"><span style="color:#aaa;">SDCP Battery Incentive</span><span style="color:#9b6de8;">&minus;$'+Math.round(sdcpAmt).toLocaleString()+'</span></div>'+
+          '<div style="display:flex;justify-content:space-between;font-size:0.74rem;padding-top:6px;border-top:1px solid rgba(255,255,255,0.08);"><span style="color:#F3EDE3;font-weight:700;">Net Cost After Incentives</span><span style="color:#F3EDE3;font-weight:700;">$'+Math.round(netCost).toLocaleString()+'</span></div>'+
           '<div style="display:flex;justify-content:space-between;font-size:0.74rem;margin-top:4px;"><span style="color:#aaa;">Annual Savings (mid estimate)</span><span style="color:#8DC63F;font-weight:700;">$'+Math.round(annTotal).toLocaleString()+'</span></div>'+
         '</div>'+
 
@@ -2083,10 +2145,81 @@
           'Federal ITC eligibility subject to tax liability — consult a tax advisor.'+
         '</div>';
 
+      window._bcLastCalc = {
+        customer_name: custName, solar_kw: solarKw,
+        annual_tou_savings: Math.round(annualTOU), vpp_lo: vppLo, vpp_hi: vppHi,
+        vpp_mid: Math.round(vppMid), sdcp_incentive_total: Math.round(sdcpAmt),
+        sdcp_type: sdcpType, batt_kwh: battKwh,
+        gross: gross, itc_pct: itcPct, itc_amt: Math.round(itcAmt),
+        net_cost: Math.round(netCost), annual_total: Math.round(annTotal),
+        payback_years: parseFloat(payback.toFixed(1)),
+        calculated_at: new Date().toISOString()
+      };
       document.getElementById('bc_result_body').innerHTML = html;
     };
 
     window.bcUpdate();
+
+    window.bcNameSearch = function(query) {
+      var dd = document.getElementById('bc_name_dropdown');
+      if (!dd) return;
+      query = (query||'').trim().toLowerCase();
+      if (!query || query.length < 2) { dd.style.display = 'none'; return; }
+      var matches = (adminCustomers||[]).filter(function(c){
+        var full = ((c.first_name||'')+' '+(c.last_name||'')).toLowerCase();
+        return full.indexOf(query) >= 0;
+      }).slice(0, 8);
+      if (!matches.length) { dd.style.display = 'none'; return; }
+      dd.innerHTML = matches.map(function(c){
+        var name = ((c.first_name||'')+' '+(c.last_name||'')).trim();
+        var sub = [c.address, c.system_size ? c.system_size+' kW' : null].filter(Boolean).join(' · ');
+        return '<div onclick="bcSelectCustomer(\''+c.id+'\',\''+name.replace(/'/g,"\\'")+'\')" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid rgba(255,255,255,0.06);" onmouseover="this.style.background=\'rgba(255,255,255,0.06)\'" onmouseout="this.style.background=\'\'">'+
+          '<div style="font-size:0.78rem;color:#F3EDE3;font-weight:600;">'+name+'</div>'+
+          (sub?'<div style="font-size:0.65rem;color:#666;margin-top:1px;">'+sub+'</div>':'')+
+        '</div>';
+      }).join('');
+      dd.style.display = 'block';
+      if (!window._bcDropdownListenerAdded) {
+        window._bcDropdownListenerAdded = true;
+        document.addEventListener('click', function(e){
+          var dd2 = document.getElementById('bc_name_dropdown');
+          if (dd2 && !dd2.contains(e.target) && e.target.id !== 'bc_name') dd2.style.display = 'none';
+        });
+      }
+    };
+
+    window.bcSelectCustomer = function(id, name) {
+      var nameEl = document.getElementById('bc_name');
+      var idEl   = document.getElementById('bc_customer_id');
+      var dd     = document.getElementById('bc_name_dropdown');
+      if (nameEl) nameEl.value = name;
+      if (idEl)   idEl.value   = id;
+      if (dd)     dd.style.display = 'none';
+      var rec = (adminCustomers||[]).find(function(c){ return c.id === id; });
+      if (rec && rec.system_size) {
+        var sEl = document.getElementById('bc_solar');
+        if (sEl) sEl.value = parseFloat(rec.system_size) || 5.4;
+      }
+      bcUpdate();
+    };
+
+    window.bcSaveToCustomer = async function() {
+      var custId = (document.getElementById('bc_customer_id')||{}).value;
+      if (!custId) { alert('Select a customer first by typing their name in the Customer Name field.'); return; }
+      if (!window._bcLastCalc) { alert('Run the calculation first.'); return; }
+      var btn = document.getElementById('bc_save_btn');
+      if (btn) btn.disabled = true;
+      try {
+        var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+        var { error } = await client.from('customers').update({ battery_calc: window._bcLastCalc }).eq('id', custId);
+        if (error) throw error;
+        var rec = (adminCustomers||[]).find(function(c){ return c.id === custId; });
+        if (rec) rec.battery_calc = window._bcLastCalc;
+        var msg = document.getElementById('bc_save_msg');
+        if (msg) { msg.style.display = 'block'; setTimeout(function(){ msg.style.display = 'none'; }, 3000); }
+      } catch(e) { alert('Save failed: '+e.message); }
+      if (btn) btn.disabled = false;
+    };
   }
 
   function openMarketingExpenseForm(id) {
@@ -3022,9 +3155,7 @@
       pillHtml = '<span class="step-pill" style="background:'+nsRec.color+'22;color:'+nsRec.color+';">'+nsRec.label+'</span>';
     } else {
       var step = c.step||1;
-      var stepLabels = ['Eval Booked','Photos','Diagnostic','Analysis','Follow Up','BR Sold','Dead','Install','Monitoring'];
-      var stepColors = ['#666','#4a9eff','#ffaa00','#f97316','#9b6de8','#8DC63F','#ef4444','#8DC63F','#8DC63F'];
-      pillHtml = '<span class="step-pill" style="background:'+stepColors[step-1]+'22;color:'+stepColors[step-1]+'">'+stepLabels[step-1]+'</span>';
+      pillHtml = '<span class="step-pill" style="background:'+(FIXMY_STEP_COLORS[step-1]||'#666')+'22;color:'+(FIXMY_STEP_COLORS[step-1]||'#666')+'">'+(FIXMY_STEP_LABELS[step-1]||'Step '+step)+'</span>';
     }
 
     var progressHtml;
@@ -3040,7 +3171,7 @@
       progressHtml += '</div>';
     } else {
       var step2 = c.step||1;
-      progressHtml = '<div class="lead-progress">'+(function(){ var h=''; [1,2,3,4,5,6,7,8].forEach(function(n,i){ h+='<div class="'+(n<=step2?'prog-dot filled':'prog-dot')+'"></div>'; if(i<7) h+='<div class="prog-line'+(step2>n?' filled':'')+'"></div>'; }); return h; }())+'</div>';
+      progressHtml = '<div class="lead-progress">'+(function(){ var h=''; [1,2,3,4,5,6,7,8,9,10,11].forEach(function(n,i){ h+='<div class="'+(n<=step2?'prog-dot filled':'prog-dot')+'"></div>'; if(i<10) h+='<div class="prog-line'+(step2>n?' filled':'')+'"></div>'; }); return h; }())+'</div>';
     }
 
     var auroraHtml = '';
@@ -3407,7 +3538,7 @@
     var slot = document.getElementById('editorSlot');
     if (!slot) return;
     // Derive next appt date/time from the relevant DB field based on step
-    var apptSrc = (c.step >= 7) ? c.install_date : c.diagnostic_date;
+    var apptSrc = (c.step >= 10) ? c.install_date : c.diagnostic_date;
     var apptDate = '', apptTime = '';
     if (apptSrc) {
       var _adt = new Date(apptSrc);
@@ -3452,14 +3583,11 @@
         '</div>'+
         '<div style="padding:8px 12px;background:rgba(74,158,255,0.07);border:1px solid rgba(74,158,255,0.18);border-radius:8px;font-size:0.7rem;color:#4a9eff;margin-bottom:12px;">&#9733; Statuses move this lead to <strong>New Solar Jobs</strong> automatically.</div>'
       :
-        '<div class="editor-section-title">Sale Type</div>'+
-        '<div class="ed-grid" style="margin-bottom:8px;">'+
-          edSelect('Sale Type (auto-set to Diagnostic at step 3+)','edSoldType',c.sold_type||'',[['','— Lead (Not Sold) —'],['diagnostic','Diagnostic'],['battery_retrofit','Battery Retrofit'],['monitoring','Monitoring']])+
-        '</div>'
+        '<div style="padding:8px 12px;background:rgba(141,198,63,0.07);border:1px solid rgba(141,198,63,0.18);border-radius:8px;font-size:0.7rem;color:#8DC63F;margin-bottom:12px;">&#9881; Sale type is set automatically from the progress step.</div>'
       )+
       '<div class="editor-section-title">Progress & Scheduling</div>'+
       '<div class="ed-grid">'+
-        (isNSEdit ? '' : edSelect('Progress Step','edStep',c.step||1,[[1,'1 - Evaluation Booked'],[2,'2 - Photos Uploaded'],[3,'3 - Diagnostic Booked'],[4,'4 - Analysis Done'],[5,'5 - Battery Retrofit: Presentation Done, Follow Up Needed'],[6,'6 - Battery Retrofit: Sold, Deposit Collected'],[7,'7 - Battery Retrofit: Presentation Done, Not Sold / Dead'],[8,'8 - Install Booked'],[9,'9 - Monitoring Online']]))+
+        (isNSEdit ? '' : edSelect('Progress Step','edStep',c.step||1,FIXMY_STEP_LABELS.map(function(lbl,i){ return [i+1,(i+1)+' — '+lbl]; })))+
         edField('Next Ops Appt Date','edApptDate',apptDate,'date')+
         '<div><label class="ed-label">Arrival Time</label><input type="time" id="edApptTime" class="ed-input" value="'+apptTime+'"/></div>'+
         '<div><label class="ed-label">Arrival Window End</label><input type="time" id="edArrivalEnd" class="ed-input" value="'+(c.arrival_end||'')+'"/></div>'+
@@ -3533,10 +3661,9 @@
       instDate = cRec.install_date || null;
     } else {
       stepVal = parseInt((document.getElementById('edStep')||{}).value)||1;
-      diagDate = stepVal >= 7 ? (cRec.diagnostic_date||null) : apptISO;
-      instDate = stepVal >= 7 ? apptISO : (cRec.install_date||null);
-      soldTypeVal = (document.getElementById('edSoldType')||{}).value||null;
-      if (stepVal >= 3 && !soldTypeVal) soldTypeVal = 'diagnostic';
+      diagDate = stepVal >= 10 ? (cRec.diagnostic_date||null) : apptISO;
+      instDate = stepVal >= 10 ? apptISO : (cRec.install_date||null);
+      soldTypeVal = fixmyStepSoldType(stepVal);
       solarStatusVal = null;
     }
 
@@ -4015,7 +4142,7 @@
     var name = ((c.first_name||'')+' '+(c.last_name||'')).trim()||c.email;
     var sys = c.system_size ? parseFloat(c.system_size)+' kW' : '--';
     var step = parseInt(c.step)||1;
-    var stepLabels = ['Evaluation<br>Booked','Photos<br>Uploaded','Diagnostic<br>Booked','Analysis<br>Done','Follow-Up','BR Sold &amp;<br>Deposit','Not<br>Sold','Install<br>Booked','Monitoring<br>Online'];
+    var stepLabels = ['Eval<br>Booked','Photos<br>Uploaded','Diagnostic<br>Launch','Analysis<br>Launch','Upgrade<br>Launch','Follow Up<br>Needed','Not<br>Sold','Booked,<br>Pending Ops','Permit<br>Submitted','Install<br>Booked','Install<br>Complete'];
     var stepsHtml = stepLabels.map(function(label,i){ var n=i+1,cls=n<step?'done':n===step?'active':'',dot=n<step?'&#10003;':n; return '<div class="step '+cls+'"><div class="step-dot">'+dot+'</div><div class="step-label">'+label+'</div></div>'; }).join('');
     var invHtml='';
     if(c.invoice_status&&c.invoice_status!=='none'){
@@ -4038,7 +4165,7 @@
     }
     // Risk-Free Guarantee card — shown when diagnostic is paid and no upgrade closed yet
     var guaranteeHtml = '';
-    if (c.invoice_status === 'paid' && c.invoice_amount && (!c.sold_type || c.sold_type === 'diagnostic')) {
+    if (c.invoice_status === 'paid' && c.invoice_amount && (c.step||1) < 8) {
       var gAmt = '$'+parseFloat(c.invoice_amount).toFixed(2);
       guaranteeHtml =
         '<div style="background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.3);border-radius:12px;padding:18px 20px;margin-top:14px;">'+
@@ -4140,6 +4267,39 @@
       }
     }
 
+    var battCalcHtml = '';
+    if (c.battery_calc) {
+      var _bc = typeof c.battery_calc === 'string' ? JSON.parse(c.battery_calc) : c.battery_calc;
+      battCalcHtml =
+        '<div class="sect-label">&#128267; Battery Savings Estimate</div>'+
+        '<div style="background:rgba(141,198,63,0.07);border:1px solid rgba(141,198,63,0.25);border-radius:12px;padding:18px 20px;margin-bottom:14px;">'+
+          '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#8DC63F;margin-bottom:12px;">Tesla Powerwall 3 &mdash; '+(_bc.batt_kwh||13.5)+' kWh</div>'+
+          '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px;">'+
+            '<div style="background:rgba(224,123,57,0.08);border:1px solid rgba(224,123,57,0.2);border-radius:8px;padding:10px;text-align:center;">'+
+              '<div style="font-size:1.3rem;font-weight:800;color:#e07b39;line-height:1.1;">$'+(_bc.annual_tou_savings||0).toLocaleString()+'</div>'+
+              '<div style="font-size:0.6rem;color:#888;margin-top:3px;">Annual TOU Savings</div>'+
+            '</div>'+
+            '<div style="background:rgba(74,158,255,0.08);border:1px solid rgba(74,158,255,0.2);border-radius:8px;padding:10px;text-align:center;">'+
+              '<div style="font-size:1.3rem;font-weight:800;color:#4a9eff;line-height:1.1;">$'+(_bc.vpp_mid||375).toLocaleString()+'</div>'+
+              '<div style="font-size:0.6rem;color:#888;margin-top:3px;">VPP Credits / yr</div>'+
+            '</div>'+
+            '<div style="background:rgba(155,109,232,0.08);border:1px solid rgba(155,109,232,0.2);border-radius:8px;padding:10px;text-align:center;">'+
+              '<div style="font-size:1.3rem;font-weight:800;color:#9b6de8;line-height:1.1;">$'+(_bc.sdcp_incentive_total||0).toLocaleString()+'</div>'+
+              '<div style="font-size:0.6rem;color:#888;margin-top:3px;">SDCP Incentive (one-time)</div>'+
+            '</div>'+
+            '<div style="background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.2);border-radius:8px;padding:10px;text-align:center;">'+
+              '<div style="font-size:1.3rem;font-weight:800;color:#8DC63F;line-height:1.1;">$'+(_bc.annual_total||0).toLocaleString()+'</div>'+
+              '<div style="font-size:0.6rem;color:#888;margin-top:3px;">Total Annual Value</div>'+
+            '</div>'+
+          '</div>'+
+          '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:10px;display:flex;justify-content:space-between;align-items:center;">'+
+            '<span style="font-size:0.78rem;color:#aaa;">Est. Payback Period</span>'+
+            '<span style="font-size:1.2rem;font-weight:800;color:#F3EDE3;">'+(_bc.payback_years||0)+'y</span>'+
+          '</div>'+
+          '<div style="font-size:0.6rem;color:#555;margin-top:10px;line-height:1.5;">Based on '+(_bc.solar_kw||'--')+' kW system · Net cost after '+(_bc.itc_pct||30)+'% ITC + SDCP incentive: $'+(_bc.net_cost||0).toLocaleString()+' · Analysis prepared '+(new Date(_bc.calculated_at||Date.now()).toLocaleDateString())+'</div>'+
+        '</div>';
+    }
+
     showDash(name,
       '<div style="margin-bottom:24px;"><h2 style="font-size:1.3rem;margin-bottom:4px;">Hi, <span style="color:#8DC63F">'+(c.first_name||'there')+'</span> &#128075;</h2><p style="font-size:0.8rem;color:#aaa;">Your Solar Review evaluation status.</p></div>'+
       '<div class="info-grid"><div class="info-card"><div class="info-label">Address</div><div class="info-val">'+(c.address||'--')+'</div></div><div class="info-card"><div class="info-label">System Size</div><div class="info-val">'+sys+'</div></div><div class="info-card"><div class="info-label">Utility</div><div class="info-val">'+(c.utility||'--')+'</div></div><div class="info-card"><div class="info-label">Monthly Bill</div><div class="info-val">'+(c.monthly_bill?'$'+c.monthly_bill+'/mo':'--')+'</div></div></div>'+
@@ -4147,7 +4307,7 @@
       '<div style="text-align:right;margin-bottom:20px;"><a href="https://api.leadconnectorhq.com/widget/booking/UjlvHxE8AlyhG5frBkqr" target="_blank" class="btn-lime" style="font-size:0.75rem;padding:9px 20px;">&#128197; Book / Reschedule Evaluation</a></div>'+
       '<div class="sect-label">Required Documents</div>'+
       '<div class="upload-grid">'+ucCard('bill','&#128196;','Most Recent Utility Bill','Upload your full PDF utility bill.')+ucCard('inverter','&#128247;','Inverter Photo','Photo of your inverter on garage wall or exterior.')+ucCard('serial','&#128290;','Serial Number','Close-up of the serial number sticker on inverter.')+ucCard('panel','&#9889;','Main Service Panel','Photo of open breaker panel with amp rating visible.')+'</div>'+
-      proposalHtml+invHtml+guaranteeHtml+agHtml+
+      proposalHtml+battCalcHtml+invHtml+guaranteeHtml+agHtml+
       '<div class="sect-label">Arrival Notes</div><div class="card"><textarea id="notesArea" class="notes-ta" placeholder="Gate codes, parking, dogs, project questions...">'+(c.notes||'')+'</textarea><div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;"><span style="font-size:0.68rem;color:#666;">&#128161; Helpful for your technician</span><div><span id="notesSaved" style="display:none;font-size:0.7rem;color:#8DC63F;margin-right:10px;">&#10003; Saved</span><button class="btn-lime" style="padding:8px 16px;font-size:0.72rem;" onclick="saveNotes()">Save Notes</button></div></div></div>'+
       '<div id="solarWrap"></div>'+
       '<div class="cta-card"><div><strong>Questions?</strong><br><span style="font-size:0.75rem;color:#aaa;">Mon-Sat 8am-6pm</span></div><a href="tel:6197776527" class="btn-lime">&#128222; (619) 777-6527</a></div>'
@@ -4859,10 +5019,9 @@
             } else {
               var step = l.step||1;
               h += '<div style="display:flex;align-items:center;gap:2px;margin-top:10px;">';
-              [1,2,3,4,5,6,7,8].forEach(function(n,i){ h+='<div style="width:'+(n<=step?'8px':'6px')+';height:'+(n<=step?'8px':'6px')+';border-radius:50%;background:'+(n<=step?'#8DC63F':'rgba(255,255,255,0.12)')+';flex-shrink:0;"></div>'; if(i<7) h+='<div style="flex:1;height:2px;background:'+(step>n?'#8DC63F':'rgba(255,255,255,0.08)')+';"></div>'; });
+              [1,2,3,4,5,6,7,8,9,10,11].forEach(function(n,i){ h+='<div style="width:'+(n<=step?'8px':'6px')+';height:'+(n<=step?'8px':'6px')+';border-radius:50%;background:'+(n<=step?(FIXMY_STEP_COLORS[n-1]||'#8DC63F'):'rgba(255,255,255,0.12)')+';flex-shrink:0;"></div>'; if(i<10) h+='<div style="flex:1;height:2px;background:'+(step>n?(FIXMY_STEP_COLORS[n]||'#8DC63F'):'rgba(255,255,255,0.08)')+';"></div>'; });
               h += '</div>';
-              var sLabels = ['Eval Booked','Photos','Diagnostic','Analysis','Follow Up','BR Sold','Dead','Install','Monitoring'];
-              var sOpts = sLabels.map(function(lbl,i){ return '<option value="'+(i+1)+'"'+(step===i+1?' selected':'')+'>'+lbl+'</option>'; }).join('');
+              var sOpts = FIXMY_STEP_LABELS.map(function(lbl,i){ return '<option value="'+(i+1)+'"'+(step===i+1?' selected':'')+'>'+lbl+'</option>'; }).join('');
               h += '<div style="margin-top:10px;display:flex;align-items:center;gap:8px;">'+
                 '<span style="font-size:0.65rem;color:#666;white-space:nowrap;">Update Status:</span>'+
                 '<select onchange="setLeadStep(\''+l.id+'\',this.value)" style="flex:1;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:#ccc;font-size:0.75rem;padding:5px 8px;cursor:pointer;">'+sOpts+'</select>'+
@@ -5056,8 +5215,11 @@
         var bcSelStyle = 'width:100%;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:5px;color:#F3EDE3;font-size:0.72rem;padding:5px 7px;box-sizing:border-box;';
         h += '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.09);border-radius:10px;padding:12px;margin-bottom:10px;">';
         h += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:10px;">';
-        h += '<div><label style="font-size:0.6rem;text-transform:uppercase;color:#888;display:block;margin-bottom:3px;">Customer</label>'+
-          '<input type="text" id="bc_name" placeholder="Name..." style="width:100%;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:5px;color:#F3EDE3;font-size:0.75rem;padding:5px 8px;box-sizing:border-box;" oninput="bcUpdate()"/></div>';
+        h += '<div style="position:relative;"><label style="font-size:0.6rem;text-transform:uppercase;color:#888;display:block;margin-bottom:3px;">Customer <span style="color:#555;font-weight:400;">(search)</span></label>'+
+          '<input type="text" id="bc_name" placeholder="Search name..." style="width:100%;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:5px;color:#F3EDE3;font-size:0.75rem;padding:5px 8px;box-sizing:border-box;" oninput="bcNameSearch(this.value)" autocomplete="off"/>'+
+          '<input type="hidden" id="bc_customer_id"/>'+
+          '<div id="bc_name_dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:200;background:#1a1c17;border:1px solid rgba(255,255,255,0.15);border-radius:8px;max-height:160px;overflow-y:auto;margin-top:2px;"></div>'+
+          '</div>';
         h += '<div><label style="font-size:0.6rem;text-transform:uppercase;color:#888;display:block;margin-bottom:3px;">Solar Size</label>'+
           '<div style="display:flex;align-items:center;gap:5px;"><input type="number" id="bc_solar" value="5.4" min="1" max="30" step="0.1" style="width:60px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:5px;color:#F3EDE3;font-size:0.75rem;padding:5px 7px;" oninput="bcUpdate()"/><span style="font-size:0.7rem;color:#888;">kW</span></div></div>';
         h += '<div><label style="font-size:0.6rem;text-transform:uppercase;color:#888;display:block;margin-bottom:3px;">NEM Status</label>'+
@@ -5113,7 +5275,32 @@
           '</div>';
         h += '</div></div>';
 
+        // SDCP incentive row
+        h += '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.09);border-radius:10px;padding:12px;margin-bottom:8px;">';
+        h += '<div style="font-size:0.6rem;font-weight:700;text-transform:uppercase;color:#9b6de8;margin-bottom:8px;">SDCP Battery Incentive (One-Time)</div>';
+        h += '<div style="display:grid;grid-template-columns:auto auto 1fr;gap:10px;align-items:center;">';
+        h += '<div style="display:flex;flex-direction:column;gap:5px;">'+
+          '<label style="display:flex;align-items:center;gap:5px;font-size:0.7rem;color:#aaa;cursor:pointer;white-space:nowrap;">'+
+            '<input type="radio" name="bc_sdcp_type" value="existing" checked onchange="bcUpdate()" style="accent-color:#9b6de8;"/> Existing — $250/kWh'+
+          '</label>'+
+          '<label style="display:flex;align-items:center;gap:5px;font-size:0.7rem;color:#aaa;cursor:pointer;white-space:nowrap;">'+
+            '<input type="radio" name="bc_sdcp_type" value="new_solar" onchange="bcUpdate()" style="accent-color:#9b6de8;"/> New Solar — $350/kWh'+
+          '</label>'+
+          '</div>';
+        h += '<div style="display:flex;align-items:center;gap:4px;">'+
+          '<input type="number" id="bc_batt_kwh" value="13.5" min="1" max="100" step="0.5" style="width:55px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:5px;color:#F3EDE3;font-size:0.75rem;padding:4px 6px;" oninput="bcUpdate()"/>'+
+          '<span style="font-size:0.68rem;color:#888;">kWh</span>'+
+          '</div>';
+        h += '<div style="text-align:right;"><span style="font-size:1.1rem;font-weight:800;color:#9b6de8;" id="bc_sdcp_amt">$3,375</span>'+
+          '<div style="font-size:0.56rem;color:#888;margin-top:1px;">incentive</div></div>';
+        h += '</div></div>';
+
         // Results placeholder
+        h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">'+
+          '<div style="font-size:0.6rem;font-weight:700;text-transform:uppercase;color:#8DC63F;">Savings Analysis</div>'+
+          '<button onclick="bcSaveToCustomer()" style="font-size:0.65rem;padding:5px 12px;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.3);border-radius:100px;color:#8DC63F;cursor:pointer;font-weight:700;">&#128190; Save</button>'+
+          '</div>';
+        h += '<div id="bc_save_msg" style="display:none;font-size:0.68rem;color:#8DC63F;text-align:center;margin-bottom:4px;">&#10003; Saved to customer</div>';
         h += '<div id="bc_result_body" style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.09);border-radius:10px;padding:12px;"></div>';
       }
 
@@ -5147,10 +5334,17 @@
             monthData.push({ name: MONTHS[i], shifted: moShift, savings: moSav });
             annualTOU += moSav;
           }
+          var battKwh2  = parseFloat((document.getElementById('bc_batt_kwh')||{}).value) || 13.5;
+          var sdcpTypeEl2 = document.querySelector('input[name="bc_sdcp_type"]:checked');
+          var sdcpType2 = sdcpTypeEl2 ? sdcpTypeEl2.value : 'existing';
+          var sdcpAmt2  = battKwh2 * (sdcpType2 === 'new_solar' ? 350 : 250);
+          var sdcpEl2 = document.getElementById('bc_sdcp_amt');
+          if (sdcpEl2) sdcpEl2.textContent = '$'+Math.round(sdcpAmt2).toLocaleString();
+
           var vppMid   = (vppLo + vppHi) / 2;
           var annTotal = annualTOU + vppMid;
           var itcAmt   = gross * (itcPct / 100);
-          var netCost  = gross - itcAmt;
+          var netCost  = gross - itcAmt - sdcpAmt2;
           var payback  = annTotal > 0 ? (netCost / annTotal) : 0;
           var annShift = monthData.reduce(function(s,m){return s+m.shifted;},0);
           var maxSav   = Math.max.apply(null, monthData.map(function(m){return m.savings;}));
@@ -5197,6 +5391,7 @@
             '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.09);border-radius:8px;padding:10px;margin-bottom:12px;">'+
               '<div style="display:flex;justify-content:space-between;font-size:0.72rem;margin-bottom:3px;"><span style="color:#aaa;">Gross Cost</span><span style="color:#F3EDE3;">$'+Math.round(gross).toLocaleString()+'</span></div>'+
               '<div style="display:flex;justify-content:space-between;font-size:0.72rem;margin-bottom:3px;"><span style="color:#aaa;">ITC ('+itcPct+'%)</span><span style="color:#8DC63F;">&minus;$'+Math.round(itcAmt).toLocaleString()+'</span></div>'+
+              '<div style="display:flex;justify-content:space-between;font-size:0.72rem;margin-bottom:3px;"><span style="color:#aaa;">SDCP Incentive</span><span style="color:#9b6de8;">&minus;$'+Math.round(sdcpAmt2).toLocaleString()+'</span></div>'+
               '<div style="display:flex;justify-content:space-between;font-size:0.72rem;padding-top:5px;border-top:1px solid rgba(255,255,255,0.08);"><span style="color:#F3EDE3;font-weight:700;">Net Cost</span><span style="color:#F3EDE3;font-weight:700;">$'+Math.round(netCost).toLocaleString()+'</span></div>'+
             '</div>'+
             bars+
@@ -5213,10 +5408,74 @@
               '</tr></tbody></table>'+
             '<div style="font-size:0.56rem;color:#444;line-height:1.5;">Powerwall 3 · 13.5 kWh · 90% efficiency · once-daily cycle from solar export · TOU-DR1</div>';
 
+          window._bcLastCalc = {
+            customer_name: custName, solar_kw: solarKw,
+            annual_tou_savings: Math.round(annualTOU), vpp_lo: vppLo, vpp_hi: vppHi,
+            vpp_mid: Math.round(vppMid), sdcp_incentive_total: Math.round(sdcpAmt2),
+            sdcp_type: sdcpType2, batt_kwh: battKwh2,
+            gross: gross, itc_pct: itcPct, itc_amt: Math.round(itcAmt),
+            net_cost: Math.round(netCost), annual_total: Math.round(annTotal),
+            payback_years: parseFloat(payback.toFixed(1)),
+            calculated_at: new Date().toISOString()
+          };
           var rb = document.getElementById('bc_result_body');
           if (rb) rb.innerHTML = html;
         };
         window.bcUpdate();
+
+        window.bcNameSearch = function(query) {
+          var dd = document.getElementById('bc_name_dropdown');
+          if (!dd) return;
+          query = (query||'').trim().toLowerCase();
+          if (!query || query.length < 2) { dd.style.display = 'none'; return; }
+          var matches = (allRecords||[]).filter(function(c){
+            var full = ((c.first_name||'')+' '+(c.last_name||'')).toLowerCase();
+            return full.indexOf(query) >= 0;
+          }).slice(0, 8);
+          if (!matches.length) { dd.style.display = 'none'; return; }
+          dd.innerHTML = matches.map(function(c){
+            var name = ((c.first_name||'')+' '+(c.last_name||'')).trim();
+            var sub = [c.address, c.system_size ? c.system_size+' kW' : null].filter(Boolean).join(' · ');
+            return '<div onclick="bcSelectCustomer(\''+c.id+'\',\''+name.replace(/'/g,"\\'")+'\')" style="padding:7px 10px;cursor:pointer;border-bottom:1px solid rgba(255,255,255,0.06);" onmouseover="this.style.background=\'rgba(255,255,255,0.06)\'" onmouseout="this.style.background=\'\'">'+
+              '<div style="font-size:0.75rem;color:#F3EDE3;font-weight:600;">'+name+'</div>'+
+              (sub?'<div style="font-size:0.62rem;color:#666;margin-top:1px;">'+sub+'</div>':'')+
+            '</div>';
+          }).join('');
+          dd.style.display = 'block';
+          if (!window._bcDropdownListenerAdded) {
+            window._bcDropdownListenerAdded = true;
+            document.addEventListener('click', function(e){
+              var dd2 = document.getElementById('bc_name_dropdown');
+              if (dd2 && !dd2.contains(e.target) && e.target.id !== 'bc_name') dd2.style.display = 'none';
+            });
+          }
+        };
+        window.bcSelectCustomer = function(id, name) {
+          var nameEl = document.getElementById('bc_name');
+          var idEl   = document.getElementById('bc_customer_id');
+          var dd     = document.getElementById('bc_name_dropdown');
+          if (nameEl) nameEl.value = name;
+          if (idEl)   idEl.value   = id;
+          if (dd)     dd.style.display = 'none';
+          var rec = (allRecords||[]).find(function(c){ return c.id === id; });
+          if (rec && rec.system_size) {
+            var sEl = document.getElementById('bc_solar');
+            if (sEl) sEl.value = parseFloat(rec.system_size) || 5.4;
+          }
+          bcUpdate();
+        };
+        window.bcSaveToCustomer = async function() {
+          var custId = (document.getElementById('bc_customer_id')||{}).value;
+          if (!custId) { alert('Select a customer first by searching their name.'); return; }
+          if (!window._bcLastCalc) { alert('Run the calculation first.'); return; }
+          try {
+            var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+            var { error } = await c2.from('customers').update({ battery_calc: window._bcLastCalc }).eq('id', custId);
+            if (error) throw error;
+            var msg = document.getElementById('bc_save_msg');
+            if (msg) { msg.style.display = 'block'; setTimeout(function(){ msg.style.display='none'; }, 3000); }
+          } catch(e) { alert('Save failed: '+e.message); }
+        };
       }
     }
 
@@ -5283,8 +5542,11 @@
         var cat = document.getElementById('seLeadCat').value || 'fixmy';
         var solarStEl = document.getElementById('seSolarStatus');
         var solarSt = cat === 'new_solar' ? ((solarStEl ? solarStEl.value : '') || 'ns_eval_booked') : null;
-        var soldType = (cat === 'new_solar' && solarSt && NS_JOB_KEYS.indexOf(solarSt) >= 0) ? 'new_solar' : null;
         var billRaw = document.getElementById('seBill').value;
+        var existingRec = allRecords.find(function(r){ return r.id === id; });
+        var soldType = cat === 'new_solar'
+          ? (solarSt && NS_JOB_KEYS.indexOf(solarSt) >= 0 ? 'new_solar' : null)
+          : fixmyStepSoldType((existingRec && existingRec.step) || 1);
         var updates = {
           lead_category: cat,
           solar_status: solarSt,
@@ -5334,8 +5596,10 @@
         return;
       }
       var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
-      await c2.from('customers').update({step: newStep}).eq('id', id);
+      var newSoldType = fixmyStepSoldType(newStep);
+      await c2.from('customers').update({step: newStep, sold_type: newSoldType}).eq('id', id);
       rec.step = newStep;
+      rec.sold_type = newSoldType;
       renderSales();
     };
     function openSalesDiagModal(id, rec) {
@@ -5552,7 +5816,7 @@
           var bdr  = isPaid ? 'rgba(141,198,63,0.3)' : 'rgba(255,170,0,0.25)';
           var lbl  = isPaid ? '✓ Paid' : '⏳ Pending';
           var step = j.step || 1;
-          var stepTxt = step >= 9 ? 'Complete' : step >= 8 ? 'Install Booked' : step === 7 ? 'Not Sold / Dead' : step === 6 ? 'BR Sold / Deposit' : step >= 5 ? 'Follow Up' : step >= 4 ? 'Analysis Done' : step >= 3 ? 'Diagnostic Booked' : step >= 2 ? 'Photos Uploaded' : 'Evaluation Booked';
+          var stepTxt = FIXMY_STEP_LABELS[step-1] || ('Step '+step);
           h += '<div style="background:#fff;border:1px solid rgba(0,0,0,0.09);border-radius:10px;padding:14px;margin-bottom:8px;display:flex;align-items:center;gap:12px;">' +
                '<div style="flex:1;">' +
                '<div style="font-size:0.88rem;font-weight:700;color:#1A1A1A;">' + (j.first_name||'') + ' ' + (j.last_name||'') + '</div>' +
