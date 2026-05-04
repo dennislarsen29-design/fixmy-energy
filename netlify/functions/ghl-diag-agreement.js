@@ -21,7 +21,17 @@ exports.handler = async function(event) {
     return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Invalid JSON' }) };
   }
 
-  console.log('GHL diag-agreement → upserting contact:', payload.email, payload.phone, 'fee:', payload.diagnostic_fee);
+  // Normalize phone to E.164 (+1XXXXXXXXXX) so GHL SMS delivery works
+  function toE164(raw) {
+    if (!raw) return undefined;
+    var digits = String(raw).replace(/\D/g, '');
+    if (digits.length === 10) return '+1' + digits;
+    if (digits.length === 11 && digits[0] === '1') return '+' + digits;
+    return '+' + digits;
+  }
+
+  const phone = toE164(payload.phone);
+  console.log('GHL diag-agreement → upserting contact:', payload.email, phone, 'fee:', payload.diagnostic_fee);
 
   const ghlHeaders = {
     'Authorization': 'Bearer ' + GHL_API_KEY,
@@ -35,7 +45,7 @@ exports.handler = async function(event) {
     const upsertBody = {
       locationId: GHL_LOCATION_ID,
       email:      payload.email      || undefined,
-      phone:      payload.phone      || undefined,
+      phone:      phone                || undefined,
       firstName:  payload.firstName  || undefined,
       lastName:   payload.lastName   || undefined,
       address1:   payload.address1   || undefined,
