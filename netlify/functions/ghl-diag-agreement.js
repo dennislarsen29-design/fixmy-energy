@@ -38,7 +38,10 @@ exports.handler = async function(event) {
       phone:      payload.phone      || undefined,
       firstName:  payload.firstName  || undefined,
       lastName:   payload.lastName   || undefined,
-      address1:   payload.address1   || undefined
+      address1:   payload.address1   || undefined,
+      customFields: payload.diagnostic_fee ? [
+        { key: 'diagnostic_fee', field_value: String(payload.diagnostic_fee) }
+      ] : undefined
     };
 
     const upsertResp = await fetch('https://services.leadconnectorhq.com/contacts/upsert', {
