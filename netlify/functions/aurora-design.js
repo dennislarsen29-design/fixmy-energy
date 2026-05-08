@@ -1,5 +1,3 @@
-const fetch = require('node-fetch');
-
 exports.handler = async function(event) {
   const { design_id } = event.queryStringParameters || {};
   if (!design_id) {
