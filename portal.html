@@ -2969,7 +2969,7 @@
         '<button class="lead-btn lime" data-id="'+c.id+'" onclick="openLeadEditor(this.dataset.id)">Edit</button>'+
         '<button class="lead-btn ghost" data-link="'+magic+'" data-email="'+c.email+'" onclick="sendMagicLink(this.dataset.link,this.dataset.email)">&#128279; Link</button>'+
         '<button class="lead-btn ghost" data-phone="'+(c.phone||'')+'" onclick="callLead(this.dataset.phone)">&#128222;</button>'+
-        (!isNS ? '<button class="lead-btn ghost" data-id="'+c.id+'" onclick="openProposalBuilder(this.dataset.id)" style="color:#8DC63F;border-color:rgba(141,198,63,0.3);">&#128196; Proposal</button>' : '')+
+        '<button class="lead-btn ghost" data-id="'+c.id+'" onclick="openProposalBuilder(this.dataset.id)" style="color:#8DC63F;border-color:rgba(141,198,63,0.3);">&#128196; Proposal</button>'+
       '</div></div>'+
       progressHtml+
       auroraHtml+
@@ -2977,33 +2977,104 @@
   }
 
   // ── PROPOSAL SYSTEM ────────────────────────────────────────────────────────
-  function openProposalBuilder(id, typeOverride) {
+  var _proposalCatalogCache = {};
+
+  async function _loadCatalog(serviceType) {
+    if (_proposalCatalogCache[serviceType]) return _proposalCatalogCache[serviceType];
+    var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var { data } = await client.from('proposal_catalog')
+      .select('*').eq('service_type', serviceType).eq('is_active', true).order('sort_order');
+    _proposalCatalogCache[serviceType] = data || [];
+    return _proposalCatalogCache[serviceType];
+  }
+
+  async function openProposalBuilder(id, typeOverride) {
     var c = adminCustomers.find(function(x){ return x.id===id; });
     if (!c) return;
-    // For unsold FixMy leads, always default to BR (ignore stale sessionStorage)
-    var _isSold = c.sold_type === 'battery_retrofit' || c.sold_type === 'monitoring' || c.sold_type === 'diagnostic';
-    var _stored = typeOverride || (_isSold ? sessionStorage.getItem('proposalType_'+id) : null);
-    var isBR = _stored ? (_stored === 'br') :
-               (c.sold_type === 'battery_retrofit' || (c.lead_category !== 'new_solar' && !c.sold_type));
-    sessionStorage.setItem('proposalType_'+id, isBR ? 'br' : 'inv');
+
+    var autoType = c.lead_category === 'new_solar' ? 'ns'
+                 : c.sold_type === 'diagnostic'       ? 'diag'
+                 : c.sold_type === 'battery_retrofit'  ? 'br'
+                 : 'br';
+    var pType = typeOverride || sessionStorage.getItem('proposalType_'+id) || autoType;
+    sessionStorage.setItem('proposalType_'+id, pType);
+
+    var serviceTypeMap = { br: 'battery_retrofit', inv: 'inverter_swap', diag: 'diagnostic', ns: 'new_solar' };
+    var serviceType = serviceTypeMap[pType] || 'battery_retrofit';
+
+    var catalog = await _loadCatalog(serviceType);
     var existing = c.proposal ? (typeof c.proposal==='string' ? JSON.parse(c.proposal) : c.proposal) : null;
-    var e = existing && existing.options;
-    var d = {
-      opt1Price:   e && e[0] ? e[0].price : (isBR ? 14995 : 4587.50),
-      opt1Part:    e && e[0] && e[0].participate_price ? e[0].participate_price : (isBR ? 10496.50 : null),
-      bundlePrice: e && e[1] ? e[1].price : (isBR ? 20594 : 39267.50),
-      bundlePart:  e && e[1] ? e[1].participate_price : (isBR ? 14715.80 : 27487.25)
-    };
+
     var acceptedBanner = '';
     if (existing && existing.status === 'accepted') {
       acceptedBanner = '<div style="padding:10px 14px;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.3);border-radius:8px;font-size:0.8rem;color:#8DC63F;margin-bottom:16px;">&#10003; Customer accepted: <strong>'+(existing.accepted_option||'')+'</strong>'+(existing.loan_term?' &middot; '+existing.loan_term+'-yr financing':'')+' &middot; '+existing.financing+'</div>';
     }
+
+    var tabDefs = [
+      { key: 'br',   label: '&#128267; Battery Retrofit', bg: '#8DC63F', fg: '#000' },
+      { key: 'inv',  label: '&#9889; Inverter Swap',       bg: '#4a9eff', fg: '#fff' },
+      { key: 'diag', label: '&#128269; Diagnostic',        bg: '#ffaa00', fg: '#000' },
+      { key: 'ns',   label: '&#9728; New Solar',           bg: '#9b6de8', fg: '#fff' }
+    ];
+    var tabsHtml = tabDefs.map(function(t) {
+      var active = t.key === pType;
+      return '<button onclick="var _m=document.getElementById(\'proposalModal\');if(_m)_m.remove();openProposalBuilder(\''+c.id+'\',\''+t.key+'\')" style="flex:1;padding:7px 4px;border:none;border-radius:7px;font-size:0.68rem;font-weight:700;cursor:pointer;'+(active?'background:'+t.bg+';color:'+t.fg+';':'background:transparent;color:#555;')+'">'+t.label+'</button>';
+    }).join('');
+
+    var optionsHtml = '';
+    if (!catalog.length) {
+      optionsHtml = '<div style="padding:20px;text-align:center;color:#555;font-size:0.82rem;">No active catalog entries for this service type.</div>';
+    } else {
+      catalog.forEach(function(row, i) {
+        var eOpt = existing && existing.options && existing.options.find(function(o){ return o.id === row.option_key; });
+        var price    = eOpt ? eOpt.price : row.default_price;
+        var partPrice = eOpt ? (eOpt.participate_price != null ? eOpt.participate_price : row.default_participate_price) : row.default_participate_price;
+        var isHighlight = i > 0;
+        var borderColor = isHighlight ? 'rgba(141,198,63,0.25)' : 'rgba(255,255,255,0.1)';
+        var bgColor     = isHighlight ? 'rgba(141,198,63,0.05)' : 'rgba(255,255,255,0.04)';
+        var titleColor  = isHighlight ? '#8DC63F' : '#fff';
+        var optLabel    = catalog.length === 1 ? 'Option 1' : (i === 0 ? 'Option 1' : 'Option '+(i+1));
+        var showAurora  = (row.option_key === 'bundle' || serviceType === 'new_solar' || serviceType === 'inverter_swap');
+        var auroraImg    = (eOpt && eOpt.aurora_image_url)    || (existing && existing.aurora_image_url)    || '';
+        var auroraPortal = (eOpt && eOpt.aurora_portal_url)   || (existing && existing.aurora_portal_url)   || '';
+        var auroraFields = showAurora
+          ? '<div style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:10px;">'+
+              '<div><label style="font-size:0.68rem;color:#666;display:block;margin-bottom:4px;">Aurora Design Image URL <span style="color:#555;">(optional)</span></label>'+
+                '<input type="url" id="prop_aurora_img_'+i+'" value="'+auroraImg+'" placeholder="https://i.imgur.com/..." style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:8px 10px;font-size:0.82rem;"/></div>'+
+              '<div><label style="font-size:0.68rem;color:#4a9eff;display:block;margin-bottom:4px;">&#9728; Aurora Customer Portal URL</label>'+
+                '<input type="url" id="prop_aurora_portal_'+i+'" value="'+auroraPortal+'" placeholder="https://v2.aurorasolar.com/..." style="width:100%;background:#111;border:1px solid rgba(74,158,255,0.3);border-radius:8px;color:#fff;padding:8px 10px;font-size:0.82rem;"/></div>'+
+            '</div>'
+          : '';
+        optionsHtml +=
+          '<div style="background:'+bgColor+';border:1px solid '+borderColor+';border-radius:12px;padding:18px;margin-bottom:12px;">'+
+            '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;">'+
+              '<div>'+
+                '<div style="font-weight:700;color:'+titleColor+';margin-bottom:4px;">'+optLabel+' &mdash; '+row.title+'</div>'+
+                '<div style="font-size:0.72rem;color:#888;">'+(row.subtitle||'')+'</div>'+
+              '</div>'+
+              '<input type="checkbox" id="prop_opt_'+i+'" checked style="width:18px;height:18px;margin-top:2px;accent-color:#8DC63F;"/>'+
+            '</div>'+
+            '<div style="display:flex;gap:10px;">'+
+              '<div style="flex:1;"><label style="font-size:0.68rem;color:#666;display:block;margin-bottom:4px;">Purchase Price ($)</label>'+
+                '<input type="number" id="prop_price_'+i+'" value="'+price+'" step="0.01" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:8px 10px;font-size:0.85rem;"/>'+
+              '</div>'+
+              (row.participate
+                ? '<div style="flex:1;"><label style="font-size:0.68rem;color:#666;display:block;margin-bottom:4px;">Participate Price ($)</label>'+
+                    '<input type="number" id="prop_part_'+i+'" value="'+(partPrice!=null?partPrice:'')+'" step="0.01" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:8px 10px;font-size:0.85rem;"/></div>'
+                : '')+
+            '</div>'+
+            (row.milestone_notes ? '<div style="font-size:0.7rem;color:#555;margin-top:8px;">'+row.milestone_notes+'</div>' : '')+
+            auroraFields+
+          '</div>';
+      });
+    }
+
     var modal = document.createElement('div');
     modal.id = 'proposalModal';
     modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:9999;display:flex;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto;';
     modal.innerHTML =
-      '<input type="hidden" id="prop_is_br" value="'+(isBR?'1':'0')+'"/>'+
-      '<div style="background:#1a1c17;border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:28px;max-width:560px;width:100%;margin:auto;">'+
+      '<input type="hidden" id="prop_service_type" value="'+serviceType+'"/>'+
+      '<div style="background:#1a1c17;border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:28px;max-width:580px;width:100%;margin:auto;">'+
         '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">'+
           '<div>'+
             '<div style="font-size:0.62rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#8DC63F;margin-bottom:4px;">Build Proposal</div>'+
@@ -3011,115 +3082,63 @@
           '</div>'+
           '<button onclick="var _m=document.getElementById(\'proposalModal\');if(_m)_m.remove();" style="background:none;border:none;color:#666;cursor:pointer;font-size:1.2rem;">&#10005;</button>'+
         '</div>'+
-        '<div style="display:flex;gap:6px;margin-bottom:18px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:4px;">'+
-          '<button onclick="var _m=document.getElementById(\'proposalModal\');if(_m)_m.remove();openProposalBuilder(\''+c.id+'\',\'br\')" style="flex:1;padding:8px;border:none;border-radius:7px;font-size:0.78rem;font-weight:700;cursor:pointer;'+(isBR?'background:#8DC63F;color:#000;':'background:transparent;color:#666;')+'">&nbsp;&#128267; Battery Retrofit</button>'+
-          '<button onclick="var _m=document.getElementById(\'proposalModal\');if(_m)_m.remove();openProposalBuilder(\''+c.id+'\',\'inv\')" style="flex:1;padding:8px;border:none;border-radius:7px;font-size:0.78rem;font-weight:700;cursor:pointer;'+(!isBR?'background:#4a9eff;color:#fff;':'background:transparent;color:#666;')+'">&nbsp;&#9889; Inverter / System</button>'+
+        '<div style="display:flex;gap:4px;margin-bottom:18px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:4px;">'+
+          tabsHtml+
         '</div>'+
         acceptedBanner+
-        '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:18px;margin-bottom:12px;">'+
-          '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;">'+
-            '<div>'+
-              '<div style="font-weight:700;color:#fff;margin-bottom:4px;">'+(isBR ? 'Option 1 &mdash; Tesla Powerwall 3 (Retrofit)' : 'Option 1 &mdash; Tesla Inverter Replacement')+'</div>'+
-              '<div style="font-size:0.72rem;color:#888;">'+(isBR ? 'TPW3 (1) &middot; 30% off w/ Participate &rarr; $9,996.50 after $500 Tesla Visa Gift Card' : 'SunPower &rarr; Tesla Inverter &middot; No Participate')+'</div>'+
-            '</div>'+
-            '<input type="checkbox" id="prop_opt1" checked style="width:18px;height:18px;margin-top:2px;accent-color:#8DC63F;"/>'+
-          '</div>'+
-          '<div style="display:flex;gap:10px;">'+
-            '<div style="flex:1;"><label style="font-size:0.68rem;color:#666;display:block;margin-bottom:4px;">Purchase Price ($)</label>'+
-              '<input type="number" id="prop_opt1_price" value="'+d.opt1Price+'" step="0.01" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:8px 10px;font-size:0.85rem;"/>'+
-            '</div>'+
-            (isBR ? '<div style="flex:1;"><label style="font-size:0.68rem;color:#666;display:block;margin-bottom:4px;">Participate Price (30% off) ($)</label><input type="number" id="prop_opt1_participate" value="'+d.opt1Part+'" step="0.01" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:8px 10px;font-size:0.85rem;"/></div>' : '')+
-          '</div>'+
-          '<div style="font-size:0.7rem;color:#555;margin-top:8px;">'+(isBR ? 'Milestones: $1,000 deposit &middot; remaining balance at installation' : 'Milestones: $1,000 deposit &middot; 50/50 split at permit &amp; inspection')+'</div>'+
-        '</div>'+
-        '<div style="background:rgba(141,198,63,0.05);border:1px solid rgba(141,198,63,0.25);border-radius:12px;padding:18px;margin-bottom:20px;">'+
-          '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;">'+
-            '<div>'+
-              '<div style="font-weight:700;color:#8DC63F;margin-bottom:4px;">'+(isBR ? 'Option 2 &mdash; TPW3 + (5) 420W Tesla Panels' : 'Option 1+2 &mdash; Full System Bundle')+'</div>'+
-              '<div style="font-size:0.72rem;color:#888;">'+(isBR ? 'TPW3 (1) + 5 Tesla 420W Panels &middot; Participate + SDCP ($3,375) + $500 Tesla Visa Gift Card &rarr; $10,840.80' : 'Inverter + 10x Tesla 420W + TPW3 &middot; Participate financing')+'</div>'+
-            '</div>'+
-            '<input type="checkbox" id="prop_bundle" checked style="width:18px;height:18px;margin-top:2px;accent-color:#8DC63F;"/>'+
-          '</div>'+
-          '<div style="display:flex;gap:10px;">'+
-            '<div style="flex:1;"><label style="font-size:0.68rem;color:#666;display:block;margin-bottom:4px;">Purchase Price ($)</label>'+
-              '<input type="number" id="prop_bundle_price" value="'+d.bundlePrice+'" step="0.01" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:8px 10px;font-size:0.85rem;"/>'+
-            '</div>'+
-            '<div style="flex:1;"><label style="font-size:0.68rem;color:#666;display:block;margin-bottom:4px;">Participate Price (30% off) ($)</label>'+
-              '<input type="number" id="prop_bundle_participate" value="'+d.bundlePart+'" step="0.01" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:8px 10px;font-size:0.85rem;"/>'+
-            '</div>'+
-          '</div>'+
-          '<div style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:10px;">'+
-            '<div><label style="font-size:0.68rem;color:#666;display:block;margin-bottom:4px;">Aurora Design Image URL <span style="color:#555;">(optional)</span></label>'+
-              '<input type="url" id="prop_aurora_url" value="'+(existing&&existing.aurora_image_url?existing.aurora_image_url:'')+'" placeholder="https://i.imgur.com/..." style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:8px 10px;font-size:0.82rem;"/>'+
-            '</div>'+
-            '<div><label style="font-size:0.68rem;color:#4a9eff;display:block;margin-bottom:4px;">&#9728; Aurora Customer Portal URL</label>'+
-              '<input type="url" id="prop_aurora_portal_url" value="'+(existing&&existing.aurora_portal_url?existing.aurora_portal_url:'')+'" placeholder="https://v2.aurorasolar.com/..." style="width:100%;background:#111;border:1px solid rgba(74,158,255,0.3);border-radius:8px;color:#fff;padding:8px 10px;font-size:0.82rem;"/>'+
-            '</div>'+
-          '</div>'+
-          '<div style="font-size:0.7rem;color:#555;margin-top:8px;">'+(isBR ? 'Milestones: $1,000 deposit &middot; remaining balance at installation &middot; Wheelhouse CU 7.99% APR' : 'Milestones: $1,000 deposit &middot; 50/50 split &middot; Wheelhouse CU 7.99% APR (10yr ~$333/mo &middot; 20yr ~$230/mo)')+'</div>'+
-        '</div>'+
+        optionsHtml+
         '<div style="display:flex;gap:10px;justify-content:flex-end;">'+
           '<button onclick="var _m=document.getElementById(\'proposalModal\');if(_m)_m.remove();" style="padding:10px 20px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:100px;color:#aaa;cursor:pointer;font-size:0.85rem;">Cancel</button>'+
           '<button onclick="sendProposal(\''+c.id+'\')" style="padding:10px 24px;background:#8DC63F;color:#000;border:none;border-radius:100px;font-weight:700;cursor:pointer;font-size:0.85rem;">&#128228; Send to Customer</button>'+
         '</div>'+
       '</div>';
     document.body.appendChild(modal);
+    modal._catalog = catalog;
   }
 
   async function sendProposal(id) {
-    var c = adminCustomers.find(function(x){ return x.id===id; });
-    var _brEl = document.getElementById('prop_is_br');
-    var isBR = _brEl ? (_brEl.value === '1') :
-               (c && (c.sold_type === 'battery_retrofit' || (c.lead_category !== 'new_solar' && !c.sold_type)));
-    var opt1On   = document.getElementById('prop_opt1').checked;
-    var bundleOn = document.getElementById('prop_bundle').checked;
-    if (!opt1On && !bundleOn) { alert('Enable at least one option.'); return; }
-    var opt1Price    = parseFloat(document.getElementById('prop_opt1_price').value)||(isBR?15495:4587.50);
-    var opt1PartEl   = document.getElementById('prop_opt1_participate');
-    var opt1Part     = opt1PartEl ? (parseFloat(opt1PartEl.value)||null) : null;
-    var bundlePrice  = parseFloat(document.getElementById('prop_bundle_price').value)||(isBR?23433:39267.50);
-    var bundlePart   = parseFloat(document.getElementById('prop_bundle_participate').value)||(isBR?16403.10:27487.25);
-    var auroraUrl       = (document.getElementById('prop_aurora_url').value||'').trim();
-    var auroraPortalUrl = (document.getElementById('prop_aurora_portal_url').value||'').trim();
-    var opt1Half     = Math.round((opt1Price - 1000) / 2 * 100) / 100;
-    var bHalf        = Math.round((bundlePart - 1000) / 2 * 100) / 100;
+    var modal = document.getElementById('proposalModal');
+    var catalog = (modal && modal._catalog) || [];
+    var serviceType = (document.getElementById('prop_service_type')||{}).value || 'battery_retrofit';
     var options = [];
-    if (opt1On) options.push(isBR ? {
-      id: 'option1', title: 'Tesla Powerwall 3 (Retrofit)',
-      subtitle: 'TPW3 (1) · 13.5 kWh Battery Storage',
-      description: 'Add whole-home battery backup with a Tesla Powerwall 3 (13.5 kWh). Protects your home from outages, charges from solar or the grid off-peak, and is monitored in real-time through the Tesla app. Includes a $500 Tesla Visa Gift Card mailed directly to you.',
-      price: opt1Price, participate_price: opt1Part, participate: true,
-      tesla_rebate: 500,
-      milestones: { deposit: 1000, remaining: Math.round(((opt1Part||opt1Price) - 1000) * 100) / 100 }
-    } : {
-      id: 'option1', title: 'Tesla Inverter Replacement',
-      subtitle: 'SunPower Inverter → Tesla Inverter',
-      description: 'Your existing SunPower string inverter system has failed. We will replace it with a Tesla inverter — restoring full solar production and connecting your system to the Tesla app for real-time monitoring.',
-      price: opt1Price, participate: false,
-      milestones: { deposit: 1000, remaining: Math.round((opt1Price - 1000) * 100) / 100 }
-    });
-    if (bundleOn) options.push(isBR ? {
-      id: 'bundle', title: 'TPW3 + (5) 420W Tesla Panels',
-      subtitle: 'Tesla Powerwall 3 (1) + 5 Tesla 420W Solar Panels (2.1 kW)',
-      description: 'Maximize energy independence with a Tesla Powerwall 3 plus 5 new Tesla 420W solar panels. Reduce your electricity bill while adding whole-home battery backup — all monitored through the Tesla app. Eligible for the SDCP rebate ($250 × 13.5 kW = $3,375) plus a $500 Tesla Visa Gift Card mailed directly to you.',
-      price: bundlePrice, participate_price: bundlePart, participate: true,
-      tesla_rebate: 500, sdcp_rebate: 3375,
-      milestones: { deposit: 1000, remaining: Math.round((bundlePart - 1000) * 100) / 100 },
-      aurora_image_url: auroraUrl || null,
-      aurora_portal_url: auroraPortalUrl || null
-    } : {
-      id: 'bundle', title: 'Full System: Inverter + 10 Panels + Powerwall 3',
-      subtitle: '10x Tesla 420W Panels + Tesla Powerwall 3 (13.5 kWh)',
-      description: 'Close the EV production gap and achieve energy independence. 10 new Tesla 420W solar panels plus a Tesla Powerwall 3 battery — fully integrated with your new Tesla inverter and monitored through the Tesla app.',
-      price: bundlePrice, participate_price: bundlePart, participate: true,
-      milestones: { deposit: 1000, permit: bHalf, inspection: bHalf },
-      aurora_image_url: auroraUrl || null,
-      aurora_portal_url: auroraPortalUrl || null
-    });
+    for (var i = 0; i < catalog.length; i++) {
+      var row = catalog[i];
+      var onEl = document.getElementById('prop_opt_'+i);
+      if (!onEl || !onEl.checked) continue;
+      var price     = parseFloat((document.getElementById('prop_price_'+i)||{}).value) || Number(row.default_price);
+      var partEl    = document.getElementById('prop_part_'+i);
+      var partPrice = partEl ? (parseFloat(partEl.value)||null) : null;
+      var aImgEl    = document.getElementById('prop_aurora_img_'+i);
+      var aPortEl   = document.getElementById('prop_aurora_portal_'+i);
+      var deposit   = Number(row.deposit_amount) || 0;
+      var effectivePrice = partPrice || price;
+      var milestones = {};
+      if (deposit > 0) {
+        milestones.deposit = deposit;
+        var remaining = Math.round((effectivePrice - deposit) * 100) / 100;
+        if (serviceType === 'inverter_swap' && row.option_key === 'bundle') {
+          var half = Math.round(remaining / 2 * 100) / 100;
+          milestones.permit = half; milestones.inspection = half;
+        } else {
+          milestones.remaining = remaining;
+        }
+      }
+      var opt = {
+        id: row.option_key, title: row.title, subtitle: row.subtitle,
+        description: row.description, price: price,
+        participate: row.participate, participate_price: partPrice,
+        milestones: milestones
+      };
+      if (row.tesla_rebate) opt.tesla_rebate = Number(row.tesla_rebate);
+      if (row.sdcp_rebate)  opt.sdcp_rebate  = Number(row.sdcp_rebate);
+      if (aImgEl)  opt.aurora_image_url  = aImgEl.value.trim()  || null;
+      if (aPortEl) opt.aurora_portal_url = aPortEl.value.trim() || null;
+      options.push(opt);
+    }
+    if (!options.length) { alert('Enable at least one option.'); return; }
     try {
       var client = supabase.createClient(SUPA_URL, SUPA_KEY);
       var proposal = { status: 'sent', created_at: new Date().toISOString(), options: options, accepted_option: null, financing: null, loan_term: null };
-      // Update and immediately read back to confirm the column saved
       var { error } = await client.from('customers').update({ proposal: proposal }).eq('id', id);
       if (error) throw error;
       var verify = await client.from('customers').select('id,proposal').eq('id', id).limit(1);
@@ -3128,8 +3147,7 @@
       if (!saved) throw new Error('Proposal column may not exist in Supabase. Run: ALTER TABLE customers ADD COLUMN IF NOT EXISTS proposal jsonb;');
       var idx = adminCustomers.findIndex(function(x){ return x.id===id; });
       if (idx > -1) adminCustomers[idx].proposal = proposal;
-      var _pm = document.getElementById('proposalModal');
-      if (_pm) _pm.remove();
+      if (modal) modal.remove();
       alert('Proposal saved and verified ✓');
     } catch(e) { alert('Save error: '+e.message); }
   }
