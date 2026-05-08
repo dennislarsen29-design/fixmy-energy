@@ -1783,6 +1783,9 @@
 
   async function renderAgentsView() {
     adminView = 'agents';
+    if (!window._agentChatHistory) window._agentChatHistory = [];
+    if (!window._agentChatDisplay) window._agentChatDisplay = [];
+
     var portalNav = '<div class="portal-tab-nav">'+
       '<button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
@@ -1794,41 +1797,86 @@
       '<a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a>'+
     '</div>';
 
-    var slot = document.getElementById('adminSlot');
-    slot.innerHTML = portalNav + '<div id="agentsContainer" style="padding:0 4px;"><p style="color:#888;padding:20px 0;">Loading agent reports...</p></div>';
+    var agentDefs = [
+      {id:'marketing', color:'#8DC63F', sched:'Mon'},
+      {id:'socials',   color:'#4a9eff', sched:'Daily'},
+      {id:'bizdev',    color:'#9b6de8', sched:'Tue'},
+      {id:'crm-dev',   color:'#f59e0b', sched:'Wed'},
+    ];
 
+    var runNowBtns = agentDefs.map(function(a){
+      return '<button id="runBtn-'+a.id+'" onclick="runAgentNow(\''+a.id+'\')" style="padding:7px 14px;background:'+a.color+'18;border:1px solid '+a.color+'44;border-radius:8px;color:'+a.color+';font-size:0.75rem;font-weight:700;cursor:pointer;white-space:nowrap;">&#9654; '+a.id.replace('-',' ')+' <span style="font-size:0.65rem;opacity:0.6;">('+a.sched+')</span></button>';
+    }).join('');
+
+    var suggestedQs = ['Who should I follow up with today?','How\'s my conversion rate this month?','Which rep is performing best?','Where should I spend marketing $?'];
+    var emptyChatHtml = '<div style="text-align:center;padding:16px 0;">'+
+      '<p style="color:#555;font-size:0.8rem;margin-bottom:12px;">Ask anything about your pipeline, leads, reps, or marketing.</p>'+
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;">'+
+      suggestedQs.map(function(q){
+        return '<button onclick="document.getElementById(\'chatInput\').value=\''+q.replace(/'/g,'&#39;')+'\';sendAgentChat()" style="padding:6px 12px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:20px;color:#888;font-size:0.75rem;cursor:pointer;">'+q+'</button>';
+      }).join('')+
+      '</div></div>';
+
+    var chatMsgsHtml = window._agentChatDisplay.length ? window._agentChatDisplay.map(function(m){
+      var isUser = m.role === 'user';
+      return '<div style="display:flex;justify-content:'+(isUser?'flex-end':'flex-start')+';"><div style="max-width:85%;background:'+(isUser?'rgba(141,198,63,0.15)':'rgba(255,255,255,0.06)')+';border:1px solid '+(isUser?'rgba(141,198,63,0.3)':'rgba(255,255,255,0.1)')+';border-radius:12px;padding:10px 14px;font-size:0.83rem;color:'+(isUser?'#c8e88a':'#ddd')+';line-height:1.6;white-space:pre-wrap;">'+m.content+'</div></div>';
+    }).join('') : emptyChatHtml;
+
+    var slot = document.getElementById('adminSlot');
+    slot.innerHTML = portalNav +
+      '<div style="padding:0 4px;">'+
+        // Chat assistant
+        '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:16px;margin-bottom:16px;">'+
+          '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">'+
+            '<h2 style="font-size:1rem;font-weight:700;margin:0;color:#fff;">&#129302; Ask your AI assistant</h2>'+
+            '<span style="font-size:0.68rem;color:#555;margin-left:auto;">Live CRM data</span>'+
+          '</div>'+
+          '<div id="chatMessages" style="min-height:80px;max-height:380px;overflow-y:auto;margin-bottom:12px;display:flex;flex-direction:column;gap:10px;">'+chatMsgsHtml+'</div>'+
+          '<div style="display:flex;gap:8px;">'+
+            '<input id="chatInput" type="text" placeholder="Who should I call today? Which zip codes should I target?..." style="flex:1;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:10px;padding:10px 14px;color:#fff;font-size:0.875rem;outline:none;" onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){sendAgentChat();event.preventDefault();}" />'+
+            '<button onclick="sendAgentChat()" style="padding:10px 18px;background:#8DC63F;border:none;border-radius:10px;color:#1A1A1A;font-weight:700;font-size:0.875rem;cursor:pointer;">Send</button>'+
+          '</div>'+
+        '</div>'+
+        // Run Now
+        '<div style="background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:14px 16px;margin-bottom:16px;">'+
+          '<div style="font-size:0.72rem;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:10px;">Run agents now</div>'+
+          '<div style="display:flex;gap:8px;flex-wrap:wrap;">'+runNowBtns+'</div>'+
+        '</div>'+
+        // Inbox
+        '<div id="agentsContainer"><p style="color:#888;padding:20px 0;">Loading agent reports...</p></div>'+
+      '</div>';
+
+    loadAgentInbox();
+  }
+
+  async function loadAgentInbox() {
     try {
       var ac = supabase.createClient(SUPA_URL, SUPA_KEY);
       var { data, error } = await ac.from('agent_reports').select('*').order('reviewed', {ascending:true}).order('created_at', {ascending:false}).limit(200);
       if (error) throw error;
       var reports = data || [];
-
       var unreviewed = reports.filter(function(r){ return !r.reviewed; });
       var agentNames = reports.map(function(r){ return r.agent; }).filter(function(v,i,a){ return a.indexOf(v)===i; });
-
       var filterState = window._agentFilter || 'all';
       var filtered = filterState === 'all' ? reports : reports.filter(function(r){ return r.agent === filterState; });
-
       var priorityColor = { urgent:'#ef4444', high:'#f97316', normal:'#888' };
       var priorityBg    = { urgent:'rgba(239,68,68,0.12)', high:'rgba(249,115,22,0.1)', normal:'rgba(255,255,255,0.04)' };
       var agentColor    = { 'marketing':'#8DC63F', 'socials':'#4a9eff', 'bizdev':'#9b6de8', 'crm-dev':'#f59e0b' };
-
       var filterBtns = '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">'+
-        '<button onclick="window._agentFilter=\'all\';renderAgentsView()" style="padding:5px 14px;border-radius:100px;border:1px solid '+(filterState==='all'?'#8DC63F':'#333')+';background:'+(filterState==='all'?'#8DC63F':'transparent')+';color:'+(filterState==='all'?'#1A1A1A':'#888')+';font-size:0.75rem;font-weight:700;cursor:pointer;">All ('+reports.length+')</button>'+
+        '<button onclick="window._agentFilter=\'all\';loadAgentInbox()" style="padding:5px 14px;border-radius:100px;border:1px solid '+(filterState==='all'?'#8DC63F':'#333')+';background:'+(filterState==='all'?'#8DC63F':'transparent')+';color:'+(filterState==='all'?'#1A1A1A':'#888')+';font-size:0.75rem;font-weight:700;cursor:pointer;">All ('+reports.length+')</button>'+
         agentNames.map(function(a){
           var cnt = reports.filter(function(r){ return r.agent===a; }).length;
           var active = filterState===a;
           var col = agentColor[a]||'#888';
-          return '<button onclick="window._agentFilter=\''+a+'\';renderAgentsView()" style="padding:5px 14px;border-radius:100px;border:1px solid '+(active?col:'#333')+';background:'+(active?col:'transparent')+';color:'+(active?'#1A1A1A':'#888')+';font-size:0.75rem;font-weight:700;cursor:pointer;text-transform:capitalize;">'+a.replace('-',' ')+' ('+cnt+')</button>';
+          return '<button onclick="window._agentFilter=\''+a+'\';loadAgentInbox()" style="padding:5px 14px;border-radius:100px;border:1px solid '+(active?col:'#333')+';background:'+(active?col:'transparent')+';color:'+(active?'#1A1A1A':'#888')+';font-size:0.75rem;font-weight:700;cursor:pointer;text-transform:capitalize;">'+a.replace('-',' ')+' ('+cnt+')</button>';
         }).join('')+
       '</div>';
-
       var cardsHtml = filtered.length ? filtered.map(function(r){
         var pColor = priorityColor[r.priority]||'#888';
         var pBg    = priorityBg[r.priority]||priorityBg.normal;
         var aColor = agentColor[r.agent]||'#888';
         var ts = new Date(r.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
-        return '<div id="ar-'+r.id+'" style="background:'+(r.reviewed?'rgba(255,255,255,0.02)':'rgba(255,255,255,0.05)')+';border:1px solid '+(r.reviewed?'#222':'rgba(255,255,255,0.1)')+';border-radius:12px;padding:16px;margin-bottom:12px;opacity:'+(r.reviewed?'0.5':'1')+';">'+
+        return '<div id="ar-'+r.id+'" style="background:'+(r.reviewed?'rgba(255,255,255,0.02)':'rgba(255,255,255,0.05)')+';border:1px solid '+(r.reviewed?'#222':'rgba(255,255,255,0.1)')+';border-radius:12px;padding:16px;margin-bottom:12px;opacity:'+(r.reviewed?'0.5':'1')+'">' +
           '<div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:8px;flex-wrap:wrap;">'+
             '<span style="padding:2px 9px;border-radius:100px;font-size:0.65rem;font-weight:800;background:'+pBg+';color:'+pColor+';border:1px solid '+pColor+'40;text-transform:uppercase;">'+r.priority+'</span>'+
             '<span style="padding:2px 9px;border-radius:100px;font-size:0.65rem;font-weight:700;background:'+aColor+'22;color:'+aColor+';border:1px solid '+aColor+'44;text-transform:capitalize;">&#129302; '+r.agent.replace('-',' ')+'</span>'+
@@ -1839,15 +1887,13 @@
           (r.action_url?'<div style="margin-top:10px;"><a href="'+r.action_url+'" target="_blank" style="font-size:0.75rem;color:#4a9eff;text-decoration:none;">&#128279; Open Resource</a></div>':'')+
           (!r.reviewed?'<div style="margin-top:12px;text-align:right;"><button onclick="markAgentReportReviewed(\''+r.id+'\')" style="padding:5px 16px;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:8px;font-size:0.75rem;font-weight:700;cursor:pointer;">&#10003; Mark Reviewed</button></div>':'<div style="margin-top:8px;text-align:right;font-size:0.7rem;color:#444;">&#10003; Reviewed</div>')+
         '</div>';
-      }).join('') : '<p style="color:#555;padding:30px 0;text-align:center;">No reports yet — agents will write here on their schedule.</p>';
-
+      }).join('') : '<p style="color:#555;padding:30px 0;text-align:center;">No reports yet — use Run Now above or wait for the scheduled runs.</p>';
       var summaryBar = '<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">'+
         '<h2 style="font-size:1.1rem;font-weight:700;margin:0;">&#129302; Agent Inbox</h2>'+
         (unreviewed.length?'<span style="padding:3px 10px;background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.4);color:#ef4444;border-radius:100px;font-size:0.72rem;font-weight:800;">'+unreviewed.length+' unreviewed</span>':'<span style="padding:3px 10px;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.3);color:#8DC63F;border-radius:100px;font-size:0.72rem;font-weight:700;">All reviewed</span>')+
+        '<button onclick="loadAgentInbox()" style="margin-left:auto;padding:4px 12px;background:transparent;border:1px solid #333;border-radius:8px;color:#666;font-size:0.72rem;cursor:pointer;">&#8635; Refresh</button>'+
       '</div>';
-
       document.getElementById('agentsContainer').innerHTML = '<div style="padding:4px 0;">'+summaryBar+filterBtns+cardsHtml+'</div>';
-
     } catch(e) {
       document.getElementById('agentsContainer').innerHTML = '<p style="color:#ef4444;padding:20px 0;">Error loading agent reports: '+e.message+'</p>';
     }
@@ -1860,11 +1906,77 @@
       var ac = supabase.createClient(SUPA_URL, SUPA_KEY);
       var { error } = await ac.from('agent_reports').update({ reviewed:true }).eq('id', reportId);
       if (error) throw error;
-      renderAgentsView();
+      loadAgentInbox();
     } catch(e) {
       alert('Error marking reviewed: '+e.message);
       if (btn) { btn.disabled=false; btn.innerHTML='&#10003; Mark Reviewed'; }
     }
+  }
+
+  function runAgentNow(agent) {
+    var btn = document.getElementById('runBtn-'+agent);
+    if (!btn || btn.disabled) return;
+    var origHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '&#9203; Running...';
+    btn.style.opacity = '0.6';
+    fetch('/.netlify/functions/run-agent-background?agent='+agent)
+      .then(function(r){ return r.text(); })
+      .then(function(){
+        btn.innerHTML = '&#10003; Done — check inbox';
+        btn.style.opacity = '1';
+        setTimeout(function(){ loadAgentInbox(); }, 2000);
+        setTimeout(function(){ btn.disabled=false; btn.innerHTML=origHtml; btn.style.opacity='1'; }, 8000);
+      })
+      .catch(function(){
+        btn.innerHTML = '&#9888; Error';
+        btn.style.opacity = '1';
+        setTimeout(function(){ btn.disabled=false; btn.innerHTML=origHtml; }, 3000);
+      });
+    // Update label while waiting
+    setTimeout(function(){ if(btn.disabled && btn.innerHTML.indexOf('Done')===-1) btn.innerHTML='&#9203; Running (~60s)...'; }, 3000);
+  }
+
+  async function sendAgentChat() {
+    var input = document.getElementById('chatInput');
+    var chatDiv = document.getElementById('chatMessages');
+    if (!input || !chatDiv) return;
+    var message = input.value.trim();
+    if (!message) return;
+    input.value = '';
+    input.disabled = true;
+
+    if (!window._agentChatHistory) window._agentChatHistory = [];
+    if (!window._agentChatDisplay) window._agentChatDisplay = [];
+    window._agentChatDisplay.push({ role:'user', content: message });
+
+    var typingId = 'typing-'+Date.now();
+    function renderChat(typing) {
+      chatDiv.innerHTML = window._agentChatDisplay.map(function(m){
+        var isUser = m.role==='user';
+        return '<div style="display:flex;justify-content:'+(isUser?'flex-end':'flex-start')+';"><div style="max-width:85%;background:'+(isUser?'rgba(141,198,63,0.15)':'rgba(255,255,255,0.06)')+';border:1px solid '+(isUser?'rgba(141,198,63,0.3)':'rgba(255,255,255,0.1)')+';border-radius:12px;padding:10px 14px;font-size:0.83rem;color:'+(isUser?'#c8e88a':'#ddd')+';line-height:1.6;white-space:pre-wrap;">'+m.content+'</div></div>';
+      }).join('') + (typing ? '<div id="'+typingId+'" style="display:flex;"><div style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:10px 14px;font-size:0.83rem;color:#555;">&#9679;&#9679;&#9679;</div></div>' : '');
+      chatDiv.scrollTop = chatDiv.scrollHeight;
+    }
+    renderChat(true);
+
+    try {
+      var resp = await fetch('/.netlify/functions/chat-agent', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ message: message, history: window._agentChatHistory })
+      });
+      var data = await resp.json();
+      var reply = data.reply || 'No response.';
+      window._agentChatHistory.push({ role:'user', content: message });
+      window._agentChatHistory.push({ role:'assistant', content: reply });
+      window._agentChatDisplay.push({ role:'assistant', content: reply });
+    } catch(e) {
+      window._agentChatDisplay.push({ role:'assistant', content: 'Error: '+e.message });
+    }
+    input.disabled = false;
+    input.focus();
+    renderChat(false);
   }
 
   function openMarketingExpenseForm(id) {
