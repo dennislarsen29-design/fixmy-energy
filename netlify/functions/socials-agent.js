@@ -1,10 +1,11 @@
 // Socials Agent — runs daily ~8am PT (see netlify.toml)
-// Env vars required: ANTHROPIC_KEY, SUPA_SERVICE_KEY
+// Env vars required: ANTHROPIC_KEY, SUPA_SERVICE_KEY, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY
 // Generates ready-to-post social content based on recent wins, pipeline events,
 // and seasonal/local context. Writes post drafts to the agent_reports table.
 
 const SUPA_URL = 'https://kbtobyoumvbcxfbugsid.supabase.co';
 const SUPA_REST = SUPA_URL + '/rest/v1';
+const { sendAgentNotification } = require('./lib/push');
 
 async function supaGet(path, key) {
   const resp = await fetch(SUPA_REST + path, {
@@ -166,6 +167,7 @@ exports.handler = async function() {
     }];
 
     let turns = 0;
+    let actionItemCount = 0;
     while (turns++ < 10) {
       const response = await callClaude(messages, TOOLS, SYSTEM);
       messages.push({ role: 'assistant', content: response.content });
@@ -176,6 +178,7 @@ exports.handler = async function() {
       for (const block of response.content) {
         if (block.type === 'tool_use') {
           console.log('[socials-agent] tool:', block.name);
+          if (block.name === 'write_post') actionItemCount++;
           const result = await executeTool(block.name, block.input, key);
           results.push({ type: 'tool_result', tool_use_id: block.id, content: result });
         }
@@ -183,7 +186,8 @@ exports.handler = async function() {
       messages.push({ role: 'user', content: results });
     }
 
-    console.log('[socials-agent] Done. Turns:', turns);
+    if (actionItemCount > 0) await sendAgentNotification('socials', actionItemCount);
+    console.log('[socials-agent] Done. Turns:', turns, 'Items:', actionItemCount);
     return { statusCode: 200, body: 'Socials agent completed' };
   } catch (e) {
     console.error('[socials-agent] Error:', e.message);

@@ -1,10 +1,11 @@
 // Marketing Agent — runs every Monday ~7am PT (see netlify.toml)
-// Env vars required: ANTHROPIC_KEY, SUPA_SERVICE_KEY
+// Env vars required: ANTHROPIC_KEY, SUPA_SERVICE_KEY, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY
 // Analyzes the past 30 days of pipeline + marketing spend, writes actionable
 // recommendations to the agent_reports table (visible in portal Agents tab).
 
 const SUPA_URL = 'https://kbtobyoumvbcxfbugsid.supabase.co';
 const SUPA_REST = SUPA_URL + '/rest/v1';
+const { sendAgentNotification } = require('./lib/push');
 
 async function supaGet(path, key) {
   const resp = await fetch(SUPA_REST + path, {
@@ -153,6 +154,7 @@ exports.handler = async function() {
     }];
 
     let turns = 0;
+    let actionItemCount = 0;
     while (turns++ < 12) {
       const response = await callClaude(messages, TOOLS, SYSTEM);
       messages.push({ role: 'assistant', content: response.content });
@@ -163,6 +165,7 @@ exports.handler = async function() {
       for (const block of response.content) {
         if (block.type === 'tool_use') {
           console.log('[marketing-agent] tool:', block.name, JSON.stringify(block.input).slice(0, 120));
+          if (block.name === 'write_recommendation') actionItemCount++;
           const result = await executeTool(block.name, block.input, key);
           results.push({ type: 'tool_result', tool_use_id: block.id, content: result });
         }
@@ -170,7 +173,8 @@ exports.handler = async function() {
       messages.push({ role: 'user', content: results });
     }
 
-    console.log('[marketing-agent] Done. Turns used:', turns);
+    if (actionItemCount > 0) await sendAgentNotification('marketing', actionItemCount);
+    console.log('[marketing-agent] Done. Turns used:', turns, 'Items:', actionItemCount);
     return { statusCode: 200, body: 'Marketing agent completed' };
   } catch (e) {
     console.error('[marketing-agent] Error:', e.message);

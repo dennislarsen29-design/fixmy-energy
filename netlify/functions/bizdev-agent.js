@@ -1,10 +1,11 @@
 // BizDev Agent — runs every Tuesday ~7am PT (see netlify.toml)
-// Env vars required: ANTHROPIC_KEY, SUPA_SERVICE_KEY
+// Env vars required: ANTHROPIC_KEY, SUPA_SERVICE_KEY, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY
 // Analyzes conversion rates, team performance, referral pipeline, and partnership
 // opportunities. Writes sales + growth action items to the agent_reports table.
 
 const SUPA_URL = 'https://kbtobyoumvbcxfbugsid.supabase.co';
 const SUPA_REST = SUPA_URL + '/rest/v1';
+const { sendAgentNotification } = require('./lib/push');
 
 async function supaGet(path, key) {
   const resp = await fetch(SUPA_REST + path, {
@@ -225,6 +226,7 @@ exports.handler = async function() {
     }];
 
     let turns = 0;
+    let actionItemCount = 0;
     while (turns++ < 14) {
       const response = await callClaude(messages, TOOLS, SYSTEM);
       messages.push({ role: 'assistant', content: response.content });
@@ -235,6 +237,7 @@ exports.handler = async function() {
       for (const block of response.content) {
         if (block.type === 'tool_use') {
           console.log('[bizdev-agent] tool:', block.name);
+          if (block.name === 'write_action_item') actionItemCount++;
           const result = await executeTool(block.name, block.input, key);
           results.push({ type: 'tool_result', tool_use_id: block.id, content: result });
         }
@@ -242,7 +245,8 @@ exports.handler = async function() {
       messages.push({ role: 'user', content: results });
     }
 
-    console.log('[bizdev-agent] Done. Turns:', turns);
+    if (actionItemCount > 0) await sendAgentNotification('bizdev', actionItemCount);
+    console.log('[bizdev-agent] Done. Turns:', turns, 'Action items:', actionItemCount);
     return { statusCode: 200, body: 'BizDev agent completed' };
   } catch (e) {
     console.error('[bizdev-agent] Error:', e.message);

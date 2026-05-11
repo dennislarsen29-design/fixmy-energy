@@ -1,10 +1,11 @@
 // CRM Dev Agent — runs every Wednesday ~9am PT (see netlify.toml)
-// Env vars required: ANTHROPIC_KEY, SUPA_SERVICE_KEY
+// Env vars required: ANTHROPIC_KEY, SUPA_SERVICE_KEY, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY
 // Audits data quality, identifies workflow gaps, and generates portal improvement
 // tasks — written to the agent_reports table for the admin to review.
 
 const SUPA_URL = 'https://kbtobyoumvbcxfbugsid.supabase.co';
 const SUPA_REST = SUPA_URL + '/rest/v1';
+const { sendAgentNotification } = require('./lib/push');
 
 async function supaGet(path, key) {
   const resp = await fetch(SUPA_REST + path, {
@@ -211,6 +212,7 @@ exports.handler = async function() {
     }];
 
     let turns = 0;
+    let actionItemCount = 0;
     while (turns++ < 14) {
       const response = await callClaude(messages, TOOLS, SYSTEM);
       messages.push({ role: 'assistant', content: response.content });
@@ -221,6 +223,7 @@ exports.handler = async function() {
       for (const block of response.content) {
         if (block.type === 'tool_use') {
           console.log('[crm-dev-agent] tool:', block.name);
+          if (block.name === 'write_task') actionItemCount++;
           const result = await executeTool(block.name, block.input, key);
           results.push({ type: 'tool_result', tool_use_id: block.id, content: result });
         }
@@ -228,7 +231,8 @@ exports.handler = async function() {
       messages.push({ role: 'user', content: results });
     }
 
-    console.log('[crm-dev-agent] Done. Turns:', turns);
+    if (actionItemCount > 0) await sendAgentNotification('crm dev', actionItemCount);
+    console.log('[crm-dev-agent] Done. Turns:', turns, 'Items:', actionItemCount);
     return { statusCode: 200, body: 'CRM Dev agent completed' };
   } catch (e) {
     console.error('[crm-dev-agent] Error:', e.message);
