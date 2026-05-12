@@ -3,8 +3,8 @@ self.addEventListener('push', function(e) {
   try { d = e.data ? e.data.json() : {}; } catch(x) { d = { body: e.data ? e.data.text() : '' }; }
   e.waitUntil(self.registration.showNotification(d.title || 'FixMy.Energy', {
     body: d.body || 'New agent reports are ready.',
-    icon: '/favicon.ico',
-    badge: '/favicon.ico',
+    icon: '/og-image.jpg',
+    badge: '/og-image.jpg',
     tag: 'agent-report',
     renotify: true,
     data: { url: d.url || '/portal.html' }
