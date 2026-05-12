@@ -27,15 +27,26 @@ exports.handler = async function(event) {
   // ContactCreate/ContactUpdate puts fields at the top level.
   const contact = payload.contact || payload;
 
-  const firstName = (contact.firstName || contact.first_name || '').trim();
-  const lastName  = (contact.lastName  || contact.last_name  || '').trim();
+  let firstName = (contact.firstName || contact.first_name || '').trim();
+  let lastName  = (contact.lastName  || contact.last_name  || '').trim();
+
+  // GHL booking widget often sends a combined `name` field instead of split first/last.
+  if (!firstName && !lastName) {
+    const fullName = (contact.name || contact.full_name || payload.name || '').trim();
+    if (fullName) {
+      const parts = fullName.split(/\s+/);
+      firstName = parts[0] || '';
+      lastName  = parts.slice(1).join(' ') || '';
+    }
+  }
+
   // GHL may use 'email', 'email_address', or top-level payload.email
-  const email     = (contact.email || contact.email_address || payload.email || '').toLowerCase().trim();
-  const rawPhone  = contact.phone || contact.phone_raw || contact.phoneRaw || payload.phone || '';
+  const email    = (contact.email || contact.email_address || payload.email || '').toLowerCase().trim();
+  const rawPhone = contact.phone || contact.phone_raw || contact.phoneRaw || payload.phone || '';
 
   console.log('GHL inbound payload keys:', Object.keys(payload).join(','));
   console.log('GHL contact keys:', Object.keys(contact).join(','));
-  console.log('Parsed email:', email, '| phone:', rawPhone);
+  console.log('Parsed name:', firstName, lastName, '| email:', email, '| phone:', rawPhone);
 
   // Clean phone to 10 digits (used as access_code)
   let digits = rawPhone.replace(/[^0-9]/g, '');
@@ -67,6 +78,13 @@ exports.handler = async function(event) {
 
   if (!email && !digits) {
     return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ skipped: 'no email or phone' }) };
+  }
+
+  // When name is still blank after all fallbacks, log the raw payload so it's diagnosable
+  // and store a note on the record so admins can see what GHL actually sent.
+  const nameMissing = !firstName && !lastName;
+  if (nameMissing) {
+    console.warn('GHL inbound: name fields missing. Raw payload:', JSON.stringify(payload).slice(0, 500));
   }
 
   // ── Check for existing record ─────────────────────────────────────────────
@@ -113,7 +131,8 @@ exports.handler = async function(event) {
     lead_source:     'inbound_web',
     lead_temp:       'cold',
     diagnostic_date: diagnosticDate,
-    arrival_end:     arrivalEnd
+    arrival_end:     arrivalEnd,
+    notes:           nameMissing ? 'GHL inbound — name not provided. Check GHL contact record.' : null
   };
 
   let result, method, supaUrl;
