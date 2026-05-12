@@ -231,6 +231,33 @@ exports.handler = async function() {
       messages.push({ role: 'user', content: results });
     }
 
+    // Forced write phase: if Claude analyzed data but never called write_task
+    if (actionItemCount === 0 && messages.length > 2) {
+      console.log('[crm-dev-agent] No items written — forcing write phase');
+      messages.push({ role: 'user', content: 'You have all the data. Now call write_task for each finding — one call per task. Do not respond with text.' });
+      const WRITE_TOOL = TOOLS.find(function(t){ return t.name === 'write_task'; });
+      let wt = 0;
+      while (wt++ < 8) {
+        const wr = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
+          body: JSON.stringify({ model: 'claude-opus-4-7', max_tokens: 4096, system: SYSTEM, tools: [WRITE_TOOL], tool_choice: { type: 'any' }, messages })
+        });
+        const wrData = await wr.json();
+        messages.push({ role: 'assistant', content: wrData.content });
+        if (wrData.stop_reason !== 'tool_use') break;
+        const res2 = [];
+        for (const b of wrData.content) {
+          if (b.type === 'tool_use') {
+            actionItemCount++;
+            const result = await executeTool(b.name, b.input, key);
+            res2.push({ type: 'tool_result', tool_use_id: b.id, content: result });
+          }
+        }
+        messages.push({ role: 'user', content: res2 });
+      }
+    }
+
     if (actionItemCount > 0) await sendAgentNotification('crm dev', actionItemCount);
     console.log('[crm-dev-agent] Done. Turns:', turns, 'Items:', actionItemCount);
     return { statusCode: 200, body: 'CRM Dev agent completed' };

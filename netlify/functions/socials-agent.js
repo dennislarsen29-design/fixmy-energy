@@ -74,7 +74,7 @@ async function executeTool(name, input, key) {
       // Jobs that moved to install or completed stages
       const jobs = await supaGet(
         '/customers?select=first_name,last_name,address,sold_type,step,solar_status,lead_category,install_date,system_size,utility,invoice_amount,created_at' +
-        '&sold_type=not.is.null&updated_at=gte.' + since.toISOString() + '&limit=50', key
+        '&sold_type=not.is.null&created_at=gte.' + since.toISOString() + '&limit=50', key
       );
 
       // Recent FixMy jobs at step 8+ (Install Booked, Monitoring)
@@ -184,6 +184,33 @@ exports.handler = async function() {
         }
       }
       messages.push({ role: 'user', content: results });
+    }
+
+    // Forced write phase: if Claude analyzed data but never called write_post
+    if (actionItemCount === 0 && messages.length > 2) {
+      console.log('[socials-agent] No items written — forcing write phase');
+      messages.push({ role: 'user', content: 'You have all the data. Now call write_post for each post — one call per post. Do not respond with text.' });
+      const WRITE_TOOL = TOOLS.find(function(t){ return t.name === 'write_post'; });
+      let wt = 0;
+      while (wt++ < 5) {
+        const wr = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
+          body: JSON.stringify({ model: 'claude-opus-4-7', max_tokens: 4096, system: SYSTEM, tools: [WRITE_TOOL], tool_choice: { type: 'any' }, messages })
+        });
+        const wrData = await wr.json();
+        messages.push({ role: 'assistant', content: wrData.content });
+        if (wrData.stop_reason !== 'tool_use') break;
+        const res2 = [];
+        for (const b of wrData.content) {
+          if (b.type === 'tool_use') {
+            actionItemCount++;
+            const result = await executeTool(b.name, b.input, key);
+            res2.push({ type: 'tool_result', tool_use_id: b.id, content: result });
+          }
+        }
+        messages.push({ role: 'user', content: res2 });
+      }
     }
 
     if (actionItemCount > 0) await sendAgentNotification('socials', actionItemCount);
