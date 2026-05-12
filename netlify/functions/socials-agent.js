@@ -24,11 +24,13 @@ async function supaInsert(table, row, key) {
   if (!resp.ok) throw new Error('Supabase INSERT failed: ' + resp.status + ' ' + await resp.text());
 }
 
-async function callClaude(messages, tools, system) {
+async function callClaude(messages, tools, system, toolChoice) {
+  const body = { model: 'claude-opus-4-7', max_tokens: 8192, system, tools, messages };
+  if (toolChoice) body.tool_choice = toolChoice;
   const resp = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({ model: 'claude-opus-4-7', max_tokens: 8192, system, tools, messages })
+    body: JSON.stringify(body)
   });
   if (!resp.ok) throw new Error('Claude API error: ' + resp.status + ' ' + await resp.text());
   return resp.json();
@@ -160,25 +162,25 @@ exports.handler = async function() {
   try {
     const today = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
     const dayOfWeek = new Date().toLocaleDateString('en-US', { weekday: 'long' });
+    const DATA_TOOLS = TOOLS.filter(function(t) { return t.name !== 'write_post'; });
+    const WRITE_TOOL = TOOLS.find(function(t) { return t.name === 'write_post'; });
 
     const messages = [{
       role: 'user',
-      content: `Generate today's social content for FixMy.Energy. Today is ${today} (${dayOfWeek}). Use get_recent_wins and get_pipeline_snapshot to find real material, then write 1-2 posts using write_post. Make them ready to copy-paste and post immediately.`
+      content: `Generate today's social content for FixMy.Energy. Today is ${today} (${dayOfWeek}). Use get_recent_wins and get_pipeline_snapshot to find real material for today's posts.`
     }];
 
+    // Phase 1: Data gathering only (write tool not available)
     let turns = 0;
-    let actionItemCount = 0;
-    while (turns++ < 10) {
-      const response = await callClaude(messages, TOOLS, SYSTEM);
+    while (turns++ < 6) {
+      const response = await callClaude(messages, DATA_TOOLS, SYSTEM);
       messages.push({ role: 'assistant', content: response.content });
       if (response.stop_reason === 'end_turn') break;
       if (response.stop_reason !== 'tool_use') break;
-
       const results = [];
       for (const block of response.content) {
         if (block.type === 'tool_use') {
-          console.log('[socials-agent] tool:', block.name);
-          if (block.name === 'write_post') actionItemCount++;
+          console.log('[socials-agent] data tool:', block.name);
           const result = await executeTool(block.name, block.input, key);
           results.push({ type: 'tool_result', tool_use_id: block.id, content: result });
         }
@@ -186,30 +188,29 @@ exports.handler = async function() {
       messages.push({ role: 'user', content: results });
     }
 
-    // Forced write phase: if Claude analyzed data but never called write_post
-    if (actionItemCount === 0 && messages.length > 2) {
-      console.log('[socials-agent] No items written — forcing write phase');
-      messages.push({ role: 'user', content: 'You have all the data. Now call write_post for each post — one call per post. Do not respond with text.' });
-      const WRITE_TOOL = TOOLS.find(function(t){ return t.name === 'write_post'; });
-      let wt = 0;
-      while (wt++ < 5) {
-        const wr = await fetch('https://api.anthropic.com/v1/messages', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
-          body: JSON.stringify({ model: 'claude-opus-4-7', max_tokens: 4096, system: SYSTEM, tools: [WRITE_TOOL], tool_choice: { type: 'any' }, messages })
-        });
-        const wrData = await wr.json();
-        messages.push({ role: 'assistant', content: wrData.content });
-        if (wrData.stop_reason !== 'tool_use') break;
-        const res2 = [];
-        for (const b of wrData.content) {
-          if (b.type === 'tool_use') {
-            actionItemCount++;
-            const result = await executeTool(b.name, b.input, key);
-            res2.push({ type: 'tool_result', tool_use_id: b.id, content: result });
-          }
+    // Phase 2: Write posts — always runs, tool_choice:any guarantees at least one write
+    let actionItemCount = 0;
+    messages.push({ role: 'user', content: 'You have the data. Now write 1-2 ready-to-post social media posts using write_post. Make them copy-paste ready with caption, hashtags, and image note.' });
+
+    const wr1 = await callClaude(messages, [WRITE_TOOL], SYSTEM, { type: 'any' });
+    messages.push({ role: 'assistant', content: wr1.content });
+    const toolRes1 = [];
+    for (const block of (wr1.content || [])) {
+      if (block.type === 'tool_use') {
+        console.log('[socials-agent] write:', block.name);
+        actionItemCount++;
+        const r = await executeTool(block.name, block.input, key);
+        toolRes1.push({ type: 'tool_result', tool_use_id: block.id, content: r });
+      }
+    }
+    if (wr1.stop_reason === 'tool_use' && toolRes1.length > 0) {
+      messages.push({ role: 'user', content: toolRes1 });
+      const wr2 = await callClaude(messages, [WRITE_TOOL], SYSTEM);
+      for (const block of (wr2.content || [])) {
+        if (block.type === 'tool_use') {
+          actionItemCount++;
+          await executeTool(block.name, block.input, key);
         }
-        messages.push({ role: 'user', content: res2 });
       }
     }
 
@@ -218,6 +219,14 @@ exports.handler = async function() {
     return { statusCode: 200, body: 'Socials agent completed' };
   } catch (e) {
     console.error('[socials-agent] Error:', e.message);
+    try {
+      await supaInsert('agent_reports', {
+        agent: 'socials', priority: 'urgent',
+        title: 'Agent Error — ' + e.message.slice(0, 60),
+        body: 'Error: ' + e.message + '\n\nCheck Netlify function logs for [socials-agent].',
+        action_url: null
+      }, process.env.SUPA_SERVICE_KEY);
+    } catch (e2) {}
     return { statusCode: 200, body: 'Error: ' + e.message };
   }
 };
