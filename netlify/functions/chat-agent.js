@@ -1,1 +1,1 @@
-placeholder
+CHAT_CONTENT

@@ -1,1 +1,1 @@
-placeholder
+GHL_CONTENT
