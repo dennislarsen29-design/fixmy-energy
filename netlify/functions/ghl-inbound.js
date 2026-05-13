@@ -22,7 +22,7 @@ exports.handler = async function(event) {
     return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ error: 'Invalid JSON' }) };
   }
 
-  // ── Normalise GHL payload ────────────────────────────────────────────────────────────────────────
+  // ── Normalise GHL payload ──────────────────────────────────────────────────────────────────────────────────────────
   // GHL sends different shapes: AppointmentCreate wraps contact under payload.contact,
   // ContactCreate/ContactUpdate puts fields at the top level.
   const contact = payload.contact || payload;
@@ -87,7 +87,7 @@ exports.handler = async function(event) {
     console.warn('GHL inbound: name fields missing. Raw payload:', JSON.stringify(payload).slice(0, 500));
   }
 
-  // ── Check for existing record ──────────────────────────────────────────────────────────────────
+  // ── Check for existing record ──────────────────────────────────────────────────────────────────────────────────────────
   // Match on email first, then phone, to avoid duplicates
   const supaHeaders = {
     'Content-Type': 'application/json',
@@ -117,7 +117,7 @@ exports.handler = async function(event) {
     }
   }
 
-  // ── Build the customer record ─────────────────────────────────────────────────────────────────────────
+  // ── Build the customer record ──────────────────────────────────────────────────────────────────────────────────────────────────
   const now = new Date().toISOString();
   const record = {
     first_name:      firstName || null,
