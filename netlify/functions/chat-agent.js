@@ -81,15 +81,9 @@ exports.handler = async function(event) {
 
     const totalSpend = spend.reduce((s, e) => s + (parseFloat(e.amount) || 0), 0);
 
-    // Parse latest note entry per lead
     function latestNote(raw) {
       if (!raw) return null;
-      try {
-        if (raw.trim().charAt(0) === '[') {
-          const entries = JSON.parse(raw);
-          if (entries.length) return entries[entries.length - 1];
-        }
-      } catch(e) {}
+      try { if (raw.trim().charAt(0) === '[') { const e = JSON.parse(raw); if (e.length) return e[e.length-1]; } } catch(e) {}
       return raw ? { ts: null, by: 'Legacy', text: raw } : null;
     }
     const leadsWithNotes = leads
@@ -123,7 +117,7 @@ MARKETING SPEND:
 ${spend.slice(0, 10).map(e => `  ${e.campaign_name || 'Campaign'}: $${e.amount} on ${e.expense_date}${e.zip_codes ? ' | zips: ' + e.zip_codes : ''}`).join('\n')}
 
 RECENT ACTIVITY LOG (latest note per lead — up to 15):
-${leadsWithNotes.length ? leadsWithNotes.map(({c, note}) => `  ${c.first_name} ${c.last_name || ''} (${c.lead_category === 'new_solar' ? c.solar_status : 'Step ' + (c.step || 0)}) — ${note.by}${note.ts ? ' ' + new Date(note.ts).toLocaleDateString() : ''}: "${note.text.slice(0, 120)}${note.text.length > 120 ? '…' : ''}"`).join('\n') : '  No notes logged yet.'}
+${leadsWithNotes.length ? leadsWithNotes.map(({c, note}) => `  ${c.first_name} ${c.last_name||''} (${c.lead_category==='new_solar'?c.solar_status:'Step '+(c.step||0)}) — ${note.by}${note.ts?' '+new Date(note.ts).toLocaleDateString():''}: "${note.text.slice(0,120)}${note.text.length>120?'…':'"'}`).join('\n') : '  No notes logged yet.'}
 
 UNREVIEWED AGENT INBOX ITEMS (${agentReports.length}):
 ${agentReports.map(r => `  [${r.agent}/${r.priority}] ${r.title}`).join('\n') || '  None'}`;
@@ -137,9 +131,7 @@ Pipeline logic:
 - New Solar: status ns_eval_booked → ns_welcome_closed (job starts) → ns_pto
 - lead_source values: direct_mail, self_generated, referral, inbound_web
 
-When recommending follow-ups, give the person's name and phone number if available. Be conversational but data-driven. No hedging — give a direct answer.
-
-The CRM now has a structured activity log on each lead (notes field). Use the "Recent Activity Log" section in the context to identify buying signals, stalled conversations, or patterns across leads. If asked "who should I close this week" or "what are the trends", draw on those notes.
+When recommending follow-ups, give the person's name and phone number if available. Be conversational but data-driven. No hedging — give a direct answer. Use the Recent Activity Log to surface close signals, objection patterns, and follow-up recommendations when asked.
 
 ${context}`;
 
