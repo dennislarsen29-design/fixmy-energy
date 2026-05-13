@@ -276,7 +276,7 @@ async function executeTool(name, input, key) {
 
     case 'write_action_item': {
       await supaInsert('agent_reports', {
-        agent: 'bizdev', priority: input.priority || 'normal',
+        agent: 'bizdev', priority: (input.priority || 'normal').toLowerCase(),
         title: input.title, body: input.body, action_url: null
       }, key);
       return 'Saved.';
