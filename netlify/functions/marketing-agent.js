@@ -24,6 +24,13 @@ async function supaInsert(table, row, key) {
   if (!resp.ok) throw new Error('Supabase INSERT ' + table + ' failed: ' + resp.status + ' ' + await resp.text());
 }
 
+function normalizePriority(p) {
+  const s = (p || '').toLowerCase();
+  if (s === 'urgent') return 'urgent';
+  if (s === 'high' || s === 'medium') return 'high';
+  return 'normal';
+}
+
 async function callClaude(messages, tools, system, toolChoice) {
   const body = { model: 'claude-opus-4-7', max_tokens: 8192, system, tools, messages };
   if (toolChoice) body.tool_choice = toolChoice;
@@ -155,7 +162,7 @@ async function executeTool(name, input, key) {
 
     case 'write_recommendation': {
       await supaInsert('agent_reports', {
-        agent: 'marketing', priority: (input.priority || 'normal').toLowerCase(),
+        agent: 'marketing', priority: normalizePriority(input.priority),
         title: input.title, body: input.body, action_url: input.action_url || null
       }, key);
       return 'Saved.';
