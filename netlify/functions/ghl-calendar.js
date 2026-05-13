@@ -21,7 +21,7 @@ exports.handler = async function(event) {
   let body;
   try { body = JSON.parse(event.body); } catch { return { statusCode: 400, body: 'Bad JSON' }; }
 
-  const { firstName, lastName, email, phone, address, appointmentDate, appointmentTime, appointmentEndTime, trigger } = body;
+  const { firstName, lastName, email, phone, address, appointmentDate, appointmentTime, appointmentEndTime, trigger, diagnosticDate } = body;
 
   // ── 1. Upsert GHL contact ────────────────────────────────────────────────
   let contactId;
@@ -86,7 +86,7 @@ exports.handler = async function(event) {
         await fetch(webhookUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ trigger, contactId, firstName, lastName, email, phone, address }),
+          body: JSON.stringify({ trigger, contactId, firstName, lastName, email, phone, address, diagnosticDate: diagnosticDate || undefined }),
         });
       } catch (err) {
         console.error('GHL trigger webhook failed:', err.message);
