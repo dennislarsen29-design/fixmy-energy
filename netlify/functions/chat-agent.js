@@ -41,7 +41,7 @@ exports.handler = async function(event) {
     const [all, stalled, spend, agentReports] = await Promise.all([
       supaGet('/customers?select=id,first_name,last_name,phone,lead_category,sold_type,step,solar_status,lead_source,rep_id,setter_name,invoice_amount,deposit_status,assigned_ops,lead_temp,created_at,address,notes&limit=2000', key),
       supaGet('/customers?select=id,first_name,last_name,phone,lead_category,sold_type,step,solar_status,lead_source,setter_name,lead_temp,created_at&sold_type=is.null&created_at=lte.' + cutoff14 + '&order=created_at.asc&limit=100', key),
-      supaGet('/marketing_expenses?select=campaign_name,amount,expense_date,zip_codes&order=expense_date.desc&limit=30', key),
+      supaGet('/marketing_expenses?select=*&order=expense_date.desc&limit=30', key),
       supaGet('/agent_reports?select=agent,title,body,priority,created_at&reviewed=eq.false&order=created_at.desc&limit=10', key),
     ]);
 
@@ -114,7 +114,7 @@ ${stalledAlive.slice(0, 20).map(r => `  ${r.first_name} ${r.last_name || ''} | $
 
 MARKETING SPEND:
 - Total all time: $${Math.round(totalSpend).toLocaleString()}
-${spend.slice(0, 10).map(e => `  ${e.campaign_name || 'Campaign'}: $${e.amount} on ${e.expense_date}${e.zip_codes ? ' | zips: ' + e.zip_codes : ''}`).join('\n')}
+${spend.slice(0, 10).map(e => `  $${e.amount} on ${e.expense_date}${e.notes ? ' | ' + e.notes : ''}`).join('\n')}
 
 RECENT ACTIVITY LOG (latest note per lead — up to 15):
 ${leadsWithNotes.length ? leadsWithNotes.map(({c, note}) => `  ${c.first_name} ${c.last_name||''} (${c.lead_category==='new_solar'?c.solar_status:'Step '+(c.step||0)}) — ${note.by}${note.ts?' '+new Date(note.ts).toLocaleDateString():''}: "${note.text.slice(0,120)}${note.text.length>120?'…':'"'}`).join('\n') : '  No notes logged yet.'}
