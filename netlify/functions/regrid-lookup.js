@@ -48,7 +48,7 @@ exports.handler = async function(event) {
   if (lat != null && lng != null) {
     try {
       const url = 'https://app.regrid.com/api/v1/search.json?lat=' + lat +
-        '&lon=' + lng + '&radius=0&token=' + encodeURIComponent(key);
+        '&lon=' + lng + '&radius=0';
       const resp = await fetch(url, { headers: regridHeaders });
       if (resp.ok) {
         const data = await resp.json();
@@ -74,7 +74,7 @@ exports.handler = async function(event) {
   // ── 2. Regrid address search ───────────────────────────────────────────────
   try {
     const url = 'https://app.regrid.com/api/v1/search.json?query=' +
-      encodeURIComponent(address) + '&token=' + encodeURIComponent(key) + '&limit=3';
+      encodeURIComponent(address) + '&limit=3';
     const resp = await fetch(url, { headers: regridHeaders });
     if (resp.ok) {
       const data = await resp.json();
@@ -99,7 +99,7 @@ exports.handler = async function(event) {
   // ── 3. Regrid typeahead fallback ──────────────────────────────────────────
   try {
     const url = 'https://app.regrid.com/api/v1/typeahead.json?query=' +
-      encodeURIComponent(address) + '&token=' + encodeURIComponent(key) + '&limit=3';
+      encodeURIComponent(address) + '&limit=3';
     const resp = await fetch(url, { headers: regridHeaders });
     if (resp.ok) {
       const data = await resp.json();
