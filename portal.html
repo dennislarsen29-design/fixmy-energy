@@ -340,6 +340,7 @@
   var GHL_PROPOSAL_WEBHOOK      = 'https://services.leadconnectorhq.com/hooks/gXWwbOVymY0iRfj7c1It/webhook-trigger/224ee5c6-85c3-42d7-99e9-0ccee6d821af';
   var GHL_DIAG_AGREEMENT_WEBHOOK = 'https://services.leadconnectorhq.com/hooks/gXWwbOVymY0iRfj7c1It/webhook-trigger/f17004a5-5956-4d13-b7f0-a11098bac586';
   var GHL_DIAG_INVOICE_WEBHOOK   = null; // placeholder — set to webhook URL when Stripe invoice flow is ready
+  var GHL_DIAG_SCHEDULE_WEBHOOK  = null; // set when GHL diagnostic scheduling workflow is ready
   var SHEETBEST_URL = 'https://api.sheetbest.com/sheets/cf351a87-0260-4633-aaa9-d955caf6c630';
   var GHL_BOOKING    = 'https://api.leadconnectorhq.com/widget/booking/UjlvHxE8AlyhG5frBkqr';
   var GHL_TT_BOOKING = 'https://api.leadconnectorhq.com/widget/booking/5cXAACDD24dV3DFymOdj';
@@ -3564,7 +3565,7 @@
     var apptISO = (apptDateVal && apptTimeVal) ? new Date(apptDateVal+'T'+apptTimeVal).toISOString() : (apptDateVal ? new Date(apptDateVal).toISOString() : null);
     var cRec = adminCustomers.find(function(x){return x.id===id;})||{};
 
-    var soldTypeVal, stepVal, diagDate, instDate, solarStatusVal;
+    var soldTypeVal, stepVal, diagDate, instDate, solarStatusVal, diagConverting = false;
     if (isNSSave) {
       var edSolarStatusEl = document.getElementById('edSolarStatus');
       solarStatusVal = (edSolarStatusEl ? edSolarStatusEl.value : null) || (cRec.solar_status || 'ns_eval_booked');
@@ -3577,7 +3578,9 @@
       diagDate = stepVal >= 7 ? (cRec.diagnostic_date||null) : apptISO;
       instDate = stepVal >= 7 ? apptISO : (cRec.install_date||null);
       var invStSave = (document.getElementById('edInvSt')||{}).value || '';
-      soldTypeVal = invStSave === 'paid' ? 'fixmy' : (cRec.sold_type || null);
+      var agStSave = (document.getElementById('edAgSt')||{}).value || '';
+      diagConverting = !cRec.sold_type && invStSave === 'paid' && agStSave === 'signed';
+      soldTypeVal = diagConverting ? 'diagnostic' : (cRec.sold_type || null);
       solarStatusVal = null;
     }
 
@@ -3660,8 +3663,85 @@
         }
       }
       var savedEl=document.getElementById('edSaved'); if(savedEl) savedEl.style.display='inline';
-      setTimeout(function(){ var el=document.getElementById('edSaved'); if(el) el.style.display='none'; closeLeadEditor(); renderAdminView(adminView); },1500);
+      if (diagConverting) {
+        setTimeout(function(){ var el=document.getElementById('edSaved'); if(el) el.style.display='none'; openDiagSchedulingModal(id, Object.assign({}, cRec, updates)); }, 1200);
+      } else {
+        setTimeout(function(){ var el=document.getElementById('edSaved'); if(el) el.style.display='none'; closeLeadEditor(); renderAdminView(adminView); }, 1500);
+      }
     } catch(e) { alert('Save failed: '+e.message); }
+  }
+
+  function openDiagSchedulingModal(id, rec) {
+    var existing = document.getElementById('diagSchedModal');
+    if (existing) existing.remove();
+    var ops = OPS_PARTNERS.map(function(o){ return '<option value="'+o.id+'">'+o.name+'</option>'; }).join('');
+    var modal = document.createElement('div');
+    modal.id = 'diagSchedModal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;';
+    modal.innerHTML =
+      '<div style="background:#1a1a1a;border:1px solid #333;border-radius:12px;padding:28px;width:min(480px,92vw);font-family:inherit;">'+
+        '<div style="font-size:1.05rem;font-weight:700;color:#8DC63F;margin-bottom:6px;">Diagnostic Job Converted</div>'+
+        '<div style="font-size:0.82rem;color:#aaa;margin-bottom:20px;">Agreement signed + invoice paid. Schedule the diagnostic appointment below.</div>'+
+        '<div style="font-size:0.78rem;color:#888;margin-bottom:4px;">Customer</div>'+
+        '<div style="font-size:0.9rem;color:#e0e0e0;margin-bottom:16px;font-weight:600;">'+((rec.first_name||'')+' '+(rec.last_name||'')).trim()+'<br><span style="font-size:0.78rem;font-weight:400;color:#aaa;">'+((rec.address||'')).trim()+'</span></div>'+
+        '<label style="font-size:0.78rem;color:#aaa;display:block;margin-bottom:4px;">Ops Partner</label>'+
+        '<select id="dsOps" style="width:100%;padding:9px 12px;background:#111;color:#e0e0e0;border:1px solid #333;border-radius:7px;font-size:0.85rem;margin-bottom:14px;">'+
+          '<option value="">— Select Partner —</option>'+ops+
+        '</select>'+
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;">'+
+          '<div>'+
+            '<label style="font-size:0.78rem;color:#aaa;display:block;margin-bottom:4px;">Date</label>'+
+            '<input type="date" id="dsDate" style="width:100%;padding:9px 12px;background:#111;color:#e0e0e0;border:1px solid #333;border-radius:7px;font-size:0.85rem;box-sizing:border-box;">'+
+          '</div>'+
+          '<div>'+
+            '<label style="font-size:0.78rem;color:#aaa;display:block;margin-bottom:4px;">Time</label>'+
+            '<input type="time" id="dsTime" style="width:100%;padding:9px 12px;background:#111;color:#e0e0e0;border:1px solid #333;border-radius:7px;font-size:0.85rem;box-sizing:border-box;">'+
+          '</div>'+
+        '</div>'+
+        '<label style="font-size:0.78rem;color:#aaa;display:block;margin-bottom:4px;">Notes for Ops (optional)</label>'+
+        '<textarea id="dsNotes" rows="2" placeholder="Any special instructions..." style="width:100%;padding:9px 12px;background:#111;color:#e0e0e0;border:1px solid #333;border-radius:7px;font-size:0.82rem;resize:vertical;box-sizing:border-box;margin-bottom:18px;"></textarea>'+
+        '<div style="display:flex;gap:10px;">'+
+          '<button onclick="confirmDiagSchedule(\''+id+'\','+JSON.stringify(rec)+')" style="flex:1;padding:11px;background:#8DC63F;color:#000;border:none;border-radius:8px;font-weight:700;cursor:pointer;font-size:0.9rem;">Confirm &amp; Notify Customer</button>'+
+          '<button onclick="document.getElementById(\'diagSchedModal\').remove();closeLeadEditor();renderAdminView(adminView);" style="padding:11px 16px;background:#222;color:#aaa;border:1px solid #333;border-radius:8px;cursor:pointer;font-size:0.85rem;">Skip</button>'+
+        '</div>'+
+      '</div>';
+    document.body.appendChild(modal);
+  }
+
+  async function confirmDiagSchedule(id, rec) {
+    var opsVal = (document.getElementById('dsOps')||{}).value || null;
+    var dateVal = (document.getElementById('dsDate')||{}).value || null;
+    var timeVal = (document.getElementById('dsTime')||{}).value || null;
+    var notesVal = (document.getElementById('dsNotes')||{}).value.trim() || null;
+    if (!dateVal) { alert('Please select a date.'); return; }
+    var diagISO = timeVal ? new Date(dateVal+'T'+timeVal).toISOString() : new Date(dateVal).toISOString();
+    var updates = { diagnostic_date: diagISO, step: 3 };
+    if (opsVal) updates.assigned_ops = opsVal;
+    try {
+      var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var { error } = await client.from('customers').update(updates).eq('id', id);
+      if (error) throw error;
+      var idx = adminCustomers.findIndex(function(x){ return x.id === id; });
+      if (idx > -1) adminCustomers[idx] = Object.assign(adminCustomers[idx], updates);
+      // Fire customer notification webhook
+      if (GHL_DIAG_SCHEDULE_WEBHOOK) {
+        fetch(GHL_DIAG_SCHEDULE_WEBHOOK, {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ trigger: 'diag_scheduled', contactId: null, firstName: rec.first_name||'', lastName: rec.last_name||'', email: rec.email||'', phone: rec.phone||'', address: rec.address||'', diagnosticDate: diagISO, opsPartner: opsVal||'', notes: notesVal||'' })
+        }).catch(function(e){ console.warn('Diag schedule webhook:', e); });
+      }
+      // Admin notification: always fire with GHL_TT_WEBHOOK as fallback (notify Dennis via GHL)
+      var adminWebhook = window.GHL_ADMIN_WEBHOOK || GHL_TT_WEBHOOK || null;
+      if (adminWebhook) {
+        fetch(adminWebhook, {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ trigger: 'admin_diag_scheduled', firstName: rec.first_name||'', lastName: rec.last_name||'', address: rec.address||'', diagnosticDate: diagISO, opsPartner: opsVal||'', notes: notesVal||'' })
+        }).catch(function(e){ console.warn('Admin diag webhook:', e); });
+      }
+      document.getElementById('diagSchedModal').remove();
+      closeLeadEditor();
+      renderAdminView(adminView);
+    } catch(e) { alert('Schedule save failed: '+e.message); }
   }
 
   function openNewLead(repId, repName, setterMode) {
