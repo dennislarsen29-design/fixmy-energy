@@ -10,16 +10,18 @@ const HEADERS = {
 exports.handler = async function(event) {
   if (event.httpMethod !== 'POST') return { statusCode: 405, body: 'Method Not Allowed' };
 
-  const calendarId  = process.env.GHL_CALENDAR_ID;
   const locationId  = process.env.GHL_LOCATION_ID;
   const apiKey      = process.env.GHL_API_KEY;
 
-  if (!apiKey || !calendarId || !locationId) {
-    return { statusCode: 500, body: JSON.stringify({ error: 'Missing GHL env vars (GHL_API_KEY, GHL_CALENDAR_ID, GHL_LOCATION_ID)' }) };
+  if (!apiKey || !locationId) {
+    return { statusCode: 500, body: JSON.stringify({ error: 'Missing GHL env vars (GHL_API_KEY, GHL_LOCATION_ID)' }) };
   }
 
   let body;
   try { body = JSON.parse(event.body); } catch { return { statusCode: 400, body: 'Bad JSON' }; }
+
+  // calendarId can be passed in the request body to support multiple calendars (TT, Diagnostic, etc.)
+  const calendarId = body.calendarId || process.env.GHL_DIAG_CALENDAR_ID || process.env.GHL_CALENDAR_ID;
 
   const { firstName, lastName, email, phone, address, appointmentDate, appointmentTime, appointmentEndTime, trigger, diagnosticDate } = body;
 
