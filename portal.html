@@ -3454,6 +3454,40 @@
         '<span style="font-size:0.7rem;margin-left:8px;padding:2px 8px;border-radius:20px;background:'+(isNSEdit?'rgba(74,158,255,0.15)':isTTEdit?'rgba(155,109,232,0.15)':'rgba(141,198,63,0.15)')+';color:'+(isNSEdit?'#4a9eff':isTTEdit?'#9b6de8':'#8DC63F')+';font-weight:600;">'+(isNSEdit?'New Solar':isTTEdit?'Top Tier':'FixMy.Energy')+'</span></div>'+
       '<button onclick="closeLeadEditor()" style="background:none;border:none;color:#666;cursor:pointer;font-size:1.1rem;">&#10005;</button></div>'+
       '<input type="hidden" id="edId" value="'+c.id+'"/>'+
+
+      // ── Pending action banners ────────────────────────────────────────────
+      ((!isNSEdit && !isTTEdit && (c.agreement_status === 'sent' || c.agreement_status === 'pending')) ?
+        '<div style="background:rgba(239,68,68,0.1);border:2px solid rgba(239,68,68,0.5);border-radius:10px;padding:14px 16px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">'+
+          '<div style="display:flex;align-items:center;gap:10px;">'+
+            '<span style="font-size:1.2rem;">⚠️</span>'+
+            '<div>'+
+              '<div style="font-size:0.85rem;font-weight:700;color:#ef4444;">Agreement Not Signed</div>'+
+              '<div style="font-size:0.72rem;color:#aaa;margin-top:2px;">Sent to customer — awaiting signature. Check if it landed in spam.</div>'+
+            '</div>'+
+          '</div>'+
+          '<div style="display:flex;gap:8px;flex-wrap:wrap;">'+
+            (c.agreement_url ? '<a href="'+c.agreement_url+'" target="_blank" style="padding:7px 14px;background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.4);border-radius:8px;color:#ef4444;font-size:0.75rem;font-weight:700;text-decoration:none;white-space:nowrap;">View Agreement</a>' : '')+
+            '<button onclick="edResendAgreement(\''+c.id+'\')" style="padding:7px 14px;background:#ef4444;border:none;border-radius:8px;color:#fff;font-size:0.75rem;font-weight:700;cursor:pointer;white-space:nowrap;">↩ Resend</button>'+
+          '</div>'+
+        '</div>'
+      : '')+
+
+      ((!isNSEdit && (c.invoice_status === 'sent' || c.invoice_status === 'pending' || c.invoice_status === 'overdue')) ?
+        '<div style="background:rgba(255,170,0,0.08);border:2px solid rgba(255,170,0,0.45);border-radius:10px;padding:14px 16px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">'+
+          '<div style="display:flex;align-items:center;gap:10px;">'+
+            '<span style="font-size:1.2rem;">💳</span>'+
+            '<div>'+
+              '<div style="font-size:0.85rem;font-weight:700;color:#ffaa00;">'+(c.invoice_status === 'overdue' ? 'Invoice Overdue' : 'Invoice Unpaid')+'</div>'+
+              '<div style="font-size:0.72rem;color:#aaa;margin-top:2px;">'+(c.invoice_amount ? '$'+parseFloat(c.invoice_amount).toFixed(2)+' outstanding — ' : '')+'customer hasn\'t paid yet.</div>'+
+            '</div>'+
+          '</div>'+
+          '<div style="display:flex;gap:8px;flex-wrap:wrap;">'+
+            (c.invoice_url ? '<a href="'+c.invoice_url+'" target="_blank" style="padding:7px 14px;background:rgba(255,170,0,0.12);border:1px solid rgba(255,170,0,0.4);border-radius:8px;color:#ffaa00;font-size:0.75rem;font-weight:700;text-decoration:none;white-space:nowrap;">View Invoice</a>' : '')+
+            '<button onclick="edResendInvoice(\''+c.id+'\')" style="padding:7px 14px;background:#ffaa00;border:none;border-radius:8px;color:#000;font-size:0.75rem;font-weight:700;cursor:pointer;white-space:nowrap;">↩ Resend</button>'+
+          '</div>'+
+        '</div>'
+      : '')+
+
       '<div class="editor-section-title">Lead Category</div>'+
       '<div class="ed-grid" style="margin-bottom:8px;">'+
         edSelect('Business Line','edLeadCat',c.lead_category||'fixmy',[['fixmy','⚡ FixMy.Energy (Diagnostic / Battery / Monitoring)'],['new_solar','☀ New Solar'],['top_tier','⭐ Top Tier (Battery / Diagnostic)']])+
@@ -4210,6 +4244,39 @@
   }
 
   // Editor title lookup (Admin / Tech editor — re-runs Regrid lookup for existing leads)
+  async function edResendAgreement(id) {
+    var c = adminCustomers.find(function(x){ return x.id === id; });
+    if (!c) return;
+    if (!confirm('Resend agreement to ' + (c.email || c.phone || 'customer') + '?')) return;
+    try {
+      var payload = {
+        firstName: c.first_name||'', lastName: c.last_name||'',
+        full_name: ((c.first_name||'')+' '+(c.last_name||'')).trim(),
+        email: c.email||'', phone: c.phone||'', address1: c.address||'',
+        diagnostic_fee: c.invoice_amount||null,
+        rep_name: c.setter_name||'',
+        source: 'Agreement Resend',
+        customField: { diagnostic_fee: c.invoice_amount||null }
+      };
+      var r = await fetch('/.netlify/functions/ghl-diag-agreement', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
+      var d = await r.json();
+      var ok = !!(d.success || (d.ghlStatus >= 200 && d.ghlStatus < 300) || d.tagStatus);
+      alert(ok ? '✓ Agreement resent successfully.' : '✗ Resend failed: ' + (d.error || JSON.stringify(d).slice(0,80)));
+    } catch(e) { alert('Error: ' + e.message); }
+  }
+
+  function edResendInvoice(id) {
+    var c = adminCustomers.find(function(x){ return x.id === id; });
+    if (!c || !c.invoice_url) { alert('No invoice URL on file — add one in the Invoice section below first.'); return; }
+    if (!c.email && !c.phone) { alert('No email or phone on file to send to.'); return; }
+    if (!confirm('Copy invoice link to share with ' + (c.first_name||'customer') + '?')) return;
+    navigator.clipboard.writeText(c.invoice_url).then(function(){
+      alert('✓ Invoice link copied to clipboard. Paste it in a text or email to the customer.');
+    }).catch(function(){
+      prompt('Copy this invoice link and send to customer:', c.invoice_url);
+    });
+  }
+
   async function edTitleLookup() {
     var addr = (document.getElementById('edAddr')||{}).value || '';
     if (!addr) { alert('Enter an address first.'); return; }
