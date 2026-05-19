@@ -107,7 +107,39 @@ Agreement: `agreement_status, agreement_url`
 - Zip-code matching against customer addresses attributes revenue to campaigns
 - `lead_source` field on customers tracks attribution: direct_mail | self_generated | referral | inbound_web
 
-## Known Pending Items
+## Payments & Invoicing
+- **Payment processor: Stripe, connected through GHL** (GHL Payments → Stripe integration)
+- GHL generates Stripe invoices with a shareable payment link
+- Diagnostic fee can be confirmed by **Admin OR Tech/Sales** — both have the fee modal
+- `invoice_url` field stores the Stripe/GHL payment link — currently populated manually, automation pending
+- `agreement_url` field stores the GHL document signing link
+- GHL combined sign+pay document does NOT charge the card — it only captures CC info. Do not use.
+- Automated invoice flow (planned): agreement signed → GHL creates Stripe invoice → webhook returns URL to portal
+
+## GHL Integration
+- Location ID: `gXWwbOVymY0iRfj7c1It`
+- Calendars: Top Tier = `5cXAACDD24dV3DFymOdj`, Diagnostic = `ZGOdyYdMUh07V1Ujav9R`
+- Netlify env vars: `GHL_API_KEY`, `GHL_CALENDAR_ID` (TT), `GHL_DIAG_CALENDAR_ID`, `GHL_LOCATION_ID`, `GHL_TT_WEBHOOK`
+- Netlify functions: `ghl-calendar.js` (book appt + fire triggers), `ghl-diag-agreement.js` (send agreement via tag), `ghl-status-update.js` (receive invoice_paid / agreement_signed from GHL → update Supabase)
+- GHL webhook tester lives in portal → Team tab → bottom of page
+- `send-diag-agreement` workflow: triggered by tag → sends document → on signed fires webhook to `ghl-status-update`
+- Top Tier triggers: `top_tier_confirmed` | `top_tier_missed` | `top_tier_follow_up` | `top_tier_dead`
+- Diagnostic triggers: `diag_scheduled` | `invoice_paid` | `agreement_signed` | `admin_diag_scheduled`
+
+## Diagnostic Fee Flow
+- Fee modal fires when any lead transitions to step 3 for the first time (`cRec.step < 3 → stepVal === 3`)
+- Tech/Sales view has `openSalesDiagModal` / `confirmSalesDiagFee` — separate from admin `openDiagFeeModal`
+- Both paths call `/.netlify/functions/ghl-diag-agreement` to send the agreement
+- Fee presets: $250, $349, $449, $499, $599 — custom amount also allowed
+- Commission calculated via `calcDiagCommission(fee)`
+
+## Auto-Conversion (Lead → Diagnostic Job)
+- Triggered in `saveLeadEditor` when: `!cRec.sold_type && invoice_status === 'paid' && agreement_status === 'signed'`
+- Sets `sold_type = 'diagnostic'`, opens `openDiagSchedulingModal`
+- Modal captures: ops partner, date, arrival start time, arrival end time, notes
+- On confirm: saves to DB, books GHL Diagnostic Calendar event, fires `diag_scheduled` webhook
+
+
 - Restrict Google Maps API key to domain in Google Cloud Console
 - Battery Retrofit Agreement flow (needs agreement template content from Dennis)
 - GHL sync for lead data
