@@ -79,7 +79,7 @@ var OPS_PARTNERS = [
 - `SECRETS_SCAN_SMART_DETECTION_OMIT_VALUES` — set to Google Maps key to bypass scanner
 
 ## Google Maps API Key
-`AIzaSyBedpPe3461c1mYiD8yxjDMkYvrJ4MQQpc` — in portal.html as `GKEY`.
+Stored in portal.html as `GKEY` (client-side key, restrict to domain in Google Cloud Console → Credentials → HTTP referrers).
 
 ## GHL Integration
 - Location ID: `gXWwbOVymY0iRfj7c1It`
