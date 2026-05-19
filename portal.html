@@ -3371,6 +3371,25 @@
     document.getElementById('diagFeeCommAmt').textContent = '$'+comm.toFixed(2);
   }
 
+  function showSignPayLink(link, name, fee) {
+    var popup = document.createElement('div');
+    popup.id = 'signPayPopup';
+    popup.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px;';
+    popup.innerHTML =
+      '<div style="background:#141414;border:1px solid rgba(141,198,63,0.3);border-radius:20px;padding:28px 24px;max-width:420px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,0.8);">'+
+        '<div style="font-size:0.68rem;font-weight:700;letter-spacing:1.5px;color:#555;text-transform:uppercase;margin-bottom:10px;">Send to Customer</div>'+
+        '<div style="font-size:1.1rem;font-weight:800;color:#fff;margin-bottom:4px;">&#9889; Sign & Pay Link Ready</div>'+
+        '<div style="font-size:0.82rem;color:#888;margin-bottom:18px;">Share this with '+(name||'the customer')+'&nbsp;&mdash; one tap to sign the agreement and pay the $'+fee+' diagnostic fee.</div>'+
+        '<div style="background:#0d0d0d;border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:12px 14px;font-size:0.75rem;color:#8DC63F;word-break:break-all;margin-bottom:16px;font-family:monospace;">'+link+'</div>'+
+        '<div style="display:flex;gap:10px;flex-wrap:wrap;">'+
+          '<button onclick="navigator.clipboard.writeText(\''+link+'\');this.textContent=\'&#10003; Copied!\';setTimeout(function(){document.querySelector(\'#signPayPopup button\').textContent=\'Copy Link\';},2000);" style="flex:1;padding:12px 16px;background:#8DC63F;border:none;border-radius:100px;color:#000;font-weight:800;cursor:pointer;font-size:0.85rem;">Copy Link</button>'+
+          '<a href="sms:?body='+encodeURIComponent('Hi! Here\'s your FixMy.Energy sign & pay link — takes about 2 min: '+link)+'" style="flex:1;padding:12px 16px;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.3);border-radius:100px;color:#8DC63F;font-weight:700;cursor:pointer;font-size:0.85rem;text-align:center;text-decoration:none;">Text It</a>'+
+        '</div>'+
+        '<button onclick="document.getElementById(\'signPayPopup\').remove();" style="display:block;margin:14px auto 0;background:none;border:none;color:#555;cursor:pointer;font-size:0.82rem;">Close</button>'+
+      '</div>';
+    document.body.appendChild(popup);
+  }
+
   async function confirmDiagFee() {
     var fee = window._diagSelectedFee || 349;
     var pending = _diagPendingUpdates;
@@ -3379,9 +3398,15 @@
     if (!c) return;
     var comm = calcDiagCommission(fee);
 
-    // Merge fee into the pending updates
+    // Generate sign token (72hr expiry)
+    var signToken = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : (Math.random().toString(36).slice(2) + Date.now().toString(36));
+    var signExpiry = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString();
+
+    // Merge fee + sign token into the pending updates
     pending.updates.invoice_amount = fee;
     pending.updates.invoice_status = 'sent';
+    pending.updates.sign_token = signToken;
+    pending.updates.sign_token_expires_at = signExpiry;
 
     try {
       var client = supabase.createClient(SUPA_URL, SUPA_KEY);
@@ -3390,7 +3415,7 @@
       var idx = adminCustomers.findIndex(function(x){ return x.id===pending.id; });
       if (idx > -1) adminCustomers[idx] = Object.assign(adminCustomers[idx], pending.updates);
 
-      // Fire GHL Agreement webhook
+      // Fire GHL Agreement webhook (for CRM contact sync)
       var payload = {
         firstName:      c.first_name||'',
         lastName:       c.last_name||'',
@@ -3412,20 +3437,24 @@
       fetch('/.netlify/functions/ghl-diag-agreement', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) })
         .then(function(r){ return r.json(); })
         .then(function(d){
-          console.log('GHL diag-agreement proxy:', d);
           var ok = !!(d.success || (d.ghlStatus >= 200 && d.ghlStatus < 300));
           var b = document.createElement('div');
           b.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);padding:12px 20px;border-radius:12px;z-index:99999;font-size:0.8rem;font-weight:700;white-space:nowrap;box-shadow:0 4px 24px rgba(0,0,0,0.5);background:'+(ok?'#1e2a14':'#2a1414')+';border:1px solid '+(ok?'rgba(141,198,63,0.4)':'rgba(239,68,68,0.4)')+';color:'+(ok?'#8DC63F':'#ef4444')+';';
-          b.textContent = ok ? '⚡ Agreement triggered in GHL' : '❌ GHL error: '+(d.error||JSON.stringify(d).slice(0,80));
+          b.textContent = ok ? '&#9889; GHL contact synced' : '&#10060; GHL error: '+(d.error||JSON.stringify(d).slice(0,80));
           document.body.appendChild(b);
-          setTimeout(function(){ b.remove(); }, 8000);
+          setTimeout(function(){ b.remove(); }, 6000);
         })
         .catch(function(e){ console.warn('GHL diag-agreement proxy error:', e); });
 
       document.getElementById('diagFeeModal').remove();
       _diagPendingUpdates = null;
-      var savedEl = document.getElementById('edSaved'); if (savedEl) savedEl.style.display = 'inline';
-      setTimeout(function(){ var el=document.getElementById('edSaved'); if(el) el.style.display='none'; closeLeadEditor(); renderAdminView(adminView); }, 1500);
+      closeLeadEditor();
+      renderAdminView(adminView);
+
+      // Show shareable Sign & Pay link popup
+      var signLink = 'https://fixmy.energy/sign?t=' + signToken;
+      var custName = ((c.first_name||'') + ' ' + (c.last_name||'')).trim();
+      showSignPayLink(signLink, custName, fee);
     } catch(e) { alert('Save failed: '+e.message); }
   }
 

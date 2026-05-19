@@ -5,14 +5,21 @@ A single-file admin + field portal for a solar diagnostic / battery retrofit / n
 All logic, HTML, CSS, and JS lives in **`portal.html`**. There is no build step — Netlify deploys the repo as-is.
 
 ## Live Site
-Deployed on Netlify from the `main` branch. Feature work goes on branch `claude/fix-login-issue-gf9lH` and is cherry-picked to `main` when ready.
+Deployed on Netlify from the `main` branch. Active feature branch: `claude/setup-proposal-catalog-4ZZkM`.
 
 ## Key Files
 - `portal.html` — the entire portal (admin, ops, setter, tech, customer views)
 - `index.html` — public-facing landing page
+- `sign.html` — customer-facing Sign & Pay page (Stripe Elements + agreement signature)
 - `netlify/functions/claude-vision.js` — proxies Anthropic API calls (photo AI categorization)
 - `netlify/functions/regrid-lookup.js` — proxies Regrid parcel lookup (keeps API key server-side)
-- `.claude/settings.local.json` — Supabase MCP config with PAT (gitignored)
+- `netlify/functions/ghl-calendar.js` — books GHL calendar appointments + upserts contacts
+- `netlify/functions/ghl-diag-agreement.js` — upserts GHL contact + adds `send-diag-agreement` tag
+- `netlify/functions/ghl-inbound.js` — receives inbound GHL webhook payloads
+- `netlify/functions/ghl-status-update.js` — receives GHL status webhooks, updates Supabase
+- `netlify/functions/sign-init.js` — validates sign_token, creates Stripe PaymentIntent server-side
+- `netlify/functions/sign-complete.js` — verifies payment success, marks invoice paid + agreement signed
+- `.claude/settings.local.json` — gitignored; holds Netlify PAT env var + Supabase MCP permissions
 
 ## Supabase
 - Project URL: `https://kbtobyoumvbcxfbugsid.supabase.co`
@@ -20,6 +27,7 @@ Deployed on Netlify from the `main` branch. Feature work goes on branch `claude/
 - Other tables: `team_members`, `rep_agreements`, `marketing_expenses`
 - MCP is configured — use it to run SQL directly instead of asking user to copy/paste
 - Anon key is in portal.html as `SUPA_KEY` (safe — protected by RLS)
+- Service role key is `SUPA_SERVICE_KEY` Netlify env var (server-side only, never in client code)
 
 ## Portal Architecture
 - `supabase.createClient(SUPA_URL, SUPA_KEY)` — client pattern used everywhere
@@ -60,23 +68,100 @@ var OPS_PARTNERS = [
 ## Netlify Environment Variables (set in Netlify UI)
 - `ANTHROPIC_KEY` — Claude API key for photo AI
 - `REGRID_KEY` — Regrid parcel lookup JWT
+- `GHL_API_KEY` — GoHighLevel private integration key
+- `GHL_LOCATION_ID` — GHL sub-account location ID: `gXWwbOVymY0iRfj7c1It`
+- `GHL_CALENDAR_ID` — GHL top-tier calendar ID (if used)
+- `GHL_DIAG_CALENDAR_ID` — GHL diagnostic calendar ID: `ZGOdyYdMUh07V1Ujav9R`
+- `GHL_TT_WEBHOOK` — GHL webhook URL for Top Tier workflow triggers
+- `STRIPE_SECRET_KEY` — Stripe secret key (server-side only, for sign-init.js / sign-complete.js) — **NOT YET ADDED**
+- `STRIPE_PUBLISHABLE_KEY` — Stripe publishable key (returned to client by sign-init.js) — **NOT YET ADDED**
+- `SUPA_SERVICE_KEY` — Supabase service role key (bypasses RLS, used in sign-init/complete) — **NOT YET ADDED**
 - `SECRETS_SCAN_SMART_DETECTION_OMIT_VALUES` — set to Google Maps key to bypass scanner
 
 ## Google Maps API Key
 `AIzaSyBedpPe3461c1mYiD8yxjDMkYvrJ4MQQpc` — in portal.html as `GKEY`.
-Restrict this to your domain in Google Cloud Console → Credentials → HTTP referrers.
+
+## GHL Integration
+- Location ID: `gXWwbOVymY0iRfj7c1It`
+- Diagnostic Calendar ID: `ZGOdyYdMUh07V1Ujav9R`
+- Agreement flow: portal calls `ghl-diag-agreement.js` → upserts contact → adds `send-diag-agreement` tag → GHL workflow fires
+- Status sync: GHL calls `ghl-status-update.js` with triggers: `invoice_paid`, `invoice_created`, `agreement_signed`, `agreement_sent`
+- Scheduling: portal calls `ghl-calendar.js` to book real GHL calendar appointment (so reminders auto-recalculate on reschedule)
+- Webhook tester: built into Team tab — tap trigger buttons to seed GHL mapping reference payloads
+
+## Diagnostic Fee Flow (IMPORTANT — do not re-ask)
+- Fee modal fires when admin/tech moves a lead to step 3
+- Both Admin (`confirmDiagFee`) and Tech/Sales (`confirmSalesDiagFee`) can set the fee
+- Both call `ghl-diag-agreement.js` after saving
+- After confirming fee: generates a `sign_token` (UUID, 72hr expiry), saves to Supabase, shows "Sign & Pay Link" popup
+- Sign & Pay link format: `https://fixmy.energy/sign?t=TOKEN`
+
+## Sign & Pay Flow (sign.html + sign-init.js + sign-complete.js)
+This is the combined customer agreement + payment page. **DO NOT rebuild — it is already built.**
+
+### How it works:
+1. Admin/Tech confirms diagnostic fee in portal → `sign_token` generated + stored in `customers.sign_token`
+2. Portal shows shareable link popup with Copy + "Text It" buttons
+3. Customer opens `fixmy.energy/sign?t=TOKEN` on their phone
+4. `sign-init.js` validates token, creates Stripe PaymentIntent server-side (amount locked — client cannot tamper)
+5. `sign.html` shows: agreement text → typed signature field → Stripe Card Element → "Sign & Pay $X" button
+6. Stripe processes card — card data never touches our servers (PCI compliant, handled by Stripe Elements)
+7. On success: `sign-complete.js` verifies PaymentIntent, updates Supabase (`invoice_status=paid`, `agreement_status=signed`, clears token), fires GHL `diag-signed-and-paid` tag
+8. Auto-conversion: portal detects `invoice_status=paid` + `agreement_status=signed` → converts lead to `sold_type=diagnostic` job → opens scheduling modal
+
+### Supabase columns added for Sign & Pay:
+- `sign_token TEXT` — UUID token (nulled out after use)
+- `sign_token_expires_at TIMESTAMPTZ` — 72hr from generation
+- `stripe_payment_intent_id TEXT` — reused on page reload to avoid duplicate charges
+
+### Netlify env vars required (not yet added to Netlify UI):
+- `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `SUPA_SERVICE_KEY`
+
+## Payments & Invoicing (IMPORTANT — do not re-ask)
+- Stripe is used through GHL Payments integration for existing flows
+- GHL's combined sign+pay document does NOT charge the card — it only captures CC info. Do NOT use this.
+- The Sign & Pay page (sign.html) IS the correct all-in-one solution — already built
+- `invoice_url` is currently set manually; automated GHL invoice creation is a future item
+
+## Auto-Conversion to Diagnostic Job
+Triggered in `saveLeadEditor` when: `!cRec.sold_type && invoice_status === 'paid' && agreement_status === 'signed'`
+- Sets `sold_type = 'diagnostic'`
+- Opens `openDiagSchedulingModal` to assign ops partner + set date/arrival window
+- Scheduling fires `ghl-calendar.js` to book GHL appointment
+
+## Diagnostic Scheduling Modal
+`openDiagSchedulingModal(id, rec)` + `confirmDiagSchedule(id, rec)`:
+- Ops partner picker, date field, arrival start/end time
+- Saves `diagnostic_date`, `arrival_window`, `assigned_ops` to Supabase
+- Books GHL calendar appointment via `ghl-calendar.js`
+- Formats arrival window as "10 AM – 1:30 PM"
+
+## Pending Action Banners (Lead Editor)
+Red/amber banners at top of editor when:
+- `agreement_status === 'sent'` or `'pending'` → red banner with "View Agreement" + "Resend" button
+- `invoice_status === 'sent'` or `'pending'` or `'overdue'` → amber banner with "View Invoice" + "Copy Link" button
+- `edResendAgreement(id)` re-fires `ghl-diag-agreement.js`
+- `edResendInvoice(id)` copies `invoice_url` to clipboard
+
+## Netlify MCP Setup
+- Official Netlify MCP: `@netlify/mcp` (npx)
+- Configured in `.claude/settings.json` (mcpServers.netlify, no token in file)
+- `NETLIFY_PERSONAL_ACCESS_TOKEN` stored in `.claude/settings.local.json` under `env` key (gitignored)
+- User needs to replace `PASTE_YOUR_PAT_HERE` with actual PAT from Netlify → User settings → Applications → Personal access tokens
+- Once PAT is set and session restarted, Claude can set Netlify env vars directly without user going to UI
 
 ## customers Table — Key Columns
 Standard: `id, first_name, last_name, email, phone, address, notes, created_at`
 Pipeline: `step, solar_status, lead_category, sold_type`
-Scheduling: `diagnostic_date, install_date, arrival_end, install_type`
+Scheduling: `diagnostic_date, install_date, arrival_end, arrival_window, install_type`
 Financial: `invoice_status, invoice_number, invoice_amount, invoice_url, invoice_items`
 Deposit: `deposit_status, deposit_amount, ops_milestone1_status, ops_milestone1_amount`
 Assignment: `assigned_ops, ops_payout_status, rep_id, setter_name`
 Lead info: `lead_source, referred_by, referral_incentive_paid, lead_temp`
 Title: `title_owner, apn, title_confirmed`
 Solar: `system_size, utility, monthly_bill, nem_status`
-Agreement: `agreement_status, agreement_url`
+Agreement: `agreement_status, agreement_url, agreement_signed_at, agreement_signature`
+Sign & Pay: `sign_token, sign_token_expires_at, stripe_payment_intent_id`
 
 ## Referral Incentive Feature
 - When `lead_source = 'referral'`, setter enters referring customer name in `referred_by`
@@ -107,42 +192,13 @@ Agreement: `agreement_status, agreement_url`
 - Zip-code matching against customer addresses attributes revenue to campaigns
 - `lead_source` field on customers tracks attribution: direct_mail | self_generated | referral | inbound_web
 
-## Payments & Invoicing
-- **Payment processor: Stripe, connected through GHL** (GHL Payments → Stripe integration)
-- GHL generates Stripe invoices with a shareable payment link
-- Diagnostic fee can be confirmed by **Admin OR Tech/Sales** — both have the fee modal
-- `invoice_url` field stores the Stripe/GHL payment link — currently populated manually, automation pending
-- `agreement_url` field stores the GHL document signing link
-- GHL combined sign+pay document does NOT charge the card — it only captures CC info. Do not use.
-- Automated invoice flow (planned): agreement signed → GHL creates Stripe invoice → webhook returns URL to portal
-
-## GHL Integration
-- Location ID: `gXWwbOVymY0iRfj7c1It`
-- Calendars: Top Tier = `5cXAACDD24dV3DFymOdj`, Diagnostic = `ZGOdyYdMUh07V1Ujav9R`
-- Netlify env vars: `GHL_API_KEY`, `GHL_CALENDAR_ID` (TT), `GHL_DIAG_CALENDAR_ID`, `GHL_LOCATION_ID`, `GHL_TT_WEBHOOK`
-- Netlify functions: `ghl-calendar.js` (book appt + fire triggers), `ghl-diag-agreement.js` (send agreement via tag), `ghl-status-update.js` (receive invoice_paid / agreement_signed from GHL → update Supabase)
-- GHL webhook tester lives in portal → Team tab → bottom of page
-- `send-diag-agreement` workflow: triggered by tag → sends document → on signed fires webhook to `ghl-status-update`
-- Top Tier triggers: `top_tier_confirmed` | `top_tier_missed` | `top_tier_follow_up` | `top_tier_dead`
-- Diagnostic triggers: `diag_scheduled` | `invoice_paid` | `agreement_signed` | `admin_diag_scheduled`
-
-## Diagnostic Fee Flow
-- Fee modal fires when any lead transitions to step 3 for the first time (`cRec.step < 3 → stepVal === 3`)
-- Tech/Sales view has `openSalesDiagModal` / `confirmSalesDiagFee` — separate from admin `openDiagFeeModal`
-- Both paths call `/.netlify/functions/ghl-diag-agreement` to send the agreement
-- Fee presets: $250, $349, $449, $499, $599 — custom amount also allowed
-- Commission calculated via `calcDiagCommission(fee)`
-
-## Auto-Conversion (Lead → Diagnostic Job)
-- Triggered in `saveLeadEditor` when: `!cRec.sold_type && invoice_status === 'paid' && agreement_status === 'signed'`
-- Sets `sold_type = 'diagnostic'`, opens `openDiagSchedulingModal`
-- Modal captures: ops partner, date, arrival start time, arrival end time, notes
-- On confirm: saves to DB, books GHL Diagnostic Calendar event, fires `diag_scheduled` webhook
-
-
+## Known Pending Items
+- Add `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `SUPA_SERVICE_KEY` to Netlify env vars (sign+pay won't work until these are set)
+- Add Netlify PAT to `.claude/settings.local.json` to enable Netlify MCP
 - Restrict Google Maps API key to domain in Google Cloud Console
 - Battery Retrofit Agreement flow (needs agreement template content from Dennis)
-- GHL sync for lead data
+- Top Tier pipeline (planned — see plan file)
+- Antoinette M2/M3 milestone invoicing (planned — see plan file)
 
 ## Common Patterns
 ```js
