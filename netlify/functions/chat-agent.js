@@ -39,7 +39,7 @@ exports.handler = async function(event) {
     const cutoff30 = new Date(Date.now() - 30 * 86400000).toISOString();
 
     const [all, stalled, spend, agentReports] = await Promise.all([
-      supaGet('/customers?select=id,first_name,last_name,phone,lead_category,sold_type,step,solar_status,lead_source,rep_id,setter_name,invoice_amount,deposit_status,assigned_ops,lead_temp,created_at,address,notes&limit=2000', key),
+      supaGet('/customers?select=id,first_name,last_name,phone,lead_category,sold_type,step,solar_status,lead_source,rep_id,setter_name,invoice_amount,deposit_status,assigned_ops,lead_temp,created_at,address,notes,original_installer,install_year&limit=2000', key),
       supaGet('/customers?select=id,first_name,last_name,phone,lead_category,sold_type,step,solar_status,lead_source,setter_name,lead_temp,created_at&sold_type=is.null&created_at=lte.' + cutoff14 + '&order=created_at.asc&limit=100', key),
       supaGet('/marketing_expenses?select=*&order=expense_date.desc&limit=30', key),
       supaGet('/agent_reports?select=agent,title,body,priority,created_at&reviewed=eq.false&order=created_at.desc&limit=10', key),
@@ -111,6 +111,15 @@ ${Object.entries(byRep).sort((a, b) => (b[1].jobs + b[1].leads) - (a[1].jobs + a
 
 STALLED LEADS — not updated in 14+ days (${stalledAlive.length} total):
 ${stalledAlive.slice(0, 20).map(r => `  ${r.first_name} ${r.last_name || ''} | ${r.lead_category === 'new_solar' ? r.solar_status : 'Step ' + (r.step || 0)} | source: ${r.lead_source || '?'} | rep: ${r.setter_name || r.rep_id || 'unassigned'} | phone: ${r.phone || '?'} | created: ${new Date(r.created_at).toLocaleDateString()}`).join('\n')}
+
+ORPHANED INSTALLER LEADS (lead_source=orphaned_list):
+${(function(){
+  const orphaned = leads.filter(c => c.lead_source === 'orphaned_list');
+  if (!orphaned.length) return '  None yet.';
+  const byInstaller = {};
+  orphaned.forEach(c => { const k = c.original_installer||'Unknown'; byInstaller[k]=(byInstaller[k]||0)+1; });
+  return '  Total: '+orphaned.length+'\n'+Object.entries(byInstaller).map(([k,v])=>'  '+k+': '+v+' leads').join('\n');
+})()}
 
 MARKETING SPEND:
 - Total all time: $${Math.round(totalSpend).toLocaleString()}
