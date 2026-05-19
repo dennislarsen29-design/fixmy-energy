@@ -911,8 +911,9 @@
     // GHL Webhook Tester tool
     h += '<div style="margin-top:24px;padding:16px 18px;background:rgba(74,158,255,0.06);border:1px solid rgba(74,158,255,0.2);border-radius:12px;">'+
       '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#4a9eff;margin-bottom:10px;">&#127380; GHL Webhook Tester</div>'+
-      '<div style="font-size:0.78rem;color:#aaa;margin-bottom:12px;">Paste any GHL Inbound Webhook URL below and tap Send. This fires a sample payload so GHL can map the fields (Mapping Reference).</div>'+
-      '<input id="ghlTestUrl" type="url" placeholder="https://services.leadconnectorhq.com/hooks/..." style="width:100%;padding:10px 12px;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#F3EDE3;font-size:0.82rem;box-sizing:border-box;margin-bottom:10px;outline:none;"/>'+
+      '<div style="font-size:0.78rem;color:#aaa;margin-bottom:12px;">Paste any GHL Inbound Webhook URL below and tap Send. For status update triggers (invoice/agreement), enter the customer email to target a specific lead.</div>'+
+      '<input id="ghlTestUrl" type="url" placeholder="https://services.leadconnectorhq.com/hooks/..." style="width:100%;padding:10px 12px;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#F3EDE3;font-size:0.82rem;box-sizing:border-box;margin-bottom:8px;outline:none;"/>'+
+      '<input id="ghlTestEmail" type="email" placeholder="Customer email (for status triggers, e.g. invoice_paid)" style="width:100%;padding:10px 12px;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#F3EDE3;font-size:0.82rem;box-sizing:border-box;margin-bottom:10px;outline:none;"/>'+
       '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">'+
         '<button onclick="ghlTestSend(\'diag_scheduled\')" style="padding:8px 14px;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.35);border-radius:8px;color:#8DC63F;font-size:0.78rem;font-weight:700;cursor:pointer;">diag_scheduled</button>'+
         '<button onclick="ghlTestSend(\'top_tier_confirmed\')" style="padding:8px 14px;background:rgba(155,109,232,0.12);border:1px solid rgba(155,109,232,0.3);border-radius:8px;color:#9b6de8;font-size:0.78rem;font-weight:700;cursor:pointer;">top_tier_confirmed</button>'+
@@ -1145,38 +1146,43 @@
 
     window.ghlTestSend = async function(trigger) {
       var url = (document.getElementById('ghlTestUrl')||{}).value || '';
+      var testEmail = (document.getElementById('ghlTestEmail')||{}).value || '';
       var res = document.getElementById('ghlTestResult');
-      if (!url || !url.startsWith('http')) {
-        if (res) res.innerHTML = '<span style="color:#ef4444;">Paste a webhook URL first.</span>';
-        return;
-      }
       if (res) res.innerHTML = '<span style="color:#ffaa00;">Sending...</span>';
       // Status update triggers go directly to the portal function, not GHL
-      var isStatusTrigger = trigger === 'invoice_paid' || trigger === 'agreement_signed';
+      var isStatusTrigger = trigger === 'invoice_paid' || trigger === 'invoice_created' ||
+                            trigger === 'agreement_signed' || trigger === 'agreement_sent';
       var targetUrl = isStatusTrigger ? '/.netlify/functions/ghl-status-update' : url;
-      if (isStatusTrigger && (!url || !url.startsWith('http'))) {
-        // Status updates don't need a GHL URL — they post directly to our function
-      } else if (!isStatusTrigger && (!url || !url.startsWith('http'))) {
+      if (!isStatusTrigger && (!url || !url.startsWith('http'))) {
         if (res) res.innerHTML = '<span style="color:#ef4444;">Paste a GHL webhook URL first.</span>';
         return;
       }
       var payload = {
         trigger: trigger,
         firstName: 'Test', lastName: 'Customer',
-        email: 'test@fixmy.energy', phone: '+16195550000',
+        email: testEmail || 'test@fixmy.energy', phone: '+16195550000',
         address: '123 Test St, San Diego, CA 92101',
         appointmentDate: 'Friday, May 23',
         arrivalWindow: '10:00 AM – 1:30 PM',
         diagnosticDate: new Date(Date.now() + 3*24*60*60*1000).toISOString(),
         opsPartner: 'ops1', notes: 'GHL mapping test payload from FixMy portal'
       };
+      if (trigger === 'invoice_created') {
+        payload.invoiceUrl    = 'https://pay.stripe.com/test-invoice-link';
+        payload.invoiceNumber = 'INV-TEST-001';
+      }
+      if (trigger === 'agreement_sent') {
+        payload.agreementUrl = 'https://sign.gohighlevel.com/test-agreement-link';
+      }
       try {
         var r = await fetch(targetUrl, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
+        var rJson = null;
+        try { rJson = await r.json(); } catch(e2) {}
         if (res) res.innerHTML = r.ok
           ? (isStatusTrigger
-              ? '<span style="color:#8DC63F;">&#10003; Status update sent to portal. Check Supabase to verify.</span>'
+              ? '<span style="color:#8DC63F;">&#10003; '+(rJson && rJson.customerName ? rJson.customerName+' updated' : 'Status update sent')+' — '+JSON.stringify(rJson && rJson.updates || {})+'</span>'
               : '<span style="color:#8DC63F;">&#10003; Sent! Status '+r.status+'. Go back to GHL and click "Check for new requests".</span>')
-          : '<span style="color:#ef4444;">&#10005; HTTP '+r.status+' — check the URL and try again.</span>';
+          : '<span style="color:#ef4444;">&#10005; HTTP '+r.status+' — '+(rJson && rJson.error ? rJson.error : 'check the URL and try again')+'</span>';
       } catch(e) {
         if (res) res.innerHTML = '<span style="color:#ef4444;">&#10005; Error: '+e.message+'</span>';
       }
