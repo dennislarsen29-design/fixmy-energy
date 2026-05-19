@@ -1,7 +1,9 @@
 // Receives status update webhooks from GHL and updates the customer record in Supabase.
-// Trigger types: 'invoice_paid' | 'agreement_signed'
-// GHL fires this after customer pays invoice or signs agreement.
-// Looks up customer by email or phone, then updates the relevant status field.
+// Trigger types:
+//   'invoice_paid'     — customer paid invoice → set invoice_status = 'paid'
+//   'invoice_created'  — GHL created invoice → store invoice_url + set invoice_status = 'sent'
+//   'agreement_signed' — customer signed agreement → set agreement_status = 'signed'
+//   'agreement_sent'   — GHL sent agreement → store agreement_url + set agreement_status = 'sent'
 
 const SUPA_URL = 'https://kbtobyoumvbcxfbugsid.supabase.co';
 const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtidG9ieW91bXZiY3hmYnVnc2lkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ1NjY5MDcsImV4cCI6MjA5MDE0MjkwN30.nLE0TlMu43E4dNRxxjoc6P1OQMjfwXgonbA2MrCCrhk';
@@ -20,17 +22,24 @@ exports.handler = async function(event) {
     return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Invalid JSON' }) };
   }
 
-  const { trigger, email, phone } = payload;
+  const { trigger, email, phone, invoiceUrl, invoiceNumber, agreementUrl } = payload;
 
   if (!trigger) return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'trigger required' }) };
   if (!email && !phone) return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'email or phone required' }) };
 
-  // Determine which field to update
+  // Determine which fields to update
   let updates = {};
   if (trigger === 'invoice_paid') {
     updates = { invoice_status: 'paid' };
+  } else if (trigger === 'invoice_created') {
+    updates = { invoice_status: 'sent' };
+    if (invoiceUrl)    updates.invoice_url    = invoiceUrl;
+    if (invoiceNumber) updates.invoice_number = invoiceNumber;
   } else if (trigger === 'agreement_signed') {
     updates = { agreement_status: 'signed' };
+  } else if (trigger === 'agreement_sent') {
+    updates = { agreement_status: 'sent' };
+    if (agreementUrl) updates.agreement_url = agreementUrl;
   } else {
     return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Unknown trigger: ' + trigger }) };
   }
