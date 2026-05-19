@@ -5,7 +5,7 @@ A single-file admin + field portal for a solar diagnostic / battery retrofit / n
 All logic, HTML, CSS, and JS lives in **`portal.html`**. There is no build step — Netlify deploys the repo as-is.
 
 ## Live Site
-Deployed on Netlify from the `main` branch. Active feature branch: `claude/setup-proposal-catalog-4ZZkM`.
+Deployed on Netlify from the `main` branch. Active feature branch: `claude/fixmy-energy-setup-R9lDn`.
 
 ## Key Files
 - `portal.html` — the entire portal (admin, ops, setter, tech, customer views)
@@ -55,6 +55,13 @@ Pipeline via `solar_status` field using `NS_STATUSES` object:
 - **Tech/Sales** — setter lead capture + personal dashboard
 - **Customer** — magic-link self-service portal
 
+## Tech Portal — Rep ID System
+- Each tech sees only their own leads via `rep_id` filter: `.eq('rep_id', person.id)`
+- Tech IDs: `tech4` = Dennis Larsen, `tech2` = Ranie, `tech3` = Michael Smith, `rep1` = Ronda, `setter1` = Setter
+- Admin can bulk-reassign via ↻ Reassign button → choose tech → "Unassigned only" or "All leads (overwrite)"
+- `openReassignModal()` / `runBulkReassign(scope)` in portal.html
+- **Action needed:** Admin → Leads → ↻ Reassign → Dennis Larsen → "All leads (overwrite)" to stamp existing leads with tech4
+
 ## Ops Partners
 ```js
 var OPS_PARTNERS = [
@@ -93,6 +100,15 @@ Stored in portal.html as `GKEY` (client-side key, restrict to domain in Google C
 - Fee modal fires when admin/tech moves a lead to step 3
 - Both Admin (`confirmDiagFee`) and Tech/Sales (`confirmSalesDiagFee`) can set the fee
 - Both call `ghl-diag-agreement.js` after saving
+- Webhook payload format (both admin + tech send identical structure):
+  ```js
+  { firstName, lastName, full_name: firstName+' '+lastName,  // full_name kept for GHL backward compat
+    email, phone, address1: rec.address, diagnostic_fee: fee,
+    rep_name, source: 'Diagnostic Fee Set',
+    tags: ['diagnostic-fee-set','agreement-pending'],
+    customField: { diagnostic_fee: fee, invoice_amount: fee, rep_name } }
+  ```
+  GHL field mapping: `{{trigger.full_name}}` → First Name, `{{trigger.diagnostic_fee}}` → custom field
 - After confirming fee: generates a `sign_token` (UUID, 72hr expiry), saves to Supabase, shows "Sign & Pay Link" popup
 - Sign & Pay link format: `https://fixmy.energy/sign?t=TOKEN`
 
@@ -199,6 +215,63 @@ Sign & Pay: `sign_token, sign_token_expires_at, stripe_payment_intent_id`
 - Battery Retrofit Agreement flow (needs agreement template content from Dennis)
 - Top Tier pipeline (planned — see plan file)
 - Antoinette M2/M3 milestone invoicing (planned — see plan file)
+- **GHL field mapping (optional cleanup):** Change First Name from `{{trigger.full_name}}` → `{{trigger.firstName}}`, add Last Name → `{{trigger.lastName}}` — works either way with current payload
+- **fixmy.energy/check page:** Draft at `/check-preview.html` — not yet pushed live as `/check`
+- **CPUC/SDG&E NEM data request:** Letter drafted below — not yet sent
+- **SD County permit data pull + scoring model walkthrough:** Not yet delivered
+- **Minuteman Press direct mail strategy doc:** Not yet delivered
+
+## Orphaned Account Marketing Strategy
+Five-channel approach targeting homeowners whose solar installer went out of business:
+1. **Permit data** — pull SD County building permits by defunct contractor names, apply scoring model (system age, size, NEM status)
+2. **CPUC NEM data** — public records request (letter below) to get address + installer + system size
+3. **Batch CSV import** — Admin → Import tab: paste permit CSV, Regrid enriches with owner name + APN, import as `new_solar / ns_eval_booked / direct_mail`
+4. **fixmy.energy/check** — dedicated landing page for orphaned accounts (draft at `/check-preview.html`)
+5. **Direct mail** — Minuteman Press postcards to enriched address list
+
+Target installers: SunPower (Ch. 11 2024), Sullivan Solar (closed 2019), Petersen Dean (closed 2020), Sungevity (closed 2017)
+
+## CPUC / SDG&E NEM Data — Public Records Request Draft
+
+**Status: Drafted, not yet sent.**
+
+### Option A — CPUC (send to `public.records@cpuc.ca.gov`, ~10 business days)
+**Subject:** `Public Records Act Request — NEM Interconnection Data (SDG&E Service Territory)`
+
+---
+
+California Public Utilities Commission  
+Attn: Public Records Office  
+505 Van Ness Avenue, San Francisco, CA 94102
+
+Re: California Public Records Act Request — Net Energy Metering (NEM) Interconnection Data, SDG&E Service Territory
+
+To Whom It May Concern,
+
+Pursuant to the California Public Records Act (Gov. Code § 7920.000 et seq.), I respectfully request all NEM interconnection application and approval data for residential solar installations within the SDG&E service territory, filed between January 1, 2015 and December 31, 2023. Specifically:
+
+1. Service address (street address and ZIP code — census tract or block group acceptable if address is withheld)
+2. Interconnection approval date
+3. Installed system size (kW-DC or kW-AC)
+4. Installing contractor or solar company name as reported on the application
+5. NEM tariff type (NEM 1.0, NEM 2.0, NEM-A)
+
+**Purpose:** Solar Review Corp (operating as FixMy.Energy) provides independent solar diagnostic, repair, monitoring, and battery retrofit services to San Diego County homeowners. A significant number of residential solar customers in the SDG&E territory were left without support when their original installers — including SunPower (Chapter 11, 2024), Sullivan Solar Power (closed 2019), Petersen Dean (closed 2020), and Sungevity (closed 2017) — ceased operations. We are using this data solely to identify affected households so we can offer them a path to restore full system performance. We have no intention of publishing, reselling, or sharing this data.
+
+**Format:** CSV, Excel, or pipe-delimited text preferred.
+
+**Fee Waiver Request:** Disclosure primarily benefits the public by facilitating the repair and continued operation of existing distributed energy resources — directly supporting California's clean energy goals. If a waiver is not granted, please provide a cost estimate before proceeding. If any portion is denied, please specify which exemption applies and provide all non-exempt portions.
+
+Dennis Larsen  
+Solar Review Corp / FixMy.Energy  
+[phone] · dennis@fixmy.energy
+
+---
+
+### Option B — SDG&E Direct (faster, send to `regulatory@sdge.com`)
+**Subject:** `CPRA Request — Residential NEM Interconnection Records, 2015–2023`
+
+SDG&E files quarterly NEM data with the CPUC and maintains it in structured form. Cite the same CPRA authority (Gov. Code § 7920.000 et seq.) and request the same five fields. Use the same purpose and fee waiver language as Option A. SDG&E's regulatory affairs team typically responds faster than the CPUC's public records office.
 
 ## Common Patterns
 ```js
