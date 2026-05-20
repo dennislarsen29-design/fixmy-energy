@@ -758,6 +758,9 @@
               '<button onclick="event.stopPropagation();openProposalBuilder(\''+c.id+'\')" style="font-size:0.72rem;padding:5px 14px;border-radius:100px;background:rgba(141,198,63,0.1);color:#8DC63F;border:1px solid rgba(141,198,63,0.3);cursor:pointer;font-weight:700;">&#128196; Proposal</button>'+
               (c.email?'<button onclick="event.stopPropagation();sendMagicLink(\''+jobMagic+'\',\''+c.email+'\')" style="font-size:0.72rem;padding:5px 14px;border-radius:100px;background:rgba(74,158,255,0.08);color:#4a9eff;border:1px solid rgba(74,158,255,0.25);cursor:pointer;font-weight:700;">&#128279; Link</button>':'')+
               (c.invoice_status&&c.invoice_status!=='none'&&c.invoice_status!=='paid'?'<button onclick="event.stopPropagation();markCheckPaid(\''+c.id+'\')" style="font-size:0.72rem;padding:5px 14px;border-radius:100px;background:rgba(141,198,63,0.12);color:#3d6b12;border:1px solid rgba(141,198,63,0.35);cursor:pointer;font-weight:700;">&#10003; Check Paid</button>':'')+
+              (c.assigned_ops&&c.assigned_ops!=='none'&&c.ops_milestone1_status!=='paid'?'<button onclick="event.stopPropagation();markOpsMilestonePaid(\''+c.id+'\',\'M1\')" style="font-size:0.72rem;padding:5px 14px;border-radius:100px;background:rgba(249,115,22,0.1);color:#f97316;border:1px solid rgba(249,115,22,0.3);cursor:pointer;font-weight:700;">&#9889; M1 Paid</button>':'')+
+              (c.assigned_ops&&c.ops_milestone1_status==='paid'&&c.milestone2_amount&&c.milestone2_status!=='paid'?'<button onclick="event.stopPropagation();markOpsMilestonePaid(\''+c.id+'\',\'M2\')" style="font-size:0.72rem;padding:5px 14px;border-radius:100px;background:rgba(249,115,22,0.1);color:#f97316;border:1px solid rgba(249,115,22,0.3);cursor:pointer;font-weight:700;">&#9889; M2 Paid</button>':'')+
+              (c.assigned_ops&&c.milestone2_status==='paid'&&c.milestone3_amount&&c.milestone3_status!=='paid'?'<button onclick="event.stopPropagation();markOpsMilestonePaid(\''+c.id+'\',\'M3\')" style="font-size:0.72rem;padding:5px 14px;border-radius:100px;background:rgba(249,115,22,0.1);color:#f97316;border:1px solid rgba(249,115,22,0.3);cursor:pointer;font-weight:700;">&#9889; M3 Paid</button>':'')+
             '</div>'+
           '</div>';
         }
@@ -4323,6 +4326,41 @@
     if (error) { alert('Error: ' + error.message); return; }
     var idx = adminCustomers.findIndex(function(x){ return x.id === id; });
     if (idx > -1) adminCustomers[idx].invoice_status = 'paid';
+    if (adminView === 'jobs') renderJobsView();
+    else renderAdminView(adminView);
+  }
+
+  async function markOpsMilestonePaid(id, milestone) {
+    var c = adminCustomers.find(function(x){ return x.id === id; });
+    if (!c) return;
+    var colStatus = milestone==='M1'?'ops_milestone1_status':milestone==='M2'?'milestone2_status':'milestone3_status';
+    var colAmount = milestone==='M1'?'ops_milestone1_amount':milestone==='M2'?'milestone2_amount':'milestone3_amount';
+    var rawAmt = c[colAmount] ? parseFloat(c[colAmount]) : null;
+    var amtStr = rawAmt ? ' ($' + rawAmt.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}) + ')' : '';
+    var name = ((c.first_name||'')+' '+(c.last_name||'')).trim();
+    if (!confirm('Mark ' + milestone + amtStr + ' paid to ops partner for ' + name + '?')) return;
+    var cl = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var updates = {}; updates[colStatus] = 'paid';
+    var { error } = await cl.from('customers').update(updates).eq('id', id);
+    if (error) { alert('Error: ' + error.message); return; }
+    var idx = adminCustomers.findIndex(function(x){ return x.id === id; });
+    if (idx > -1) adminCustomers[idx][colStatus] = 'paid';
+    // Fire GHL notification to ops partner
+    if (c.assigned_ops) {
+      var partner = OPS_PARTNERS.find(function(p){ return p.id === c.assigned_ops; });
+      if (partner) {
+        var portalLink = 'https://fixmy.energy/portal?email=' + encodeURIComponent(partner.email) + '&code=' + encodeURIComponent(partner.code);
+        fetch('/.netlify/functions/ghl-ops-payment', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            partnerId: partner.id, partnerName: partner.name, partnerEmail: partner.email,
+            customerName: name, customerAddress: c.address || '',
+            milestone: milestone, amount: rawAmt, portalLink: portalLink
+          })
+        }).catch(function(e){ console.warn('GHL ops-payment notify:', e.message); });
+      }
+    }
     if (adminView === 'jobs') renderJobsView();
     else renderAdminView(adminView);
   }
