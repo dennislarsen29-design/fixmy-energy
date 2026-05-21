@@ -220,6 +220,34 @@ Sign & Pay: `sign_token, sign_token_expires_at, stripe_payment_intent_id`
 - **CPUC/SDG&E NEM data request:** Letter drafted below — not yet sent
 - **SD County permit data pull + scoring model walkthrough:** Not yet delivered
 - **Minuteman Press direct mail strategy doc:** Not yet delivered
+- **Golf course solar panel protection:** New service scope — see Future Services section below
+
+## Future Services
+
+### Golf Course Solar Panel Protection
+**Status: Concept — not yet scoped or offered.**
+
+Solar panels installed near golf courses are at elevated risk of impact damage from errant golf balls. This is a niche but recurring need in San Diego County (Torrey Pines, Rancho Bernardo, Carmel Mountain, Eastlake, etc.).
+
+**Scope of work (to be developed):**
+- Site assessment: identify exposure angle, distance from fairways/driving ranges, typical ball trajectory
+- Protection options to evaluate:
+  - Polycarbonate ballistic shield panels mounted above array on standoff frame
+  - Heavy-gauge wire mesh / expanded metal screens (angled to deflect, not catch)
+  - Sacrificial tempered glass overlay on high-exposure panels
+  - Array repositioning / tilt adjustment during re-roof or retrofit (prevents future exposure)
+- Framing: likely custom aluminum unistrut or steel angle — no off-the-shelf product exists for this
+- Documentation: before/after photos, warranty language for protection gear vs. panel warranty
+
+**Ops partner:**
+- Cosmic Solar's fit is uncertain — primarily a panel swap / install crew, not custom fabrication
+- Need to identify a partner with light metal fabrication + roofing experience
+- Possible leads: local awning/shade structure contractors, solar racking fabricators, or a roofing/metal shop willing to sub on jobs
+- **Action needed:** Ask Cosmic if they're comfortable with custom screen/shield installs; if not, source an alternate ops partner before offering this service
+
+**Lead identification:**
+- Filter `address` field in portal for proximity to known golf courses (manual today; could automate with geocoding + golf course polygon overlay)
+- Add `golf_course_exposure` boolean to customers table when this service launches
 
 ## Orphaned Account Marketing Strategy
 Five-channel approach targeting homeowners whose solar installer went out of business:
