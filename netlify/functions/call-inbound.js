@@ -91,7 +91,15 @@ exports.handler = async (event) => {
   let body;
   try { body = JSON.parse(event.body || '{}'); } catch { body = {}; }
 
-  const parsed = parsePayload(body);
+  // Check page submission (orphaned installer lead)
+  const isCheckPage = body.source === 'check_page';
+
+  const parsed = isCheckPage
+    ? { source: 'check_page', phone: normalizePhone(body.phone), name: body.name || null,
+        summary: body.notes || null, event: 'check_page_submit',
+        address: body.address || null, installer: body.installer || null, install_year: body.install_year || null }
+    : parsePayload(body);
+
   if (!parsed.phone) return { statusCode: 200, body: JSON.stringify({ ok: false, reason: 'no phone' }) };
 
   const supa = createClient(SUPA_URL, process.env.SUPA_SERVICE_KEY);
@@ -111,29 +119,30 @@ exports.handler = async (event) => {
                     (parsed.summary ? '\n' + parsed.summary : '');
 
   if (existing) {
-    // Append call note to existing lead
     const updatedNotes = [existing.notes, noteEntry].filter(Boolean).join('\n\n');
     await supa.from('customers').update({ notes: updatedNotes }).eq('id', existing.id);
     console.log('Updated existing lead', existing.id, parsed.phone);
   } else {
-    // Create new lead
-    const { error } = await supa.from('customers').insert({
+    const insertPayload = {
       first_name:    firstName,
       last_name:     lastName,
       phone:         parsed.phone,
       lead_category: 'fixmy',
-      lead_source:   'inbound_web',
+      lead_source:   isCheckPage ? 'orphaned_list' : 'inbound_web',
       step:          1,
       notes:         noteEntry,
       created_at:    new Date().toISOString(),
-    });
+    };
+    if (isCheckPage && parsed.address)      insertPayload.address         = parsed.address;
+    if (isCheckPage && parsed.installer)    insertPayload.original_installer = parsed.installer;
+    const { error } = await supa.from('customers').insert(insertPayload);
     if (error) console.error('Supabase insert error:', error);
-    else console.log('Created new lead for', parsed.phone);
+    else console.log('Created new lead for', parsed.phone, isCheckPage ? '(check page)' : '');
   }
 
-  // Fire GHL tag → triggers instant SMS callback workflow
-  const ghlTags = parsed.event === 'missed_call'
-    ? ['missed-call-callback-needed']
+  // Fire GHL tag
+  const ghlTags = isCheckPage
+    ? ['orphaned-installer-lead', parsed.installer ? `installer-${parsed.installer}` : 'installer-unknown'].filter(Boolean)
     : ['inbound-call-received'];
 
   await upsertGhlContact(parsed.phone, firstName, lastName, ghlTags);
