@@ -1,151 +1,126 @@
-// call-inbound.js — receives inbound call webhooks from Grasshopper (via Zapier) or Smith.ai
-// On missed call / call completion: upserts lead in Supabase + fires GHL callback tag
-
-const { createClient } = require('@supabase/supabase-js');
+// call-inbound.js — receives Smith.ai webhooks + /check page form submissions
+// Uses Supabase REST API directly (no SDK) to match other functions in this project
 
 const SUPA_URL = 'https://kbtobyoumvbcxfbugsid.supabase.co';
 const GHL_API  = 'https://services.leadconnectorhq.com';
-const GHL_LOC  = process.env.GHL_LOCATION_ID;
 
 function normalizePhone(raw) {
   if (!raw) return null;
   const digits = raw.replace(/\D/g, '');
   if (digits.length === 10) return '+1' + digits;
   if (digits.length === 11 && digits[0] === '1') return '+' + digits;
-  return '+' + digits;
+  return digits.length > 6 ? '+' + digits : null;
 }
 
-// Parse caller info from multiple possible webhook shapes:
-// Grasshopper (via Zapier), Smith.ai, or generic
-function parsePayload(body) {
-  // Smith.ai format
-  if (body.call_id || body.caller_name) {
-    return {
-      source:    'smith_ai',
-      phone:     normalizePhone(body.caller_phone || body.phone),
-      name:      body.caller_name || body.name || null,
-      summary:   body.call_summary || body.transcript || body.notes || null,
-      event:     body.status || 'completed',
-    };
-  }
-  // Grasshopper via Zapier — typical fields
-  if (body.caller_id || body.CallerID || body.from) {
-    return {
-      source:    'grasshopper',
-      phone:     normalizePhone(body.caller_id || body.CallerID || body.from),
-      name:      body.caller_name || body.CallerName || null,
-      summary:   body.transcription || body.message || null,
-      event:     body.event_type || body.type || 'missed_call',
-    };
-  }
-  // Generic fallback
-  return {
-    source:  'inbound_call',
-    phone:   normalizePhone(body.phone || body.from || body.caller),
-    name:    body.name || body.caller_name || null,
-    summary: body.notes || body.summary || null,
-    event:   body.event || 'inbound',
-  };
+function supaHeaders(key) {
+  return { 'apikey': key, 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json' };
+}
+
+async function supaGet(key, phone) {
+  const url = SUPA_URL + '/rest/v1/customers?phone=eq.' + encodeURIComponent(phone) +
+              '&select=id,first_name,last_name,notes&limit=1';
+  const res = await fetch(url, { headers: supaHeaders(key) });
+  const rows = await res.json();
+  return Array.isArray(rows) && rows.length ? rows[0] : null;
+}
+
+async function supaUpdate(key, id, updates) {
+  await fetch(SUPA_URL + '/rest/v1/customers?id=eq.' + id, {
+    method: 'PATCH',
+    headers: { ...supaHeaders(key), 'Prefer': 'return=minimal' },
+    body: JSON.stringify(updates),
+  });
+}
+
+async function supaInsert(key, row) {
+  const res = await fetch(SUPA_URL + '/rest/v1/customers', {
+    method: 'POST',
+    headers: { ...supaHeaders(key), 'Prefer': 'return=minimal' },
+    body: JSON.stringify(row),
+  });
+  return res.ok;
 }
 
 async function upsertGhlContact(phone, firstName, lastName, tags) {
   const key = process.env.GHL_API_KEY;
-  if (!key || !phone) return null;
-
-  // Search for existing contact
-  const search = await fetch(`${GHL_API}/contacts/?locationId=${GHL_LOC}&query=${encodeURIComponent(phone)}`, {
-    headers: { Authorization: `Bearer ${key}`, Version: '2021-07-28' }
-  });
-  const sData = await search.json();
-  const existing = sData.contacts && sData.contacts[0];
-
-  const payload = {
-    locationId: GHL_LOC,
-    phone,
-    firstName: firstName || 'Unknown',
-    lastName:  lastName  || 'Caller',
-    tags,
-  };
-
-  if (existing) {
-    await fetch(`${GHL_API}/contacts/${existing.id}`, {
-      method: 'PUT',
-      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Version: '2021-07-28' },
-      body: JSON.stringify({ tags }),
+  const loc  = process.env.GHL_LOCATION_ID;
+  if (!key || !phone) return;
+  try {
+    const search = await fetch(`${GHL_API}/contacts/?locationId=${loc}&query=${encodeURIComponent(phone)}`, {
+      headers: { Authorization: `Bearer ${key}`, Version: '2021-07-28' },
     });
-    return existing.id;
-  } else {
-    const res = await fetch(`${GHL_API}/contacts/`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Version: '2021-07-28' },
-      body: JSON.stringify(payload),
-    });
-    const d = await res.json();
-    return d.contact && d.contact.id;
-  }
+    const sd = await search.json();
+    const existing = sd.contacts && sd.contacts[0];
+    if (existing) {
+      await fetch(`${GHL_API}/contacts/${existing.id}`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Version: '2021-07-28' },
+        body: JSON.stringify({ tags }),
+      });
+    } else {
+      await fetch(`${GHL_API}/contacts/`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Version: '2021-07-28' },
+        body: JSON.stringify({ locationId: loc, phone, firstName: firstName || 'Unknown', lastName: lastName || 'Caller', tags }),
+      });
+    }
+  } catch (e) { console.warn('GHL upsert failed', e.message); }
 }
 
 exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') return { statusCode: 405, body: 'Method Not Allowed' };
 
+  const key = process.env.SUPA_SERVICE_KEY;
+  if (!key) return { statusCode: 500, body: 'Missing SUPA_SERVICE_KEY' };
+
   let body;
   try { body = JSON.parse(event.body || '{}'); } catch { body = {}; }
 
-  // Check page submission (orphaned installer lead)
   const isCheckPage = body.source === 'check_page';
 
-  const parsed = isCheckPage
-    ? { source: 'check_page', phone: normalizePhone(body.phone), name: body.name || null,
-        summary: body.notes || null, event: 'check_page_submit',
-        address: body.address || null, installer: body.installer || null, install_year: body.install_year || null }
-    : parsePayload(body);
+  // Parse phone + caller info
+  const rawPhone = isCheckPage ? body.phone : (body.caller_id || body.CallerID || body.from || body.caller_phone || body.phone);
+  const phone = normalizePhone(rawPhone);
+  if (!phone) return { statusCode: 200, body: JSON.stringify({ ok: false, reason: 'no phone' }) };
 
-  if (!parsed.phone) return { statusCode: 200, body: JSON.stringify({ ok: false, reason: 'no phone' }) };
+  const rawName  = isCheckPage ? body.name : (body.caller_name || body.CallerName || body.name || '');
+  const parts    = (rawName || '').trim().split(/\s+/);
+  const firstName = parts[0] || 'Unknown';
+  const lastName  = parts.slice(1).join(' ') || 'Caller';
 
-  const supa = createClient(SUPA_URL, process.env.SUPA_SERVICE_KEY);
+  const noteEntry = `[${new Date().toISOString().slice(0,16).replace('T',' ')}] ` +
+    (isCheckPage
+      ? `Check page submission — installer: ${body.installer || 'unknown'}${body.install_year ? ' (' + body.install_year + ')' : ''}`
+      : `Inbound call (Smith.AI): ${body.status || body.event || 'received'}`) +
+    (body.notes || body.call_summary || body.transcript ? '\n' + (body.notes || body.call_summary || body.transcript) : '');
 
-  // Check if lead already exists
-  const { data: existing } = await supa
-    .from('customers')
-    .select('id, first_name, last_name, step, sold_type, notes')
-    .eq('phone', parsed.phone)
-    .maybeSingle();
-
-  const nameParts = (parsed.name || '').trim().split(/\s+/);
-  const firstName = nameParts[0] || 'Unknown';
-  const lastName  = nameParts.slice(1).join(' ') || 'Caller';
-
-  const noteEntry = `[${new Date().toISOString().slice(0,16).replace('T',' ')}] Inbound call (${parsed.source}): ${parsed.event}` +
-                    (parsed.summary ? '\n' + parsed.summary : '');
+  // Check for existing lead
+  const existing = await supaGet(key, phone);
 
   if (existing) {
     const updatedNotes = [existing.notes, noteEntry].filter(Boolean).join('\n\n');
-    await supa.from('customers').update({ notes: updatedNotes }).eq('id', existing.id);
-    console.log('Updated existing lead', existing.id, parsed.phone);
+    await supaUpdate(key, existing.id, { notes: updatedNotes });
   } else {
-    const insertPayload = {
+    const row = {
       first_name:    firstName,
       last_name:     lastName,
-      phone:         parsed.phone,
+      phone:         phone,
       lead_category: 'fixmy',
       lead_source:   isCheckPage ? 'orphaned_list' : 'inbound_web',
       step:          1,
       notes:         noteEntry,
       created_at:    new Date().toISOString(),
     };
-    if (isCheckPage && parsed.address)      insertPayload.address         = parsed.address;
-    if (isCheckPage && parsed.installer)    insertPayload.original_installer = parsed.installer;
-    const { error } = await supa.from('customers').insert(insertPayload);
-    if (error) console.error('Supabase insert error:', error);
-    else console.log('Created new lead for', parsed.phone, isCheckPage ? '(check page)' : '');
+    if (isCheckPage && body.address)   row.address = body.address;
+    if (isCheckPage && body.installer) row.original_installer = body.installer;
+    await supaInsert(key, row);
   }
 
-  // Fire GHL tag
-  const ghlTags = isCheckPage
-    ? ['orphaned-installer-lead', parsed.installer ? `installer-${parsed.installer}` : 'installer-unknown'].filter(Boolean)
+  // GHL tags
+  const tags = isCheckPage
+    ? ['orphaned-installer-lead', body.installer ? `installer-${body.installer}` : 'installer-unknown']
     : ['inbound-call-received'];
+  await upsertGhlContact(phone, firstName, lastName, tags);
 
-  await upsertGhlContact(parsed.phone, firstName, lastName, ghlTags);
-
-  return { statusCode: 200, body: JSON.stringify({ ok: true, phone: parsed.phone, source: parsed.source }) };
+  return { statusCode: 200, body: JSON.stringify({ ok: true, phone }) };
 };
