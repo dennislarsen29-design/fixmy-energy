@@ -1496,6 +1496,40 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return m ? m[m.length-1] : null;
   }
 
+  async function fixMissingZips() {
+    var missing = adminCustomers.filter(function(c){ return c.address && !extractZip(c.address); });
+    if (!missing.length) { alert('All leads already have zip codes — nothing to fix!'); return; }
+    if (!confirm('Found ' + missing.length + ' leads without a zip code.\n\nGoogle Maps will look up each address and fill in the missing zip. Continue?')) return;
+
+    var btn = document.querySelector('button[onclick="fixMissingZips()"]');
+    if (btn) { btn.textContent = 'Fixing…'; btn.disabled = true; }
+
+    var fixed = 0, failed = 0;
+    var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+
+    for (var i = 0; i < missing.length; i++) {
+      var rec = missing[i];
+      try {
+        var resp = await fetch('https://maps.googleapis.com/maps/api/geocode/json?address='+encodeURIComponent(rec.address)+'&key='+GKEY);
+        var data = await resp.json();
+        if (data.results && data.results[0]) {
+          var result = data.results[0];
+          var pc = (result.address_components||[]).find(function(c){ return c.types.indexOf('postal_code')>=0; });
+          if (pc) {
+            var newAddr = result.formatted_address;
+            await client.from('customers').update({ address: newAddr }).eq('id', rec.id);
+            rec.address = newAddr;
+            fixed++;
+          } else { failed++; }
+        } else { failed++; }
+      } catch(e) { failed++; }
+    }
+
+    if (btn) { btn.textContent = 'Fix Missing Zips'; btn.disabled = false; }
+    alert('Done!\nFixed: ' + fixed + ' leads\nCould not resolve: ' + failed + ' leads');
+    renderMarketingView();
+  }
+
   function renderMarketingView() {
     adminView = 'marketing';
     var portalNav = '<div class="portal-tab-nav">'+
@@ -1670,7 +1704,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     document.getElementById('dashBody').innerHTML = portalNav+
       '<div class="admin-header-row">'+
         '<h2 style="font-size:1.1rem;font-weight:700;">Marketing Spend &amp; ROI</h2>'+
-        '<button onclick="openMarketingExpenseForm()" class="lead-btn lime" style="padding:9px 18px;font-size:0.78rem;">+ Add Expense</button>'+
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;">'+
+          '<button onclick="fixMissingZips()" class="lead-btn" style="padding:9px 18px;font-size:0.78rem;background:rgba(74,158,255,0.15);color:#4a9eff;border:1px solid rgba(74,158,255,0.3);">Fix Missing Zips</button>'+
+          '<button onclick="openMarketingExpenseForm()" class="lead-btn lime" style="padding:9px 18px;font-size:0.78rem;">+ Add Expense</button>'+
+        '</div>'+
       '</div>'+
       '<div id="editorSlot"></div>'+
       bizModelHtml+
