@@ -216,11 +216,13 @@ Sign & Pay: `sign_token, sign_token_expires_at, stripe_payment_intent_id`
 - Top Tier pipeline (planned — see plan file)
 - Antoinette M2/M3 milestone invoicing (planned — see plan file)
 - **GHL field mapping (optional cleanup):** Change First Name from `{{trigger.full_name}}` → `{{trigger.firstName}}`, add Last Name → `{{trigger.lastName}}` — works either way with current payload
-- **fixmy.energy/check page:** Draft at `/check-preview.html` — not yet pushed live as `/check`
+- **fixmy.energy/check:** Live at `/check` (redirects to FAQ section on main site); installer-specific pages live at `/sunpower`, `/titan`, `/sunnova`, `/mosaic`, etc.
 - **CPUC/SDG&E NEM data request:** Letter drafted below — not yet sent
 - **SD County permit data pull + scoring model walkthrough:** Not yet delivered
 - **Minuteman Press direct mail strategy doc:** Not yet delivered
 - **Golf course solar panel protection:** New service scope — see Future Services section below
+- **GTM conversion tracking audit:** GTM-TSJVG2GT is installed. Verify GA4 + Google Ads conversion events fire on booking completion. Use Tag Assistant Chrome extension to confirm.
+- **Switch from Smith.AI to Quoya (GHL built-in AI agent):** Smith.AI webhooks no longer needed — `call-inbound.js` function can be repurposed or removed. Quoya migration is halfway completed in GHL. Finish configuring Quoya workflow to handle inbound calls and missed-call SMS follow-up.
 
 ## Future Services
 
