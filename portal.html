@@ -3073,6 +3073,9 @@
         '<button class="lead-btn lime" data-id="'+c.id+'" onclick="openLeadEditor(this.dataset.id)">Edit</button>'+
         '<button class="lead-btn ghost" data-link="'+magic+'" data-email="'+c.email+'" onclick="sendMagicLink(this.dataset.link,this.dataset.email)">&#128279; Link</button>'+
         '<button class="lead-btn ghost" data-phone="'+(c.phone||'')+'" onclick="callLead(this.dataset.phone)">&#128222;</button>'+
+        (c.phone ? '<a class="lead-btn ghost" href="sms:'+(c.phone||'').replace(/\D/g,'')+'" style="text-decoration:none;" title="Text customer">&#128172;</a>' : '')+
+        (c.address ? '<button class="lead-btn ghost" data-addr="'+(c.address||'').replace(/"/g,'&quot;')+'" onclick="navigator.clipboard.writeText(this.dataset.addr).then((function(b){var o=b.innerHTML;b.innerHTML=\'&#10003;\';setTimeout(function(){b.innerHTML=o;},1500);}).bind(this))" title="Copy address">&#128205;</button>' : '')+
+        (c.lead_category!=='new_solar'&&(c.step||1)<7 ? '<button class="lead-btn ghost" data-id="'+c.id+'" onclick="adminQuickAdvanceStep(this.dataset.id)" title="Advance step">&#8594;</button>' : '')+
         (isTT && !c.tt_confirmed ? '<button class="lead-btn ghost" data-id="'+c.id+'" onclick="confirmTTLead(this.dataset.id)" style="color:#9b6de8;border-color:rgba(155,109,232,0.35);">&#10003; Confirm</button>' :
           '<button class="lead-btn ghost" data-id="'+c.id+'" onclick="openProposalBuilder(this.dataset.id)" style="color:#8DC63F;border-color:rgba(141,198,63,0.3);">&#128196; Proposal</button>')+
       '</div></div>'+
@@ -3618,6 +3621,12 @@
           '</div>'
         : '')
       : '')+
+      (!isNSEdit && (c.step||1) >= 3 ?
+        '<div class="editor-section-title">Diagnostic Assessment (Visible to Customer)</div>'+
+        '<div class="ed-full" style="margin-bottom:16px;">'+
+          '<textarea id="edDiagFindings" class="ed-input" rows="4" style="width:100%;resize:vertical;box-sizing:border-box;" placeholder="Enter findings, recommendations, or notes to share with the customer...">'+(c.diagnostic_findings||'')+'</textarea>'+
+        '</div>'
+      : '')+
       '<div class="editor-section-title">Agreement</div>'+
       '<div class="ed-grid">'+
         edSelect('Agreement Status','edAgSt',c.agreement_status||'none',[['none','None'],['pending','Pending'],['sent','Sent'],['signed','Signed'],['declined','Declined']])+
@@ -3767,6 +3776,7 @@
       updates.milestone3_url = (document.getElementById('edM3Url')||{}).value||null;
       updates.milestone3_payment_method = (document.getElementById('edM3Method')||{}).value||null;
       updates.top_tier_disposition = (document.getElementById('edTTDisposition')||{}).value||null;
+      updates.diagnostic_findings = (document.getElementById('edDiagFindings')||{}).value||null;
       if (!updates.assigned_ops) updates.assigned_ops = null;
     }
     // Intercept step-3 transition: always show diagnostic fee modal when moving to Diagnostic Booked
@@ -4472,6 +4482,19 @@
   }
   function sendMagicLink(link,email){ navigator.clipboard.writeText(link).then(function(){alert('Portal link copied!\n\nSend this to '+email);}).catch(function(){prompt('Copy this portal link for '+email+':', link);}); }
   function callLead(phone){ if(!phone){alert('No phone number on file.');return;} window.location.href='tel:'+phone.replace(/\D/g,''); }
+  async function adminQuickAdvanceStep(id) {
+    var c = adminCustomers.find(function(x){ return x.id===id; });
+    if (!c || c.lead_category === 'new_solar') return;
+    var step = parseInt(c.step)||1;
+    if (step >= 7) return;
+    var next = step + 1;
+    if (next === 3) { openLeadEditor(id); return; }
+    var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var res = await client.from('customers').update({step: next}).eq('id', id);
+    if (res.error) { alert('Error: ' + res.error.message); return; }
+    c.step = next;
+    renderAdminView(adminView);
+  }
   function exportCSV(){
     var cols=['first_name','last_name','email','phone','address','monthly_bill','step','invoice_status','agreement_status','source','created_at'];
     var rows=[cols.join(',')];
@@ -4647,6 +4670,79 @@
       }
     }
 
+    // Sign & Pay CTA (active token, not yet paid)
+    var signPayHtml = '';
+    if (c.sign_token && c.invoice_status !== 'paid') {
+      var _signLink = 'https://fixmy.energy/sign?t=' + c.sign_token;
+      signPayHtml = '<div class="sect-label">Sign &amp; Pay</div>'+
+        '<div style="background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.3);border-radius:12px;padding:18px 20px;margin-bottom:16px;">'+
+          '<div style="font-weight:700;color:#8DC63F;margin-bottom:6px;">&#9889; Ready to Sign &amp; Pay</div>'+
+          '<div style="font-size:0.78rem;color:#aaa;line-height:1.6;margin-bottom:14px;">Review and sign your service agreement, then complete payment &mdash; all in one step. Takes about 2 minutes.</div>'+
+          (c.invoice_amount?'<div style="font-size:1.3rem;font-weight:800;color:#fff;margin-bottom:14px;">$'+parseFloat(c.invoice_amount).toFixed(2)+'</div>':'')+
+          '<a href="'+_signLink+'" class="btn-lime" style="display:block;text-align:center;text-decoration:none;padding:13px;font-size:0.9rem;font-weight:700;border-radius:100px;">&#9997;&#65039; Sign &amp; Pay Now</a>'+
+        '</div>';
+    }
+
+    // Appointment confirmation (paid + signed + scheduled)
+    var apptHtml = '';
+    if (c.invoice_status === 'paid' && c.agreement_status === 'signed' && c.diagnostic_date) {
+      var _apptDate = new Date(c.diagnostic_date);
+      var _apptStr = _apptDate.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
+      var _apptTime = c.arrival_window || _apptDate.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true});
+      var _opsNames = {ops1:'Jon Klos',ops2:'John Espinoza',ops3:'Cosmic Solar',ops4:'Axia'};
+      var _techName = (c.assigned_ops && _opsNames[c.assigned_ops]) ? _opsNames[c.assigned_ops] : 'Your FixMy technician';
+      apptHtml = '<div class="sect-label">Your Appointment</div>'+
+        '<div style="background:rgba(141,198,63,0.06);border:1px solid rgba(141,198,63,0.25);border-radius:12px;padding:18px 20px;margin-bottom:16px;">'+
+          '<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">'+
+            '<span style="font-size:1.8rem;">&#128197;</span>'+
+            '<div><div style="font-weight:700;color:#fff;font-size:0.92rem;">'+_apptStr+'</div>'+
+            '<div style="font-size:0.78rem;color:#8DC63F;margin-top:2px;">&#128336; '+_apptTime+'</div></div>'+
+          '</div>'+
+          '<div style="font-size:0.75rem;color:#888;margin-bottom:12px;">&#128296; '+_techName+' will perform your evaluation.</div>'+
+          '<a href="https://api.leadconnectorhq.com/widget/booking/UjlvHxE8AlyhG5frBkqr" target="_blank" style="font-size:0.75rem;padding:8px 18px;border:1px solid rgba(255,255,255,0.15);border-radius:100px;color:#aaa;text-decoration:none;display:inline-block;">&#128197; Reschedule</a>'+
+        '</div>';
+    }
+
+    // Diagnostic findings (step 3+ with tech notes visible to customer)
+    var findingsHtml = '';
+    if (step >= 3 && c.diagnostic_findings) {
+      findingsHtml = '<div class="sect-label">Technician Assessment</div>'+
+        '<div class="card"><div style="font-size:0.8rem;color:#ccc;line-height:1.8;white-space:pre-wrap;">'+
+          c.diagnostic_findings.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+
+        '</div></div>';
+    }
+
+    // Battery Retrofit milestone payments
+    var brHtml = '';
+    if (c.sold_type === 'battery_retrofit') {
+      var _m1s = c.deposit_status || 'none';
+      var _m1a = c.deposit_amount ? '$'+parseFloat(c.deposit_amount).toFixed(2) : 'TBD';
+      var _m1clr = _m1s==='paid'?'#8DC63F':_m1s==='pending'||_m1s==='sent'?'#ffaa00':'#666';
+      var _m1lbl = {paid:'Paid &#10003;',pending:'Due',sent:'Invoice Sent',none:'Pending',draft:'Draft'}[_m1s]||_m1s;
+      var _m2s = c.ops_milestone1_status || 'none';
+      var _m2a = c.ops_milestone1_amount ? '$'+parseFloat(c.ops_milestone1_amount).toFixed(2) : 'TBD';
+      var _m2clr = _m2s==='paid'?'#8DC63F':'#666';
+      var _m2lbl = _m2s==='paid'?'Paid &#10003;':'Pending after install';
+      brHtml = '<div class="sect-label">Battery Retrofit Milestones</div>'+
+        '<div class="card" style="padding:0;overflow:hidden;">'+
+          '<div style="display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid rgba(255,255,255,0.06);">'+
+            '<div><div style="font-size:0.82rem;font-weight:700;">Deposit (M1)</div><div style="font-size:0.68rem;color:#666;margin-top:2px;">Project kickoff</div></div>'+
+            '<div style="text-align:right;">'+
+              '<div style="font-size:0.85rem;font-weight:700;color:'+_m1clr+';">'+_m1lbl+'</div>'+
+              (_m1a!=='TBD'?'<div style="font-size:0.7rem;color:#555;margin-top:1px;">'+_m1a+'</div>':'')+
+              (_m1s==='sent'&&c.invoice_url?'<a href="'+c.invoice_url+'" target="_blank" style="display:inline-block;margin-top:6px;font-size:0.7rem;padding:4px 12px;background:#8DC63F;color:#000;border-radius:100px;font-weight:700;text-decoration:none;">Pay Now</a>':'')+
+            '</div>'+
+          '</div>'+
+          '<div style="display:flex;justify-content:space-between;align-items:center;padding:14px 16px;">'+
+            '<div><div style="font-size:0.82rem;font-weight:700;">Completion (M2)</div><div style="font-size:0.68rem;color:#666;margin-top:2px;">After install sign-off</div></div>'+
+            '<div style="text-align:right;">'+
+              '<div style="font-size:0.85rem;font-weight:700;color:'+_m2clr+';">'+_m2lbl+'</div>'+
+              (_m2a!=='TBD'?'<div style="font-size:0.7rem;color:#555;margin-top:1px;">'+_m2a+'</div>':'')+
+            '</div>'+
+          '</div>'+
+        '</div>';
+    }
+
     showDash(name,
       '<div style="margin-bottom:24px;"><h2 style="font-size:1.3rem;margin-bottom:4px;">Hi, <span style="color:#8DC63F">'+(c.first_name||'there')+'</span> &#128075;</h2><p style="font-size:0.8rem;color:#aaa;">Your Solar Review evaluation status.</p></div>'+
       '<div class="info-grid"><div class="info-card"><div class="info-label">Address</div><div class="info-val">'+(c.address||'--')+'</div></div><div class="info-card"><div class="info-label">System Size</div><div class="info-val">'+sys+'</div></div><div class="info-card"><div class="info-label">Utility</div><div class="info-val">'+(c.utility||'--')+'</div></div><div class="info-card"><div class="info-label">Monthly Bill</div><div class="info-val">'+(c.monthly_bill?'$'+c.monthly_bill+'/mo':'--')+'</div></div></div>'+
@@ -4683,7 +4779,7 @@
       '</div>'+
       '<div class="sect-label">Required Documents</div>'+
       '<div class="upload-grid">'+ucCard('bill','&#128196;','Most Recent Utility Bill','Upload your full PDF utility bill.')+ucCard('inverter','&#128247;','Inverter Photo','Photo of your inverter on garage wall or exterior.')+ucCard('serial','&#128290;','Serial Number','Close-up of the serial number sticker on inverter.')+ucCard('panel','&#9889;','Main Service Panel','Photo of open breaker panel with amp rating visible.')+'</div>'+
-      proposalHtml+invHtml+guaranteeHtml+agHtml+
+      signPayHtml+apptHtml+proposalHtml+invHtml+guaranteeHtml+agHtml+findingsHtml+brHtml+
       '<div id="solarWrap"></div>'+
       '<div class="cta-card"><div><strong>Questions?</strong><br><span style="font-size:0.75rem;color:#aaa;">Mon-Sat 8am-6pm</span></div><a href="tel:6197776527" class="btn-lime">&#128222; (619) 777-6527</a></div>'
     );
@@ -5339,11 +5435,14 @@
       '</div>';
 
       // Stats
-      var cols = showFieldJobs ? 4 : 3;
+      var totalEstComm = 0;
+      myJobs.forEach(function(j){ totalEstComm += calcRepCommission(j); });
+      var cols = showFieldJobs ? 4 : (config.setterMode ? 4 : 3);
       h += '<div style="display:grid;grid-template-columns:repeat('+cols+',1fr);gap:8px;margin-bottom:14px;">';
       function sBox(v,lbl,clr){ return '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:10px;text-align:center;"><div style="font-size:1.2rem;font-weight:800;color:'+(clr||'#8DC63F')+';">'+v+'</div><div style="font-size:0.68rem;color:#888;">'+lbl+'</div></div>'; }
       h += sBox(myFixmyLeads.length,'FixMy Leads') + sBox(myNSLeads.length,'Solar Leads','#4a9eff') + sBox(myJobs.length,'Jobs');
       if (showFieldJobs) h += sBox(fieldJobs.length,'Field');
+      else if (config.setterMode) h += sBox('$'+totalEstComm,'Est. Earned','#ffaa00');
       h += '</div>';
 
       // Main view tabs
