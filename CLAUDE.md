@@ -257,7 +257,7 @@ Five-channel approach targeting homeowners whose solar installer went out of bus
 4. **fixmy.energy/check** — dedicated landing page for orphaned accounts (draft at `/check-preview.html`)
 5. **Direct mail** — Minuteman Press postcards to enriched address list
 
-Target installers: SunPower (Ch. 11 2024), Sullivan Solar (closed 2019), Petersen Dean (closed 2020), Sungevity (closed 2017)
+Target installers: SunPower (Ch. 11 Aug 2024), Titan Solar (Ch. 7 Jun 2024), Sunnova (Ch. 11 Jun 2025), Mosaic Solar Loans (Ch. 11 Jun 2025), Sullivan Solar (shut down Oct/Nov 2021 — NOT 2019), Petersen Dean (Ch. 11 Jun 2020), Sungevity (Ch. 11 Mar 2017)
 
 ## CPUC / SDG&E NEM Data — Public Records Request Draft
 
