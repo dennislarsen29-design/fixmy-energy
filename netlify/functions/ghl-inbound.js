@@ -137,11 +137,17 @@ exports.handler = async function(event) {
 
   let result, method, supaUrl;
   if (existingId) {
-    // Update existing — fill in any blanks, update appt if provided
-    const patch = {};
+    // Update existing — stamp step/category, fill in any blanks
+    const patch = {
+      step:          1,
+      lead_category: 'fixmy',
+      lead_source:   'inbound_web',
+    };
+    if (firstName)      patch.first_name = firstName;
+    if (lastName)       patch.last_name  = lastName;
     if (diagnosticDate) patch.diagnostic_date = diagnosticDate;
     if (arrivalEnd)     patch.arrival_end = arrivalEnd;
-    if (address && !existingId.address) patch.address = address;
+    if (address)        patch.address = address;
     method  = 'PATCH';
     supaUrl = SUPA_URL + '/rest/v1/customers?id=eq.' + existingId;
     result  = await fetch(supaUrl, {

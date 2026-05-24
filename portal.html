@@ -2,6 +2,13 @@
 <!-- Solar Review Portal | Jobs Tab Update -->
 <html lang="en">
 <head>
+<!-- Google Tag Manager -->
+<script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-TSJVG2GT');</script>
+<!-- End Google Tag Manager -->
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
@@ -278,6 +285,10 @@
   </style>
 </head>
 <body>
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-TSJVG2GT"
+height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
 
 <!-- LOGIN -->
 <div id="loginBox" class="box">
@@ -768,6 +779,10 @@
             '<div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;">'+
               '<button onclick="event.stopPropagation();openProposalBuilder(\''+c.id+'\')" style="font-size:0.72rem;padding:5px 14px;border-radius:100px;background:rgba(141,198,63,0.1);color:#8DC63F;border:1px solid rgba(141,198,63,0.3);cursor:pointer;font-weight:700;">&#128196; Proposal</button>'+
               (c.email?'<button onclick="event.stopPropagation();sendMagicLink(\''+jobMagic+'\',\''+c.email+'\')" style="font-size:0.72rem;padding:5px 14px;border-radius:100px;background:rgba(74,158,255,0.08);color:#4a9eff;border:1px solid rgba(74,158,255,0.25);cursor:pointer;font-weight:700;">&#128279; Link</button>':'')+
+              (c.invoice_status&&c.invoice_status!=='none'&&c.invoice_status!=='paid'?'<button onclick="event.stopPropagation();markCheckPaid(\''+c.id+'\')" style="font-size:0.72rem;padding:5px 14px;border-radius:100px;background:rgba(141,198,63,0.12);color:#3d6b12;border:1px solid rgba(141,198,63,0.35);cursor:pointer;font-weight:700;">&#10003; Check Paid</button>':'')+
+              (c.assigned_ops&&c.assigned_ops!=='none'&&c.ops_milestone1_status!=='paid'?'<button onclick="event.stopPropagation();markOpsMilestonePaid(\''+c.id+'\',\'M1\')" style="font-size:0.72rem;padding:5px 14px;border-radius:100px;background:rgba(249,115,22,0.1);color:#f97316;border:1px solid rgba(249,115,22,0.3);cursor:pointer;font-weight:700;">&#9889; M1 Paid</button>':'')+
+              (c.assigned_ops&&c.ops_milestone1_status==='paid'&&c.milestone2_amount&&c.milestone2_status!=='paid'?'<button onclick="event.stopPropagation();markOpsMilestonePaid(\''+c.id+'\',\'M2\')" style="font-size:0.72rem;padding:5px 14px;border-radius:100px;background:rgba(249,115,22,0.1);color:#f97316;border:1px solid rgba(249,115,22,0.3);cursor:pointer;font-weight:700;">&#9889; M2 Paid</button>':'')+
+              (c.assigned_ops&&c.milestone2_status==='paid'&&c.milestone3_amount&&c.milestone3_status!=='paid'?'<button onclick="event.stopPropagation();markOpsMilestonePaid(\''+c.id+'\',\'M3\')" style="font-size:0.72rem;padding:5px 14px;border-radius:100px;background:rgba(249,115,22,0.1);color:#f97316;border:1px solid rgba(249,115,22,0.3);cursor:pointer;font-weight:700;">&#9889; M3 Paid</button>':'')+
             '</div>'+
           '</div>';
         }
@@ -1492,6 +1507,40 @@
     return m ? m[m.length-1] : null;
   }
 
+  async function fixMissingZips() {
+    var missing = adminCustomers.filter(function(c){ return c.address && !extractZip(c.address); });
+    if (!missing.length) { alert('All leads already have zip codes — nothing to fix!'); return; }
+    if (!confirm('Found ' + missing.length + ' leads without a zip code.\n\nGoogle Maps will look up each address and fill in the missing zip. Continue?')) return;
+
+    var btn = document.querySelector('button[onclick="fixMissingZips()"]');
+    if (btn) { btn.textContent = 'Fixing…'; btn.disabled = true; }
+
+    var fixed = 0, failed = 0;
+    var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+
+    for (var i = 0; i < missing.length; i++) {
+      var rec = missing[i];
+      try {
+        var resp = await fetch('https://maps.googleapis.com/maps/api/geocode/json?address='+encodeURIComponent(rec.address)+'&key='+GKEY);
+        var data = await resp.json();
+        if (data.results && data.results[0]) {
+          var result = data.results[0];
+          var pc = (result.address_components||[]).find(function(c){ return c.types.indexOf('postal_code')>=0; });
+          if (pc) {
+            var newAddr = result.formatted_address;
+            await client.from('customers').update({ address: newAddr }).eq('id', rec.id);
+            rec.address = newAddr;
+            fixed++;
+          } else { failed++; }
+        } else { failed++; }
+      } catch(e) { failed++; }
+    }
+
+    if (btn) { btn.textContent = 'Fix Missing Zips'; btn.disabled = false; }
+    alert('Done!\nFixed: ' + fixed + ' leads\nCould not resolve: ' + failed + ' leads');
+    renderMarketingView();
+  }
+
   function renderMarketingView() {
     adminView = 'marketing';
     var portalNav = '<div class="portal-tab-nav">'+
@@ -1506,6 +1555,8 @@
     '</div>';
 
     // ── Compute summary stats ──
+    var gadsEntries = adminMarketingExpenses.filter(function(e){ return e.category==='Google Ads'; });
+    var gadsTotalSpend = gadsEntries.reduce(function(s,e){ return s+parseFloat(e.amount||0); },0);
     var totalSpend = adminMarketingExpenses.reduce(function(s,e){ return s+parseFloat(e.amount||0); },0);
     var allMailedZips = new Set();
     adminMarketingExpenses.forEach(function(e){
@@ -1529,18 +1580,54 @@
     }
     var summaryHtml =
       '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:18px;">'+
-      mBox('$'+totalSpend.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}),'Total Spend','#ffaa00')+
+      mBox('$'+totalSpend.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}),'Total Spend (all)','#ffaa00')+
+      mBox('$'+gadsTotalSpend.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}),'Google Ads Spend','#9b6de8')+
       mBox('$'+mailRevTotal.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}),'Mail Revenue (paid)','#8DC63F','from Direct Mail tagged jobs')+
       mBox((roi>=0?'+':'')+roi+'%','ROI',roiClr,'mail rev vs spend')+
-      mBox(matchedCust.length,'Leads in Mailed Zips','#4a9eff')+
       '</div>';
 
-    // ── Per-expense card list ──
-    var expHtml = '';
-    if (!adminMarketingExpenses.length) {
-      expHtml = '<div style="text-align:center;padding:32px;color:#555;">No expenses logged yet. Click + Add Expense to get started.</div>';
+    // ── Google Ads section ──
+    var gadsHtml = '<div style="background:rgba(155,109,232,0.06);border:1px solid rgba(155,109,232,0.2);border-radius:12px;padding:16px;margin-bottom:18px;">';
+    gadsHtml += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:'+(gadsEntries.length?'12':'6')+'px;flex-wrap:wrap;gap:8px;">';
+    gadsHtml += '<div style="display:flex;align-items:center;gap:8px;">';
+    gadsHtml += '<span style="font-size:0.85rem;font-weight:700;color:#9b6de8;">&#128202; Google Ads</span>';
+    if (gadsTotalSpend>0) gadsHtml += '<span style="font-size:0.82rem;color:#fff;font-weight:800;margin-left:4px;">$'+gadsTotalSpend.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})+'</span>';
+    gadsHtml += '</div>';
+    gadsHtml += '<button onclick="openMarketingExpenseForm(null,\'Google Ads\')" class="lead-btn" style="padding:7px 14px;font-size:0.72rem;background:rgba(155,109,232,0.15);color:#9b6de8;border:1px solid rgba(155,109,232,0.3);">+ Log Spend</button>';
+    gadsHtml += '</div>';
+    if (!gadsEntries.length) {
+      gadsHtml += '<div style="font-size:0.75rem;color:#555;padding:4px 0 8px;">No Google Ads spend logged yet. Click + Log Spend to add a campaign.</div>';
     } else {
-      adminMarketingExpenses.forEach(function(e) {
+      gadsHtml += '<table style="width:100%;border-collapse:collapse;font-size:0.75rem;">';
+      gadsHtml += '<thead><tr style="border-bottom:1px solid rgba(155,109,232,0.15);">';
+      ['Campaign','Date','Spend',''].forEach(function(h){ gadsHtml += '<th style="text-align:left;padding:5px 8px;color:#666;font-weight:700;">'+h+'</th>'; });
+      gadsHtml += '</tr></thead><tbody>';
+      gadsEntries.forEach(function(e) {
+        var dStr = e.expense_date ? new Date(e.expense_date+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '—';
+        gadsHtml += '<tr style="border-bottom:1px solid rgba(255,255,255,0.04);">';
+        gadsHtml += '<td style="padding:5px 8px;color:#ccc;">'+(e.description||'—')+'</td>';
+        gadsHtml += '<td style="padding:5px 8px;color:#666;white-space:nowrap;">'+dStr+'</td>';
+        gadsHtml += '<td style="padding:5px 8px;color:#9b6de8;font-weight:700;">$'+parseFloat(e.amount||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})+'</td>';
+        gadsHtml += '<td style="padding:5px 8px;text-align:right;white-space:nowrap;">';
+        gadsHtml += '<button onclick="openMarketingExpenseForm(\''+e.id+'\')" style="font-size:0.65rem;padding:3px 8px;background:rgba(255,255,255,0.06);color:#aaa;border-radius:6px;border:1px solid rgba(255,255,255,0.1);cursor:pointer;">&#9998;</button> ';
+        gadsHtml += '<button onclick="deleteMarketingExpense(\''+e.id+'\')" style="font-size:0.65rem;padding:3px 8px;background:rgba(239,68,68,0.08);color:#ef4444;border-radius:6px;border:1px solid rgba(239,68,68,0.2);cursor:pointer;">&#128465;</button>';
+        gadsHtml += '</td></tr>';
+      });
+      gadsHtml += '<tr style="border-top:1px solid rgba(155,109,232,0.25);">';
+      gadsHtml += '<td colspan="2" style="padding:6px 8px;color:#777;font-weight:700;font-size:0.72rem;">Total</td>';
+      gadsHtml += '<td style="padding:6px 8px;color:#9b6de8;font-weight:800;">$'+gadsTotalSpend.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})+'</td>';
+      gadsHtml += '<td></td></tr>';
+      gadsHtml += '</tbody></table>';
+    }
+    gadsHtml += '</div>';
+
+    // ── Per-expense card list (direct mail + other, excluding Google Ads) ──
+    var nonGadsExpenses = adminMarketingExpenses.filter(function(e){ return e.category!=='Google Ads'; });
+    var expHtml = '';
+    if (!nonGadsExpenses.length) {
+      expHtml = '<div style="text-align:center;padding:32px;color:#555;">No direct mail expenses logged yet. Click + Add Expense to get started.</div>';
+    } else {
+      nonGadsExpenses.forEach(function(e) {
         var zips = (e.mailed_zips||'').split(',').map(function(z){ return z.trim(); }).filter(Boolean);
         var matches = zips.length ? adminCustomers.filter(function(c){ var z=extractZip(c.address); return z&&zips.indexOf(z)>=0; }) : [];
         var expRev = matches.filter(function(c){ return c.invoice_status==='paid'; }).reduce(function(s,c){ return s+(parseFloat(c.invoice_amount)||0); },0);
@@ -1666,11 +1753,16 @@
     document.getElementById('dashBody').innerHTML = portalNav+
       '<div class="admin-header-row">'+
         '<h2 style="font-size:1.1rem;font-weight:700;">Marketing Spend &amp; ROI</h2>'+
-        '<button onclick="openMarketingExpenseForm()" class="lead-btn lime" style="padding:9px 18px;font-size:0.78rem;">+ Add Expense</button>'+
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;">'+
+          '<button onclick="fixMissingZips()" class="lead-btn" style="padding:9px 18px;font-size:0.78rem;background:rgba(74,158,255,0.15);color:#4a9eff;border:1px solid rgba(74,158,255,0.3);">Fix Missing Zips</button>'+
+          '<button onclick="openMarketingExpenseForm()" class="lead-btn lime" style="padding:9px 18px;font-size:0.78rem;">+ Add Expense</button>'+
+        '</div>'+
       '</div>'+
       '<div id="editorSlot"></div>'+
       bizModelHtml+
       summaryHtml+
+      gadsHtml+
+      '<div class="editor-section-title" style="margin-bottom:10px;">Direct Mail &amp; Other Expenses</div>'+
       '<div id="mktList">'+expHtml+'</div>'+
       zipTableHtml;
 
@@ -1860,20 +1952,18 @@
         var nameParts = (en.owner||'').split(' ');
         var firstName = r.first_name || nameParts[0] || '';
         var lastName  = r.last_name  || nameParts.slice(1).join(' ') || '';
-        var notesParts = [];
-        if (r.installer)    notesParts.push('Installer: ' + r.installer);
-        if (r.install_year) notesParts.push('Install year: ' + r.install_year);
-        if (r.notes)        notesParts.push(r.notes);
         var rec = {
-          first_name:    firstName,
-          last_name:     lastName,
-          address:       r.address,
-          lead_category: 'new_solar',
-          solar_status:  'ns_eval_booked',
-          lead_source:   'direct_mail',
-          notes:         notesParts.join(' | ') || null,
-          title_owner:   en.owner || null,
-          apn:           en.apn   || null
+          first_name:          firstName,
+          last_name:           lastName,
+          address:             r.address,
+          lead_category:       'fixmy',
+          step:                1,
+          lead_source:         'orphaned_list',
+          original_installer:  r.installer || null,
+          install_year:        r.install_year ? parseInt(r.install_year) : null,
+          notes:               r.notes || null,
+          title_owner:         en.owner || null,
+          apn:                 en.apn   || null
         };
         return rec;
       });
@@ -2088,7 +2178,7 @@
     renderChat(false);
   }
 
-  function openMarketingExpenseForm(id) {
+  function openMarketingExpenseForm(id, defaultCat) {
     var slot = document.getElementById('editorSlot');
     if (!slot) return;
     var rec = id ? adminMarketingExpenses.find(function(x){ return x.id===id; }) : null;
@@ -2105,7 +2195,7 @@
         '<div><label class="ed-label">Date *</label><input type="date" id="mktDate" class="ed-input" value="'+(rec?rec.expense_date:today)+'"/></div>'+
         '<div><label class="ed-label">Amount ($) *</label><input type="number" id="mktAmount" class="ed-input" step="0.01" placeholder="0.00" value="'+(rec?rec.amount:'')+'"/></div>'+
         '<div><label class="ed-label">Category</label><select id="mktCategory" class="ed-input">'+
-          ['Direct Mail Print','USPS Charges','Digital Ads','Other'].map(function(c){ return '<option value="'+c+'"'+(rec&&rec.category===c?' selected':'')+'>'+c+'</option>'; }).join('')+
+          ['Direct Mail Print','USPS Charges','Google Ads','Digital Ads','Other'].map(function(c){ var sel=(rec&&rec.category===c)||(!rec&&defaultCat===c); return '<option value="'+c+'"'+(sel?' selected':'')+'>'+c+'</option>'; }).join('')+
         '</select></div>'+
         '<div><label class="ed-label">Description / Notes</label><input type="text" id="mktDesc" class="ed-input" placeholder="e.g. Apr batch, 5000 postcards" value="'+(rec&&rec.description?rec.description:'')+'"/></div>'+
       '</div>'+
@@ -2162,6 +2252,20 @@
       if (error) throw error;
       adminMarketingExpenses = adminMarketingExpenses.filter(function(x){ return x.id!==id; });
       renderMarketingView();
+    } catch(e) { alert('Delete failed: '+e.message); }
+  }
+
+  async function deleteLead(id) {
+    var rec = adminCustomers.find(function(x){ return x.id==id; });
+    var label = rec ? (((rec.first_name||'')+(rec.last_name?' '+rec.last_name:'')).trim()||rec.email||'this lead') : 'this lead';
+    if (!confirm('Permanently delete ' + label + '?\n\nThis cannot be undone.')) return;
+    try {
+      var sc = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var {error} = await sc.from('customers').delete().eq('id', id);
+      if (error) throw error;
+      adminCustomers = adminCustomers.filter(function(x){ return x.id!=id; });
+      closeLeadEditor();
+      renderAdminView(adminView);
     } catch(e) { alert('Delete failed: '+e.message); }
   }
 
@@ -3075,7 +3179,7 @@
 
     return '<div class="lead-card" id="lead-'+c.id+'">'+
       '<div class="lead-card-top"><div>'+
-        '<div class="lead-name">'+(c.first_name||'')+(c.last_name?' '+c.last_name:'')+pillHtml+'</div>'+
+        '<div class="lead-name">'+(((c.first_name||'')+(c.last_name?' '+c.last_name:'')).trim()||c.email||c.phone||'Unknown')+pillHtml+'</div>'+
         '<div class="lead-meta">'+(c.email||'')+(c.phone?' &middot; '+c.phone:'')+(created?' &middot; '+created:'')+'</div>'+
         '<div class="lead-addr">'+(c.address||'No address')+'</div>'+
         assignLine+
@@ -3089,6 +3193,7 @@
         (c.lead_category!=='new_solar'&&(c.step||1)<7 ? '<button class="lead-btn ghost" data-id="'+c.id+'" onclick="adminQuickAdvanceStep(this.dataset.id)" title="Advance step">&#8594;</button>' : '')+
         (isTT && !c.tt_confirmed ? '<button class="lead-btn ghost" data-id="'+c.id+'" onclick="confirmTTLead(this.dataset.id)" style="color:#9b6de8;border-color:rgba(155,109,232,0.35);">&#10003; Confirm</button>' :
           '<button class="lead-btn ghost" data-id="'+c.id+'" onclick="openProposalBuilder(this.dataset.id)" style="color:#8DC63F;border-color:rgba(141,198,63,0.3);">&#128196; Proposal</button>')+
+        (person && person.isAdmin ? '<button class="lead-btn ghost" data-id="'+c.id+'" onclick="deleteLead(this.dataset.id)" style="color:#ef4444;border-color:rgba(239,68,68,0.25);" title="Delete lead">&#128465;</button>' : '')+
       '</div></div>'+
       progressHtml+
       auroraHtml+
@@ -3549,6 +3654,7 @@
           '<div style="display:flex;gap:8px;flex-wrap:wrap;">'+
             (c.invoice_url ? '<a href="'+c.invoice_url+'" target="_blank" style="padding:7px 14px;background:rgba(255,170,0,0.12);border:1px solid rgba(255,170,0,0.4);border-radius:8px;color:#ffaa00;font-size:0.75rem;font-weight:700;text-decoration:none;white-space:nowrap;">View Invoice</a>' : '')+
             '<button onclick="edResendInvoice(\''+c.id+'\')" style="padding:7px 14px;background:#ffaa00;border:none;border-radius:8px;color:#000;font-size:0.75rem;font-weight:700;cursor:pointer;white-space:nowrap;">↩ Resend</button>'+
+            '<button onclick="markCheckPaid(\''+c.id+'\')" style="padding:7px 14px;background:#8DC63F;border:none;border-radius:8px;color:#1A1A1A;font-size:0.75rem;font-weight:700;cursor:pointer;white-space:nowrap;">&#10003; Paid by Check</button>'+
           '</div>'+
         '</div>'
       : '')+
@@ -3648,7 +3754,12 @@
         edSelect('Closer (Sold By)','edRepId',c.rep_id||'none',[['none','— Unassigned —'],['tech4','Dennis Larsen'],['tech2','Ranie'],['tech3','Michael Smith'],['tech5','Cristina Huang']])+
         (!isTTEdit ? edSelect('Ops Partner (Installer)','edAssignedOps',c.assigned_ops||'none',[['none','— Unassigned —'],['ops1','Jon Klos'],['ops2','John Espinoza'],['ops3','Cosmic Solar'],['ops4','Axia'],['dennis','Dennis (Self)']]) : '')+
         (!isTTEdit ? edSelect('Ops Payout','edOpsPayout',c.ops_payout_status||'pending',[['pending','Pending'],['paid','Paid']]) : '')+
-        edSelect('Lead Source','edLeadSource',c.lead_source||'',[['','— Unknown —'],['direct_mail','Direct Mail Response'],['self_generated','Self-Generated (Canvassing)'],['referral','Referral'],['inbound_web','Inbound / Web']])+
+        edSelect('Lead Source','edLeadSource',c.lead_source||'',[['','— Unknown —'],['direct_mail','Direct Mail Response'],['self_generated','Self-Generated (Canvassing)'],['referral','Referral'],['inbound_web','Inbound / Web'],['orphaned_list','Orphaned Installer List']])+
+        (c.lead_source==='orphaned_list'||c.original_installer ?
+          '<div class="ed-grid">'+
+            edField('Original Installer','edOrigInstaller',c.original_installer||'','text')+
+            edField('Install Year','edInstallYear',c.install_year||'','number')+
+          '</div>' : '')+
         (isTTEdit ? edSelect('Top Tier Outcome','edTTDisposition',c.top_tier_disposition||'',[['','— None —'],['missed','Missed Appointment'],['no_sign','No Sign After Presentation'],['dead','Dead / Other']]) : '')+
       '</div>'+
       (isTTEdit ?
@@ -3675,6 +3786,7 @@
         '<button class="lead-btn lime" style="padding:12px 28px;" onclick="saveLeadEditor()">Save Changes</button>'+
         '<button class="lead-btn ghost" style="padding:12px 20px;" onclick="closeLeadEditor()">Cancel</button>'+
         '<span id="edSaved" style="display:none;font-size:0.72rem;color:#8DC63F;margin-left:10px;">&#10003; Saved</span>'+
+        (person && person.isAdmin ? '<button class="lead-btn ghost" style="padding:12px 18px;margin-left:auto;color:#ef4444;border-color:rgba(239,68,68,0.25);" onclick="deleteLead(\''+c.id+'\')">&#128465; Delete Lead</button>' : '')+
       '</div></div>';
     slot.scrollIntoView({behavior:'smooth',block:'start'});
     loadEditorPhotos(c.id);
@@ -3769,6 +3881,8 @@
       nem_status: document.getElementById('edNem') ? document.getElementById('edNem').value||null : (cRec.nem_status||null),
       ops_payout_status: (document.getElementById('edOpsPayout')||{}).value||null,
       lead_source: document.getElementById('edLeadSource').value||null,
+      original_installer: (document.getElementById('edOrigInstaller')||{}).value||null,
+      install_year: (function(){ var v=(document.getElementById('edInstallYear')||{}).value; return v?parseInt(v):null; })(),
       title_owner: (document.getElementById('edTitleOwner')||{}).value||null,
       apn: (document.getElementById('edApn')||{}).value||null,
       title_confirmed: (function(){ var v=(document.getElementById('edTitleConfirmed')||{}).value; return v==='true'?true:v==='false'?false:null; })()
@@ -4031,7 +4145,7 @@
         '<div class="editor-section-title">Note to Tech</div>'+
         '<div style="margin-bottom:16px;"><textarea id="nlNotes" class="ed-input" rows="3" style="resize:vertical;" placeholder="Gate code, concerns, system issues..." oninput="nlUpdateCal()"></textarea></div>'+
         '<div class="editor-section-title">Lead Source</div>'+
-        '<div class="ed-grid" style="margin-bottom:8px;"><div><label class="ed-label">Lead Source</label><select id="nlLeadSource" class="ed-input" onchange="nlLeadSourceChanged(this.value)"><option value="">— Other —</option><option value="self_generated">Self-Generated (Canvassing)</option><option value="referral">Referral</option><option value="inbound_web">Inbound / Web</option></select></div></div>'+
+        '<div class="ed-grid" style="margin-bottom:8px;"><div><label class="ed-label">Lead Source</label><select id="nlLeadSource" class="ed-input" onchange="nlLeadSourceChanged(this.value)"><option value="">— Other —</option><option value="self_generated">Self-Generated (Canvassing)</option><option value="referral">Referral</option><option value="inbound_web">Inbound / Web</option><option value="orphaned_list">Orphaned Installer List</option></select></div></div>'+
         '<div id="nlReferralNote" style="display:none;padding:10px 14px;background:rgba(141,198,63,0.07);border:1px solid rgba(141,198,63,0.2);border-radius:8px;margin-bottom:16px;font-size:0.75rem;color:#aaa;line-height:1.6;">'+
           '&#127381; <strong style="color:#8DC63F;">$1,000 Referral Incentive</strong> &mdash; The referring customer earns a $1,000 credit toward their next service when this lead closes a job. '+
           '<br><label class="ed-label" style="margin-top:8px;display:block;">Referring Customer Name (optional)</label>'+
@@ -4170,7 +4284,18 @@
     if (!input||nlPlacesInit||typeof google==='undefined') return;
     nlPlacesInit = true;
     var ac = new google.maps.places.Autocomplete(input,{types:['address'],componentRestrictions:{country:'us'}});
-    ac.addListener('place_changed',function(){ var place=ac.getPlace(); if(!place.geometry) return; var fa=place.formatted_address||input.value; var lat=place.geometry.location.lat(); var lng=place.geometry.location.lng(); loadNlSatellite(fa); loadNlSolar(lat,lng); checkTitleOwner(fa,lat,lng); });
+    ac.addListener('place_changed',function(){
+      var place=ac.getPlace(); if(!place.geometry) return;
+      var fa=place.formatted_address||input.value;
+      // Extract postal_code from address_components — formatted_address often omits it
+      if(place.address_components){
+        var pc=(place.address_components.find(function(c){return c.types.indexOf('postal_code')>=0;})||{}).short_name;
+        if(pc && fa.indexOf(pc)===-1) fa=fa.replace(/,\s*USA\s*$/i,', '+pc+', USA');
+      }
+      input.value=fa;
+      var lat=place.geometry.location.lat(); var lng=place.geometry.location.lng();
+      loadNlSatellite(fa); loadNlSolar(lat,lng); checkTitleOwner(fa,lat,lng);
+    });
   }
   function nlAddrChanged(){ nlPlacesInit=false; var s=document.getElementById('nlSatWrap'),o=document.getElementById('nlSolarWrap'),t=document.getElementById('nlTitleWrap'); if(s) s.style.display='none'; if(o) o.style.display='none'; if(t) t.style.display='none'; setTimeout(initNlPlaces,300); }
   function loadNlSatellite(addr){ var wrap=document.getElementById('nlSatWrap'),img=document.getElementById('nlSatImg'); if(!wrap||!img) return; img.src='https://maps.googleapis.com/maps/api/staticmap?center='+encodeURIComponent(addr)+'&zoom=19&size=700x200&maptype=satellite&key='+GKEY; wrap.style.display='block'; }
@@ -4326,6 +4451,54 @@
       var ok = !!(d.success || (d.ghlStatus >= 200 && d.ghlStatus < 300) || d.tagStatus);
       alert(ok ? '✓ Agreement resent successfully.' : '✗ Resend failed: ' + (d.error || JSON.stringify(d).slice(0,80)));
     } catch(e) { alert('Error: ' + e.message); }
+  }
+
+  async function markCheckPaid(id) {
+    var c = adminCustomers.find(function(x){ return x.id === id; });
+    var amt = c && c.invoice_amount ? ' ($' + parseFloat(c.invoice_amount).toFixed(2) + ')' : '';
+    if (!confirm('Mark invoice' + amt + ' as paid by check for ' + (c ? (c.first_name||'') + ' ' + (c.last_name||'') : id) + '?')) return;
+    var cl = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var { error } = await cl.from('customers').update({ invoice_status: 'paid' }).eq('id', id);
+    if (error) { alert('Error: ' + error.message); return; }
+    var idx = adminCustomers.findIndex(function(x){ return x.id === id; });
+    if (idx > -1) adminCustomers[idx].invoice_status = 'paid';
+    if (adminView === 'jobs') renderJobsView();
+    else renderAdminView(adminView);
+  }
+
+  async function markOpsMilestonePaid(id, milestone) {
+    var c = adminCustomers.find(function(x){ return x.id === id; });
+    if (!c) return;
+    var colStatus = milestone==='M1'?'ops_milestone1_status':milestone==='M2'?'milestone2_status':'milestone3_status';
+    var colAmount = milestone==='M1'?'ops_milestone1_amount':milestone==='M2'?'milestone2_amount':'milestone3_amount';
+    var rawAmt = c[colAmount] ? parseFloat(c[colAmount]) : null;
+    var amtStr = rawAmt ? ' ($' + rawAmt.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}) + ')' : '';
+    var name = ((c.first_name||'')+' '+(c.last_name||'')).trim();
+    if (!confirm('Mark ' + milestone + amtStr + ' paid to ops partner for ' + name + '?')) return;
+    var cl = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var updates = {}; updates[colStatus] = 'paid';
+    var { error } = await cl.from('customers').update(updates).eq('id', id);
+    if (error) { alert('Error: ' + error.message); return; }
+    var idx = adminCustomers.findIndex(function(x){ return x.id === id; });
+    if (idx > -1) adminCustomers[idx][colStatus] = 'paid';
+    // Fire GHL notification to ops partner
+    if (c.assigned_ops) {
+      var partner = OPS_PARTNERS.find(function(p){ return p.id === c.assigned_ops; });
+      if (partner) {
+        var portalLink = 'https://fixmy.energy/portal?email=' + encodeURIComponent(partner.email) + '&code=' + encodeURIComponent(partner.code);
+        fetch('/.netlify/functions/ghl-ops-payment', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            partnerId: partner.id, partnerName: partner.name, partnerEmail: partner.email,
+            customerName: name, customerAddress: c.address || '',
+            milestone: milestone, amount: rawAmt, portalLink: portalLink
+          })
+        }).catch(function(e){ console.warn('GHL ops-payment notify:', e.message); });
+      }
+    }
+    if (adminView === 'jobs') renderJobsView();
+    else renderAdminView(adminView);
   }
 
   function edResendInvoice(id) {
@@ -4941,6 +5114,11 @@
 
   // ── AUTO LOGIN ─────────────────────────────────────────────────────────────
   window.addEventListener('load', async function() {
+    // Magic link URL params take priority — skip session restore if present
+    var _initParams = new URLSearchParams(location.search);
+    if (_initParams.get('email') && _initParams.get('code')) {
+      // Fall through to magic link handler below
+    } else {
     // Restore rep/tech session
     var saved = sessionStorage.getItem('user');
     if (saved) {
@@ -4982,6 +5160,7 @@
         return;
       } catch(e) { sessionStorage.clear(); }
     }
+    } // end else (no magic link params)
     var p=new URLSearchParams(location.search); var ue=p.get('email'),uc=p.get('code');
     if(ue&&uc){
       // Check for ops partner magic link first (codes are alphanumeric, not phone numbers)
@@ -4997,7 +5176,8 @@
 
       // Magic link auto-login for customers
       var cleanEmail = decodeURIComponent(ue).toLowerCase().trim();
-      var cleanUc = uc.trim().replace(/[^0-9]/g,'');
+      var rawUc = uc.trim();
+      var cleanUc = rawUc.replace(/[^0-9]/g,'');
       if(cleanUc.length===11&&cleanUc.charAt(0)==='1') cleanUc=cleanUc.slice(1);
       if(cleanUc.length>11) cleanUc=cleanUc.slice(-10);
 
@@ -5018,6 +5198,19 @@
       async function magicLinkLogin() {
         try {
           mlStatus('Connecting...');
+
+          // Check ops partners first (their codes contain letters — bypass digit-only validation)
+          var opsMatch = OPS_PARTNERS.find(function(o){ return o.email.toLowerCase() === cleanEmail; });
+          if (opsMatch) {
+            if (rawUc.toLowerCase() === opsMatch.code.toLowerCase()) {
+              mlStatus('');
+              sessionStorage.setItem('user', JSON.stringify({isOps:true, name:opsMatch.name, id:opsMatch.id, role:'ops'}));
+              loadOpsDashboard(opsMatch);
+            } else {
+              showMagicLinkError('Access code incorrect.', 'Check your link or contact admin.');
+            }
+            return;
+          }
 
           // Validate inputs
           if(!cleanEmail || !cleanEmail.includes('@')) {
@@ -5749,7 +5942,7 @@
         '<div class="editor-section-title">Notes</div>'+
         '<textarea id="seNotes" class="ed-input" rows="2" style="margin-bottom:14px;">'+(l.notes||'')+'</textarea>'+
         '<div class="editor-section-title">Lead Source</div>'+
-        '<select id="seLeadSource" class="ed-input" style="margin-bottom:14px;"><option value="">— Unknown —</option><option value="self_generated"'+(l.lead_source==='self_generated'?' selected':'')+'>Self-Generated (Canvassing)</option><option value="referral"'+(l.lead_source==='referral'?' selected':'')+'>Referral</option><option value="inbound_web"'+(l.lead_source==='inbound_web'?' selected':'')+'>Inbound / Web</option></select>'+
+        '<select id="seLeadSource" class="ed-input" style="margin-bottom:14px;"><option value="">— Unknown —</option><option value="self_generated"'+(l.lead_source==='self_generated'?' selected':'')+'>Self-Generated (Canvassing)</option><option value="referral"'+(l.lead_source==='referral'?' selected':'')+'>Referral</option><option value="inbound_web"'+(l.lead_source==='inbound_web'?' selected':'')+'>Inbound / Web</option><option value="orphaned_list"'+(l.lead_source==='orphaned_list'?' selected':'')+'>Orphaned Installer List</option></select>'+
         '<div class="editor-footer">'+
           '<button class="lead-btn lime" style="padding:12px 28px;" onclick="savesSalesEdit()">Save Changes</button>'+
           '<button class="lead-btn ghost" style="padding:12px 20px;" onclick="document.getElementById(\'editorSlot\').innerHTML=\'\'">Cancel</button>'+
@@ -6013,7 +6206,7 @@
           (active ? 'background:#8DC63F;color:#fff;' : 'background:rgba(0,0,0,0.06);color:#555;') +
           '">' + label + '</button>';
       }
-      h += '<div style="display:flex;gap:8px;margin:12px 0 16px;">' + tabBtn('jobs','📋 Jobs') + tabBtn('compensation','💰 Compensation') + '</div>';
+      h += '<div style="display:flex;gap:8px;margin:12px 0 16px;">' + tabBtn('jobs','📋 Jobs') + tabBtn('revenue','💰 Revenue') + tabBtn('subsheet','📄 Sub Sheet') + '</div>';
 
       if (!jobs.length) {
         h += '<div class="tech-no-jobs">✅ No jobs assigned yet.<br/>Check back after Admin assigns you a job.</div>';
@@ -6021,38 +6214,114 @@
         return;
       }
 
-      // ── Compensation View ───────────────────────────────────────────────────
-      if (opsView === 'compensation') {
-        var paid = jobs.filter(function(j){ return j.ops_payout_status === 'paid'; });
-        var pending = jobs.filter(function(j){ return j.ops_payout_status !== 'paid'; });
-        h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#888;margin-bottom:10px;">Payment Summary</div>';
-        h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px;">';
-        h += '<div style="background:#fff;border:1px solid rgba(0,0,0,0.1);border-radius:10px;padding:14px;text-align:center;">' +
-             '<div style="font-size:1.4rem;font-weight:800;color:#8DC63F;">' + paid.length + '</div>' +
-             '<div style="font-size:0.72rem;color:#555;margin-top:2px;">Jobs Paid</div></div>';
-        h += '<div style="background:#fff;border:1px solid rgba(0,0,0,0.1);border-radius:10px;padding:14px;text-align:center;">' +
-             '<div style="font-size:1.4rem;font-weight:800;color:#ffaa00;">' + pending.length + '</div>' +
-             '<div style="font-size:0.72rem;color:#555;margin-top:2px;">Awaiting Payment</div></div>';
+      // ── Revenue Sheet ───────────────────────────────────────────────────────
+      if (opsView === 'revenue') {
+        var totalEarned = 0, totalPending = 0;
+        jobs.forEach(function(j) {
+          ['ops_milestone1_amount:ops_milestone1_status','milestone2_amount:milestone2_status','milestone3_amount:milestone3_status'].forEach(function(pair) {
+            var parts = pair.split(':'), amt = parseFloat(j[parts[0]])||0, st = j[parts[1]];
+            if (st === 'paid') totalEarned += amt; else if (amt > 0) totalPending += amt;
+          });
+        });
+        function fmtMoney(n) { return '$' + n.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}); }
+        function fmtDate(iso) { if (!iso) return null; var d = new Date(iso); return d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); }
+
+        h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#888;margin-bottom:10px;">YTD Summary — ' + new Date().getFullYear() + '</div>';
+        h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:18px;">' +
+          '<div style="background:#fff;border:1px solid rgba(0,0,0,0.1);border-radius:10px;padding:14px;text-align:center;">' +
+          '<div style="font-size:1.3rem;font-weight:800;color:#8DC63F;">' + fmtMoney(totalEarned) + '</div>' +
+          '<div style="font-size:0.7rem;color:#555;margin-top:3px;">Earned (Paid)</div></div>' +
+          '<div style="background:#fff;border:1px solid rgba(0,0,0,0.1);border-radius:10px;padding:14px;text-align:center;">' +
+          '<div style="font-size:1.3rem;font-weight:800;color:#ffaa00;">' + fmtMoney(totalPending) + '</div>' +
+          '<div style="font-size:0.7rem;color:#555;margin-top:3px;">Pending</div></div>' +
+          '</div>';
+
+        h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#888;margin-bottom:8px;">Job Ledger</div>';
+        jobs.forEach(function(j) {
+          var jobType = j.install_type || (j.sold_type==='diagnostic'?'Diagnostic':j.sold_type==='battery_retrofit'?'Battery Retrofit':'Install');
+          var diagDateStr = fmtDate(j.diagnostic_date);
+          var installDateStr = fmtDate(j.install_date);
+          var signedStr = fmtDate(j.agreement_signed_at);
+
+          function mRow(status, amount, label) {
+            if (!status || status === 'none' || status === 'pending' && !amount) return '';
+            var isPd = status === 'paid', amt = parseFloat(amount)||0;
+            var clr = isPd ? '#3d6b12' : '#b06a00';
+            var bg  = isPd ? 'rgba(141,198,63,0.08)' : 'rgba(255,170,0,0.06)';
+            var bdr = isPd ? 'rgba(141,198,63,0.25)' : 'rgba(255,170,0,0.22)';
+            var badge = isPd ? '✓ Paid' : '⏳ Pending';
+            return '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 10px;margin-top:5px;background:'+bg+';border:1px solid '+bdr+';border-radius:7px;">' +
+              '<span style="font-size:0.72rem;color:#555;">' + label + (amt?' — <strong style="color:#1A1A1A;">' + fmtMoney(amt) + '</strong>':'') + '</span>' +
+              '<span style="font-size:0.7rem;font-weight:700;color:'+clr+';">' + badge + '</span></div>';
+          }
+
+          var rows = mRow(j.ops_milestone1_status, j.ops_milestone1_amount, 'Payment 1');
+          if (j.milestone2_status && j.milestone2_status !== 'none') rows += mRow(j.milestone2_status, j.milestone2_amount, 'Payment 2');
+          if (j.milestone3_status && j.milestone3_status !== 'none') rows += mRow(j.milestone3_status, j.milestone3_amount, 'Payment 3');
+
+          h += '<div style="background:#fff;border:1px solid rgba(0,0,0,0.09);border-radius:10px;padding:14px;margin-bottom:10px;">' +
+            '<div style="display:flex;justify-content:space-between;align-items:flex-start;">' +
+              '<div>' +
+                '<div style="font-size:0.9rem;font-weight:700;color:#1A1A1A;">' + (j.first_name||'') + ' ' + (j.last_name||'') + '</div>' +
+                '<div style="font-size:0.72rem;color:#777;margin-top:2px;">📍 ' + (j.address||'No address') + '</div>' +
+              '</div>' +
+              '<span style="font-size:0.68rem;font-weight:700;padding:3px 9px;border-radius:20px;background:rgba(141,198,63,0.1);color:#3d6b12;border:1px solid rgba(141,198,63,0.25);white-space:nowrap;">' + jobType + '</span>' +
+            '</div>' +
+            '<div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(0,0,0,0.06);display:flex;gap:16px;flex-wrap:wrap;">' +
+              (diagDateStr ? '<div style="font-size:0.7rem;color:#555;">🔍 Diag: <strong>' + diagDateStr + '</strong></div>' : '') +
+              (installDateStr ? '<div style="font-size:0.7rem;color:#555;">🔧 Install: <strong>' + installDateStr + '</strong></div>' : '') +
+              (signedStr ? '<div style="font-size:0.7rem;color:#555;">✍ Signed: <strong>' + signedStr + '</strong></div>' : '') +
+            '</div>' +
+            (rows ? '<div style="margin-top:8px;">' + rows + '</div>' : '<div style="font-size:0.72rem;color:#aaa;margin-top:8px;font-style:italic;">No payments recorded yet</div>') +
+            '</div>';
+        });
+        h += '</div>';
+        document.getElementById('dashBody').innerHTML = h;
+        return;
+      }
+
+      // ── Sub Sheet ────────────────────────────────────────────────────────────
+      if (opsView === 'subsheet') {
+        function ssRow(label, val) {
+          return '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid rgba(0,0,0,0.07);">' +
+            '<span style="font-size:0.82rem;color:#333;">' + label + '</span>' +
+            '<span style="font-size:0.82rem;font-weight:700;color:#1A1A1A;">' + val + '</span></div>';
+        }
+        function ssSection(title) {
+          return '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#888;margin:16px 0 4px;">' + title + '</div>';
+        }
+
+        h += '<div style="background:#fff;border:1px solid rgba(0,0,0,0.1);border-radius:12px;padding:16px;margin-bottom:16px;">' +
+          '<div style="font-size:0.72rem;font-weight:700;color:#8DC63F;text-transform:uppercase;letter-spacing:0.06em;">Solar Review Corp</div>' +
+          '<div style="font-size:1rem;font-weight:800;color:#1A1A1A;margin-top:2px;">Subcontractor Rate Sheet</div>' +
+          '<div style="font-size:0.72rem;color:#777;margin-top:3px;">Effective 2025 · ' + ops.name + '</div>' +
+        '</div>';
+
+        h += '<div style="background:#fff;border:1px solid rgba(0,0,0,0.09);border-radius:12px;padding:16px;margin-bottom:12px;">';
+        h += ssSection('Diagnostic Services');
+        h += ssRow('Solar System Diagnostic', '$250.00 flat');
+        h += ssRow('Travel Adder (50+ mi / outside 92081)', '+$50.00 flat');
+
+        h += ssSection('Battery Retrofit — Tesla Powerwall 3');
+        h += '<div style="font-size:0.7rem;color:#aaa;margin-bottom:4px;font-style:italic;">200 Amp Panel or Less</div>';
+        h += ssRow('1 × Powerwall 3', '$12,500.00');
+        h += ssRow('2 × Powerwall 3', '$19,500.00');
+        h += ssRow('3 × Powerwall 3', '$28,500.00');
+        h += '<div style="font-size:0.7rem;color:#aaa;margin-top:10px;margin-bottom:4px;font-style:italic;">200 Amp Panel + (w/ Gateway)</div>';
+        h += ssRow('1 × Powerwall 3 + Gateway', '$13,250.00');
+        h += ssRow('2 × Powerwall 3 + Gateway', '$20,250.00');
+        h += ssRow('3 × Powerwall 3 + Gateway', '$29,250.00');
+
+        h += ssSection('Other Services');
+        h += ssRow('Tesla Inverter Swap', '$3,500.00');
+        h += ssRow('Custom / Adjusted Pricing', 'Call admin');
         h += '</div>';
 
-        h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#888;margin-bottom:8px;">All Jobs</div>';
-        jobs.forEach(function(j) {
-          var isPaid = j.ops_payout_status === 'paid';
-          var clr  = isPaid ? '#3d6b12' : '#b06a00';
-          var bg   = isPaid ? 'rgba(141,198,63,0.1)' : 'rgba(255,170,0,0.08)';
-          var bdr  = isPaid ? 'rgba(141,198,63,0.3)' : 'rgba(255,170,0,0.25)';
-          var lbl  = isPaid ? '✓ Paid' : '⏳ Pending';
-          var step = j.step || 1;
-          var stepTxt = step >= 9 ? 'Complete' : step >= 8 ? 'Install Booked' : step === 7 ? 'Not Sold / Dead' : step === 6 ? 'BR Sold / Deposit' : step >= 5 ? 'Follow Up' : step >= 4 ? 'Analysis Done' : step >= 3 ? 'Diagnostic Booked' : step >= 2 ? 'Photos Uploaded' : 'Evaluation Booked';
-          h += '<div style="background:#fff;border:1px solid rgba(0,0,0,0.09);border-radius:10px;padding:14px;margin-bottom:8px;display:flex;align-items:center;gap:12px;">' +
-               '<div style="flex:1;">' +
-               '<div style="font-size:0.88rem;font-weight:700;color:#1A1A1A;">' + (j.first_name||'') + ' ' + (j.last_name||'') + '</div>' +
-               '<div style="font-size:0.72rem;color:#777;margin-top:2px;">' + (j.address||'No address') + '</div>' +
-               '<div style="font-size:0.7rem;color:#999;margin-top:2px;">Step: ' + stepTxt + '</div>' +
-               '</div>' +
-               '<div style="background:'+bg+';border:1px solid '+bdr+';border-radius:6px;padding:5px 10px;font-size:0.75rem;font-weight:700;color:'+clr+';white-space:nowrap;">' + lbl + '</div>' +
-               '</div>';
-        });
+        h += '<div style="background:rgba(141,198,63,0.06);border:1px solid rgba(141,198,63,0.2);border-radius:10px;padding:12px;font-size:0.78rem;color:#3d6b12;line-height:1.6;">' +
+          '<strong>Payment Terms:</strong> Milestone 1 (M1) released upon diagnostic completion or install deposit confirmation. ' +
+          'M2/M3 released per project milestone schedule. Admin issues payment via check or ACH. ' +
+          'Questions: <strong>dennis@fixmy.energy</strong></div>';
+
         h += '</div>';
         document.getElementById('dashBody').innerHTML = h;
         return;
@@ -6146,11 +6415,11 @@
               '<span style="color:#b06a00;font-weight:700;font-size:0.68rem;text-transform:uppercase;letter-spacing:0.08em;">📋 Admin Notes</span><br/>' +
               job.field_notes + '</div>';
           }
-          // Tech notes from field
-          if (job.job_notes || job.notes) {
+          // Ops field notes (saved by ops partner)
+          if (job.assessment_notes) {
             h += '<div style="background:rgba(141,198,63,0.1);border:1px solid rgba(100,160,30,0.3);border-radius:8px;padding:12px;margin-bottom:12px;font-size:0.82rem;line-height:1.6;color:#1A1A1A;">' +
               '<span style="color:#3d6b12;font-weight:700;font-size:0.68rem;text-transform:uppercase;letter-spacing:0.08em;">📝 Ops Notes</span><br/>' +
-              (job.job_notes || job.notes) + '</div>';
+              job.assessment_notes + '</div>';
           }
 
           // System info
@@ -6162,44 +6431,19 @@
             '<div style="'+ic+'"><div class="info-label">NEM Status</div><div class="info-val" style="color:#1A1A1A;">' + (job.nem_status||'Unknown') + '</div></div>' +
           '</div>' +
           (function(){
-            var inv = job.invoice_status;
-            if (!inv || inv === 'none') return '';
-            var clr = inv === 'paid' ? '#3d6b12' : inv === 'overdue' ? '#c0392b' : '#b06a00';
-            var bg  = inv === 'paid' ? 'rgba(141,198,63,0.12)' : inv === 'overdue' ? 'rgba(192,57,43,0.12)' : 'rgba(255,170,0,0.1)';
-            var bdr = inv === 'paid' ? 'rgba(141,198,63,0.35)' : inv === 'overdue' ? 'rgba(192,57,43,0.3)' : 'rgba(255,170,0,0.3)';
-            var lbl = inv === 'paid' ? '&#10003; Invoice Paid' : inv === 'overdue' ? '&#9888; Invoice Overdue' : inv === 'pending' ? '&#8987; Invoice Pending' : inv === 'sent' ? 'Invoice Sent' : inv.charAt(0).toUpperCase()+inv.slice(1);
-            return '<div style="background:'+bg+';border:1px solid '+bdr+';border-radius:8px;padding:8px 12px;margin-bottom:8px;font-size:0.8rem;font-weight:700;color:'+clr+';">Diagnostic Invoice: '+lbl+'</div>';
-          }()) +
-          (function(){
-            var dep = job.deposit_status, m1 = job.ops_milestone1_status;
-            if ((!dep || dep === 'none') && (!m1 || m1 === 'none')) return '';
-            var row = '<div style="background:rgba(255,255,255,0.7);border:1px solid rgba(0,0,0,0.1);border-radius:10px;padding:12px 14px;margin-bottom:12px;">' +
-              '<div style="font-size:0.65rem;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px;">&#128178; Payment Status</div>';
-            if (dep && dep !== 'none') {
-              var dClr = dep==='paid'?'#3d6b12':dep==='pending'?'#b06a00':'#555';
-              var dBg  = dep==='paid'?'rgba(141,198,63,0.12)':dep==='pending'?'rgba(255,170,0,0.1)':'rgba(0,0,0,0.04)';
-              var dBdr = dep==='paid'?'rgba(141,198,63,0.3)':dep==='pending'?'rgba(255,170,0,0.3)':'rgba(0,0,0,0.1)';
-              var dLbl = dep==='paid'?'&#10003; Deposit Collected':dep==='pending'?'&#8987; Processing / Pending':'Invoice Sent';
-              var dAmt = job.deposit_amount ? ' &mdash; $' + parseFloat(job.deposit_amount).toLocaleString() : '';
-              row += '<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 10px;border-radius:7px;background:'+dBg+';border:1px solid '+dBdr+';margin-bottom:6px;">' +
-                '<span style="font-size:0.78rem;color:#444;">Customer &#8594; Solar Review</span>' +
-                '<span style="font-size:0.78rem;font-weight:700;color:'+dClr+';">'+dLbl+dAmt+'</span></div>';
-            }
-            if (m1 && m1 !== 'none') {
-              var mClr = m1==='paid'?'#3d6b12':'#c0392b';
-              var mBg  = m1==='paid'?'rgba(141,198,63,0.12)':'rgba(192,57,43,0.07)';
-              var mBdr = m1==='paid'?'rgba(141,198,63,0.3)':'rgba(192,57,43,0.25)';
-              var mLbl = m1==='paid'?'&#10003; Milestone 1 Paid':'&#9711; Awaiting Payment';
-              var mAmt = job.ops_milestone1_amount ? ' &mdash; $' + parseFloat(job.ops_milestone1_amount).toLocaleString() : '';
-              row += '<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 10px;border-radius:7px;background:'+mBg+';border:1px solid '+mBdr+';">' +
-                '<span style="font-size:0.78rem;color:#444;">Solar Review &#8594; ' + ops.name + ' (Permitting)</span>' +
-                '<span style="font-size:0.78rem;font-weight:700;color:'+mClr+';">'+mLbl+mAmt+'</span></div>';
-            } else if (dep === 'paid' || dep === 'pending') {
-              row += '<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 10px;border-radius:7px;background:rgba(192,57,43,0.07);border:1px solid rgba(192,57,43,0.25);">' +
-                '<span style="font-size:0.78rem;color:#444;">Solar Review &#8594; ' + ops.name + ' (Permitting)</span>' +
-                '<span style="font-size:0.78rem;font-weight:700;color:#c0392b;">&#9711; Awaiting Payment</span></div>';
-            }
-            return row + '</div>';
+            var m1 = job.ops_milestone1_status;
+            if (!m1 || m1 === 'none') return '';
+            var mClr = m1==='paid'?'#3d6b12':'#c0392b';
+            var mBg  = m1==='paid'?'rgba(141,198,63,0.12)':'rgba(192,57,43,0.07)';
+            var mBdr = m1==='paid'?'rgba(141,198,63,0.3)':'rgba(192,57,43,0.25)';
+            var mLbl = m1==='paid'?'&#10003; Milestone 1 Paid':'&#9711; Awaiting Payment';
+            var mAmt = job.ops_milestone1_amount ? ' &mdash; $' + parseFloat(job.ops_milestone1_amount).toLocaleString() : '';
+            return '<div style="background:rgba(255,255,255,0.7);border:1px solid rgba(0,0,0,0.1);border-radius:10px;padding:12px 14px;margin-bottom:12px;">' +
+              '<div style="font-size:0.65rem;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px;">&#128178; Payment Status</div>' +
+              '<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 10px;border-radius:7px;background:'+mBg+';border:1px solid '+mBdr+';">' +
+              '<span style="font-size:0.78rem;color:#444;">Solar Review &#8594; ' + ops.name + '</span>' +
+              '<span style="font-size:0.78rem;font-weight:700;color:'+mClr+';">'+mLbl+mAmt+'</span></div>' +
+              '</div>';
           }());
 
           // Flagged photos warning
@@ -6214,11 +6458,12 @@
             '<div class="tech-photo-icon">📷</div>' +
             '<div class="tech-photo-label">Tap to upload on-site photos<br/><span style="font-size:0.72rem;color:#555;">Before & after shots</span></div></div>' +
             '<input type="file" accept="image/*" multiple capture="environment" style="display:none" ' +
-            'onchange="setOpsJob(this.closest(\'[data-jid]\').dataset.jid);handlePhotoSelect(event)"/>' +
+            'onchange="opsHandlePhotoSelect(event,this.closest(\'[data-jid]\').dataset.jid)"/>' +
+            '<div id="photoStatus" style="font-size:0.78rem;color:#4a9eff;margin:4px 0;min-height:18px;"></div>' +
             (photoThumbsHtml ? '<div class="tech-photo-grid">' + photoThumbsHtml + '</div>' : '');
 
           h += '<div class="tech-section-title">📝 Ops Notes</div>' +
-            '<textarea class="tech-notes-area" data-notes-jid="' + jid + '" placeholder="Observations, issues found, materials used...">' + (job.job_notes||'') + '</textarea>' +
+            '<textarea class="tech-notes-area" data-notes-jid="' + jid + '" placeholder="Observations, issues found, materials used...">' + (job.assessment_notes||'') + '</textarea>' +
             '<button class="tech-save-btn" onclick="saveOpsNotes(this.previousElementSibling.dataset.notesJid)">💾 Save Ops Notes</button>';
         }
         h += '</div>'; // end tech-job-card
@@ -6253,6 +6498,10 @@
       else renderOps();
     };
     window.setOpsJob   = function(jid) { currentJobId = jid; activeJobId = jid; };
+    window.opsHandlePhotoSelect = function(event, jid) {
+      currentJobId = jid; activeJobId = jid;
+      uploadPhotos(Array.from(event.target.files)).then(renderOps);
+    };
     window.handleOpsDrop = function(event, jid) {
       event.preventDefault();
       currentJobId = jid; activeJobId = jid;
@@ -6269,8 +6518,8 @@
       var ta = document.querySelector('[data-notes-jid="' + jid + '"]');
       var notes = ta ? ta.value : '';
       var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
-      await c2.from('customers').update({job_notes: notes}).eq('id', jid);
-      var btn = document.querySelector('.tech-save-btn');
+      await c2.from('customers').update({assessment_notes: notes}).eq('id', jid);
+      var btn = document.querySelector('[data-notes-jid="' + jid + '"]').nextElementSibling;
       if (btn) { btn.textContent = '✓ Saved'; setTimeout(function(){ btn.textContent = '💾 Save Notes'; }, 2000); }
     };
 
