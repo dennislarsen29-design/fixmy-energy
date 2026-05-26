@@ -223,7 +223,7 @@ Sign & Pay: `sign_token, sign_token_expires_at, stripe_payment_intent_id`
 - **Golf course solar panel protection:** New service scope — see Future Services section below
 - **GTM conversion tracking audit:** GTM-TSJVG2GT is installed. Verify GA4 + Google Ads conversion events fire on booking completion. Use Tag Assistant Chrome extension to confirm.
 - **Switch from Smith.AI to Quoya (GHL built-in AI agent):** Smith.AI webhooks no longer needed — `call-inbound.js` function can be repurposed or removed. Quoya migration is halfway completed in GHL. Finish configuring Quoya workflow to handle inbound calls and missed-call SMS follow-up.
-- **Customer photo upload SMS notification:** When a customer uploads photos via the customer portal, send an SMS to the assigned rep. Message format: "David Robie just uploaded photos — fixmy.energy/portal". Implementation: new Netlify function `notify-photo-upload.js` (called from `handleUpload` in portal.html after successful `job_photos` insert) → queries Supabase for customer name + rep_id → looks up rep phone from `team_members` table → sends SMS via Twilio (needs `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER` added to Netlify env) or GHL outbound SMS API. Rep phone numbers must be in `team_members` table.
+- **Customer photo upload SMS notification:** ✅ Built — `notify-photo-upload.js` fires after every customer upload. **Needs 3 Netlify env vars to go live:** `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`. Rep phones in `team_members`: Dennis Larsen (tech4) and Cristina Huang (tech5) are set. Add phone for any additional reps who should receive notifications.
 
 ## Future Services
 
