@@ -1,9 +1,11 @@
-// Sends an SMS to the assigned rep when a customer uploads photos.
-// Required Netlify env vars: TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER
+// Sends an SMS to the assigned rep when a customer uploads photos via the customer portal.
+// Uses GHL outbound SMS via the conversations API (same GHL_API_KEY already in Netlify env).
+// Required env vars: GHL_API_KEY, GHL_LOCATION_ID
 // Optional (falls back to anon key): SUPA_SERVICE_KEY
 
-const SUPA_URL     = 'https://kbtobyoumvbcxfbugsid.supabase.co';
-const SUPA_ANON    = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtidG9ieW91bXZiY3hmYnVnc2lkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ1NjY5MDcsImV4cCI6MjA5MDE0MjkwN30.nLE0TlMu43E4dNRxxjoc6P1OQMjfwXgonbA2MrCCrhk';
+const SUPA_URL  = 'https://kbtobyoumvbcxfbugsid.supabase.co';
+const SUPA_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtidG9ieW91bXZiY3hmYnVnc2lkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ1NjY5MDcsImV4cCI6MjA5MDE0MjkwN30.nLE0TlMu43E4dNRxxjoc6P1OQMjfwXgonbA2MrCCrhk';
+const GHL_BASE  = 'https://services.leadconnectorhq.com';
 
 const cors = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' };
 
@@ -11,14 +13,13 @@ exports.handler = async function(event) {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers: cors, body: '' };
   if (event.httpMethod !== 'POST') return { statusCode: 405, headers: cors, body: 'Method Not Allowed' };
 
-  const TWILIO_SID   = process.env.TWILIO_ACCOUNT_SID;
-  const TWILIO_TOKEN = process.env.TWILIO_AUTH_TOKEN;
-  const TWILIO_FROM  = process.env.TWILIO_FROM_NUMBER;
-  const supaKey      = process.env.SUPA_SERVICE_KEY || SUPA_ANON;
+  const GHL_KEY    = process.env.GHL_API_KEY;
+  const GHL_LOC    = process.env.GHL_LOCATION_ID;
+  const supaKey    = process.env.SUPA_SERVICE_KEY || SUPA_ANON;
 
-  if (!TWILIO_SID || !TWILIO_TOKEN || !TWILIO_FROM) {
-    console.warn('[notify-photo-upload] Twilio env vars not set — skipping SMS');
-    return { statusCode: 200, headers: cors, body: JSON.stringify({ ok: false, reason: 'twilio_not_configured' }) };
+  if (!GHL_KEY || !GHL_LOC) {
+    console.warn('[notify-photo-upload] GHL env vars not set');
+    return { statusCode: 200, headers: cors, body: JSON.stringify({ ok: false, reason: 'ghl_not_configured' }) };
   }
 
   let body;
@@ -30,6 +31,7 @@ exports.handler = async function(event) {
   if (!customerId) return { statusCode: 400, headers: cors, body: 'Missing customerId' };
 
   const supaHeaders = { 'apikey': supaKey, 'Authorization': `Bearer ${supaKey}` };
+  const ghlHeaders  = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${GHL_KEY}`, 'Version': '2021-07-28' };
 
   // 1 — Look up customer's rep_id
   let repId;
@@ -47,12 +49,13 @@ exports.handler = async function(event) {
     return { statusCode: 200, headers: cors, body: JSON.stringify({ ok: false, reason: 'no_rep_id' }) };
   }
 
-  // 2 — Look up rep's phone from team_members
-  let repPhone;
+  // 2 — Look up rep's phone + name from team_members
+  let repPhone, repName;
   try {
     const r = await fetch(`${SUPA_URL}/rest/v1/team_members?id=eq.${repId}&select=phone,name`, { headers: supaHeaders });
     const rows = await r.json();
     repPhone = rows[0] && rows[0].phone;
+    repName  = rows[0] && rows[0].name;
   } catch(e) {
     console.error('[notify-photo-upload] team_members lookup failed', e.message);
     return { statusCode: 200, headers: cors, body: JSON.stringify({ ok: false, reason: 'supabase_error' }) };
@@ -63,30 +66,46 @@ exports.handler = async function(event) {
     return { statusCode: 200, headers: cors, body: JSON.stringify({ ok: false, reason: 'no_rep_phone' }) };
   }
 
-  // 3 — Send SMS via Twilio
-  const name    = (customerName || 'A customer').trim();
-  const message = `${name} just uploaded photos — fixmy.energy/portal`;
   const digits  = repPhone.replace(/\D/g, '');
-  const toE164  = digits.length === 10 ? `+1${digits}` : `+${digits}`;
-  const fromE164 = TWILIO_FROM.startsWith('+') ? TWILIO_FROM : `+1${TWILIO_FROM.replace(/\D/g,'')}`;
+  const e164    = digits.length === 10 ? `+1${digits}` : `+${digits}`;
+  const message = `${(customerName || 'A customer').trim()} just uploaded photos — fixmy.energy/portal`;
 
-  const params = new URLSearchParams({ To: toE164, From: fromE164, Body: message });
-  const auth   = Buffer.from(`${TWILIO_SID}:${TWILIO_TOKEN}`).toString('base64');
-
+  // 3 — Upsert rep as GHL contact to get a contactId
+  let contactId;
   try {
-    const r = await fetch(
-      `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_SID}/Messages.json`,
-      { method: 'POST', headers: { 'Authorization': `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' }, body: params }
-    );
+    const r = await fetch(`${GHL_BASE}/contacts/upsert`, {
+      method: 'POST',
+      headers: ghlHeaders,
+      body: JSON.stringify({ firstName: repName || repId, phone: e164, locationId: GHL_LOC })
+    });
     const data = await r.json();
-    if (data.error_code) {
-      console.error('[notify-photo-upload] Twilio error', data.error_code, data.message);
-      return { statusCode: 200, headers: cors, body: JSON.stringify({ ok: false, reason: 'twilio_error', detail: data.message }) };
-    }
-    console.log('[notify-photo-upload] SMS sent to', repId, '- SID', data.sid);
-    return { statusCode: 200, headers: cors, body: JSON.stringify({ ok: true, sid: data.sid }) };
+    contactId = data.contact && data.contact.id;
   } catch(e) {
-    console.error('[notify-photo-upload] Twilio request failed', e.message);
-    return { statusCode: 200, headers: cors, body: JSON.stringify({ ok: false, reason: 'twilio_fetch_error' }) };
+    console.error('[notify-photo-upload] GHL contact upsert failed', e.message);
+    return { statusCode: 200, headers: cors, body: JSON.stringify({ ok: false, reason: 'ghl_contact_error' }) };
+  }
+
+  if (!contactId) {
+    console.error('[notify-photo-upload] no contactId returned from GHL upsert');
+    return { statusCode: 200, headers: cors, body: JSON.stringify({ ok: false, reason: 'ghl_no_contact_id' }) };
+  }
+
+  // 4 — Send outbound SMS via GHL conversations
+  try {
+    const r = await fetch(`${GHL_BASE}/conversations/messages`, {
+      method: 'POST',
+      headers: ghlHeaders,
+      body: JSON.stringify({ type: 'SMS', contactId, message, locationId: GHL_LOC })
+    });
+    const data = await r.json();
+    if (!r.ok) {
+      console.error('[notify-photo-upload] GHL SMS send failed', JSON.stringify(data));
+      return { statusCode: 200, headers: cors, body: JSON.stringify({ ok: false, reason: 'ghl_sms_error', detail: data }) };
+    }
+    console.log('[notify-photo-upload] SMS sent to', repId, repPhone);
+    return { statusCode: 200, headers: cors, body: JSON.stringify({ ok: true, messageId: data.id }) };
+  } catch(e) {
+    console.error('[notify-photo-upload] GHL SMS request failed', e.message);
+    return { statusCode: 200, headers: cors, body: JSON.stringify({ ok: false, reason: 'ghl_fetch_error' }) };
   }
 };
