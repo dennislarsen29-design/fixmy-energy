@@ -80,9 +80,9 @@ var OPS_PARTNERS = [
 - `GHL_CALENDAR_ID` — GHL top-tier calendar ID (if used)
 - `GHL_DIAG_CALENDAR_ID` — GHL diagnostic calendar ID: `ZGOdyYdMUh07V1Ujav9R`
 - `GHL_TT_WEBHOOK` — GHL webhook URL for Top Tier workflow triggers
-- `STRIPE_SECRET_KEY` — Stripe secret key (server-side only, for sign-init.js / sign-complete.js) — **NOT YET ADDED**
-- `STRIPE_PUBLISHABLE_KEY` — Stripe publishable key (returned to client by sign-init.js) — **NOT YET ADDED**
-- `SUPA_SERVICE_KEY` — Supabase service role key (bypasses RLS, used in sign-init/complete) — **NOT YET ADDED**
+- `STRIPE_SECRET_KEY` — Stripe secret key (server-side only, for sign-init.js / sign-complete.js) ✅
+- `STRIPE_PUBLISHABLE_KEY` — Stripe publishable key (returned to client by sign-init.js) ✅
+- `SUPA_SERVICE_KEY` — Supabase service role key (bypasses RLS, used in sign-init/complete) ✅
 - `SECRETS_SCAN_SMART_DETECTION_OMIT_VALUES` — set to Google Maps key to bypass scanner
 
 ## Google Maps API Key
