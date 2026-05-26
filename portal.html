@@ -500,18 +500,29 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     document.getElementById('loginBox').style.display = 'none';
     document.getElementById('dashboard').style.display = 'block';
     document.getElementById('userName').textContent = 'Solar Review Admin';
-    document.getElementById('dashBody').innerHTML = '<p style="color:#aaa;padding:20px 0;">Loading...</p>';
+    var _dbEl = document.getElementById('dashBody');
+    _dbEl.innerHTML = '<p style="color:#aaa;padding:20px 0;">Loading...</p>';
     var tries = 0;
     while (!supabase && tries < 5) { await new Promise(function(r){setTimeout(r,400);}); tries++; }
     var client;
     try { client = supabase.createClient(SUPA_URL, SUPA_KEY); }
-    catch(e) { document.getElementById('dashBody').innerHTML = '<p style="color:#ef4444;">Database unavailable. <button onclick="loadAdminDashboard()" style="width:auto;padding:8px 16px;font-size:0.75rem;background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;cursor:pointer;">Retry</button></p>'; return; }
-    var resp = await client.from('customers').select('*').order('created_at', {ascending:false});
+    catch(e) { _dbEl.innerHTML = '<p style="color:#ef4444;">Database unavailable. <button onclick="loadAdminDashboard()" style="width:auto;padding:8px 16px;font-size:0.75rem;background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;cursor:pointer;">Retry</button></p>'; return; }
+    // Race query against a 12-second timeout so "Loading..." never hangs forever
+    var _timeout = new Promise(function(_, rej){ setTimeout(function(){ rej(new Error('timeout')); }, 12000); });
+    var resp;
+    try {
+      resp = await Promise.race([client.from('customers').select('*').order('created_at',{ascending:false}), _timeout]);
+    } catch(e) {
+      _dbEl.innerHTML = '<p style="color:#ef4444;">Could not reach database'+(e.message==='timeout'?' (connection timed out)':'')+'. <button onclick="loadAdminDashboard()" style="width:auto;padding:8px 16px;font-size:0.75rem;background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;cursor:pointer;">Retry</button></p>';
+      return;
+    }
+    if (resp.error) { _dbEl.innerHTML = '<p style="color:#ef4444;">Load error: '+resp.error.message+'. <button onclick="loadAdminDashboard()" style="width:auto;padding:8px 16px;font-size:0.75rem;background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;cursor:pointer;">Retry</button></p>'; return; }
     adminCustomers = resp.data || [];
     try { var agResp = await client.from('rep_agreements').select('*').order('signed_at',{ascending:false}); adminRecentAgreements = agResp.data || []; } catch(e) { adminRecentAgreements = []; }
     try { var tmResp = await client.from('team_members').select('*').order('created_at',{ascending:true}); adminTeamMembers = tmResp.data || []; } catch(e) { adminTeamMembers = []; }
     try { var mktResp = await client.from('marketing_expenses').select('*').order('expense_date',{ascending:false}); adminMarketingExpenses = mktResp.data || []; } catch(e) { adminMarketingExpenses = []; }
-    renderAdminView('dashboard');
+    try { renderAdminView('dashboard'); }
+    catch(e) { _dbEl.innerHTML = '<p style="color:#ef4444;">Render error: '+e.message+'. <button onclick="loadAdminDashboard()" style="width:auto;padding:8px 16px;font-size:0.75rem;background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;cursor:pointer;">Retry</button></p>'; console.error('[renderAdminView]', e); }
   }
 
   function renderAdminView(view) {
@@ -3177,6 +3188,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<button class="lead-btn lime" data-id="'+c.id+'" onclick="openLeadEditor(this.dataset.id)">Edit</button>'+
         '<button class="lead-btn ghost" data-link="'+magic+'" data-email="'+c.email+'" onclick="sendMagicLink(this.dataset.link,this.dataset.email)">&#128279; Link</button>'+
         '<button class="lead-btn ghost" data-phone="'+(c.phone||'')+'" onclick="callLead(this.dataset.phone)">&#128222;</button>'+
+        (c.phone ? '<a class="lead-btn ghost" href="sms:'+(c.phone||'').replace(/\D/g,'')+'" style="text-decoration:none;" title="Text customer">&#128172;</a>' : '')+
+        (c.address ? '<button class="lead-btn ghost" data-addr="'+(c.address||'').replace(/"/g,'&quot;')+'" onclick="navigator.clipboard.writeText(this.dataset.addr).then((function(b){var o=b.innerHTML;b.innerHTML=\'&#10003;\';setTimeout(function(){b.innerHTML=o;},1500);}).bind(this))" title="Copy address">&#128205;</button>' : '')+
+        (c.lead_category!=='new_solar'&&(c.step||1)<7 ? '<button class="lead-btn ghost" data-id="'+c.id+'" onclick="adminQuickAdvanceStep(this.dataset.id)" title="Advance step">&#8594;</button>' : '')+
         (isTT && !c.tt_confirmed ? '<button class="lead-btn ghost" data-id="'+c.id+'" onclick="confirmTTLead(this.dataset.id)" style="color:#9b6de8;border-color:rgba(155,109,232,0.35);">&#10003; Confirm</button>' :
           '<button class="lead-btn ghost" data-id="'+c.id+'" onclick="openProposalBuilder(this.dataset.id)" style="color:#8DC63F;border-color:rgba(141,198,63,0.3);">&#128196; Proposal</button>')+
         (CURRENT_ROLE === 'admin' ? '<button class="lead-btn ghost" data-id="'+c.id+'" onclick="deleteLead(this.dataset.id)" style="color:#ef4444;border-color:rgba(239,68,68,0.25);" title="Delete lead">&#128465;</button>' : '')+
@@ -3724,6 +3738,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '</div>'
         : '')
       : '')+
+      (!isNSEdit && (c.step||1) >= 3 ?
+        '<div class="editor-section-title">Diagnostic Assessment (Visible to Customer)</div>'+
+        '<div class="ed-full" style="margin-bottom:16px;">'+
+          '<textarea id="edDiagFindings" class="ed-input" rows="4" style="width:100%;resize:vertical;box-sizing:border-box;" placeholder="Enter findings, recommendations, or notes to share with the customer...">'+(c.diagnostic_findings||'')+'</textarea>'+
+        '</div>'
+      : '')+
       '<div class="editor-section-title">Agreement</div>'+
       '<div class="ed-grid">'+
         edSelect('Agreement Status','edAgSt',c.agreement_status||'none',[['none','None'],['pending','Pending'],['sent','Sent'],['signed','Signed'],['declined','Declined']])+
@@ -3881,6 +3901,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       updates.milestone3_url = (document.getElementById('edM3Url')||{}).value||null;
       updates.milestone3_payment_method = (document.getElementById('edM3Method')||{}).value||null;
       updates.top_tier_disposition = (document.getElementById('edTTDisposition')||{}).value||null;
+      updates.diagnostic_findings = (document.getElementById('edDiagFindings')||{}).value||null;
       if (!updates.assigned_ops) updates.assigned_ops = null;
     }
     // Intercept step-3 transition: always show diagnostic fee modal when moving to Diagnostic Booked
@@ -4645,6 +4666,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   }
   function sendMagicLink(link,email){ navigator.clipboard.writeText(link).then(function(){alert('Portal link copied!\n\nSend this to '+email);}).catch(function(){prompt('Copy this portal link for '+email+':', link);}); }
   function callLead(phone){ if(!phone){alert('No phone number on file.');return;} window.location.href='tel:'+phone.replace(/\D/g,''); }
+  async function adminQuickAdvanceStep(id) {
+    var c = adminCustomers.find(function(x){ return x.id===id; });
+    if (!c || c.lead_category === 'new_solar') return;
+    var step = parseInt(c.step)||1;
+    if (step >= 7) return;
+    var next = step + 1;
+    if (next === 3) { openLeadEditor(id); return; }
+    var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var res = await client.from('customers').update({step: next}).eq('id', id);
+    if (res.error) { alert('Error: ' + res.error.message); return; }
+    c.step = next;
+    renderAdminView(adminView);
+  }
   function exportCSV(){
     var cols=['first_name','last_name','email','phone','address','monthly_bill','step','invoice_status','agreement_status','source','created_at'];
     var rows=[cols.join(',')];
@@ -4820,6 +4854,79 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }
     }
 
+    // Sign & Pay CTA (active token, not yet paid)
+    var signPayHtml = '';
+    if (c.sign_token && c.invoice_status !== 'paid') {
+      var _signLink = 'https://fixmy.energy/sign?t=' + c.sign_token;
+      signPayHtml = '<div class="sect-label">Sign &amp; Pay</div>'+
+        '<div style="background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.3);border-radius:12px;padding:18px 20px;margin-bottom:16px;">'+
+          '<div style="font-weight:700;color:#8DC63F;margin-bottom:6px;">&#9889; Ready to Sign &amp; Pay</div>'+
+          '<div style="font-size:0.78rem;color:#aaa;line-height:1.6;margin-bottom:14px;">Review and sign your service agreement, then complete payment &mdash; all in one step. Takes about 2 minutes.</div>'+
+          (c.invoice_amount?'<div style="font-size:1.3rem;font-weight:800;color:#fff;margin-bottom:14px;">$'+parseFloat(c.invoice_amount).toFixed(2)+'</div>':'')+
+          '<a href="'+_signLink+'" class="btn-lime" style="display:block;text-align:center;text-decoration:none;padding:13px;font-size:0.9rem;font-weight:700;border-radius:100px;">&#9997;&#65039; Sign &amp; Pay Now</a>'+
+        '</div>';
+    }
+
+    // Appointment confirmation (paid + signed + scheduled)
+    var apptHtml = '';
+    if (c.invoice_status === 'paid' && c.agreement_status === 'signed' && c.diagnostic_date) {
+      var _apptDate = new Date(c.diagnostic_date);
+      var _apptStr = _apptDate.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});
+      var _apptTime = c.arrival_window || _apptDate.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true});
+      var _opsNames = {ops1:'Jon Klos',ops2:'John Espinoza',ops3:'Cosmic Solar',ops4:'Axia'};
+      var _techName = (c.assigned_ops && _opsNames[c.assigned_ops]) ? _opsNames[c.assigned_ops] : 'Your FixMy technician';
+      apptHtml = '<div class="sect-label">Your Appointment</div>'+
+        '<div style="background:rgba(141,198,63,0.06);border:1px solid rgba(141,198,63,0.25);border-radius:12px;padding:18px 20px;margin-bottom:16px;">'+
+          '<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">'+
+            '<span style="font-size:1.8rem;">&#128197;</span>'+
+            '<div><div style="font-weight:700;color:#fff;font-size:0.92rem;">'+_apptStr+'</div>'+
+            '<div style="font-size:0.78rem;color:#8DC63F;margin-top:2px;">&#128336; '+_apptTime+'</div></div>'+
+          '</div>'+
+          '<div style="font-size:0.75rem;color:#888;margin-bottom:12px;">&#128296; '+_techName+' will perform your evaluation.</div>'+
+          '<a href="https://api.leadconnectorhq.com/widget/booking/UjlvHxE8AlyhG5frBkqr" target="_blank" style="font-size:0.75rem;padding:8px 18px;border:1px solid rgba(255,255,255,0.15);border-radius:100px;color:#aaa;text-decoration:none;display:inline-block;">&#128197; Reschedule</a>'+
+        '</div>';
+    }
+
+    // Diagnostic findings (step 3+ with tech notes visible to customer)
+    var findingsHtml = '';
+    if (step >= 3 && c.diagnostic_findings) {
+      findingsHtml = '<div class="sect-label">Technician Assessment</div>'+
+        '<div class="card"><div style="font-size:0.8rem;color:#ccc;line-height:1.8;white-space:pre-wrap;">'+
+          c.diagnostic_findings.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+
+        '</div></div>';
+    }
+
+    // Battery Retrofit milestone payments
+    var brHtml = '';
+    if (c.sold_type === 'battery_retrofit') {
+      var _m1s = c.deposit_status || 'none';
+      var _m1a = c.deposit_amount ? '$'+parseFloat(c.deposit_amount).toFixed(2) : 'TBD';
+      var _m1clr = _m1s==='paid'?'#8DC63F':_m1s==='pending'||_m1s==='sent'?'#ffaa00':'#666';
+      var _m1lbl = {paid:'Paid &#10003;',pending:'Due',sent:'Invoice Sent',none:'Pending',draft:'Draft'}[_m1s]||_m1s;
+      var _m2s = c.ops_milestone1_status || 'none';
+      var _m2a = c.ops_milestone1_amount ? '$'+parseFloat(c.ops_milestone1_amount).toFixed(2) : 'TBD';
+      var _m2clr = _m2s==='paid'?'#8DC63F':'#666';
+      var _m2lbl = _m2s==='paid'?'Paid &#10003;':'Pending after install';
+      brHtml = '<div class="sect-label">Battery Retrofit Milestones</div>'+
+        '<div class="card" style="padding:0;overflow:hidden;">'+
+          '<div style="display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid rgba(255,255,255,0.06);">'+
+            '<div><div style="font-size:0.82rem;font-weight:700;">Deposit (M1)</div><div style="font-size:0.68rem;color:#666;margin-top:2px;">Project kickoff</div></div>'+
+            '<div style="text-align:right;">'+
+              '<div style="font-size:0.85rem;font-weight:700;color:'+_m1clr+';">'+_m1lbl+'</div>'+
+              (_m1a!=='TBD'?'<div style="font-size:0.7rem;color:#555;margin-top:1px;">'+_m1a+'</div>':'')+
+              (_m1s==='sent'&&c.invoice_url?'<a href="'+c.invoice_url+'" target="_blank" style="display:inline-block;margin-top:6px;font-size:0.7rem;padding:4px 12px;background:#8DC63F;color:#000;border-radius:100px;font-weight:700;text-decoration:none;">Pay Now</a>':'')+
+            '</div>'+
+          '</div>'+
+          '<div style="display:flex;justify-content:space-between;align-items:center;padding:14px 16px;">'+
+            '<div><div style="font-size:0.82rem;font-weight:700;">Completion (M2)</div><div style="font-size:0.68rem;color:#666;margin-top:2px;">After install sign-off</div></div>'+
+            '<div style="text-align:right;">'+
+              '<div style="font-size:0.85rem;font-weight:700;color:'+_m2clr+';">'+_m2lbl+'</div>'+
+              (_m2a!=='TBD'?'<div style="font-size:0.7rem;color:#555;margin-top:1px;">'+_m2a+'</div>':'')+
+            '</div>'+
+          '</div>'+
+        '</div>';
+    }
+
     showDash(name,
       '<div style="margin-bottom:24px;"><h2 style="font-size:1.3rem;margin-bottom:4px;">Hi, <span style="color:#8DC63F">'+(c.first_name||'there')+'</span> &#128075;</h2><p style="font-size:0.8rem;color:#aaa;">Your Solar Review evaluation status.</p></div>'+
       '<div class="info-grid"><div class="info-card"><div class="info-label">Address</div><div class="info-val">'+(c.address||'--')+'</div></div><div class="info-card"><div class="info-label">System Size</div><div class="info-val">'+sys+'</div></div><div class="info-card"><div class="info-label">Utility</div><div class="info-val">'+(c.utility||'--')+'</div></div><div class="info-card"><div class="info-label">Monthly Bill</div><div class="info-val">'+(c.monthly_bill?'$'+c.monthly_bill+'/mo':'--')+'</div></div></div>'+
@@ -4856,7 +4963,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '</div>'+
       '<div class="sect-label">Required Documents</div>'+
       '<div class="upload-grid">'+ucCard('bill','&#128196;','Most Recent Utility Bill','Upload your full PDF utility bill.')+ucCard('inverter','&#128247;','Inverter Photo','Photo of your inverter on garage wall or exterior.')+ucCard('serial','&#128290;','Serial Number','Close-up of the serial number sticker on inverter.')+ucCard('panel','&#9889;','Main Service Panel','Photo of open breaker panel with amp rating visible.')+'</div>'+
-      proposalHtml+invHtml+guaranteeHtml+agHtml+
+      signPayHtml+apptHtml+proposalHtml+invHtml+guaranteeHtml+agHtml+findingsHtml+brHtml+
       '<div id="solarWrap"></div>'+
       '<div class="cta-card"><div><strong>Questions?</strong><br><span style="font-size:0.75rem;color:#aaa;">Mon-Sat 8am-6pm</span></div><a href="tel:6197776527" class="btn-lime">&#128222; (619) 777-6527</a></div>'
     );
@@ -4940,6 +5047,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         quality_flag: aiResult.flag,
         quality_note: aiResult.note
       });
+
+      // Notify assigned rep via SMS (fire-and-forget)
+      var _custName = ((currentUser.first_name||'')+' '+(currentUser.last_name||'')).trim() || 'A customer';
+      fetch('/.netlify/functions/notify-photo-upload', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ customerId: custId, customerName: _custName })
+      }).catch(function(){});
 
 
       // 6 — Show result with quality feedback
@@ -5532,11 +5646,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '</div>';
 
       // Stats
-      var cols = showFieldJobs ? 4 : 3;
+      var totalEstComm = 0;
+      myJobs.forEach(function(j){ totalEstComm += calcRepCommission(j); });
+      var cols = showFieldJobs ? 4 : (config.setterMode ? 4 : 3);
       h += '<div style="display:grid;grid-template-columns:repeat('+cols+',1fr);gap:8px;margin-bottom:14px;">';
       function sBox(v,lbl,clr){ return '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:10px;text-align:center;"><div style="font-size:1.2rem;font-weight:800;color:'+(clr||'#8DC63F')+';">'+v+'</div><div style="font-size:0.68rem;color:#888;">'+lbl+'</div></div>'; }
       h += sBox(myFixmyLeads.length,'FixMy Leads') + sBox(myNSLeads.length,'Solar Leads','#4a9eff') + sBox(myJobs.length,'Jobs');
       if (showFieldJobs) h += sBox(fieldJobs.length,'Field');
+      else if (config.setterMode) h += sBox('$'+totalEstComm,'Est. Earned','#ffaa00');
       h += '</div>';
 
       // Main view tabs
@@ -5552,6 +5669,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (showFieldJobs) h += tBtn('field','🔧 Field ('+fieldJobs.length+')');
       h += tBtn('schedule','📅 Appts'+(myApptCount?'  ('+myApptCount+')':''));
       if (config.setterMode) h += tBtn('map','🗺 Map');
+      if (config.setterMode) h += tBtn('canvass','🚪 Canvass');
       h += '</div>';
 
       // Category sub-tab helper
@@ -5791,6 +5909,104 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '</div>';
       }
 
+      // ── Canvass view (Setter/Ronda/Dennis only) ──────────────────────────────
+      else if (salesView === 'canvass' && config.setterMode) {
+        h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;margin-bottom:12px;">🚪 Door Knocking Route</div>';
+
+        if (canvassGpsStatus === 'idle') {
+          h += '<div style="text-align:center;padding:32px 16px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:14px;margin-bottom:12px;">';
+          h += '<div style="font-size:2rem;margin-bottom:12px;">📍</div>';
+          h += '<div style="font-size:0.9rem;font-weight:700;margin-bottom:6px;">Find Nearest Leads</div>';
+          h += '<div style="font-size:0.75rem;color:#888;margin-bottom:18px;">Uses your GPS to route you to the closest orphaned account leads first. No more driving across town.</div>';
+          h += '<button onclick="canvassInit()" style="background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;padding:14px 32px;font-size:0.9rem;font-weight:700;cursor:pointer;">📍 Get My Location</button>';
+          h += '</div>';
+          var knockedToday = canvassLeads.filter(function(l){ return l.knock_status && l.knocked_at && (Date.now()-new Date(l.knocked_at).getTime() < 86400000); }).length;
+          if (knockedToday) h += '<div style="font-size:0.72rem;color:#8DC63F;text-align:center;margin-top:8px;">✓ '+knockedToday+' doors knocked today</div>';
+        }
+
+        else if (canvassGpsStatus === 'loading') {
+          h += '<div style="text-align:center;padding:48px;color:#888;font-size:0.85rem;">Locating you and loading leads…</div>';
+        }
+
+        else if (canvassGpsStatus === 'error') {
+          h += '<div style="text-align:center;padding:32px 16px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.2);border-radius:14px;">';
+          h += '<div style="color:#ef4444;font-size:0.85rem;margin-bottom:14px;">⚠ Location access denied. Enable location in your browser settings.</div>';
+          h += '<button onclick="canvassInit()" style="background:rgba(255,255,255,0.08);color:#ccc;border:1px solid rgba(255,255,255,0.15);border-radius:100px;padding:10px 22px;font-size:0.8rem;font-weight:700;cursor:pointer;">Try Again</button>';
+          h += '</div>';
+        }
+
+        else if (canvassGpsStatus === 'ready') {
+          var unvisited = canvassLeads.filter(function(l){ return !l.knock_status; });
+          var visited = canvassLeads.filter(function(l){ return !!l.knock_status; });
+
+          // Stats strip
+          h += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:14px;">';
+          h += '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:10px;text-align:center;"><div style="font-size:1.2rem;font-weight:800;color:#8DC63F;">'+unvisited.length+'</div><div style="font-size:0.65rem;color:#888;">Remaining</div></div>';
+          h += '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:10px;text-align:center;"><div style="font-size:1.2rem;font-weight:800;color:#4a9eff;">'+visited.length+'</div><div style="font-size:0.65rem;color:#888;">Knocked</div></div>';
+          var interested = canvassLeads.filter(function(l){ return l.knock_status === 'interested'; }).length;
+          h += '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:10px;text-align:center;"><div style="font-size:1.2rem;font-weight:800;color:#ffaa00;">'+interested+'</div><div style="font-size:0.65rem;color:#888;">Interested</div></div>';
+          h += '</div>';
+
+          // Location pill
+          h += '<div style="font-size:0.68rem;color:#555;margin-bottom:12px;display:flex;align-items:center;gap:6px;">';
+          h += '<span style="background:rgba(141,198,63,0.12);color:#8DC63F;border:1px solid rgba(141,198,63,0.25);border-radius:100px;padding:3px 10px;">📍 GPS Active</span>';
+          h += '<button onclick="canvassInit()" style="background:none;border:none;color:#555;cursor:pointer;font-size:0.7rem;padding:0;">↻ Refresh</button>';
+          h += '</div>';
+
+          if (!unvisited.length) {
+            h += '<div style="text-align:center;padding:40px 20px;background:rgba(141,198,63,0.06);border:1px solid rgba(141,198,63,0.2);border-radius:14px;">';
+            h += '<div style="font-size:2rem;margin-bottom:10px;">🎉</div>';
+            h += '<div style="font-size:0.95rem;font-weight:700;color:#8DC63F;margin-bottom:6px;">All doors knocked!</div>';
+            h += '<div style="font-size:0.75rem;color:#888;">'+visited.length+' addresses visited. Great work!</div>';
+            h += '</div>';
+          } else {
+            var lead = unvisited[0];
+            var distMi = lead._distMi != null ? lead._distMi.toFixed(1)+' mi away' : '';
+            var mapsUrl = 'https://www.google.com/maps/dir/?api=1&destination='+encodeURIComponent(lead.address||'');
+            var fullName = ((lead.first_name||'')+' '+(lead.last_name||'')).trim();
+
+            // "Next Door" card
+            h += '<div style="background:rgba(255,255,255,0.05);border:2px solid rgba(141,198,63,0.35);border-radius:16px;padding:18px;margin-bottom:12px;">';
+            h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">';
+            h += '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#8DC63F;">Next Door · 1 of '+unvisited.length+' remaining</div>';
+            if (distMi) h += '<div style="font-size:0.72rem;color:#888;">'+distMi+'</div>';
+            h += '</div>';
+            h += '<div style="font-size:1.05rem;font-weight:700;margin-bottom:2px;">'+(lead.address||'No address')+'</div>';
+            if (fullName) h += '<div style="font-size:0.75rem;color:#888;margin-bottom:2px;">'+fullName+'</div>';
+            var installer = lead.notes ? lead.notes.slice(0,50) : '';
+            if (installer) h += '<div style="font-size:0.7rem;color:#666;margin-bottom:10px;font-style:italic;">'+installer+'</div>';
+            h += '<a href="'+mapsUrl+'" target="_blank" style="display:inline-block;font-size:0.75rem;font-weight:700;color:#4a9eff;text-decoration:none;background:rgba(74,158,255,0.08);border:1px solid rgba(74,158,255,0.25);border-radius:100px;padding:6px 14px;margin-bottom:14px;">🗺 Get Directions</a>';
+
+            // Outcome buttons
+            h += '<div style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#666;margin-bottom:8px;">What happened?</div>';
+            h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">';
+            h += '<button onclick="canvassKnock(\''+lead.id+'\',\'not_home\')" style="padding:14px 8px;border:1px solid rgba(255,255,255,0.15);border-radius:12px;background:rgba(255,255,255,0.06);color:#ccc;font-size:0.8rem;font-weight:700;cursor:pointer;">🚫 Not Home</button>';
+            h += '<button onclick="canvassKnock(\''+lead.id+'\',\'not_interested\')" style="padding:14px 8px;border:1px solid rgba(255,255,255,0.15);border-radius:12px;background:rgba(255,255,255,0.06);color:#ccc;font-size:0.8rem;font-weight:700;cursor:pointer;">👎 Not Interested</button>';
+            h += '<button onclick="canvassKnock(\''+lead.id+'\',\'interested\')" style="padding:14px 8px;border:1px solid rgba(141,198,63,0.4);border-radius:12px;background:rgba(141,198,63,0.12);color:#8DC63F;font-size:0.8rem;font-weight:700;cursor:pointer;">✅ Interested!</button>';
+            h += '<button onclick="canvassKnock(\''+lead.id+'\',\'already_customer\')" style="padding:14px 8px;border:1px solid rgba(74,158,255,0.3);border-radius:12px;background:rgba(74,158,255,0.08);color:#4a9eff;font-size:0.8rem;font-weight:700;cursor:pointer;">⭐ Already Customer</button>';
+            h += '</div>';
+            h += '</div>';
+
+            // Skip button
+            h += '<div style="text-align:center;margin-bottom:16px;">';
+            h += '<button onclick="canvassSkip()" style="background:none;border:none;color:#555;cursor:pointer;font-size:0.75rem;text-decoration:underline;">Skip this address ›</button>';
+            h += '</div>';
+
+            // Next 3 coming up
+            if (unvisited.length > 1) {
+              h += '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#444;margin-bottom:6px;">Coming up</div>';
+              unvisited.slice(1, 4).forEach(function(nl, ni) {
+                var nd = nl._distMi != null ? nl._distMi.toFixed(1)+' mi' : '';
+                h += '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:8px;margin-bottom:4px;">';
+                h += '<div style="font-size:0.75rem;color:#888;">'+(ni+2)+'. '+(nl.address||'—')+'</div>';
+                if (nd) h += '<div style="font-size:0.68rem;color:#555;">'+nd+'</div>';
+                h += '</div>';
+              });
+            }
+          }
+        }
+      }
+
       document.getElementById('dashBody').innerHTML = h;
     }
 
@@ -6021,6 +6237,121 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       renderSales();
     };
     window.salesRefresh = function() { loadSalesDashboard(person, Object.assign({}, config, {autoOpenForm: false})); };
+
+    // ── Canvass Knocks ─────────────────────────────────────────────────────────
+    var canvassLeads = [];
+    var canvassUserLat = null, canvassUserLng = null;
+    var canvassGpsStatus = 'idle';
+    var canvassSkipIds = [];
+
+    function canvassHaversine(lat1, lng1, lat2, lng2) {
+      var R = 3958.8; // miles
+      var dLat = (lat2-lat1) * Math.PI/180;
+      var dLng = (lng2-lng1) * Math.PI/180;
+      var a = Math.sin(dLat/2)*Math.sin(dLat/2) +
+              Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)*Math.sin(dLng/2);
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    }
+
+    window.canvassInit = async function() {
+      canvassGpsStatus = 'loading';
+      renderSales();
+      try {
+        var pos = await new Promise(function(resolve, reject) {
+          navigator.geolocation.getCurrentPosition(resolve, reject, {enableHighAccuracy:true, timeout:10000});
+        });
+        canvassUserLat = pos.coords.latitude;
+        canvassUserLng = pos.coords.longitude;
+      } catch(e) {
+        canvassGpsStatus = 'error';
+        renderSales();
+        return;
+      }
+
+      // Load orphaned leads without knock_status (or already loaded in allRecords)
+      var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var { data: rawLeads, error: lErr } = await c2
+        .from('customers')
+        .select('id,first_name,last_name,address,notes,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step')
+        .eq('lead_source','orphaned_list')
+        .is('sold_type', null)
+        .order('created_at', {ascending: false})
+        .limit(500);
+
+      if (lErr || !rawLeads) { canvassGpsStatus = 'error'; renderSales(); return; }
+
+      // Geocode up to 30 leads that are missing lat/lng (fire-and-save, non-blocking)
+      var needsGeo = rawLeads.filter(function(l){ return !l.lat && l.address; }).slice(0, 30);
+      if (needsGeo.length) {
+        (async function() {
+          for (var i = 0; i < needsGeo.length; i++) {
+            try {
+              var geo = await geocodeAddress(needsGeo[i].address);
+              if (geo) {
+                needsGeo[i].lat = geo.lat;
+                needsGeo[i].lng = geo.lng;
+                supabase.createClient(SUPA_URL, SUPA_KEY).from('customers').update({lat:geo.lat, lng:geo.lng}).eq('id',needsGeo[i].id);
+              }
+            } catch(e){}
+          }
+        })();
+      }
+
+      // Sort by distance (leads without coords go to end)
+      rawLeads.forEach(function(l) {
+        if (l.lat && l.lng) l._distMi = canvassHaversine(canvassUserLat, canvassUserLng, l.lat, l.lng);
+        else l._distMi = null;
+      });
+      rawLeads.sort(function(a, b) {
+        if (a.knock_status && !b.knock_status) return 1;
+        if (!a.knock_status && b.knock_status) return -1;
+        var dA = a._distMi != null ? a._distMi : 9999;
+        var dB = b._distMi != null ? b._distMi : 9999;
+        return dA - dB;
+      });
+      canvassLeads = rawLeads.filter(function(l){ return canvassSkipIds.indexOf(l.id) < 0; });
+      canvassGpsStatus = 'ready';
+      renderSales();
+    };
+
+    window.canvassKnock = async function(id, knockStatus) {
+      var lead = canvassLeads.find(function(l){ return l.id === id; });
+      if (!lead) return;
+      var now = new Date().toISOString();
+      var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+      await c2.from('customers').update({ knock_status: knockStatus, knocked_at: now, knocked_by: person.id }).eq('id', id);
+      lead.knock_status = knockStatus;
+      lead.knocked_at = now;
+      lead.knocked_by = person.id;
+      // Re-sort: knocked leads go to end
+      canvassLeads.sort(function(a, b) {
+        if (a.knock_status && !b.knock_status) return 1;
+        if (!a.knock_status && b.knock_status) return -1;
+        var dA = a._distMi != null ? a._distMi : 9999;
+        var dB = b._distMi != null ? b._distMi : 9999;
+        return dA - dB;
+      });
+      if (knockStatus === 'interested') {
+        // Assign this lead to the current rep and advance step
+        var updates = { rep_id: person.id, step: 1, lead_category: 'fixmy', sold_type: null };
+        await c2.from('customers').update(updates).eq('id', id);
+        var recInAll = allRecords.find(function(r){ return r.id === id; });
+        if (recInAll) Object.assign(recInAll, updates);
+        // Show lead editor for this record so rep can fill in contact info
+        salesSetView('leads');
+        setTimeout(function(){ if (typeof window.salesEditLead === 'function') window.salesEditLead(id); }, 100);
+        return;
+      }
+      renderSales();
+    };
+
+    window.canvassSkip = function() {
+      var unvisited = canvassLeads.filter(function(l){ return !l.knock_status; });
+      if (unvisited.length) canvassSkipIds.push(unvisited[0].id);
+      // Re-filter
+      canvassLeads = canvassLeads.filter(function(l){ return canvassSkipIds.indexOf(l.id) < 0; });
+      renderSales();
+    };
 
     renderSales();
 
