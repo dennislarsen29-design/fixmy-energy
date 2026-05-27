@@ -3038,6 +3038,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
     var h = portalNav + '<div style="padding:4px 0 16px;">';
     h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;margin-bottom:12px;">&#128230; Black Box &mdash; Door Knocking Route</div>';
+    h += '<div id="bbEnrichBar" style="margin-bottom:12px;"></div>';
 
     if (adminCanvassGpsStatus === 'idle') {
       h += '<div style="text-align:center;padding:32px 16px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:14px;margin-bottom:12px;">';
@@ -3159,6 +3160,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
     h += '</div>';
     document.getElementById('dashBody').innerHTML = h;
+    setTimeout(adminCanvassLoadEnrichBar, 0);
   }
 
   function adminCanvassHaversine(lat1, lng1, lat2, lng2) {
@@ -3267,6 +3269,88 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   window.adminCanvassClearHistory = function() {
     try { localStorage.removeItem('bbKnockHistory'); } catch(e){}
     renderAdminCanvassView();
+  };
+
+  var _bbEnrichRunning = false;
+
+  window.adminCanvassLoadEnrichBar = async function() {
+    var bar = document.getElementById('bbEnrichBar');
+    if (!bar) return;
+    var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var { count: total } = await c2.from('customers').select('id', {count:'exact',head:true}).eq('lead_source','orphaned_list').is('sold_type',null);
+    var { count: haveOwner } = await c2.from('customers').select('id', {count:'exact',head:true}).eq('lead_source','orphaned_list').is('sold_type',null).not('title_owner','is',null);
+    total = total || 0; haveOwner = haveOwner || 0;
+    var missing = total - haveOwner;
+    if (!bar) return;
+    if (missing === 0) {
+      bar.innerHTML = '<div style="background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.2);border-radius:10px;padding:10px 14px;font-size:0.75rem;color:#8DC63F;font-weight:700;">&#10003; All '+total+' leads have owner names on file</div>';
+    } else {
+      bar.innerHTML = '<div style="background:rgba(255,170,0,0.07);border:1px solid rgba(255,170,0,0.2);border-radius:10px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">'
+        + '<div><div style="font-size:0.75rem;font-weight:700;color:#ffaa00;">'+missing+' leads missing owner name</div>'
+        + '<div style="font-size:0.68rem;color:#888;margin-top:1px;">'+haveOwner+' of '+total+' already enriched &mdash; uses free SANDAG + SD City GIS</div></div>'
+        + '<button onclick="adminCanvassEnrichAll()" style="background:#ffaa00;color:#1A1A1A;border:none;border-radius:100px;padding:8px 18px;font-size:0.78rem;font-weight:800;cursor:pointer;white-space:nowrap;">&#128269; Enrich All</button>'
+        + '</div>';
+    }
+  };
+
+  window.adminCanvassEnrichAll = async function() {
+    if (_bbEnrichRunning) return;
+    _bbEnrichRunning = true;
+    var bar = document.getElementById('bbEnrichBar');
+    if (bar) bar.innerHTML = '<div style="background:rgba(74,158,255,0.07);border:1px solid rgba(74,158,255,0.2);border-radius:10px;padding:10px 14px;" id="bbEnrichProgress"><div style="font-size:0.75rem;color:#4a9eff;font-weight:700;">Starting enrichment&hellip;</div></div>';
+
+    var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var { data: leads } = await c2.from('customers')
+      .select('id,address,lat,lng')
+      .eq('lead_source','orphaned_list')
+      .is('sold_type',null)
+      .is('title_owner',null)
+      .not('address','is',null)
+      .order('created_at',{ascending:true})
+      .limit(1000);
+
+    leads = leads || [];
+    var total = leads.length, found = 0, failed = 0;
+
+    function updateProgress() {
+      var done = found + failed;
+      var pct = total ? Math.round(done/total*100) : 0;
+      var prog = document.getElementById('bbEnrichProgress');
+      if (prog) prog.innerHTML = '<div style="font-size:0.75rem;color:#4a9eff;font-weight:700;margin-bottom:6px;">Enriching&hellip; '+done+' of '+total+' &mdash; '+found+' owners found</div>'
+        + '<div style="background:rgba(255,255,255,0.08);border-radius:100px;height:6px;overflow:hidden;">'
+        + '<div style="background:#4a9eff;height:6px;border-radius:100px;width:'+pct+'%;transition:width 0.3s;"></div></div>'
+        + '<div style="font-size:0.65rem;color:#555;margin-top:4px;">'+pct+'% &mdash; do not close this tab</div>';
+    }
+
+    for (var i = 0; i < leads.length; i++) {
+      var lead = leads[i];
+      try {
+        var body = { address: lead.address };
+        if (lead.lat) body.lat = lead.lat;
+        if (lead.lng) body.lng = lead.lng;
+        var resp = await fetch('/.netlify/functions/regrid-lookup', {
+          method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
+        });
+        var data = await resp.json();
+        if (data.owner) {
+          found++;
+          await c2.from('customers').update({ title_owner: data.owner, apn: data.apn || null }).eq('id', lead.id);
+        } else {
+          failed++;
+        }
+      } catch(e) { failed++; }
+      updateProgress();
+      // 350ms between requests to respect public GIS rate limits
+      await new Promise(function(r){ setTimeout(r, 350); });
+    }
+
+    _bbEnrichRunning = false;
+    var bar2 = document.getElementById('bbEnrichBar');
+    var skipped = total - found - failed;
+    if (bar2) bar2.innerHTML = '<div style="background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.2);border-radius:10px;padding:10px 14px;">'
+      + '<div style="font-size:0.75rem;font-weight:700;color:#8DC63F;">&#10003; Enrichment complete &mdash; '+found+' of '+total+' owners found</div>'
+      + '<div style="font-size:0.68rem;color:#888;margin-top:2px;">'+(total-found)+' addresses not found in public GIS (may need skip trace)</div>'
+      + '</div>';
   };
 
   // ── Finance View — Commission Ledger + Ops Payouts ─────────────────────────
