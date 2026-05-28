@@ -433,6 +433,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if ((email === ADMIN_EMAIL) || (code === ADMIN_CODE)) {
       if (code === ADMIN_CODE) {
         sessionStorage.setItem('user', JSON.stringify({isAdmin:true, name:'Admin', role:'admin'}));
+        CURRENT_ROLE = 'admin';
         loadAdminDashboard(); return;
       } else { showErr('Admin code incorrect.'); btn.textContent = 'Access My Portal'; btn.disabled = false; return; }
     }
@@ -533,8 +534,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
   function renderAdminView(view) {
     adminView = view;
-    // All unsold leads, split by category
-    var allLeads = adminCustomers.filter(function(x){ return !x.sold_type; });
+    // All unsold, non-black-box leads, split by category
+    var allLeads = adminCustomers.filter(function(x){ return !x.sold_type && !x.black_box; });
     var fixmyLeads = allLeads.filter(function(x){ return x.lead_category !== 'new_solar' && x.lead_category !== 'top_tier'; });
     var nsLeads    = allLeads.filter(function(x){ return x.lead_category === 'new_solar'; });
     var ttLeads    = allLeads.filter(function(x){ return x.lead_category === 'top_tier'; });
@@ -1968,7 +1969,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           install_year:        r.install_year ? parseInt(r.install_year) : null,
           notes:               r.notes || null,
           title_owner:         en.owner || null,
-          apn:                 en.apn   || null
+          apn:                 en.apn   || null,
+          black_box:           true
         };
         return rec;
       });
@@ -3034,8 +3036,45 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     '</div>';
 
     var h = portalNav + '<div style="padding:4px 0 16px;">';
-    h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;margin-bottom:12px;">&#128230; Black Box &mdash; Door Knocking Route</div>';
+
+    // ── Quarantine stats + list ─────────────────────────────────────────────
+    var bbLeads = adminCustomers.filter(function(x){ return !!x.black_box; });
+    var totalImported = adminCustomers.filter(function(x){ return x.lead_source === 'orphaned_list'; }).length;
+    var totalActivated = adminCustomers.filter(function(x){ return x.lead_source === 'orphaned_list' && !x.black_box; }).length;
+    var convPct = totalImported > 0 ? Math.round(totalActivated / totalImported * 100) : 0;
+    h += '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px;">';
+    h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;">&#128230; Black Box &mdash; Quarantined Leads</div>';
+    h += '<div style="display:flex;gap:10px;align-items:center;">';
+    h += '<span style="font-size:0.72rem;color:#888;"><strong style="color:#eee;">'+totalImported+'</strong> imported &middot; <strong style="color:#8DC63F;">'+totalActivated+'</strong> activated (<strong style="color:#8DC63F;">'+convPct+'%</strong>)</span>';
+    h += '</div></div>';
     h += '<div id="bbEnrichBar" style="margin-bottom:12px;"></div>';
+
+    if (bbLeads.length === 0) {
+      h += '<div style="padding:20px;text-align:center;background:rgba(141,198,63,0.06);border:1px solid rgba(141,198,63,0.2);border-radius:12px;margin-bottom:16px;">';
+      h += '<div style="font-size:0.85rem;font-weight:700;color:#8DC63F;margin-bottom:4px;">&#10003; No quarantined leads</div>';
+      h += '<div style="font-size:0.72rem;color:#888;">Import a permit CSV to populate Black Box.</div>';
+      h += '</div>';
+    } else {
+      h += '<div style="display:grid;gap:8px;margin-bottom:20px;">';
+      bbLeads.forEach(function(lead) {
+        var name = ((lead.first_name||'')+' '+(lead.last_name||'')).trim() || lead.title_owner || '—';
+        var installer = lead.original_installer ? (' &middot; '+lead.original_installer+(lead.install_year?' ('+lead.install_year+')':'')) : '';
+        var noContact = !lead.phone && !lead.email;
+        h += '<div style="background:#1e1e1e;border:1px solid #2a2a2a;border-radius:10px;padding:13px 14px;display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">';
+        h += '<div style="flex:1;min-width:0;">';
+        h += '<div style="font-size:0.85rem;font-weight:700;color:#eee;margin-bottom:2px;">'+name+'</div>';
+        h += '<div style="font-size:0.72rem;color:#888;margin-bottom:3px;">'+(lead.address||'—')+'</div>';
+        if (lead.apn) h += '<div style="font-size:0.66rem;color:#555;">APN: '+lead.apn+installer+'</div>';
+        if (noContact) h += '<div style="margin-top:5px;"><span style="font-size:0.63rem;font-weight:700;background:rgba(255,170,0,0.1);border:1px solid rgba(255,170,0,0.3);color:#ffaa00;border-radius:100px;padding:2px 8px;">&#128222; Needs skip trace</span></div>';
+        h += '</div>';
+        h += '<button onclick="activateBlackBoxLead(\''+lead.id+'\')" style="flex-shrink:0;padding:8px 14px;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;white-space:nowrap;">&#128275; Activate</button>';
+        h += '</div>';
+      });
+      h += '</div>';
+    }
+
+    h += '<hr style="border:none;border-top:1px solid #2a2a2a;margin:4px 0 16px;">';
+    h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;margin-bottom:12px;">&#128205; Door Knocking Route</div>';
 
     if (adminCanvassGpsStatus === 'idle') {
       h += '<div style="text-align:center;padding:32px 16px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:14px;margin-bottom:12px;">';
@@ -3088,13 +3127,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var mapsUrl = 'https://www.google.com/maps/dir/?api=1&destination='+encodeURIComponent(lead.address||'');
         var fullName = ((lead.first_name||'')+' '+(lead.last_name||'')).trim();
 
+        var ownerName = lead.title_owner || fullName || '';
         h += '<div style="background:rgba(255,255,255,0.05);border:2px solid rgba(141,198,63,0.35);border-radius:16px;padding:18px;margin-bottom:12px;">';
         h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">';
         h += '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#8DC63F;">Next Door &middot; 1 of '+unvisited.length+' remaining</div>';
         if (distMi) h += '<div style="font-size:0.72rem;color:#888;">'+distMi+'</div>';
         h += '</div>';
-        h += '<div style="font-size:1.05rem;font-weight:700;margin-bottom:2px;">'+(lead.address||'No address')+'</div>';
-        if (fullName) h += '<div style="font-size:0.75rem;color:#888;margin-bottom:2px;">'+fullName+'</div>';
+        h += '<div style="font-size:1.05rem;font-weight:700;margin-bottom:4px;">'+(lead.address||'No address')+'</div>';
+        if (ownerName) {
+          h += '<div style="font-size:0.8rem;font-weight:600;color:#F3EDE3;margin-bottom:2px;">'+ownerName+'</div>';
+        }
+        if (lead.apn) h += '<div style="font-size:0.65rem;color:#555;margin-bottom:8px;">APN: '+lead.apn+'</div>';
+        if (!ownerName) {
+          h += '<button id="bbVerifyBtn_'+lead.id+'" onclick="adminCanvassVerifyOwner(\''+lead.id+'\')" style="display:inline-block;font-size:0.7rem;font-weight:700;color:#ffaa00;background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.3);border-radius:100px;padding:4px 12px;cursor:pointer;margin-bottom:10px;">&#128269; Verify Owner</button>';
+        }
         if (lead.notes) h += '<div style="font-size:0.7rem;color:#666;margin-bottom:10px;font-style:italic;">'+lead.notes.slice(0,60)+'</div>';
         h += '<a href="'+mapsUrl+'" target="_blank" style="display:inline-block;font-size:0.75rem;font-weight:700;color:#4a9eff;text-decoration:none;background:rgba(74,158,255,0.08);border:1px solid rgba(74,158,255,0.25);border-radius:100px;padding:6px 14px;margin-bottom:14px;">&#128506; Get Directions</a>';
         h += '<div style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#666;margin-bottom:8px;">What happened?</div>';
@@ -3108,13 +3154,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '<div style="text-align:center;margin-bottom:16px;"><button onclick="adminCanvassSkip()" style="background:none;border:none;color:#555;cursor:pointer;font-size:0.75rem;text-decoration:underline;">Skip this address &rsaquo;</button></div>';
 
         if (unvisited.length > 1) {
-          h += '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#444;margin-bottom:6px;">Coming up</div>';
-          unvisited.slice(1, 4).forEach(function(nl, ni) {
+          h += '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#444;margin-bottom:6px;">Coming up &mdash; <span style="font-weight:400;color:#333;">tap to go there first</span></div>';
+          unvisited.slice(1, 6).forEach(function(nl, ni) {
             var nd = nl._distMi != null ? nl._distMi.toFixed(1)+' mi' : '';
-            h += '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:8px;margin-bottom:4px;">';
-            h += '<div style="font-size:0.75rem;color:#888;">'+(ni+2)+'. '+(nl.address||'&mdash;')+'</div>';
-            if (nd) h += '<div style="font-size:0.68rem;color:#555;">'+nd+'</div>';
+            var nlOwner = nl.title_owner || ((nl.first_name||'')+' '+(nl.last_name||'')).trim();
+            h += '<button onclick="adminCanvassPrioritize(\''+nl.id+'\')" style="width:100%;display:flex;justify-content:space-between;align-items:center;padding:9px 10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:8px;margin-bottom:4px;cursor:pointer;text-align:left;">';
+            h += '<div>';
+            h += '<div style="font-size:0.75rem;color:#aaa;font-weight:600;">'+(ni+2)+'. '+(nl.address||'&mdash;')+'</div>';
+            if (nlOwner) h += '<div style="font-size:0.65rem;color:#666;margin-top:1px;">'+nlOwner+'</div>';
             h += '</div>';
+            h += '<div style="font-size:0.68rem;color:#555;flex-shrink:0;margin-left:8px;">'+(nd?nd+' &#8679;':'&#8679;')+'</div>';
+            h += '</button>';
           });
         }
       }
@@ -3184,8 +3234,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
     var { data: rawLeads, error: lErr } = await c2
       .from('customers')
-      .select('id,first_name,last_name,address,notes,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step')
+      .select('id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step')
       .eq('lead_source','orphaned_list')
+      .eq('black_box', true)
       .is('sold_type', null)
       .order('created_at', {ascending: false})
       .limit(500);
@@ -3237,9 +3288,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       return (a._distMi!=null?a._distMi:9999) - (b._distMi!=null?b._distMi:9999);
     });
     if (knockStatus === 'interested') {
-      await c2.from('customers').update({ step: 1, lead_category: 'fixmy', sold_type: null }).eq('id', id);
+      await c2.from('customers').update({ step: 1, lead_category: 'fixmy', sold_type: null, black_box: false }).eq('id', id);
       var rec = adminCustomers.find(function(r){ return r.id === id; });
-      if (rec) { rec.step = 1; rec.lead_category = 'fixmy'; }
+      if (rec) { rec.step = 1; rec.lead_category = 'fixmy'; rec.black_box = false; }
       openLeadEditor(id);
       return;
     }
@@ -3266,6 +3317,52 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   window.adminCanvassClearHistory = function() {
     try { localStorage.removeItem('bbKnockHistory'); } catch(e){}
     renderAdminCanvassView();
+  };
+
+  window.adminCanvassPrioritize = function(id) {
+    var lead = adminCanvassLeads.find(function(l){ return l.id === id; });
+    if (!lead) return;
+    adminCanvassLeads = [lead].concat(adminCanvassLeads.filter(function(l){ return l.id !== id; }));
+    renderAdminCanvassView();
+  };
+
+  window.adminCanvassVerifyOwner = async function(id) {
+    var lead = adminCanvassLeads.find(function(l){ return l.id === id; });
+    if (!lead || !lead.address) return;
+    var btn = document.getElementById('bbVerifyBtn_'+id);
+    if (btn) { btn.textContent = 'Looking up…'; btn.disabled = true; }
+    try {
+      var body = { address: lead.address };
+      if (lead.lat) body.lat = lead.lat;
+      if (lead.lng) body.lng = lead.lng;
+      var resp = await fetch('/.netlify/functions/regrid-lookup', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+      var data = await resp.json();
+      if (data.owner) {
+        lead.title_owner = data.owner;
+        lead.apn = data.apn || lead.apn || null;
+        var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+        c2.from('customers').update({ title_owner: data.owner, apn: data.apn||null }).eq('id', id);
+        var rec = adminCustomers.find(function(r){ return r.id === id; });
+        if (rec) { rec.title_owner = data.owner; rec.apn = data.apn||null; }
+        renderAdminCanvassView();
+      } else {
+        if (btn) { btn.textContent = 'Not found in GIS'; btn.disabled = false; }
+      }
+    } catch(e) {
+      if (btn) { btn.textContent = 'Error — try again'; btn.disabled = false; }
+    }
+  };
+
+  window.activateBlackBoxLead = async function(id) {
+    var rec = adminCustomers.find(function(x){ return x.id === id; });
+    if (!rec) return;
+    try {
+      var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var { error } = await c2.from('customers').update({ black_box: false, step: rec.step || 1, lead_category: rec.lead_category || 'fixmy' }).eq('id', id);
+      if (error) throw error;
+      rec.black_box = false;
+    } catch(e) { alert('Activate failed: ' + e.message); return; }
+    openLeadEditor(id);
   };
 
   var _bbEnrichRunning = false;
@@ -4134,6 +4231,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             'style="padding:5px 14px;border:none;border-radius:100px;background:'+(c.title_confirmed===true?'#5a9e20':'#8DC63F')+';color:#1A1A1A;font-size:0.72rem;font-weight:700;cursor:pointer;">&#10003; Confirmed on Title</button>'+
           '<button type="button" onclick="edTitleConfirm(false)" id="edTitleMismatchBtn" '+
             'style="padding:5px 14px;border:1px solid rgba(239,68,68,0.4);border-radius:100px;background:'+(c.title_confirmed===false?'rgba(239,68,68,0.2)':'transparent')+';color:#ef4444;font-size:0.72rem;font-weight:700;cursor:pointer;">&#10005; Mismatch — Note</button>'+
+          '<button type="button" onclick="edUseOwnerName()" id="edUseOwnerNameBtn" '+
+            'style="'+(c.title_confirmed===true?'':'display:none;')+'padding:5px 14px;border:1px solid rgba(141,198,63,0.4);border-radius:100px;background:rgba(141,198,63,0.1);color:#8DC63F;font-size:0.72rem;font-weight:700;cursor:pointer;">&#8592; Use as Lead Name</button>'+
         '</div>'
       : '<span style="font-size:0.75rem;color:#666;">No title data yet — click <strong style="color:#4a9eff;">Run Lookup</strong> to check parcel owner.</span>';
     var _notesLogHtml = _renderNotesLog(_parseNotes(c.notes || ''));
@@ -4227,12 +4326,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<div><label class="ed-label">Arrival Window End</label><input type="time" id="edArrivalEnd" class="ed-input" value="'+(c.arrival_end||'')+'"/></div>'+
         edField('Install Type','edInstType',c.install_type||'','text')+
       '</div>'+
-      '<div class="editor-section-title">Invoice</div>'+
-      '<div class="ed-grid">'+
-        edSelect('Invoice Status','edInvSt',c.invoice_status||'none',[['none','None'],['draft','Draft'],['sent','Sent'],['pending','Payment Due'],['paid','Paid'],['overdue','Overdue']])+
-        edField('Amount ($)','edInvAmt',c.invoice_amount||'','number')+
-      '</div>'+
-      (!isNSEdit ?
+      (!isNSEdit && !isTTEdit ?
+        '<div class="editor-section-title">Invoice</div>'+
+        '<div class="ed-grid">'+
+          edSelect('Invoice Status','edInvSt',c.invoice_status||'none',[['none','None'],['draft','Draft'],['sent','Sent'],['pending','Payment Due'],['paid','Paid'],['overdue','Overdue']])+
+          edField('Amount ($)','edInvAmt',c.invoice_amount||'','number')+
+        '</div>'
+      : '')+
+      (!isNSEdit && !isTTEdit ?
         '<div class="editor-section-title">Deposit &amp; Milestones</div>'+
         '<div class="ed-grid">'+
           edSelect('Deposit Status','edDepSt',c.deposit_status||'none',[['none','None'],['sent','Invoice Sent'],['pending','Processing / Pending'],['paid','Paid ✓']])+
@@ -4348,6 +4449,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var id = document.getElementById('edId').value;
     var leadCatVal = (document.getElementById('edLeadCat')||{}).value || 'fixmy';
     var isNSSave = leadCatVal === 'new_solar';
+    var isTTSave = leadCatVal === 'top_tier';
+    var isFixMySave = !isNSSave && !isTTSave;
     var apptDateVal = document.getElementById('edApptDate').value;
     var apptTimeVal = document.getElementById('edApptTime').value;
     var apptISO = (apptDateVal && apptTimeVal) ? new Date(apptDateVal+'T'+apptTimeVal).toISOString() : (apptDateVal ? new Date(apptDateVal).toISOString() : null);
@@ -4388,8 +4491,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       diagnostic_date: diagDate,
       install_date: instDate,
       install_type: document.getElementById('edInstType').value||null,
-      invoice_status: document.getElementById('edInvSt').value,
-      invoice_amount: parseFloat(document.getElementById('edInvAmt').value)||null,
       agreement_status: document.getElementById('edAgSt').value,
       notes: (function(){ var p=(document.getElementById('edNoteInput')||{}).value.trim(); return p ? _appendNote(cRec.notes||null,'Admin',p) : (cRec.notes||null); })(),
       setter_name: document.getElementById('edSetterName').value==='none'?null:document.getElementById('edSetterName').value||null,
@@ -4405,7 +4506,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       apn: (document.getElementById('edApn')||{}).value||null,
       title_confirmed: (function(){ var v=(document.getElementById('edTitleConfirmed')||{}).value; return v==='true'?true:v==='false'?false:null; })()
     };
-    if (!isNSSave) {
+    if (isFixMySave) {
+      updates.invoice_status = (document.getElementById('edInvSt')||{}).value||null;
+      updates.invoice_amount = parseFloat((document.getElementById('edInvAmt')||{}).value)||null;
       updates.deposit_status = (document.getElementById('edDepSt')||{}).value||null;
       updates.deposit_amount = parseFloat((document.getElementById('edDepAmt')||{}).value)||null;
       updates.ops_milestone1_amount = parseFloat((document.getElementById('edOpsMile1Amt')||{}).value)||null;
@@ -5075,13 +5178,29 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (confEl) confEl.value = isMatch ? 'true' : 'false';
     var cBtn = document.getElementById('edTitleConfirmBtn');
     var mBtn = document.getElementById('edTitleMismatchBtn');
+    var uBtn = document.getElementById('edUseOwnerNameBtn');
     if (isMatch) {
       if (cBtn) cBtn.style.background = '#5a9e20';
       if (mBtn) mBtn.style.background = 'transparent';
+      if (uBtn) uBtn.style.display = '';
     } else {
       if (cBtn) cBtn.style.background = '#8DC63F';
       if (mBtn) mBtn.style.background = 'rgba(239,68,68,0.2)';
+      if (uBtn) uBtn.style.display = 'none';
     }
+  };
+
+  window.edUseOwnerName = function() {
+    var ownerEl = document.getElementById('edTitleOwner');
+    var owner = (ownerEl ? ownerEl.value : '').replace(/\s+/g,' ').trim();
+    if (!owner) return;
+    var parts = owner.split(' ');
+    var firstEl = document.getElementById('edFirst');
+    var lastEl  = document.getElementById('edLast');
+    if (firstEl) firstEl.value = parts[0] || '';
+    if (lastEl)  lastEl.value  = parts.slice(1).join(' ') || '';
+    var btn = document.getElementById('edUseOwnerNameBtn');
+    if (btn) { var orig = btn.innerHTML; btn.innerHTML = '&#10003; Applied'; setTimeout(function(){ btn.innerHTML = orig; }, 1500); }
   };
 
   async function createNewLead() {
@@ -5651,6 +5770,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var u = JSON.parse(saved);
         if (u.isAdmin || u.role === 'admin') {
           currentUser = {isAdmin:true, email:ADMIN_EMAIL};
+          CURRENT_ROLE = 'admin';
           loadAdminDashboard(); return;
         }
         if (u.isOps || u.role === 'ops') {
@@ -6834,7 +6954,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
       var { data: rawLeads, error: lErr } = await c2
         .from('customers')
-        .select('id,first_name,last_name,address,notes,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step')
+        .select('id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step')
         .eq('lead_source','orphaned_list')
         .is('sold_type', null)
         .order('created_at', {ascending: false})
