@@ -1,63 +1,60 @@
-const { createClient } = require('@supabase/supabase-js');
+const SUPA_URL = 'https://kbtobyoumvbcxfbugsid.supabase.co';
+const cors = {
+  'Access-Control-Allow-Origin': '*',
+  'Content-Type': 'application/json'
+};
 
 exports.handler = async function(event) {
   if (event.httpMethod === 'OPTIONS') {
-    return {
-      statusCode: 200,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'Content-Type',
-        'Access-Control-Allow-Methods': 'POST, OPTIONS'
-      },
-      body: ''
-    };
+    return { statusCode: 200, headers: { ...cors, 'Access-Control-Allow-Methods': 'POST, OPTIONS' }, body: '' };
+  }
+  if (event.httpMethod !== 'POST') {
+    return { statusCode: 405, headers: cors, body: JSON.stringify({ error: 'Method not allowed' }) };
   }
 
   var payload;
   try { payload = JSON.parse(event.body || '{}'); } catch(e) {
-    return { statusCode: 400, body: JSON.stringify({ error: 'Invalid JSON' }) };
+    return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Invalid JSON' }) };
   }
 
-  var { firstName, lastName, email, phone, rep_id } = payload;
+  var firstName = payload.firstName || null;
+  var lastName = payload.lastName || null;
+  var email = payload.email || null;
+  var phone = payload.phone || null;
+  var rep_id = payload.rep_id;
+
   if (!rep_id) {
-    return { statusCode: 400, body: JSON.stringify({ error: 'Missing rep_id' }) };
+    return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Missing rep_id' }) };
   }
 
-  var supabase = createClient(
-    process.env.SUPA_URL || 'https://kbtobyoumvbcxfbugsid.supabase.co',
-    process.env.SUPA_SERVICE_KEY
-  );
-
-  var insertData = {
-    first_name: firstName || null,
-    last_name: lastName || null,
-    email: email || null,
-    phone: phone || null,
+  var SUPA_SERVICE_KEY = process.env.SUPA_SERVICE_KEY;
+  var body = JSON.stringify({
+    first_name: firstName,
+    last_name: lastName,
+    email: email,
+    phone: phone,
     rep_id: rep_id,
     lead_source: 'qr_canvass',
     lead_category: 'fixmy',
     step: 1,
     created_at: new Date().toISOString()
-  };
+  });
 
-  // Upsert by email if provided, otherwise insert new
-  var result;
-  if (email) {
-    result = await supabase
-      .from('customers')
-      .upsert(insertData, { onConflict: 'email', ignoreDuplicates: false });
-  } else {
-    result = await supabase.from('customers').insert(insertData);
+  var resp = await fetch(SUPA_URL + '/rest/v1/customers', {
+    method: 'POST',
+    headers: {
+      'apikey': SUPA_SERVICE_KEY,
+      'Authorization': 'Bearer ' + SUPA_SERVICE_KEY,
+      'Content-Type': 'application/json',
+      'Prefer': 'return=minimal'
+    },
+    body: body
+  });
+
+  if (!resp.ok) {
+    var errText = await resp.text();
+    return { statusCode: 500, headers: cors, body: JSON.stringify({ error: errText }) };
   }
 
-  if (result.error) {
-    console.error('qr-lead insert error:', result.error);
-    return { statusCode: 500, body: JSON.stringify({ error: result.error.message }) };
-  }
-
-  return {
-    statusCode: 200,
-    headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-    body: JSON.stringify({ ok: true })
-  };
+  return { statusCode: 200, headers: cors, body: JSON.stringify({ ok: true }) };
 };
