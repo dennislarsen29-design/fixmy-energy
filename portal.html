@@ -95,7 +95,7 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
     .lead-addr { font-size:0.72rem; color:#555; }
     .step-pill { font-size:0.62rem; font-weight:600; padding:3px 8px; border-radius:100px; }
     .mini-badge { font-size:0.6rem; font-weight:600; padding:2px 8px; border-radius:100px; margin-right:4px; }
-    .lead-card-actions { display:flex; gap:6px; align-items:flex-start; flex-shrink:0; }
+    .lead-card-actions { display:flex; gap:6px; align-items:flex-start; flex-shrink:0; flex-wrap:wrap; }
     .lead-btn { border:none; border-radius:100px; padding:8px 14px; font-size:0.72rem; font-weight:700; cursor:pointer; text-decoration:none; }
     .lead-btn.lime { background:#8DC63F; color:#1A1A1A; }
     .lead-btn.ghost { background:rgba(255,255,255,0.07); color:#F3EDE3; border:1px solid rgba(255,255,255,0.1); }
@@ -126,8 +126,9 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
     .nl-check { width:16px; height:16px; accent-color:#8DC63F; cursor:pointer; flex-shrink:0; }
     .nl-check-label:has(.nl-check:checked) { background:rgba(141,198,63,0.08); border-color:rgba(141,198,63,0.3); color:#8DC63F; }
     /* PORTAL TAB NAV */
-    .portal-tab-nav { display:flex; gap:8px; padding:12px 16px 0; border-bottom:1px solid #2a2a2a; margin-bottom:16px; }
-    .portal-tab { background:none; border:none; padding:8px 16px; font-size:0.78rem; font-weight:600; color:#666; cursor:pointer; border-bottom:2px solid transparent; border-radius:0; transition:all 0.2s; }
+    .portal-tab-nav { display:flex; gap:4px; padding:8px 12px 0; border-bottom:1px solid #2a2a2a; margin-bottom:16px; overflow-x:auto; -webkit-overflow-scrolling:touch; flex-wrap:nowrap; scrollbar-width:none; }
+    .portal-tab-nav::-webkit-scrollbar { display:none; }
+    .portal-tab { background:none; border:none; padding:8px 10px; font-size:0.74rem; font-weight:600; color:#666; cursor:pointer; border-bottom:2px solid transparent; border-radius:0; transition:all 0.2s; white-space:nowrap; }
     .portal-tab.active { color:#8DC63F; border-bottom-color:#8DC63F; }
     .portal-tab:hover { color:#ccc; }
     /* JOBS LIST */
@@ -372,10 +373,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   var adminTechFilter = '';
   var adminOpsFilter  = '';
   var adminTeamMembers = [];
+  var adminCanvassLeads = [];
+  var adminCanvassUserLat = null, adminCanvassUserLng = null;
+  var adminCanvassGpsStatus = 'idle';
+  var adminCanvassSkipIds = [];
   var currentJobId = null;
   var upgradeItems = [];
   var jobPhotos = {};
   var adminLeadCat = 'fixmy';   // 'fixmy' | 'new_solar' | 'top_tier'
+  var financeSubTab = 'commissions';   // 'commissions' | 'marketing'
   var adminJobCat  = 'fixmy';
   var schedCalView   = 'week';  // 'week' | 'month'
   var schedCalOffset = 0;       // weeks or months from current
@@ -427,6 +433,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if ((email === ADMIN_EMAIL) || (code === ADMIN_CODE)) {
       if (code === ADMIN_CODE) {
         sessionStorage.setItem('user', JSON.stringify({isAdmin:true, name:'Admin', role:'admin'}));
+        CURRENT_ROLE = 'admin';
         loadAdminDashboard(); return;
       } else { showErr('Admin code incorrect.'); btn.textContent = 'Access My Portal'; btn.disabled = false; return; }
     }
@@ -511,7 +518,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var _timeout = new Promise(function(_, rej){ setTimeout(function(){ rej(new Error('timeout')); }, 12000); });
     var resp;
     try {
-      resp = await Promise.race([client.from('customers').select('*').order('created_at',{ascending:false}), _timeout]);
+      resp = await Promise.race([client.from('customers').select('*').order('updated_at',{ascending:false}), _timeout]);
     } catch(e) {
       _dbEl.innerHTML = '<p style="color:#ef4444;">Could not reach database'+(e.message==='timeout'?' (connection timed out)':'')+'. <button onclick="loadAdminDashboard()" style="width:auto;padding:8px 16px;font-size:0.75rem;background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;cursor:pointer;">Retry</button></p>';
       return;
@@ -527,8 +534,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
   function renderAdminView(view) {
     adminView = view;
-    // All unsold leads, split by category
-    var allLeads = adminCustomers.filter(function(x){ return !x.sold_type; });
+    // All unsold, non-black-box leads, split by category
+    var allLeads = adminCustomers.filter(function(x){ return !x.sold_type && !x.black_box; });
     var fixmyLeads = allLeads.filter(function(x){ return x.lead_category !== 'new_solar' && x.lead_category !== 'top_tier'; });
     var nsLeads    = allLeads.filter(function(x){ return x.lead_category === 'new_solar'; });
     var ttLeads    = allLeads.filter(function(x){ return x.lead_category === 'top_tier'; });
@@ -570,9 +577,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Team'+teamBadge+'</button>'+
       '<button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button>'+
-      '<button class="portal-tab" onclick="renderMarketingView()">&#128200; Marketing</button>'+
-      '<button class="portal-tab" onclick="renderImportView()">&#128229; Import</button>'+
-      '<button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button>'+
+      '<button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button><button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button>'+
       '<a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a>'+
     '</div>';
 
@@ -636,7 +641,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<div style="width:100%;margin-top:8px;">'+filterBtns+'</div>'+
       '</div>'+
     '</div>';
-    var actionsBar = '<div class="admin-actions-bar"><button class="admin-action-btn" onclick="openNewLead()">+ New Lead</button><button class="admin-action-btn ghost" onclick="exportCSV()">&#8681; Export CSV</button><button class="admin-action-btn ghost" onclick="openReassignModal()">&#128257; Reassign</button><button class="admin-action-btn ghost" onclick="loadAdminDashboard()" title="Re-pull all leads from database">&#8635; Refresh</button></div>';
+    var actionsBar = '<div class="admin-actions-bar"><button class="admin-action-btn" onclick="openNewLead()">+ New Lead</button><button class="admin-action-btn ghost" onclick="exportCSV()">&#8681; Export CSV</button><button class="admin-action-btn ghost" onclick="openReassignModal()">&#128257; Reassign</button><button class="admin-action-btn ghost" onclick="renderImportView()">&#8679; Import</button><button class="admin-action-btn ghost" onclick="loadAdminDashboard()" title="Re-pull all leads from database">&#8635; Refresh</button></div>';
     var listHtml = '';
     if (!c.length) { listHtml = '<div style="padding:32px;text-align:center;color:#555;">No leads in this category.</div>'; }
     else { c.forEach(function(cust) { listHtml += buildLeadCard(cust); }); }
@@ -716,7 +721,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // ── JOBS TAB ───────────────────────────────────────────────────────────────
   function renderJobsView() {
     adminView = 'jobs';
-    var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab active" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab" onclick="renderTeamView()">&#128101; Team</button><button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button><button class="portal-tab" onclick="renderMarketingView()">&#128200; Marketing</button><button class="portal-tab" onclick="renderImportView()">&#128229; Import</button><button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a></div>';
+    var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab active" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab" onclick="renderTeamView()">&#128101; Team</button><button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button><button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button><button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a></div>';
     var allJobs = adminCustomers.filter(function(c){ return !!c.sold_type; });
     var fixmyJobs = allJobs.filter(function(c){ return c.lead_category !== 'new_solar'; });
     var nsJobs    = allJobs.filter(function(c){ return c.lead_category === 'new_solar'; });
@@ -796,7 +801,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // ── TEAM TAB ───────────────────────────────────────────────────────────────
   async function renderTeamView() {
     adminView = 'team';
-    var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab active" onclick="renderTeamView()">&#128101; Team</button><button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button><button class="portal-tab" onclick="renderMarketingView()">&#128200; Marketing</button><button class="portal-tab" onclick="renderImportView()">&#128229; Import</button><button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a></div>';
+    var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab active" onclick="renderTeamView()">&#128101; Team</button><button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button><button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button><button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a></div>';
     document.getElementById('dashBody').innerHTML = portalNav + '<p style="color:#aaa;padding:20px 0;">Loading team data...</p>';
 
     // Fetch agreement records and credential overrides from Supabase
@@ -1411,9 +1416,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Team</button>'+
       '<button class="portal-tab active" onclick="renderScheduleView()">&#128197; Schedule</button>'+
-      '<button class="portal-tab" onclick="renderMarketingView()">&#128200; Marketing</button>'+
-      '<button class="portal-tab" onclick="renderImportView()">&#128229; Import</button>'+
-      '<button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button>'+
+      '<button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button><button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button>'+
       '<a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a>'+
     '</div>';
 
@@ -1548,9 +1551,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Team</button>'+
       '<button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button>'+
-      '<button class="portal-tab active" onclick="renderMarketingView()">&#128200; Marketing</button>'+
-      '<button class="portal-tab" onclick="renderImportView()">&#128229; Import</button>'+
-      '<button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button>'+
+      '<button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button><button class="portal-tab active" onclick="renderFinanceView()">&#128176; Finance</button>'+
       '<a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a>'+
     '</div>';
 
@@ -1670,7 +1671,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           ['Name','Zip','Source','Status','Inv Amt'].forEach(function(h2){ expHtml += '<th style="text-align:left;padding:4px 6px;color:#555;font-weight:700;">'+h2+'</th>'; });
           expHtml += '</tr></thead><tbody>';
           matches.forEach(function(c) {
-            var srcLbl = {direct_mail:'✉ Mail',self_generated:'🚶 Canvass',referral:'👥 Referral',inbound_web:'🌐 Web'}[c.lead_source]||'—';
+            var srcLbl = {direct_mail:'✉ Mail',self_generated:'🚶 Black Box',referral:'👥 Referral',inbound_web:'🌐 Web'}[c.lead_source]||'—';
             var stLbl = c.sold_type ? 'Job' : 'Lead';
             var stClr = c.sold_type ? '#8DC63F' : '#4a9eff';
             expHtml += '<tr style="border-bottom:1px solid rgba(255,255,255,0.04);">';
@@ -1708,7 +1709,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       zipTableHtml += '<div style="overflow-x:auto;margin-bottom:16px;">';
       zipTableHtml += '<table style="width:100%;border-collapse:collapse;font-size:0.72rem;">';
       zipTableHtml += '<thead><tr style="border-bottom:1px solid rgba(255,255,255,0.1);">';
-      ['Zip','Leads','Jobs','✉ Mail Resp','🚶 Canvass','👥 Referral','Total Rev (paid)','Mail Rev (paid)'].forEach(function(h2){
+      ['Zip','Leads','Jobs','✉ Mail Resp','🚶 Black Box','👥 Referral','Total Rev (paid)','Mail Rev (paid)'].forEach(function(h2){
         zipTableHtml += '<th style="text-align:left;padding:6px 8px;color:#555;font-weight:700;white-space:nowrap;">'+h2+'</th>';
       });
       zipTableHtml += '</tr></thead><tbody>';
@@ -1750,7 +1751,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '</div>'+
       '</div>';
 
+    var stStyle = 'padding:6px 16px;border:none;border-radius:100px;font-size:0.75rem;font-weight:700;cursor:pointer;transition:all 0.15s;';
+    var subTabRow = '<div style="display:flex;gap:8px;margin-bottom:18px;">'+
+      '<button onclick="financeSubTab=\'commissions\';renderFinanceView()" style="'+stStyle+'background:rgba(255,255,255,0.07);color:#888;">&#128176; Commissions</button>'+
+      '<button style="'+stStyle+'background:#8DC63F;color:#1A1A1A;">&#128200; Marketing</button>'+
+    '</div>';
     document.getElementById('dashBody').innerHTML = portalNav+
+      '<div style="padding:4px 0 24px;">'+subTabRow+
       '<div class="admin-header-row">'+
         '<h2 style="font-size:1.1rem;font-weight:700;">Marketing Spend &amp; ROI</h2>'+
         '<div style="display:flex;gap:8px;flex-wrap:wrap;">'+
@@ -1764,7 +1771,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       gadsHtml+
       '<div class="editor-section-title" style="margin-bottom:10px;">Direct Mail &amp; Other Expenses</div>'+
       '<div id="mktList">'+expHtml+'</div>'+
-      zipTableHtml;
+      zipTableHtml+
+      '</div>';
 
     window.toggleMktExpand = function(id) {
       var el = document.getElementById('mktExpand-'+id);
@@ -1776,13 +1784,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   function renderImportView() {
     adminView = 'import';
     var portalNav = '<div class="portal-tab-nav">'+
-      '<button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
+      '<button class="portal-tab active" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Team</button>'+
       '<button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button>'+
-      '<button class="portal-tab" onclick="renderMarketingView()">&#128200; Marketing</button>'+
-      '<button class="portal-tab active" onclick="renderImportView()">&#128229; Import</button>'+
-      '<button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button>'+
+      '<button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button><button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button>'+
       '<a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a>'+
     '</div>';
 
@@ -1963,7 +1969,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           install_year:        r.install_year ? parseInt(r.install_year) : null,
           notes:               r.notes || null,
           title_owner:         en.owner || null,
-          apn:                 en.apn   || null
+          apn:                 en.apn   || null,
+          black_box:           true
         };
         return rec;
       });
@@ -1990,9 +1997,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Team</button>'+
       '<button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button>'+
-      '<button class="portal-tab" onclick="renderMarketingView()">&#128200; Marketing</button>'+
-      '<button class="portal-tab" onclick="renderImportView()">&#128229; Import</button>'+
-      '<button class="portal-tab active" onclick="renderAgentsView()">&#129302; Agents</button>'+
+      '<button class="portal-tab active" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button><button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button>'+
       '<a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a>'+
     '</div>';
 
@@ -3017,6 +3022,570 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (status) { status.textContent = '✓ All photos labeled'; status.style.color = '#8DC63F'; setTimeout(function(){ if(status) status.textContent=''; }, 3000); }
   }
 
+  // ── Admin Canvass View ─────────────────────────────────────────────────────
+  function renderAdminCanvassView() {
+    adminView = 'canvass';
+    var portalNav = '<div class="portal-tab-nav">'+
+      '<button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
+      '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
+      '<button class="portal-tab" onclick="renderTeamView()">&#128101; Team</button>'+
+      '<button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button>'+
+      '<button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button>'+
+      '<button class="portal-tab active" onclick="renderAdminCanvassView()">&#128230; Black Box</button><button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button>'+
+      '<a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a>'+
+    '</div>';
+
+    var h = portalNav + '<div style="padding:4px 0 16px;">';
+
+    // ── Quarantine stats + list ─────────────────────────────────────────────
+    var bbLeads = adminCustomers.filter(function(x){ return !!x.black_box; });
+    var totalImported = adminCustomers.filter(function(x){ return x.lead_source === 'orphaned_list'; }).length;
+    var totalActivated = adminCustomers.filter(function(x){ return x.lead_source === 'orphaned_list' && !x.black_box; }).length;
+    var convPct = totalImported > 0 ? Math.round(totalActivated / totalImported * 100) : 0;
+    h += '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px;">';
+    h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;">&#128230; Black Box &mdash; Quarantined Leads</div>';
+    h += '<div style="display:flex;gap:10px;align-items:center;">';
+    h += '<span style="font-size:0.72rem;color:#888;"><strong style="color:#eee;">'+totalImported+'</strong> imported &middot; <strong style="color:#8DC63F;">'+totalActivated+'</strong> activated (<strong style="color:#8DC63F;">'+convPct+'%</strong>)</span>';
+    h += '</div></div>';
+    h += '<div id="bbEnrichBar" style="margin-bottom:12px;"></div>';
+
+    if (bbLeads.length === 0) {
+      h += '<div style="padding:20px;text-align:center;background:rgba(141,198,63,0.06);border:1px solid rgba(141,198,63,0.2);border-radius:12px;margin-bottom:16px;">';
+      h += '<div style="font-size:0.85rem;font-weight:700;color:#8DC63F;margin-bottom:4px;">&#10003; No quarantined leads</div>';
+      h += '<div style="font-size:0.72rem;color:#888;">Import a permit CSV to populate Black Box.</div>';
+      h += '</div>';
+    } else {
+      h += '<div style="display:grid;gap:8px;margin-bottom:20px;">';
+      bbLeads.forEach(function(lead) {
+        var name = ((lead.first_name||'')+' '+(lead.last_name||'')).trim() || lead.title_owner || '—';
+        var installer = lead.original_installer ? (' &middot; '+lead.original_installer+(lead.install_year?' ('+lead.install_year+')':'')) : '';
+        var noContact = !lead.phone && !lead.email;
+        h += '<div style="background:#1e1e1e;border:1px solid #2a2a2a;border-radius:10px;padding:13px 14px;display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">';
+        h += '<div style="flex:1;min-width:0;">';
+        h += '<div style="font-size:0.85rem;font-weight:700;color:#eee;margin-bottom:2px;">'+name+'</div>';
+        h += '<div style="font-size:0.72rem;color:#888;margin-bottom:3px;">'+(lead.address||'—')+'</div>';
+        if (lead.apn) h += '<div style="font-size:0.66rem;color:#555;">APN: '+lead.apn+installer+'</div>';
+        if (noContact) h += '<div style="margin-top:5px;"><span style="font-size:0.63rem;font-weight:700;background:rgba(255,170,0,0.1);border:1px solid rgba(255,170,0,0.3);color:#ffaa00;border-radius:100px;padding:2px 8px;">&#128222; Needs skip trace</span></div>';
+        h += '</div>';
+        h += '<button onclick="activateBlackBoxLead(\''+lead.id+'\')" style="flex-shrink:0;padding:8px 14px;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;white-space:nowrap;">&#128275; Activate</button>';
+        h += '</div>';
+      });
+      h += '</div>';
+    }
+
+    h += '<hr style="border:none;border-top:1px solid #2a2a2a;margin:4px 0 16px;">';
+    h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;margin-bottom:12px;">&#128205; Door Knocking Route</div>';
+
+    if (adminCanvassGpsStatus === 'idle') {
+      h += '<div style="text-align:center;padding:32px 16px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:14px;margin-bottom:12px;">';
+      h += '<div style="font-size:2rem;margin-bottom:12px;">&#128205;</div>';
+      h += '<div style="font-size:0.9rem;font-weight:700;margin-bottom:6px;">Find Nearest Leads</div>';
+      h += '<div style="font-size:0.75rem;color:#888;margin-bottom:18px;">Uses your GPS to route you to the closest orphaned account leads first.</div>';
+      h += '<button onclick="adminCanvassInit()" style="background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;padding:14px 32px;font-size:0.9rem;font-weight:700;cursor:pointer;">&#128205; Get My Location</button>';
+      h += '</div>';
+    } else if (adminCanvassGpsStatus === 'loading') {
+      h += '<div style="text-align:center;padding:48px;color:#888;font-size:0.85rem;">Locating you and loading leads&hellip;</div>';
+    } else if (adminCanvassGpsStatus === 'error') {
+      h += '<div style="text-align:center;padding:32px 16px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.2);border-radius:14px;">';
+      h += '<div style="color:#ef4444;font-size:0.85rem;margin-bottom:14px;">&#9888; Location access denied. Enable location in your browser settings.</div>';
+      h += '<button onclick="adminCanvassInit()" style="background:rgba(255,255,255,0.08);color:#ccc;border:1px solid rgba(255,255,255,0.15);border-radius:100px;padding:10px 22px;font-size:0.8rem;font-weight:700;cursor:pointer;">Try Again</button>';
+      h += '</div>';
+    } else if (adminCanvassGpsStatus === 'ready') {
+      var unvisited = adminCanvassLeads.filter(function(l){ return !l.knock_status; });
+      var visited   = adminCanvassLeads.filter(function(l){ return !!l.knock_status; });
+      var interested = adminCanvassLeads.filter(function(l){ return l.knock_status === 'interested'; }).length;
+
+      h += '<div style="font-size:0.68rem;color:#555;margin-bottom:12px;display:flex;align-items:center;gap:8px;">';
+      h += '<span style="background:rgba(141,198,63,0.12);color:#8DC63F;border:1px solid rgba(141,198,63,0.25);border-radius:100px;padding:3px 10px;">&#128205; GPS Active</span>';
+      h += '<button onclick="adminCanvassInit()" style="background:none;border:none;color:#555;cursor:pointer;font-size:0.7rem;padding:0;">&#8635; Refresh</button>';
+      h += '</div>';
+
+      h += '<div style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap;">';
+
+      // ── Left: stats + card ───────────────────────────────────────────────────
+      h += '<div style="flex:1;min-width:260px;">';
+
+      h += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px;">';
+      h += '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:10px;text-align:center;"><div style="font-size:1.2rem;font-weight:800;color:#8DC63F;">'+unvisited.length+'</div><div style="font-size:0.68rem;color:#888;">Remaining</div></div>';
+      h += '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:10px;text-align:center;"><div style="font-size:1.2rem;font-weight:800;color:#4a9eff;">'+visited.length+'</div><div style="font-size:0.68rem;color:#888;">Knocked</div></div>';
+      h += '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:10px;text-align:center;"><div style="font-size:1.2rem;font-weight:800;color:#ffaa00;">'+interested+'</div><div style="font-size:0.68rem;color:#888;">Interested</div></div>';
+      h += '</div>';
+
+      if (unvisited.length >= 2) {
+        h += '<button onclick="adminCanvassBatchRoute(5)" style="width:100%;margin-bottom:14px;padding:10px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);border-radius:10px;color:#4a9eff;font-size:0.8rem;font-weight:700;cursor:pointer;">&#128506; Route Next 5 Houses in Google Maps</button>';
+      }
+
+      if (!unvisited.length) {
+        h += '<div style="text-align:center;padding:40px 20px;background:rgba(141,198,63,0.06);border:1px solid rgba(141,198,63,0.2);border-radius:14px;">';
+        h += '<div style="font-size:2rem;margin-bottom:10px;">&#127881;</div>';
+        h += '<div style="font-size:0.95rem;font-weight:700;color:#8DC63F;margin-bottom:6px;">All doors knocked!</div>';
+        h += '<div style="font-size:0.75rem;color:#888;">'+visited.length+' addresses visited.</div>';
+        h += '</div>';
+      } else {
+        var lead = unvisited[0];
+        var distMi = lead._distMi != null ? lead._distMi.toFixed(1)+' mi away' : '';
+        var mapsUrl = 'https://www.google.com/maps/dir/?api=1&destination='+encodeURIComponent(lead.address||'');
+        var fullName = ((lead.first_name||'')+' '+(lead.last_name||'')).trim();
+
+        h += '<div style="background:rgba(255,255,255,0.05);border:2px solid rgba(141,198,63,0.35);border-radius:16px;padding:18px;margin-bottom:12px;">';
+        h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">';
+        h += '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#8DC63F;">Next Door &middot; 1 of '+unvisited.length+' remaining</div>';
+        if (distMi) h += '<div style="font-size:0.72rem;color:#888;">'+distMi+'</div>';
+        h += '</div>';
+        h += '<div style="font-size:1.05rem;font-weight:700;margin-bottom:2px;">'+(lead.address||'No address')+'</div>';
+        if (fullName) h += '<div style="font-size:0.75rem;color:#888;margin-bottom:2px;">'+fullName+'</div>';
+        if (lead.notes) h += '<div style="font-size:0.7rem;color:#666;margin-bottom:10px;font-style:italic;">'+lead.notes.slice(0,60)+'</div>';
+        h += '<a href="'+mapsUrl+'" target="_blank" style="display:inline-block;font-size:0.75rem;font-weight:700;color:#4a9eff;text-decoration:none;background:rgba(74,158,255,0.08);border:1px solid rgba(74,158,255,0.25);border-radius:100px;padding:6px 14px;margin-bottom:14px;">&#128506; Get Directions</a>';
+        h += '<div style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#666;margin-bottom:8px;">What happened?</div>';
+        h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">';
+        h += '<button onclick="adminCanvassKnock(\''+lead.id+'\',\'not_home\')" style="padding:14px 8px;border:1px solid rgba(255,255,255,0.15);border-radius:12px;background:rgba(255,255,255,0.06);color:#ccc;font-size:0.8rem;font-weight:700;cursor:pointer;">&#128683; Not Home</button>';
+        h += '<button onclick="adminCanvassKnock(\''+lead.id+'\',\'not_interested\')" style="padding:14px 8px;border:1px solid rgba(255,255,255,0.15);border-radius:12px;background:rgba(255,255,255,0.06);color:#ccc;font-size:0.8rem;font-weight:700;cursor:pointer;">&#128077;&#65039; Not Interested</button>';
+        h += '<button onclick="adminCanvassKnock(\''+lead.id+'\',\'interested\')" style="padding:14px 8px;border:1px solid rgba(141,198,63,0.4);border-radius:12px;background:rgba(141,198,63,0.12);color:#8DC63F;font-size:0.8rem;font-weight:700;cursor:pointer;">&#10003; Interested!</button>';
+        h += '<button onclick="adminCanvassKnock(\''+lead.id+'\',\'already_customer\')" style="padding:14px 8px;border:1px solid rgba(74,158,255,0.3);border-radius:12px;background:rgba(74,158,255,0.08);color:#4a9eff;font-size:0.8rem;font-weight:700;cursor:pointer;">&#11088; Already Customer</button>';
+        h += '</div></div>';
+
+        h += '<div style="text-align:center;margin-bottom:16px;"><button onclick="adminCanvassSkip()" style="background:none;border:none;color:#555;cursor:pointer;font-size:0.75rem;text-decoration:underline;">Skip this address &rsaquo;</button></div>';
+
+        if (unvisited.length > 1) {
+          h += '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#444;margin-bottom:6px;">Coming up</div>';
+          unvisited.slice(1, 4).forEach(function(nl, ni) {
+            var nd = nl._distMi != null ? nl._distMi.toFixed(1)+' mi' : '';
+            h += '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:8px;margin-bottom:4px;">';
+            h += '<div style="font-size:0.75rem;color:#888;">'+(ni+2)+'. '+(nl.address||'&mdash;')+'</div>';
+            if (nd) h += '<div style="font-size:0.68rem;color:#555;">'+nd+'</div>';
+            h += '</div>';
+          });
+        }
+      }
+      h += '</div>'; // end left panel
+
+      // ── Right: Session Log ───────────────────────────────────────────────────
+      var bbHist = [];
+      try { bbHist = JSON.parse(localStorage.getItem('bbKnockHistory') || '[]'); } catch(e2){}
+      h += '<div style="flex:0 0 210px;min-width:190px;">';
+      h += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">';
+      h += '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#555;">Session Log</div>';
+      if (bbHist.length) h += '<button onclick="adminCanvassClearHistory()" style="background:none;border:none;color:#444;cursor:pointer;font-size:0.68rem;padding:0;text-decoration:underline;">Clear</button>';
+      h += '</div>';
+      if (!bbHist.length) {
+        h += '<div style="font-size:0.72rem;color:#444;text-align:center;padding:20px 8px;background:rgba(255,255,255,0.02);border:1px dashed rgba(255,255,255,0.08);border-radius:10px;">No knocks yet<br/><span style="font-size:0.65rem;color:#333;">History appears here as you go</span></div>';
+      } else {
+        var bbStatusColor = {interested:'#8DC63F',not_home:'#666',not_interested:'#ef4444',already_customer:'#4a9eff'};
+        var bbStatusLabel = {interested:'✓ Hot Lead',not_home:'🚫 Not Home',not_interested:'👎 No Interest',already_customer:'⭐ Already Ours'};
+        bbHist.slice(0, 20).forEach(function(entry) {
+          var ago = '';
+          try {
+            var diff = Math.round((Date.now() - new Date(entry.ts).getTime()) / 60000);
+            ago = diff < 1 ? 'just now' : diff < 60 ? diff+'m ago' : Math.floor(diff/60)+'h ago';
+          } catch(e3){}
+          var col = bbStatusColor[entry.knockStatus] || '#666';
+          var lbl = bbStatusLabel[entry.knockStatus] || entry.knockStatus;
+          h += '<div style="padding:8px 10px;background:rgba(255,255,255,0.03);border-left:3px solid '+col+';border-radius:0 8px 8px 0;margin-bottom:5px;">';
+          h += '<div style="font-size:0.7rem;color:#ccc;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+(entry.address||'—')+'</div>';
+          h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:2px;">';
+          h += '<div style="font-size:0.62rem;color:'+col+';font-weight:700;">'+lbl+'</div>';
+          h += '<div style="font-size:0.6rem;color:#444;">'+ago+'</div>';
+          h += '</div>';
+          h += '</div>';
+        });
+      }
+      h += '</div>'; // end right panel
+
+      h += '</div>'; // end flex row
+    }
+
+    h += '</div>';
+    document.getElementById('dashBody').innerHTML = h;
+    setTimeout(adminCanvassLoadEnrichBar, 0);
+  }
+
+  function adminCanvassHaversine(lat1, lng1, lat2, lng2) {
+    var R = 3958.8;
+    var dLat = (lat2-lat1)*Math.PI/180, dLng = (lng2-lng1)*Math.PI/180;
+    var a = Math.sin(dLat/2)*Math.sin(dLat/2)+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)*Math.sin(dLng/2);
+    return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+  }
+
+  window.adminCanvassInit = async function() {
+    adminCanvassGpsStatus = 'loading';
+    renderAdminCanvassView();
+    try {
+      var pos = await new Promise(function(resolve, reject) {
+        navigator.geolocation.getCurrentPosition(resolve, reject, {enableHighAccuracy:true, timeout:10000});
+      });
+      adminCanvassUserLat = pos.coords.latitude;
+      adminCanvassUserLng = pos.coords.longitude;
+    } catch(e) {
+      adminCanvassGpsStatus = 'error';
+      renderAdminCanvassView();
+      return;
+    }
+    var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var { data: rawLeads, error: lErr } = await c2
+      .from('customers')
+      .select('id,first_name,last_name,address,notes,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step')
+      .eq('lead_source','orphaned_list')
+      .is('sold_type', null)
+      .order('created_at', {ascending: false})
+      .limit(500);
+    if (lErr || !rawLeads) { adminCanvassGpsStatus = 'error'; renderAdminCanvassView(); return; }
+    var needsGeo = rawLeads.filter(function(l){ return !l.lat && l.address; }).slice(0, 30);
+    if (needsGeo.length) {
+      (async function() {
+        for (var i = 0; i < needsGeo.length; i++) {
+          try {
+            var geo = await geocodeAddress(needsGeo[i].address);
+            if (geo) {
+              needsGeo[i].lat = geo.lat; needsGeo[i].lng = geo.lng;
+              supabase.createClient(SUPA_URL, SUPA_KEY).from('customers').update({lat:geo.lat, lng:geo.lng}).eq('id',needsGeo[i].id);
+            }
+          } catch(e){}
+        }
+      })();
+    }
+    rawLeads.forEach(function(l) {
+      l._distMi = (l.lat && l.lng) ? adminCanvassHaversine(adminCanvassUserLat, adminCanvassUserLng, l.lat, l.lng) : null;
+    });
+    rawLeads.sort(function(a,b) {
+      if (a.knock_status && !b.knock_status) return 1;
+      if (!a.knock_status && b.knock_status) return -1;
+      return (a._distMi!=null?a._distMi:9999) - (b._distMi!=null?b._distMi:9999);
+    });
+    adminCanvassLeads = rawLeads.filter(function(l){ return adminCanvassSkipIds.indexOf(l.id) < 0; });
+    adminCanvassGpsStatus = 'ready';
+    renderAdminCanvassView();
+  };
+
+  window.adminCanvassKnock = async function(id, knockStatus) {
+    var lead = adminCanvassLeads.find(function(l){ return l.id === id; });
+    if (!lead) return;
+    var now = new Date().toISOString();
+    var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+    await c2.from('customers').update({ knock_status: knockStatus, knocked_at: now, knocked_by: 'admin' }).eq('id', id);
+    lead.knock_status = knockStatus; lead.knocked_at = now; lead.knocked_by = 'admin';
+    // Save to session history
+    try {
+      var hist = JSON.parse(localStorage.getItem('bbKnockHistory') || '[]');
+      hist.unshift({id:id, address:lead.address, name:((lead.first_name||'')+' '+(lead.last_name||'')).trim(), knockStatus:knockStatus, ts:now, distMi:lead._distMi||null});
+      if (hist.length > 25) hist = hist.slice(0,25);
+      localStorage.setItem('bbKnockHistory', JSON.stringify(hist));
+    } catch(e){}
+    adminCanvassLeads.sort(function(a,b) {
+      if (a.knock_status && !b.knock_status) return 1;
+      if (!a.knock_status && b.knock_status) return -1;
+      return (a._distMi!=null?a._distMi:9999) - (b._distMi!=null?b._distMi:9999);
+    });
+    if (knockStatus === 'interested') {
+      await c2.from('customers').update({ step: 1, lead_category: 'fixmy', sold_type: null, black_box: false }).eq('id', id);
+      var rec = adminCustomers.find(function(r){ return r.id === id; });
+      if (rec) { rec.step = 1; rec.lead_category = 'fixmy'; rec.black_box = false; }
+      openLeadEditor(id);
+      return;
+    }
+    renderAdminCanvassView();
+  };
+
+  window.adminCanvassSkip = function() {
+    var unvisited = adminCanvassLeads.filter(function(l){ return !l.knock_status; });
+    if (unvisited.length) adminCanvassSkipIds.push(unvisited[0].id);
+    adminCanvassLeads = adminCanvassLeads.filter(function(l){ return adminCanvassSkipIds.indexOf(l.id) < 0; });
+    renderAdminCanvassView();
+  };
+
+  window.adminCanvassBatchRoute = function(n) {
+    var unvisited = adminCanvassLeads.filter(function(l){ return !l.knock_status && l.address; });
+    var batch = unvisited.slice(0, n || 5);
+    if (!batch.length) return;
+    var stops = batch.map(function(l){ return encodeURIComponent(l.address); });
+    var origin = (adminCanvassUserLat && adminCanvassUserLng) ? adminCanvassUserLat+','+adminCanvassUserLng : stops.shift();
+    var url = 'https://www.google.com/maps/dir/' + origin + '/' + stops.join('/');
+    window.open(url, '_blank');
+  };
+
+  window.adminCanvassClearHistory = function() {
+    try { localStorage.removeItem('bbKnockHistory'); } catch(e){}
+    renderAdminCanvassView();
+  };
+
+  window.activateBlackBoxLead = async function(id) {
+    var rec = adminCustomers.find(function(x){ return x.id === id; });
+    if (!rec) return;
+    try {
+      var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var { error } = await c2.from('customers').update({ black_box: false, step: rec.step || 1, lead_category: rec.lead_category || 'fixmy' }).eq('id', id);
+      if (error) throw error;
+      rec.black_box = false;
+    } catch(e) { alert('Activate failed: ' + e.message); return; }
+    openLeadEditor(id);
+  };
+
+  var _bbEnrichRunning = false;
+
+  window.adminCanvassLoadEnrichBar = async function() {
+    var bar = document.getElementById('bbEnrichBar');
+    if (!bar) return;
+    var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var { count: total } = await c2.from('customers').select('id', {count:'exact',head:true}).eq('lead_source','orphaned_list').is('sold_type',null);
+    var { count: haveOwner } = await c2.from('customers').select('id', {count:'exact',head:true}).eq('lead_source','orphaned_list').is('sold_type',null).not('title_owner','is',null);
+    total = total || 0; haveOwner = haveOwner || 0;
+    var missing = total - haveOwner;
+    if (!bar) return;
+    if (missing === 0) {
+      bar.innerHTML = '<div style="background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.2);border-radius:10px;padding:10px 14px;font-size:0.75rem;color:#8DC63F;font-weight:700;">&#10003; All '+total+' leads have owner names on file</div>';
+    } else {
+      bar.innerHTML = '<div style="background:rgba(255,170,0,0.07);border:1px solid rgba(255,170,0,0.2);border-radius:10px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">'
+        + '<div><div style="font-size:0.75rem;font-weight:700;color:#ffaa00;">'+missing+' leads missing owner name</div>'
+        + '<div style="font-size:0.68rem;color:#888;margin-top:1px;">'+haveOwner+' of '+total+' already enriched &mdash; uses free SANDAG + SD City GIS</div></div>'
+        + '<button onclick="adminCanvassEnrichAll()" style="background:#ffaa00;color:#1A1A1A;border:none;border-radius:100px;padding:8px 18px;font-size:0.78rem;font-weight:800;cursor:pointer;white-space:nowrap;">&#128269; Enrich All</button>'
+        + '</div>';
+    }
+  };
+
+  window.adminCanvassEnrichAll = async function() {
+    if (_bbEnrichRunning) return;
+    _bbEnrichRunning = true;
+    var bar = document.getElementById('bbEnrichBar');
+    if (bar) bar.innerHTML = '<div style="background:rgba(74,158,255,0.07);border:1px solid rgba(74,158,255,0.2);border-radius:10px;padding:10px 14px;" id="bbEnrichProgress"><div style="font-size:0.75rem;color:#4a9eff;font-weight:700;">Starting enrichment&hellip;</div></div>';
+
+    var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var { data: leads } = await c2.from('customers')
+      .select('id,address,lat,lng')
+      .eq('lead_source','orphaned_list')
+      .is('sold_type',null)
+      .is('title_owner',null)
+      .not('address','is',null)
+      .order('created_at',{ascending:true})
+      .limit(1000);
+
+    leads = leads || [];
+    var total = leads.length, found = 0, failed = 0;
+
+    function updateProgress() {
+      var done = found + failed;
+      var pct = total ? Math.round(done/total*100) : 0;
+      var prog = document.getElementById('bbEnrichProgress');
+      if (prog) prog.innerHTML = '<div style="font-size:0.75rem;color:#4a9eff;font-weight:700;margin-bottom:6px;">Enriching&hellip; '+done+' of '+total+' &mdash; '+found+' owners found</div>'
+        + '<div style="background:rgba(255,255,255,0.08);border-radius:100px;height:6px;overflow:hidden;">'
+        + '<div style="background:#4a9eff;height:6px;border-radius:100px;width:'+pct+'%;transition:width 0.3s;"></div></div>'
+        + '<div style="font-size:0.65rem;color:#555;margin-top:4px;">'+pct+'% &mdash; do not close this tab</div>';
+    }
+
+    for (var i = 0; i < leads.length; i++) {
+      var lead = leads[i];
+      try {
+        var body = { address: lead.address };
+        if (lead.lat) body.lat = lead.lat;
+        if (lead.lng) body.lng = lead.lng;
+        var resp = await fetch('/.netlify/functions/regrid-lookup', {
+          method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
+        });
+        var data = await resp.json();
+        if (data.owner) {
+          found++;
+          await c2.from('customers').update({ title_owner: data.owner, apn: data.apn || null }).eq('id', lead.id);
+        } else {
+          failed++;
+        }
+      } catch(e) { failed++; }
+      updateProgress();
+      // 350ms between requests to respect public GIS rate limits
+      await new Promise(function(r){ setTimeout(r, 350); });
+    }
+
+    _bbEnrichRunning = false;
+    var bar2 = document.getElementById('bbEnrichBar');
+    var skipped = total - found - failed;
+    if (bar2) bar2.innerHTML = '<div style="background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.2);border-radius:10px;padding:10px 14px;">'
+      + '<div style="font-size:0.75rem;font-weight:700;color:#8DC63F;">&#10003; Enrichment complete &mdash; '+found+' of '+total+' owners found</div>'
+      + '<div style="font-size:0.68rem;color:#888;margin-top:2px;">'+(total-found)+' addresses not found in public GIS (may need skip trace)</div>'
+      + '</div>';
+  };
+
+  // ── Finance View — Commission Ledger + Ops Payouts ─────────────────────────
+  async function renderFinanceView() {
+    adminView = 'finance';
+    var portalNav = '<div class="portal-tab-nav">'+
+      '<button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
+      '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
+      '<button class="portal-tab" onclick="renderTeamView()">&#128101; Team</button>'+
+      '<button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button>'+
+      '<button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button>'+
+      '<button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button>'+
+      '<button class="portal-tab active" onclick="renderFinanceView()">&#128176; Finance</button>'+
+      '<a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a>'+
+    '</div>';
+
+    var stStyle = 'padding:6px 16px;border:none;border-radius:100px;font-size:0.75rem;font-weight:700;cursor:pointer;transition:all 0.15s;';
+    var subTabRow = '<div style="display:flex;gap:8px;margin-bottom:18px;">'+
+      '<button onclick="financeSubTab=\'commissions\';renderFinanceView()" style="'+stStyle+'background:'+(financeSubTab!=='marketing'?'#8DC63F':'rgba(255,255,255,0.07)')+';color:'+(financeSubTab!=='marketing'?'#1A1A1A':'#888')+';">&#128176; Commissions</button>'+
+      '<button onclick="financeSubTab=\'marketing\';renderFinanceView()" style="'+stStyle+'background:'+(financeSubTab==='marketing'?'#8DC63F':'rgba(255,255,255,0.07)')+';color:'+(financeSubTab==='marketing'?'#1A1A1A':'#888')+';">&#128200; Marketing</button>'+
+    '</div>';
+
+    if (financeSubTab === 'marketing') {
+      renderMarketingView();
+      return;
+    }
+
+    document.getElementById('dashBody').innerHTML = portalNav + '<div style="padding:4px 0 24px;">' + subTabRow + '<div style="text-align:center;padding:20px;color:#555;font-size:0.8rem;">Loading finance data&hellip;</div></div>';
+
+    var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var { data: jobs } = await c2
+      .from('customers')
+      .select('id,first_name,last_name,address,sold_type,rep_id,setter_name,rep_commission,commission_estimate,commission_paid,commission_paid_at,invoice_amount,invoice_status,project_costs,ops_payout_amount,ops_payout_status,assigned_ops,gross_revenue,milestone2_amount,milestone2_status,milestone3_amount,milestone3_status,notes_internal')
+      .not('sold_type', 'is', null)
+      .order('created_at', {ascending: false});
+
+    jobs = jobs || [];
+
+    // ── Rep map
+    var repMap = {tech4:'Dennis Larsen',tech2:'Ranie',tech3:'Michael Smith',rep1:'Ronda',tech5:'Cristina Huang',setter1:'Setter'};
+    var opsMap = {ops1:'Jon Klos',ops2:'John Espinoza',ops3:'Cosmic Solar',ops4:'Axia'};
+
+    // ── Commission section
+    var commJobs = jobs.filter(function(j){ return j.rep_commission > 0; });
+    var byRep = {};
+    commJobs.forEach(function(j) {
+      var key = j.rep_id || 'unknown';
+      if (!byRep[key]) byRep[key] = [];
+      byRep[key].push(j);
+    });
+
+    var totalOwed = 0, totalPaid = 0;
+    commJobs.forEach(function(j){
+      var amt = parseFloat(j.rep_commission)||0;
+      if (j.commission_paid) totalPaid += amt; else totalOwed += amt;
+    });
+    var totalPipeline = jobs.reduce(function(s,j){ return s+(parseFloat(j.commission_estimate)||0); },0);
+
+    var h = portalNav + '<div style="padding:4px 0 24px;">' + subTabRow;
+
+    // Summary strip
+    h += '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:8px;">';
+    h += '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:12px;text-align:center;"><div style="font-size:1.15rem;font-weight:800;color:#ef4444;">$'+totalOwed.toLocaleString()+'</div><div style="font-size:0.65rem;color:#888;">Commissions Owed</div></div>';
+    h += '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:12px;text-align:center;"><div style="font-size:1.15rem;font-weight:800;color:#8DC63F;">$'+totalPaid.toLocaleString()+'</div><div style="font-size:0.65rem;color:#888;">Commissions Paid</div></div>';
+    h += '</div>';
+    h += '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:20px;">';
+    var opsOwed = jobs.filter(function(j){ return j.ops_payout_status==='pending' && j.ops_payout_amount>0; }).reduce(function(s,j){ return s+(parseFloat(j.ops_payout_amount)||0); },0);
+    h += '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:12px;text-align:center;"><div style="font-size:1.15rem;font-weight:800;color:#ffaa00;">$'+opsOwed.toLocaleString()+'</div><div style="font-size:0.65rem;color:#888;">Ops Payouts Pending</div></div>';
+    h += '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(74,158,255,0.2);border-radius:10px;padding:12px;text-align:center;"><div style="font-size:1.15rem;font-weight:800;color:#4a9eff;">$'+totalPipeline.toLocaleString()+'</div><div style="font-size:0.65rem;color:#888;">Pipeline (Est.)</div></div>';
+    h += '</div>';
+
+    // ── Commission Ledger
+    h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;margin-bottom:10px;">&#128176; Rep Commission Ledger</div>';
+
+    Object.keys(byRep).forEach(function(repId) {
+      var repJobs = byRep[repId];
+      var repName = repMap[repId] || repId;
+      var repOwed = repJobs.filter(function(j){ return !j.commission_paid; }).reduce(function(s,j){ return s+(parseFloat(j.rep_commission)||0); },0);
+      var repPaid = repJobs.filter(function(j){ return j.commission_paid; }).reduce(function(s,j){ return s+(parseFloat(j.rep_commission)||0); },0);
+
+      h += '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:14px;padding:16px;margin-bottom:12px;">';
+      h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">';
+      h += '<div style="font-size:0.9rem;font-weight:700;">'+repName+'</div>';
+      h += '<div style="display:flex;gap:10px;font-size:0.75rem;">';
+      if (repOwed > 0) h += '<span style="color:#ef4444;font-weight:700;">$'+repOwed.toFixed(2)+' owed</span>';
+      if (repPaid > 0) h += '<span style="color:#8DC63F;">$'+repPaid.toFixed(2)+' paid</span>';
+      h += '</div></div>';
+
+      repJobs.forEach(function(j) {
+        var amt = parseFloat(j.rep_commission)||0;
+        var paid = !!j.commission_paid;
+        var name = ((j.first_name||'')+' '+(j.last_name||'')).trim();
+        h += '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:10px;margin-bottom:6px;">';
+        h += '<div>';
+        h += '<div style="font-size:0.82rem;font-weight:600;">'+name+'</div>';
+        h += '<div style="font-size:0.68rem;color:#555;">'+(j.address||'—').split(',')[0]+'</div>';
+        if (j.notes_internal) h += '<div style="font-size:0.65rem;color:#444;margin-top:2px;font-style:italic;">'+j.notes_internal.slice(0,60)+'</div>';
+        h += '</div>';
+        h += '<div style="display:flex;align-items:center;gap:8px;">';
+        h += '<div style="font-size:0.9rem;font-weight:800;color:'+(paid?'#8DC63F':'#ffaa00')+';">$'+amt.toFixed(2)+'</div>';
+        if (paid) {
+          h += '<span style="font-size:0.65rem;background:rgba(141,198,63,0.12);color:#8DC63F;border:1px solid rgba(141,198,63,0.3);border-radius:100px;padding:3px 8px;">&#10003; Paid</span>';
+        } else {
+          h += '<button onclick="markCommissionPaid(\''+j.id+'\')" style="font-size:0.68rem;padding:5px 12px;background:rgba(141,198,63,0.12);color:#8DC63F;border:1px solid rgba(141,198,63,0.3);border-radius:100px;cursor:pointer;font-weight:700;">Mark Paid</button>';
+        }
+        h += '</div></div>';
+      });
+      h += '</div>';
+    });
+
+    if (!commJobs.length) h += '<div style="text-align:center;padding:24px;color:#555;font-size:0.8rem;">No commission records yet.</div>';
+
+    // ── Pipeline Estimates
+    var pipelineJobs = jobs.filter(function(j){ return parseFloat(j.commission_estimate) > 0; });
+    if (pipelineJobs.length) {
+      h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#4a9eff;margin:20px 0 10px;">&#128640; Commission Pipeline</div>';
+      pipelineJobs.forEach(function(j) {
+        var est = parseFloat(j.commission_estimate)||0;
+        var name = ((j.first_name||'')+' '+(j.last_name||'')).trim();
+        var repName = repMap[j.rep_id] || j.rep_id || '—';
+        h += '<div style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px;background:rgba(74,158,255,0.04);border:1px solid rgba(74,158,255,0.15);border-radius:10px;margin-bottom:6px;">';
+        h += '<div>';
+        h += '<div style="font-size:0.82rem;font-weight:600;">'+name+'</div>';
+        h += '<div style="font-size:0.68rem;color:#555;">'+(j.address||'—').split(',')[0]+' &middot; '+repName+'</div>';
+        if (j.notes_internal) h += '<div style="font-size:0.65rem;color:#4a9eff;margin-top:2px;font-style:italic;">'+j.notes_internal.slice(0,80)+'</div>';
+        h += '</div>';
+        h += '<div style="font-size:0.9rem;font-weight:800;color:#4a9eff;">~$'+est.toLocaleString()+'</div>';
+        h += '</div>';
+      });
+    }
+
+    // ── Ops Payouts
+    h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;margin:20px 0 10px;">&#128295; Ops Partner Payouts</div>';
+
+    var opsPending = jobs.filter(function(j){ return j.ops_payout_status === 'pending'; });
+    var byOps = {};
+    opsPending.forEach(function(j) {
+      var key = j.assigned_ops || 'unassigned';
+      if (!byOps[key]) byOps[key] = [];
+      byOps[key].push(j);
+    });
+
+    Object.keys(byOps).forEach(function(opsId) {
+      var opsJobs = byOps[opsId];
+      var opsName = opsMap[opsId] || opsId;
+      var opsTotalOwed = opsJobs.reduce(function(s,j){ return s+(parseFloat(j.ops_payout_amount)||0); },0);
+
+      h += '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:14px;padding:16px;margin-bottom:12px;">';
+      h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">';
+      h += '<div style="font-size:0.9rem;font-weight:700;">'+opsName+'</div>';
+      h += '<span style="font-size:0.75rem;color:#ffaa00;font-weight:700;">$'+opsTotalOwed.toLocaleString()+' pending</span>';
+      h += '</div>';
+
+      opsJobs.forEach(function(j) {
+        var amt = parseFloat(j.ops_payout_amount)||0;
+        var name = ((j.first_name||'')+' '+(j.last_name||'')).trim();
+        h += '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:10px;margin-bottom:6px;">';
+        h += '<div>';
+        h += '<div style="font-size:0.82rem;font-weight:600;">'+name+'</div>';
+        h += '<div style="font-size:0.68rem;color:#555;">'+(j.address||'—').split(',')[0]+'</div>';
+        h += '</div>';
+        h += '<div style="display:flex;align-items:center;gap:8px;">';
+        if (amt > 0) h += '<div style="font-size:0.9rem;font-weight:800;color:#ffaa00;">$'+amt.toLocaleString()+'</div>';
+        h += '<button onclick="markOpsPaid(\''+j.id+'\')" style="font-size:0.68rem;padding:5px 12px;background:rgba(255,170,0,0.1);color:#ffaa00;border:1px solid rgba(255,170,0,0.3);border-radius:100px;cursor:pointer;font-weight:700;">Mark Paid</button>';
+        h += '</div></div>';
+      });
+      h += '</div>';
+    });
+
+    if (!opsPending.length) h += '<div style="text-align:center;padding:24px;color:#555;font-size:0.8rem;">No ops payouts pending.</div>';
+
+    h += '</div>';
+    document.getElementById('dashBody').innerHTML = h;
+  }
+
+  window.markCommissionPaid = async function(id) {
+    var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+    await c2.from('customers').update({ commission_paid: true, commission_paid_at: new Date().toISOString() }).eq('id', id);
+    renderFinanceView();
+  };
+
+  window.markOpsPaid = async function(id) {
+    var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+    await c2.from('customers').update({ ops_payout_status: 'paid' }).eq('id', id);
+    renderFinanceView();
+  };
+
   function renderPhotoGrid() {
     var grid = document.getElementById('photoGrid');
     if (!grid) return;
@@ -3711,12 +4280,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<div><label class="ed-label">Arrival Window End</label><input type="time" id="edArrivalEnd" class="ed-input" value="'+(c.arrival_end||'')+'"/></div>'+
         edField('Install Type','edInstType',c.install_type||'','text')+
       '</div>'+
-      '<div class="editor-section-title">Invoice</div>'+
-      '<div class="ed-grid">'+
-        edSelect('Invoice Status','edInvSt',c.invoice_status||'none',[['none','None'],['draft','Draft'],['sent','Sent'],['pending','Payment Due'],['paid','Paid'],['overdue','Overdue']])+
-        edField('Amount ($)','edInvAmt',c.invoice_amount||'','number')+
-      '</div>'+
-      (!isNSEdit ?
+      (!isNSEdit && !isTTEdit ?
+        '<div class="editor-section-title">Invoice</div>'+
+        '<div class="ed-grid">'+
+          edSelect('Invoice Status','edInvSt',c.invoice_status||'none',[['none','None'],['draft','Draft'],['sent','Sent'],['pending','Payment Due'],['paid','Paid'],['overdue','Overdue']])+
+          edField('Amount ($)','edInvAmt',c.invoice_amount||'','number')+
+        '</div>'
+      : '')+
+      (!isNSEdit && !isTTEdit ?
         '<div class="editor-section-title">Deposit &amp; Milestones</div>'+
         '<div class="ed-grid">'+
           edSelect('Deposit Status','edDepSt',c.deposit_status||'none',[['none','None'],['sent','Invoice Sent'],['pending','Processing / Pending'],['paid','Paid ✓']])+
@@ -3756,7 +4327,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         edSelect('Closer (Sold By)','edRepId',c.rep_id||'none',[['none','— Unassigned —'],['tech4','Dennis Larsen'],['tech2','Ranie'],['tech3','Michael Smith'],['tech5','Cristina Huang']])+
         (!isTTEdit ? edSelect('Ops Partner (Installer)','edAssignedOps',c.assigned_ops||'none',[['none','— Unassigned —'],['ops1','Jon Klos'],['ops2','John Espinoza'],['ops3','Cosmic Solar'],['ops4','Axia'],['dennis','Dennis (Self)']]) : '')+
         (!isTTEdit ? edSelect('Ops Payout','edOpsPayout',c.ops_payout_status||'pending',[['pending','Pending'],['paid','Paid']]) : '')+
-        edSelect('Lead Source','edLeadSource',c.lead_source||'',[['','— Unknown —'],['direct_mail','Direct Mail Response'],['self_generated','Self-Generated (Canvassing)'],['referral','Referral'],['inbound_web','Inbound / Web'],['orphaned_list','Orphaned Installer List']])+
+        edSelect('Lead Source','edLeadSource',c.lead_source||'',[['','— Unknown —'],['direct_mail','Direct Mail Response'],['self_generated','Self-Generated (Black Box)'],['referral','Referral'],['inbound_web','Inbound / Web'],['orphaned_list','Orphaned Installer List']])+
         (c.lead_source==='orphaned_list'||c.original_installer ?
           '<div class="ed-grid">'+
             edField('Original Installer','edOrigInstaller',c.original_installer||'','text')+
@@ -3832,6 +4403,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var id = document.getElementById('edId').value;
     var leadCatVal = (document.getElementById('edLeadCat')||{}).value || 'fixmy';
     var isNSSave = leadCatVal === 'new_solar';
+    var isTTSave = leadCatVal === 'top_tier';
+    var isFixMySave = !isNSSave && !isTTSave;
     var apptDateVal = document.getElementById('edApptDate').value;
     var apptTimeVal = document.getElementById('edApptTime').value;
     var apptISO = (apptDateVal && apptTimeVal) ? new Date(apptDateVal+'T'+apptTimeVal).toISOString() : (apptDateVal ? new Date(apptDateVal).toISOString() : null);
@@ -3872,8 +4445,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       diagnostic_date: diagDate,
       install_date: instDate,
       install_type: document.getElementById('edInstType').value||null,
-      invoice_status: document.getElementById('edInvSt').value,
-      invoice_amount: parseFloat(document.getElementById('edInvAmt').value)||null,
       agreement_status: document.getElementById('edAgSt').value,
       notes: (function(){ var p=(document.getElementById('edNoteInput')||{}).value.trim(); return p ? _appendNote(cRec.notes||null,'Admin',p) : (cRec.notes||null); })(),
       setter_name: document.getElementById('edSetterName').value==='none'?null:document.getElementById('edSetterName').value||null,
@@ -3889,7 +4460,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       apn: (document.getElementById('edApn')||{}).value||null,
       title_confirmed: (function(){ var v=(document.getElementById('edTitleConfirmed')||{}).value; return v==='true'?true:v==='false'?false:null; })()
     };
-    if (!isNSSave) {
+    if (isFixMySave) {
+      updates.invoice_status = (document.getElementById('edInvSt')||{}).value||null;
+      updates.invoice_amount = parseFloat((document.getElementById('edInvAmt')||{}).value)||null;
       updates.deposit_status = (document.getElementById('edDepSt')||{}).value||null;
       updates.deposit_amount = parseFloat((document.getElementById('edDepAmt')||{}).value)||null;
       updates.ops_milestone1_amount = parseFloat((document.getElementById('edOpsMile1Amt')||{}).value)||null;
@@ -4147,7 +4720,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<div class="editor-section-title">Note to Tech</div>'+
         '<div style="margin-bottom:16px;"><textarea id="nlNotes" class="ed-input" rows="3" style="resize:vertical;" placeholder="Gate code, concerns, system issues..." oninput="nlUpdateCal()"></textarea></div>'+
         '<div class="editor-section-title">Lead Source</div>'+
-        '<div class="ed-grid" style="margin-bottom:8px;"><div><label class="ed-label">Lead Source</label><select id="nlLeadSource" class="ed-input" onchange="nlLeadSourceChanged(this.value)"><option value="">— Other —</option><option value="self_generated">Self-Generated (Canvassing)</option><option value="referral">Referral</option><option value="inbound_web">Inbound / Web</option><option value="orphaned_list">Orphaned Installer List</option></select></div></div>'+
+        '<div class="ed-grid" style="margin-bottom:8px;"><div><label class="ed-label">Lead Source</label><select id="nlLeadSource" class="ed-input" onchange="nlLeadSourceChanged(this.value)"><option value="">— Other —</option><option value="self_generated">Self-Generated (Black Box)</option><option value="referral">Referral</option><option value="inbound_web">Inbound / Web</option><option value="orphaned_list">Orphaned Installer List</option></select></div></div>'+
         '<div id="nlReferralNote" style="display:none;padding:10px 14px;background:rgba(141,198,63,0.07);border:1px solid rgba(141,198,63,0.2);border-radius:8px;margin-bottom:16px;font-size:0.75rem;color:#aaa;line-height:1.6;">'+
           '&#127381; <strong style="color:#8DC63F;">$1,000 Referral Incentive</strong> &mdash; The referring customer earns a $1,000 credit toward their next service when this lead closes a job. '+
           '<br><label class="ed-label" style="margin-top:8px;display:block;">Referring Customer Name (optional)</label>'+
@@ -5151,6 +5724,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var u = JSON.parse(saved);
         if (u.isAdmin || u.role === 'admin') {
           currentUser = {isAdmin:true, email:ADMIN_EMAIL};
+          CURRENT_ROLE = 'admin';
           loadAdminDashboard(); return;
         }
         if (u.isOps || u.role === 'ops') {
@@ -5687,7 +6261,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (showFieldJobs) h += tBtn('field','🔧 Field ('+fieldJobs.length+')');
       h += tBtn('schedule','📅 Appts'+(myApptCount?'  ('+myApptCount+')':''));
       if (config.setterMode) h += tBtn('map','🗺 Map');
-      if (config.setterMode) h += tBtn('canvass','🚪 Canvass');
+      if (config.setterMode) h += tBtn('canvass','📦 Black Box');
       h += '</div>';
 
       // Category sub-tab helper
@@ -5922,14 +6496,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '<div style="font-size:0.68rem;color:#555;line-height:1.6;margin-top:8px;">'+
           '<div style="font-weight:700;color:#444;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.05em;">Dev Roadmap</div>'+
           '&#8226; Two-way sync — lead status changes auto-update map pins<br/>'+
-          '&#8226; Canvassing layer — disposition doors, import data (LandGlide, SalesRabbit-style), territory assignment per setter/tech<br/>'+
+          '&#8226; Black Box scouting layer — disposition doors, import data (LandGlide, SalesRabbit-style), territory assignment per setter/tech<br/>'+
           '&#8226; Unique synced calendars — each tech&#39;s field schedule vs company-wide booking calendar (onboarding phase)'+
         '</div>';
       }
 
       // ── Canvass view (Setter/Ronda/Dennis only) ──────────────────────────────
       else if (salesView === 'canvass' && config.setterMode) {
-        h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;margin-bottom:12px;">🚪 Door Knocking Route</div>';
+        h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;margin-bottom:12px;">📦 Black Box &mdash; Door Knocking Route</div>';
 
         if (canvassGpsStatus === 'idle') {
           h += '<div style="text-align:center;padding:32px 16px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:14px;margin-bottom:12px;">';
@@ -5956,20 +6530,29 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         else if (canvassGpsStatus === 'ready') {
           var unvisited = canvassLeads.filter(function(l){ return !l.knock_status; });
           var visited = canvassLeads.filter(function(l){ return !!l.knock_status; });
-
-          // Stats strip
-          h += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:14px;">';
-          h += '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:10px;text-align:center;"><div style="font-size:1.2rem;font-weight:800;color:#8DC63F;">'+unvisited.length+'</div><div style="font-size:0.65rem;color:#888;">Remaining</div></div>';
-          h += '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:10px;text-align:center;"><div style="font-size:1.2rem;font-weight:800;color:#4a9eff;">'+visited.length+'</div><div style="font-size:0.65rem;color:#888;">Knocked</div></div>';
           var interested = canvassLeads.filter(function(l){ return l.knock_status === 'interested'; }).length;
-          h += '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:10px;text-align:center;"><div style="font-size:1.2rem;font-weight:800;color:#ffaa00;">'+interested+'</div><div style="font-size:0.65rem;color:#888;">Interested</div></div>';
-          h += '</div>';
 
           // Location pill
           h += '<div style="font-size:0.68rem;color:#555;margin-bottom:12px;display:flex;align-items:center;gap:6px;">';
           h += '<span style="background:rgba(141,198,63,0.12);color:#8DC63F;border:1px solid rgba(141,198,63,0.25);border-radius:100px;padding:3px 10px;">📍 GPS Active</span>';
           h += '<button onclick="canvassInit()" style="background:none;border:none;color:#555;cursor:pointer;font-size:0.7rem;padding:0;">↻ Refresh</button>';
           h += '</div>';
+
+          h += '<div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;">';
+
+          // ── Left panel ────────────────────────────────────────────────────────
+          h += '<div style="flex:1;min-width:240px;">';
+
+          // Stats strip
+          h += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:14px;">';
+          h += '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:10px;text-align:center;"><div style="font-size:1.2rem;font-weight:800;color:#8DC63F;">'+unvisited.length+'</div><div style="font-size:0.65rem;color:#888;">Remaining</div></div>';
+          h += '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:10px;text-align:center;"><div style="font-size:1.2rem;font-weight:800;color:#4a9eff;">'+visited.length+'</div><div style="font-size:0.65rem;color:#888;">Knocked</div></div>';
+          h += '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:10px;text-align:center;"><div style="font-size:1.2rem;font-weight:800;color:#ffaa00;">'+interested+'</div><div style="font-size:0.65rem;color:#888;">Interested</div></div>';
+          h += '</div>';
+
+          if (unvisited.length >= 2) {
+            h += '<button onclick="canvassBatchRoute(5)" style="width:100%;margin-bottom:14px;padding:10px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);border-radius:10px;color:#4a9eff;font-size:0.8rem;font-weight:700;cursor:pointer;">🗺 Route Next 5 Houses in Google Maps</button>';
+          }
 
           if (!unvisited.length) {
             h += '<div style="text-align:center;padding:40px 20px;background:rgba(141,198,63,0.06);border:1px solid rgba(141,198,63,0.2);border-radius:14px;">';
@@ -6022,6 +6605,41 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
               });
             }
           }
+          h += '</div>'; // end left panel
+
+          // ── Right: Session Log ─────────────────────────────────────────────
+          var bbHistT = [];
+          try { bbHistT = JSON.parse(localStorage.getItem('bbKnockHistory') || '[]'); } catch(e2){}
+          h += '<div style="flex:0 0 200px;min-width:180px;">';
+          h += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">';
+          h += '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#555;">Session Log</div>';
+          if (bbHistT.length) h += '<button onclick="canvassClearHistory()" style="background:none;border:none;color:#444;cursor:pointer;font-size:0.68rem;padding:0;text-decoration:underline;">Clear</button>';
+          h += '</div>';
+          if (!bbHistT.length) {
+            h += '<div style="font-size:0.72rem;color:#444;text-align:center;padding:20px 8px;background:rgba(255,255,255,0.02);border:1px dashed rgba(255,255,255,0.08);border-radius:10px;">No knocks yet<br/><span style="font-size:0.65rem;color:#333;">History appears here as you go</span></div>';
+          } else {
+            var bbSC = {interested:'#8DC63F',not_home:'#666',not_interested:'#ef4444',already_customer:'#4a9eff'};
+            var bbSL = {interested:'✓ Hot Lead',not_home:'🚫 Not Home',not_interested:'👎 No Interest',already_customer:'⭐ Already Ours'};
+            bbHistT.slice(0, 20).forEach(function(entry) {
+              var ago = '';
+              try {
+                var diff = Math.round((Date.now()-new Date(entry.ts).getTime())/60000);
+                ago = diff < 1 ? 'just now' : diff < 60 ? diff+'m ago' : Math.floor(diff/60)+'h ago';
+              } catch(e3){}
+              var col = bbSC[entry.knockStatus]||'#666';
+              var lbl = bbSL[entry.knockStatus]||entry.knockStatus;
+              h += '<div style="padding:8px 10px;background:rgba(255,255,255,0.03);border-left:3px solid '+col+';border-radius:0 8px 8px 0;margin-bottom:5px;">';
+              h += '<div style="font-size:0.7rem;color:#ccc;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+(entry.address||'—')+'</div>';
+              h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:2px;">';
+              h += '<div style="font-size:0.62rem;color:'+col+';font-weight:700;">'+lbl+'</div>';
+              h += '<div style="font-size:0.6rem;color:#444;">'+ago+'</div>';
+              h += '</div>';
+              h += '</div>';
+            });
+          }
+          h += '</div>'; // end right panel
+
+          h += '</div>'; // end flex row
         }
       }
 
@@ -6066,7 +6684,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<div class="editor-section-title">Notes</div>'+
         '<textarea id="seNotes" class="ed-input" rows="2" style="margin-bottom:14px;">'+(l.notes||'')+'</textarea>'+
         '<div class="editor-section-title">Lead Source</div>'+
-        '<select id="seLeadSource" class="ed-input" style="margin-bottom:14px;"><option value="">— Unknown —</option><option value="self_generated"'+(l.lead_source==='self_generated'?' selected':'')+'>Self-Generated (Canvassing)</option><option value="referral"'+(l.lead_source==='referral'?' selected':'')+'>Referral</option><option value="inbound_web"'+(l.lead_source==='inbound_web'?' selected':'')+'>Inbound / Web</option><option value="orphaned_list"'+(l.lead_source==='orphaned_list'?' selected':'')+'>Orphaned Installer List</option></select>'+
+        '<select id="seLeadSource" class="ed-input" style="margin-bottom:14px;"><option value="">— Unknown —</option><option value="self_generated"'+(l.lead_source==='self_generated'?' selected':'')+'>Self-Generated (Black Box)</option><option value="referral"'+(l.lead_source==='referral'?' selected':'')+'>Referral</option><option value="inbound_web"'+(l.lead_source==='inbound_web'?' selected':'')+'>Inbound / Web</option><option value="orphaned_list"'+(l.lead_source==='orphaned_list'?' selected':'')+'>Orphaned Installer List</option></select>'+
         '<div class="editor-footer">'+
           '<button class="lead-btn lime" style="padding:12px 28px;" onclick="savesSalesEdit()">Save Changes</button>'+
           '<button class="lead-btn ghost" style="padding:12px 20px;" onclick="document.getElementById(\'editorSlot\').innerHTML=\'\'">Cancel</button>'+
@@ -6341,6 +6959,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       lead.knock_status = knockStatus;
       lead.knocked_at = now;
       lead.knocked_by = person.id;
+      // Save to session history
+      try {
+        var hist = JSON.parse(localStorage.getItem('bbKnockHistory') || '[]');
+        hist.unshift({id:id, address:lead.address, name:((lead.first_name||'')+' '+(lead.last_name||'')).trim(), knockStatus:knockStatus, ts:now, distMi:lead._distMi||null});
+        if (hist.length > 25) hist = hist.slice(0,25);
+        localStorage.setItem('bbKnockHistory', JSON.stringify(hist));
+      } catch(e){}
       // Re-sort: knocked leads go to end
       canvassLeads.sort(function(a, b) {
         if (a.knock_status && !b.knock_status) return 1;
@@ -6366,8 +6991,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     window.canvassSkip = function() {
       var unvisited = canvassLeads.filter(function(l){ return !l.knock_status; });
       if (unvisited.length) canvassSkipIds.push(unvisited[0].id);
-      // Re-filter
       canvassLeads = canvassLeads.filter(function(l){ return canvassSkipIds.indexOf(l.id) < 0; });
+      renderSales();
+    };
+
+    window.canvassBatchRoute = function(n) {
+      var unvisited = canvassLeads.filter(function(l){ return !l.knock_status && l.address; });
+      var batch = unvisited.slice(0, n || 5);
+      if (!batch.length) return;
+      var stops = batch.map(function(l){ return encodeURIComponent(l.address); });
+      var origin = (canvassUserLat && canvassUserLng) ? canvassUserLat+','+canvassUserLng : stops.shift();
+      var url = 'https://www.google.com/maps/dir/' + origin + '/' + stops.join('/');
+      window.open(url, '_blank');
+    };
+
+    window.canvassClearHistory = function() {
+      try { localStorage.removeItem('bbKnockHistory'); } catch(e){}
       renderSales();
     };
 
