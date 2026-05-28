@@ -3127,13 +3127,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var mapsUrl = 'https://www.google.com/maps/dir/?api=1&destination='+encodeURIComponent(lead.address||'');
         var fullName = ((lead.first_name||'')+' '+(lead.last_name||'')).trim();
 
+        var ownerName = lead.title_owner || fullName || '';
         h += '<div style="background:rgba(255,255,255,0.05);border:2px solid rgba(141,198,63,0.35);border-radius:16px;padding:18px;margin-bottom:12px;">';
         h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">';
         h += '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#8DC63F;">Next Door &middot; 1 of '+unvisited.length+' remaining</div>';
         if (distMi) h += '<div style="font-size:0.72rem;color:#888;">'+distMi+'</div>';
         h += '</div>';
-        h += '<div style="font-size:1.05rem;font-weight:700;margin-bottom:2px;">'+(lead.address||'No address')+'</div>';
-        if (fullName) h += '<div style="font-size:0.75rem;color:#888;margin-bottom:2px;">'+fullName+'</div>';
+        h += '<div style="font-size:1.05rem;font-weight:700;margin-bottom:4px;">'+(lead.address||'No address')+'</div>';
+        if (ownerName) {
+          h += '<div style="font-size:0.8rem;font-weight:600;color:#F3EDE3;margin-bottom:2px;">'+ownerName+'</div>';
+        }
+        if (lead.apn) h += '<div style="font-size:0.65rem;color:#555;margin-bottom:8px;">APN: '+lead.apn+'</div>';
+        if (!ownerName) {
+          h += '<button id="bbVerifyBtn_'+lead.id+'" onclick="adminCanvassVerifyOwner(\''+lead.id+'\')" style="display:inline-block;font-size:0.7rem;font-weight:700;color:#ffaa00;background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.3);border-radius:100px;padding:4px 12px;cursor:pointer;margin-bottom:10px;">&#128269; Verify Owner</button>';
+        }
         if (lead.notes) h += '<div style="font-size:0.7rem;color:#666;margin-bottom:10px;font-style:italic;">'+lead.notes.slice(0,60)+'</div>';
         h += '<a href="'+mapsUrl+'" target="_blank" style="display:inline-block;font-size:0.75rem;font-weight:700;color:#4a9eff;text-decoration:none;background:rgba(74,158,255,0.08);border:1px solid rgba(74,158,255,0.25);border-radius:100px;padding:6px 14px;margin-bottom:14px;">&#128506; Get Directions</a>';
         h += '<div style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#666;margin-bottom:8px;">What happened?</div>';
@@ -3147,13 +3154,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '<div style="text-align:center;margin-bottom:16px;"><button onclick="adminCanvassSkip()" style="background:none;border:none;color:#555;cursor:pointer;font-size:0.75rem;text-decoration:underline;">Skip this address &rsaquo;</button></div>';
 
         if (unvisited.length > 1) {
-          h += '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#444;margin-bottom:6px;">Coming up</div>';
-          unvisited.slice(1, 4).forEach(function(nl, ni) {
+          h += '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#444;margin-bottom:6px;">Coming up &mdash; <span style="font-weight:400;color:#333;">tap to go there first</span></div>';
+          unvisited.slice(1, 6).forEach(function(nl, ni) {
             var nd = nl._distMi != null ? nl._distMi.toFixed(1)+' mi' : '';
-            h += '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:8px;margin-bottom:4px;">';
-            h += '<div style="font-size:0.75rem;color:#888;">'+(ni+2)+'. '+(nl.address||'&mdash;')+'</div>';
-            if (nd) h += '<div style="font-size:0.68rem;color:#555;">'+nd+'</div>';
+            var nlOwner = nl.title_owner || ((nl.first_name||'')+' '+(nl.last_name||'')).trim();
+            h += '<button onclick="adminCanvassPrioritize(\''+nl.id+'\')" style="width:100%;display:flex;justify-content:space-between;align-items:center;padding:9px 10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:8px;margin-bottom:4px;cursor:pointer;text-align:left;">';
+            h += '<div>';
+            h += '<div style="font-size:0.75rem;color:#aaa;font-weight:600;">'+(ni+2)+'. '+(nl.address||'&mdash;')+'</div>';
+            if (nlOwner) h += '<div style="font-size:0.65rem;color:#666;margin-top:1px;">'+nlOwner+'</div>';
             h += '</div>';
+            h += '<div style="font-size:0.68rem;color:#555;flex-shrink:0;margin-left:8px;">'+(nd?nd+' &#8679;':'&#8679;')+'</div>';
+            h += '</button>';
           });
         }
       }
@@ -3223,8 +3234,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
     var { data: rawLeads, error: lErr } = await c2
       .from('customers')
-      .select('id,first_name,last_name,address,notes,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step')
+      .select('id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step')
       .eq('lead_source','orphaned_list')
+      .eq('black_box', true)
       .is('sold_type', null)
       .order('created_at', {ascending: false})
       .limit(500);
@@ -3305,6 +3317,40 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   window.adminCanvassClearHistory = function() {
     try { localStorage.removeItem('bbKnockHistory'); } catch(e){}
     renderAdminCanvassView();
+  };
+
+  window.adminCanvassPrioritize = function(id) {
+    var lead = adminCanvassLeads.find(function(l){ return l.id === id; });
+    if (!lead) return;
+    adminCanvassLeads = [lead].concat(adminCanvassLeads.filter(function(l){ return l.id !== id; }));
+    renderAdminCanvassView();
+  };
+
+  window.adminCanvassVerifyOwner = async function(id) {
+    var lead = adminCanvassLeads.find(function(l){ return l.id === id; });
+    if (!lead || !lead.address) return;
+    var btn = document.getElementById('bbVerifyBtn_'+id);
+    if (btn) { btn.textContent = 'Looking up…'; btn.disabled = true; }
+    try {
+      var body = { address: lead.address };
+      if (lead.lat) body.lat = lead.lat;
+      if (lead.lng) body.lng = lead.lng;
+      var resp = await fetch('/.netlify/functions/regrid-lookup', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+      var data = await resp.json();
+      if (data.owner) {
+        lead.title_owner = data.owner;
+        lead.apn = data.apn || lead.apn || null;
+        var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+        c2.from('customers').update({ title_owner: data.owner, apn: data.apn||null }).eq('id', id);
+        var rec = adminCustomers.find(function(r){ return r.id === id; });
+        if (rec) { rec.title_owner = data.owner; rec.apn = data.apn||null; }
+        renderAdminCanvassView();
+      } else {
+        if (btn) { btn.textContent = 'Not found in GIS'; btn.disabled = false; }
+      }
+    } catch(e) {
+      if (btn) { btn.textContent = 'Error — try again'; btn.disabled = false; }
+    }
   };
 
   window.activateBlackBoxLead = async function(id) {
@@ -6908,7 +6954,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
       var { data: rawLeads, error: lErr } = await c2
         .from('customers')
-        .select('id,first_name,last_name,address,notes,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step')
+        .select('id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step')
         .eq('lead_source','orphaned_list')
         .is('sold_type', null)
         .order('created_at', {ascending: false})
