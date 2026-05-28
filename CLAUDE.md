@@ -262,6 +262,45 @@ Five-channel approach targeting homeowners whose solar installer went out of bus
 
 Target installers: SunPower (Ch. 11 Aug 2024), Titan Solar (Ch. 7 Jun 2024), Sunnova (Ch. 11 Jun 2025), Mosaic Solar Loans (Ch. 11 Jun 2025), Sullivan Solar (shut down Oct/Nov 2021 — NOT 2019), Petersen Dean (Ch. 11 Jun 2020), Sungevity (Ch. 11 Mar 2017)
 
+## Defunct Solar Installer Database (Marketing Agent Reference)
+
+### Priority 1 — Truly Orphaned (no active service entity)
+These companies have NO successor managing service calls. Targeting them is the highest-priority opportunity.
+
+| Company | Event | Date | CA Customers | Permit Name Variations |
+|---|---|---|---|---|
+| SunPower | Ch. 11 → sold assets | Aug 5, 2024 | ~600,000 US | "SunPower Corporation", "Complete Solar Inc", "BRS Field Ops" |
+| Titan Solar | Ch. 7 liquidation | Jun 20, 2024 | 150,000+ / 22 states | "Titan Solar Power", "Titan Solar" |
+| Sunnova | Ch. 11 bankruptcy | Jun 9, 2025 | ~500,000 US | "Sunnova Energy International", "Sunnova Energy" |
+| Sullivan Solar | Shut down (no BK) | Oct/Nov 2021 | 9,000+ (SD only) | "Sullivan Solar Power", "Sullivan Solar Power of California" |
+| Petersen Dean | Ch. 11 bankruptcy | Jun 11, 2020 | Thousands (CA) | "Petersen-Dean", "Petersen Dean", "Red Rose Inc", "PetersenDean" |
+| Sungevity | Ch. 11 bankruptcy | Mar 14, 2017 | Tens of thousands | "Sungevity Inc", "Horizon Solar Power", "Solar Spectrum" |
+| Kota Energy | Shut down ~2022 | ~2022 | AZ/TX/UT/NM focus | "Kota Energy Group LLC", "Kota Energy Group" |
+| OneRoof Energy | Shut down 2016 | 2016 | CA focused | "OneRoof Energy Inc" |
+| Verengo | Shut down 2014 | 2014 | CA only (SD/LA) | "Verengo Inc", "Verengo Solar" |
+| American Solar Direct | Shut down 2019 | 2019 | CA only | "American Solar Direct Inc" |
+| ADT Solar | Shut down 2023 | Jan 2023 | 22 states | "ADT Solar LLC" |
+| RGS Energy | Delisted/defunct | 2019 | Multi-state | "Real Goods Solar Inc", "RGS Energy", "Alteris Renewables" |
+| Pink Energy | Ch. 7 | Oct 2022 | 17 states | "Pink Energy" |
+| Vision Solar | Ch. 7 | Jul 2021 | Multi-state | "Vision Solar" |
+| Mosaic Solar Loans | Ch. 11 (LENDER only) | Jun 6, 2025 | 500,000+ (financed) | N/A — lender, not installer |
+
+### Priority 2 — Acquired/Managed (lower priority — successor handling service calls)
+
+| Company | Status | Successor |
+|---|---|---|
+| Vivint Solar | Acquired by Sunrun 2021 | Sunrun |
+| SolarCity | Acquired by Tesla 2016 | Tesla Energy |
+| Freedom Forever | Still operational as of 2024 | Active — skip |
+| Complete Solar | Acquired SunPower assets 2024, rebranded | Active as "SunPower" |
+
+### PermitStack Pull Notes
+- SunPower is rarely listed as "SunPower" on permits — use "Complete Solar Inc" or "BRS Field Ops" as primary search terms
+- SD County zip filter: 919xx (El Cajon, La Mesa, Santee, Lakeside) + 920xx (San Diego, Chula Vista, Poway)
+- System size kW extracted from permit description text via regex when not a dedicated field
+- Mosaic is a LENDER not an installer — leads from Mosaic are homeowners with outstanding loans, not necessarily broken systems
+- Portal Import tab → "Pull Live from PermitStack" button fires `permitstack-pull.js` for each selected installer, deduplicates by address, auto-populates CSV textarea
+
 ## CPUC / SDG&E NEM Data — Public Records Request Draft
 
 **Status: Drafted, not yet sent.**
