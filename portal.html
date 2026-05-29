@@ -2015,11 +2015,32 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         };
         return rec;
       });
+
+      // Deduplicate against already-loaded leads (in-memory) and within the batch itself
+      var existingAddrs = new Set(adminCustomers.map(function(c){ return (c.address||'').toLowerCase().replace(/\s+/g,' ').trim(); }));
+      var dupeCount = 0;
+      records = records.filter(function(r) {
+        var key = (r.address||'').toLowerCase().replace(/\s+/g,' ').trim();
+        if (!key) return true;
+        if (existingAddrs.has(key)) { dupeCount++; return false; }
+        existingAddrs.add(key); // block intra-batch dupes too
+        return true;
+      });
+      if (dupeCount > 0) {
+        if (statusEl) statusEl.textContent = dupeCount + ' duplicate address(es) skipped. Saving ' + records.length + '…';
+      }
+      if (!records.length) {
+        if (statusEl) statusEl.textContent = 'All selected leads already exist — no duplicates imported.';
+        return;
+      }
+
       sc.from('customers').insert(records).select()
         .then(function(res) {
           if (res.error) throw res.error;
           var inserted = (res.data||[]).length;
-          if (statusEl) statusEl.textContent = '✓ ' + inserted + ' leads imported!';
+          var msg = '✓ ' + inserted + ' leads imported!';
+          if (dupeCount > 0) msg += ' (' + dupeCount + ' duplicates skipped)';
+          if (statusEl) statusEl.textContent = msg;
           (res.data||[]).forEach(function(rec){ adminCustomers.unshift(rec); });
         })
         .catch(function(err) {
