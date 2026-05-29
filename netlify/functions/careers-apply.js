@@ -1,4 +1,4 @@
-const { createClient } = require('@supabase/supabase-js');
+const SUPA_URL = 'https://kbtobyoumvbcxfbugsid.supabase.co';
 
 const CORS = {
   'Content-Type': 'application/json',
@@ -18,7 +18,6 @@ exports.handler = async function(event) {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers: CORS, body: '' };
   if (event.httpMethod !== 'POST') return { statusCode: 405, headers: CORS, body: 'Method Not Allowed' };
 
-  const SUPA_URL         = 'https://kbtobyoumvbcxfbugsid.supabase.co';
   const SUPA_SERVICE_KEY = process.env.SUPA_SERVICE_KEY;
   const GHL_API_KEY      = process.env.GHL_API_KEY;
   const GHL_LOCATION_ID  = 'gXWwbOVymY0iRfj7c1It';
@@ -34,20 +33,30 @@ exports.handler = async function(event) {
     return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: 'first_name, email, and phone are required' }) };
   }
 
-  // 1. Save to Supabase
-  const supa = createClient(SUPA_URL, SUPA_SERVICE_KEY);
-  const { data: candidate, error: supaErr } = await supa
-    .from('candidates')
-    .insert({ first_name, last_name, email, phone, city, zip, sales_experience, why_solar, source: source || 'website' })
-    .select('id')
-    .single();
+  const supaHeaders = {
+    'apikey': SUPA_SERVICE_KEY,
+    'Authorization': 'Bearer ' + SUPA_SERVICE_KEY,
+    'Content-Type': 'application/json',
+    'Prefer': 'return=representation'
+  };
 
-  if (supaErr) {
-    console.error('Supabase insert error:', supaErr);
+  // 1. Save to Supabase candidates table
+  const insertResp = await fetch(SUPA_URL + '/rest/v1/candidates', {
+    method: 'POST',
+    headers: supaHeaders,
+    body: JSON.stringify({ first_name, last_name, email, phone, city, zip, sales_experience, why_solar, source: source || 'website' })
+  });
+
+  if (!insertResp.ok) {
+    const err = await insertResp.text();
+    console.error('Supabase insert error:', err);
     return { statusCode: 500, headers: CORS, body: JSON.stringify({ error: 'Failed to save application' }) };
   }
 
-  // 2. Upsert to GHL + tag as candidate
+  const inserted = await insertResp.json();
+  const candidateId = (inserted[0] || {}).id;
+
+  // 2. Upsert to GHL + tag as candidate (non-fatal if fails)
   if (GHL_API_KEY) {
     try {
       const ghlHeaders = {
@@ -73,10 +82,14 @@ exports.handler = async function(event) {
       });
 
       const ghlData = await upsertResp.json();
-      const contactId = ghlData?.contact?.id;
+      const contactId = ghlData && ghlData.contact && ghlData.contact.id;
 
-      if (contactId) {
-        await supa.from('candidates').update({ ghl_contact_id: contactId }).eq('id', candidate.id);
+      if (contactId && candidateId) {
+        await fetch(SUPA_URL + '/rest/v1/candidates?id=eq.' + candidateId, {
+          method: 'PATCH',
+          headers: supaHeaders,
+          body: JSON.stringify({ ghl_contact_id: contactId })
+        });
       }
     } catch(e) {
       console.error('GHL upsert error (non-fatal):', e.message);
@@ -86,6 +99,6 @@ exports.handler = async function(event) {
   return {
     statusCode: 200,
     headers: CORS,
-    body: JSON.stringify({ success: true, id: candidate.id })
+    body: JSON.stringify({ success: true, id: candidateId })
   };
 };
