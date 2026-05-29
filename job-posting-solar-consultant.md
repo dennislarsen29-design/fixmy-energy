@@ -1,5 +1,5 @@
 # Solar Energy Consultant — Retrofit & Battery Storage
-*San Diego County | Commission-Based | $100K–$250K+ First Year*
+*San Diego, CA & Augusta, GA | Commission-Based | $100K–$250K+ First Year*
 
 ---
 
@@ -16,7 +16,7 @@ This is a rare sales role with a built-in differentiator: you're not competing a
 - Run pre-set appointments with homeowners who need system diagnostics, battery retrofits, or net metering upgrades
 - Generate additional leads through referrals and self-prospecting within your territory
 - Conduct energy audits and present customized solutions
-- Manage your pipeline across San Diego County and select travel markets
+- Manage your pipeline across San Diego, CA and Augusta, GA, with select additional travel markets
 - Participate in ongoing sales and leadership training
 
 ---
