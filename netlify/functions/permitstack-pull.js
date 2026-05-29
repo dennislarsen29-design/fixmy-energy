@@ -67,24 +67,44 @@ exports.handler = async function(event) {
     }
   }
 
+  function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
   // Pull all permits for a contractor ID, filter to SD County, deduplicate
   async function pullPermits(contractorId) {
     let page = 1;
     const perPage = 100;
     let totalFetched = 0;
+    let sampleLogged = false;
 
     while (true) {
       try {
         const url = `${BASE}/contractors/${contractorId}/permits?per_page=${perPage}&page=${page}`;
         const resp = await fetch(url, { headers: psHeaders });
+        if (resp.status === 429) {
+          log.push(`id=${contractorId} page=${page}: rate limited, pausing 3s`);
+          await sleep(3000);
+          continue; // retry same page
+        }
         if (!resp.ok) { log.push(`permits id=${contractorId} page=${page}: HTTP ${resp.status}`); break; }
         const data = await resp.json();
         const batch = data.permits || data.results || data.data || [];
         if (!batch.length) break;
         totalFetched += batch.length;
 
+        // Log raw keys + sample address on first page to diagnose filter issues
+        if (!sampleLogged && batch.length > 0) {
+          sampleLogged = true;
+          const sample = batch[0];
+          const addrFields = ['address','site_address','property_address','location','street_address'];
+          const foundAddr = addrFields.map(f => `${f}=${JSON.stringify(sample[f]||'')}`).join(' | ');
+          log.push(`id=${contractorId} sample: ${foundAddr}`);
+          // Also log first 3 full address values so we can see the format
+          const addrs = batch.slice(0,3).map(p => p.address || p.site_address || p.property_address || p.location || '(none)');
+          log.push(`id=${contractorId} first 3 addrs: ${addrs.join(' || ')}`);
+        }
+
         for (const p of batch) {
-          const address = (p.address || p.site_address || p.property_address || '').trim();
+          const address = (p.address || p.site_address || p.property_address || p.location || p.street_address || '').trim();
           if (!address || !isSanDiegoCounty(address)) continue;
 
           const addrKey = address.toLowerCase().replace(/\s+/g, ' ');
@@ -109,6 +129,7 @@ exports.handler = async function(event) {
         if (batch.length < perPage) break;
         page++;
         if (page > 30) { log.push(`id=${contractorId}: page cap reached (3000 permits)`); break; }
+        await sleep(200); // rate limit: 5 req/s
       } catch(e) {
         log.push(`permits id=${contractorId} page=${page}: error ${e.message}`);
         break;
@@ -125,6 +146,7 @@ exports.handler = async function(event) {
       const id = c.id || c.contractor_id;
       if (id) contractorIds.add(String(id));
     }
+    await sleep(300);
   }
 
   log.push(`${installer}: found ${contractorIds.size} contractor record(s)`);
