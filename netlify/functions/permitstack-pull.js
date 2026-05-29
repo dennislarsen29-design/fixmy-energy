@@ -90,16 +90,17 @@ exports.handler = async function(event) {
         if (!batch.length) break;
         totalFetched += batch.length;
 
-        // Log raw keys + sample address on first page to diagnose filter issues
+        // Log sample permit data on first page — one short line per item for mobile readability
         if (!sampleLogged && batch.length > 0) {
           sampleLogged = true;
           const sample = batch[0];
-          const addrFields = ['address','site_address','property_address','location','street_address'];
-          const foundAddr = addrFields.map(f => `${f}=${JSON.stringify(sample[f]||'')}`).join(' | ');
-          log.push(`id=${contractorId} sample: ${foundAddr}`);
-          // Also log first 3 full address values so we can see the format
-          const addrs = batch.slice(0,3).map(p => p.address || p.site_address || p.property_address || p.location || '(none)');
-          log.push(`id=${contractorId} first 3 addrs: ${addrs.join(' || ')}`);
+          const rawAddr = sample.address || sample.site_address || sample.property_address || sample.location || sample.street_address || '(NO ADDR FIELD)';
+          log.push(`[SAMPLE addr] ${rawAddr}`);
+          log.push(`[SAMPLE keys] ${Object.keys(sample).join(', ')}`);
+          batch.slice(0, 3).forEach((p, i) => {
+            const a = p.address || p.site_address || p.property_address || p.location || p.street_address || '—';
+            log.push(`[ADDR${i+1}] ${a}`);
+          });
         }
 
         for (const p of batch) {
