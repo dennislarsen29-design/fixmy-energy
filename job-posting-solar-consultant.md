@@ -39,7 +39,7 @@ This is a rare sales role with a built-in differentiator: you're not competing a
 
 ---
 
-## Why FixMy.Energy
+## Why Work Here?
 
 - One of the few solar companies focused on the retrofit and recovery market — not another new-install race to the bottom
 - Appointments provided in addition to self-generated opportunities
