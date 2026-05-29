@@ -94,17 +94,24 @@ exports.handler = async function(event) {
         if (!sampleLogged && batch.length > 0) {
           sampleLogged = true;
           const sample = batch[0];
-          const rawAddr = sample.address || sample.site_address || sample.property_address || sample.location || sample.street_address || '(NO ADDR FIELD)';
+          const rawAddr = sample.address || sample.address_street || sample.site_address || sample.property_address || sample.location || sample.street_address || '(NO ADDRESS FIELD)';
           log.push(`[SAMPLE addr] ${rawAddr}`);
           log.push(`[SAMPLE keys] ${Object.keys(sample).join(', ')}`);
           batch.slice(0, 3).forEach((p, i) => {
-            const a = p.address || p.site_address || p.property_address || p.location || p.street_address || '—';
-            log.push(`[ADDR${i+1}] ${a}`);
+            const street = p.address_street || p.address || p.site_address || p.property_address || p.location || p.street_address || '';
+            const city = p.address_city || p.city || '';
+            const state = p.address_state || p.state || '';
+            const zip = p.address_zip || p.zip || p.postal_code || '';
+            log.push(`[ADDR${i+1}] ${[street, city, state, zip].filter(Boolean).join(', ') || '—'}`);
           });
         }
 
         for (const p of batch) {
-          const address = (p.address || p.site_address || p.property_address || p.location || p.street_address || '').trim();
+          const street = (p.address_street || p.address || p.site_address || p.property_address || p.location || p.street_address || '').trim();
+          const city   = (p.address_city || p.city || '').trim();
+          const state  = (p.address_state || p.state || '').trim();
+          const zip    = (p.address_zip || p.zip || p.postal_code || '').trim();
+          const address = [street, city, state, zip].filter(Boolean).join(', ');
           if (!address || !isSanDiegoCounty(address)) continue;
 
           const addrKey = address.toLowerCase().replace(/\s+/g, ' ');
@@ -117,7 +124,7 @@ exports.handler = async function(event) {
           const installYear = rawDate ? new Date(rawDate).getFullYear() : '';
 
           records.push({
-            address,
+            address: [street, city, state, zip].filter(Boolean).join(', '),
             installer,
             install_year: installYear || '',
             system_size_kw: systemSizeKw || '',
