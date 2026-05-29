@@ -81,9 +81,8 @@ exports.handler = async function(event) {
         const url = `${BASE}/contractors/${contractorId}/permits?per_page=${perPage}&page=${page}`;
         const resp = await fetch(url, { headers: psHeaders });
         if (resp.status === 429) {
-          log.push(`id=${contractorId} page=${page}: rate limited, pausing 3s`);
-          await sleep(3000);
-          continue; // retry same page
+          log.push(`id=${contractorId} page=${page}: rate limited — skipping remaining pages`);
+          break;
         }
         if (!resp.ok) { log.push(`permits id=${contractorId} page=${page}: HTTP ${resp.status}`); break; }
         const data = await resp.json();
@@ -129,7 +128,7 @@ exports.handler = async function(event) {
         if (batch.length < perPage) break;
         page++;
         if (page > 30) { log.push(`id=${contractorId}: page cap reached (3000 permits)`); break; }
-        await sleep(200); // rate limit: 5 req/s
+        await sleep(100); // rate limit: 10 req/s
       } catch(e) {
         log.push(`permits id=${contractorId} page=${page}: error ${e.message}`);
         break;
