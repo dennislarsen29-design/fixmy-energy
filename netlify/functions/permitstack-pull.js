@@ -26,7 +26,8 @@ exports.handler = async function(event) {
     return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Invalid JSON body' }) };
   }
 
-  const BASE = 'https://api.permit-stack.com/v1';
+  const BASE    = 'https://api.permit-stack.com/v1';
+  const BASE_SD = 'https://data.sandiego.gov/resource/nt65-c7a7.json'; // City of SD DSD permits (Socrata)
   const psHeaders = { 'X-API-Key': apiKey, 'Accept': 'application/json' };
   const log = [];
   const records = [];
@@ -74,6 +75,71 @@ exports.handler = async function(event) {
     const fullAddress = [street, city, state, zip].filter(Boolean).join(', ');
     return { street, city, state, zip, fullAddress, desc, systemSizeKw, installYear,
              permitId: p.id || p.permit_id || p.permit_number || '' };
+  }
+
+  // ── Strategy 0: City of San Diego Open Data (Socrata) — returns full street addresses ──
+  async function trySDOpenData(name) {
+    let found = 0, sampleLogged = false;
+    try {
+      let offset = 0;
+      while (offset < 3000) {
+        // $q = full-text search across all fields (catches contractor, owner, description)
+        const url = BASE_SD + '?$q=' + encodeURIComponent(name)
+          + '&$where=' + encodeURIComponent("permit_type like '%SOLAR%'")
+          + '&$limit=1000&$offset=' + offset;
+        const resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
+        if (resp.status === 404) { log.push(`SD open data: 404 — endpoint unavailable`); return 0; }
+        if (!resp.ok) { log.push(`SD open data: HTTP ${resp.status}`); break; }
+        const batch = await resp.json();
+        if (!Array.isArray(batch) || !batch.length) break;
+
+        if (!sampleLogged && batch.length > 0) {
+          sampleLogged = true;
+          const s = batch[0];
+          log.push(`[SD keys] ${Object.keys(s).join(', ')}`);
+          // build a sample address so we can see which fields populate
+          const sNum  = (s.address_number || s.street_number || '(none)');
+          const sNm   = (s.address_street_name || s.street_name || '(none)');
+          const sCity = (s.address_city || s.city || '(none)');
+          const sZip  = (s.address_zip || s.zip_code || '(none)');
+          log.push(`[SD addr] num="${sNum}" name="${sNm}" city="${sCity}" zip="${sZip}"`);
+        }
+
+        found += batch.length;
+        for (const p of batch) {
+          const num   = String(p.address_number || p.street_number || '').trim();
+          const dir   = String(p.address_street_direction || p.direction || '').trim();
+          const sname = String(p.address_street_name || p.street_name || '').trim();
+          const sfx   = String(p.address_street_type || p.street_type || p.address_suffix || '').trim();
+          const street = [num, dir, sname, sfx].filter(Boolean).join(' ')
+            || String(p.address || p.site_address || '').split(',')[0].trim();
+          if (!street) continue; // skip city-only records
+          const city  = String(p.address_city || p.city || 'San Diego').trim();
+          const state = 'CA';
+          const zip   = String(p.address_zip || p.zip_code || p.zip || '').replace(/\D/g,'').slice(0, 5);
+          const fullAddress = [street, city, state, zip].filter(Boolean).join(', ');
+          if (!isSanDiegoCounty(street, city, state, zip)) continue;
+          const key = fullAddress.toLowerCase().replace(/\s+/g, ' ');
+          if (seenAddresses.has(key)) continue;
+          seenAddresses.add(key);
+          const rawDate = p.date_issued || p.issue_date || p.issued_date || '';
+          const installYear = rawDate ? new Date(rawDate).getFullYear() : '';
+          const desc = p.work_description || p.description || p.scope_of_work || '';
+          const systemSizeKw = extractKw(desc) || '';
+          records.push({ address: fullAddress, installer,
+            install_year: installYear || '', system_size_kw: systemSizeKw || '',
+            notes: `${installer}${systemSizeKw ? ` · ${systemSizeKw}kW` : ''}${installYear ? ` · Installed ${installYear}` : ''}`,
+            permit_id: p.permit_number || p.permit_id || '' });
+        }
+        if (batch.length < 1000) break;
+        offset += 1000;
+        await sleep(150);
+      }
+      log.push(`SD open data "${name}": ${found} fetched, ${records.length} SD matches so far`);
+    } catch(e) {
+      log.push(`SD open data error: ${e.message}`);
+    }
+    return found;
   }
 
   // ── Strategy 1: Direct permits/search endpoint (city-filtered, most efficient) ──
@@ -201,6 +267,12 @@ exports.handler = async function(event) {
       }
     }
     return totalFetched;
+  }
+
+  // ── Strategy 0: City of SD open data (always run — full street addresses) ──
+  for (const name of names) {
+    await trySDOpenData(name);
+    await sleep(200);
   }
 
   // ── Run Strategy 1 first, fall back to Strategy 2 ──

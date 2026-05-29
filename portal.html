@@ -3188,6 +3188,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '<span style="font-size:0.72rem;color:#888;"><strong style="color:#eee;">'+totalImported+'</strong> imported &middot; <strong style="color:#8DC63F;">'+totalActivated+'</strong> activated (<strong style="color:#8DC63F;">'+convPct+'%</strong>)</span>';
     h += '</div></div>';
     h += '<div id="bbEnrichBar" style="margin-bottom:12px;"></div>';
+    if (CURRENT_ROLE === 'admin') h += '<div id="bbPullBar" style="margin-bottom:12px;"></div>';
     h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;margin-bottom:12px;">&#128205; Routes</div>';
 
     // QR code for canvassing — tech gets their ID, admin gets generic company URL
@@ -3440,6 +3441,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '</div>';
     document.getElementById('dashBody').innerHTML = h;
     setTimeout(adminCanvassLoadEnrichBar, 0);
+    if (CURRENT_ROLE === 'admin') setTimeout(adminCanvassLoadPullBar, 0);
   }
 
   function adminCanvassHaversine(lat1, lng1, lat2, lng2) {
@@ -3704,6 +3706,110 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       + '<div style="font-size:0.75rem;font-weight:700;color:#8DC63F;">&#10003; Enrichment complete &mdash; '+found+' of '+total+' owners found</div>'
       + '<div style="font-size:0.68rem;color:#888;margin-top:2px;">'+(total-found)+' addresses not found in public GIS (may need skip trace)</div>'
       + '</div>';
+  };
+
+  // ── Black Box: Pull More Leads from PermitStack ─────────────────────────────
+  var BB_SD_INSTALLERS = [
+    { id:'sullivan',  label:'Sullivan Solar',         names:['Sullivan Solar Power','Sullivan Solar Power of California'] },
+    { id:'petersen',  label:'Petersen Dean',          names:['Petersen-Dean','Petersen Dean','Red Rose Inc','PetersenDean'] },
+    { id:'sungevity', label:'Sungevity',              names:['Sungevity Inc','Horizon Solar Power','Solar Spectrum'] },
+    { id:'verengo',   label:'Verengo',                names:['Verengo Inc','Verengo Solar'] },
+    { id:'asd',       label:'American Solar Direct',  names:['American Solar Direct Inc'] },
+    { id:'kota',      label:'Kota Energy',            names:['Kota Energy Group LLC','Kota Energy Group'] },
+    { id:'oneroof',   label:'OneRoof Energy',         names:['OneRoof Energy Inc'] },
+    { id:'adt',       label:'ADT Solar',              names:['ADT Solar LLC'] },
+    { id:'sunpower',  label:'SunPower',               names:['SunPower Corporation','Complete Solar Inc','BRS Field Ops'] },
+    { id:'titan',     label:'Titan Solar',            names:['Titan Solar Power','Titan Solar'] },
+    { id:'sunnova',   label:'Sunnova',                names:['Sunnova Energy International','Sunnova Energy'] },
+  ];
+  window.BB_SD_INSTALLERS = BB_SD_INSTALLERS;
+
+  window.bbPsToggleAll = function(checked) {
+    (window.BB_SD_INSTALLERS||[]).forEach(function(ins){
+      var el = document.getElementById('bbPsChk_'+ins.id);
+      if (el) el.checked = checked;
+    });
+  };
+
+  window.adminCanvassLoadPullBar = function() {
+    var bar = document.getElementById('bbPullBar');
+    if (!bar) return;
+    var checksHtml = BB_SD_INSTALLERS.map(function(ins) {
+      return '<label style="display:inline-flex;align-items:center;gap:4px;font-size:0.68rem;color:#bbb;cursor:pointer;white-space:nowrap;padding:3px 8px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:100px;">'
+        + '<input type="checkbox" id="bbPsChk_'+ins.id+'" checked style="accent-color:#8DC63F;width:11px;height:11px;flex-shrink:0;">'+ins.label+'</label>';
+    }).join('');
+    bar.innerHTML = '<div style="background:rgba(141,198,63,0.05);border:1px solid rgba(141,198,63,0.15);border-radius:12px;padding:12px 14px;">'
+      + '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-bottom:8px;">'
+      + '<strong style="font-size:0.75rem;color:#8DC63F;">&#9889; Pull More Leads from PermitStack</strong>'
+      + '<span id="bbPullProgress" style="font-size:0.68rem;color:#888;"></span>'
+      + '</div>'
+      + '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:10px;">'+checksHtml+'</div>'
+      + '<div style="display:flex;gap:8px;align-items:center;">'
+      + '<button onclick="adminCanvassPullAndImport()" style="width:auto;margin-top:0;background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;padding:8px 18px;font-size:0.78rem;font-weight:800;cursor:pointer;">&#9889; Pull &amp; Import</button>'
+      + '<label style="font-size:0.68rem;color:#666;cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;gap:3px;"><input type="checkbox" id="bbPsSelectAll" checked onchange="window.bbPsToggleAll(this.checked)" style="accent-color:#8DC63F;width:11px;height:11px;">All</label>'
+      + '</div>'
+      + '</div>';
+  };
+
+  window.adminCanvassPullAndImport = async function() {
+    var checked = (window.BB_SD_INSTALLERS||[]).filter(function(ins){
+      var el = document.getElementById('bbPsChk_'+ins.id);
+      return el && el.checked;
+    });
+    if (!checked.length) { alert('Select at least one installer.'); return; }
+    var prog = document.getElementById('bbPullProgress');
+    var allRecords = [];
+    for (var i = 0; i < checked.length; i++) {
+      var ins = checked[i];
+      if (prog) prog.textContent = '('+(i+1)+'/'+checked.length+') '+ins.label+'…';
+      try {
+        var resp = await fetch('/.netlify/functions/permitstack-pull', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ installer: ins.label, names: ins.names })
+        });
+        if (!resp.ok) { continue; }
+        var data; try { data = await resp.json(); } catch(e) { continue; }
+        if (data.records && data.records.length) allRecords = allRecords.concat(data.records);
+      } catch(e) { console.error('BB pull error:', e); }
+    }
+    if (!allRecords.length) {
+      if (prog) prog.textContent = 'No new SD County permits found.';
+      return;
+    }
+    var existingAddrs = new Set(adminCustomers.map(function(c){ return (c.address||'').toLowerCase().replace(/\s+/g,' ').trim(); }));
+    var dupeCount = 0;
+    var toInsert = allRecords.filter(function(r) {
+      var key = (r.address||'').toLowerCase().replace(/\s+/g,' ').trim();
+      if (!key) return false;
+      if (existingAddrs.has(key)) { dupeCount++; return false; }
+      existingAddrs.add(key);
+      return true;
+    });
+    if (!toInsert.length) {
+      if (prog) prog.textContent = 'All '+allRecords.length+' permits already imported.';
+      return;
+    }
+    if (prog) prog.textContent = 'Importing '+toInsert.length+' new leads…';
+    var sc = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var inserted = 0;
+    var dbRecs = toInsert.map(function(r) {
+      return { address: r.address, lead_category:'fixmy', step:1, lead_source:'orphaned_list',
+        original_installer: r.installer||null, install_year: r.install_year?parseInt(r.install_year):null,
+        system_size: r.system_size_kw?parseFloat(r.system_size_kw):null, notes: r.notes||null, black_box:true };
+    });
+    for (var j = 0; j < dbRecs.length; j += 100) {
+      var batch = dbRecs.slice(j, j+100);
+      var res = await sc.from('customers').insert(batch).select();
+      if (!res.error) {
+        inserted += (res.data||[]).length;
+        (res.data||[]).forEach(function(rec){ adminCustomers.unshift(rec); });
+      }
+      if (prog) prog.textContent = 'Importing… '+(Math.min(j+100, dbRecs.length))+'/'+dbRecs.length;
+    }
+    var done = '&#10003; '+inserted+' new leads imported!';
+    if (dupeCount) done += ' ('+dupeCount+' already existed)';
+    if (prog) prog.innerHTML = done;
+    setTimeout(function(){ adminCanvassLoadEnrichBar(); }, 500);
   };
 
   // ── Finance View — Commission Ledger + Ops Payouts ─────────────────────────
