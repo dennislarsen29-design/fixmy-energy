@@ -3633,12 +3633,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (!bar) return;
     var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
     var { count: total } = await c2.from('customers').select('id', {count:'exact',head:true}).eq('lead_source','orphaned_list').is('sold_type',null);
-    var { count: haveOwner } = await c2.from('customers').select('id', {count:'exact',head:true}).eq('lead_source','orphaned_list').is('sold_type',null).not('title_owner','is',null);
-    total = total || 0; haveOwner = haveOwner || 0;
-    var missing = total - haveOwner;
+    var { count: havePhone } = await c2.from('customers').select('id', {count:'exact',head:true}).eq('lead_source','orphaned_list').is('sold_type',null).not('phone','is',null);
+    total = total || 0; havePhone = havePhone || 0;
+    var missing = total - havePhone;
     if (!bar) return;
     if (missing === 0) {
-      bar.innerHTML = '<div style="background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.2);border-radius:10px;padding:10px 14px;font-size:0.75rem;color:#8DC63F;font-weight:700;">&#10003; All '+total+' leads have owner names on file</div>';
+      bar.innerHTML = '<div style="background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.2);border-radius:10px;padding:10px 14px;font-size:0.75rem;color:#8DC63F;font-weight:700;">&#10003; All '+total+' leads have phone numbers on file</div>';
     } else {
       var queueInfo = null;
       try { var qi = localStorage.getItem('bb_skip_trace_queue'); if (qi) queueInfo = JSON.parse(qi); } catch(e) {}
@@ -3646,8 +3646,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         ? '<button onclick="adminCanvassPollSkipTrace(\''+queueInfo.queue_id+'\','+missing+')" style="width:auto;margin-top:0;background:#4a9eff;color:#fff;border:none;border-radius:100px;padding:8px 18px;font-size:0.78rem;font-weight:800;cursor:pointer;white-space:nowrap;">&#9681; Check Results</button>'
         : '<button onclick="adminCanvassEnrichAll()" style="width:auto;margin-top:0;background:#ffaa00;color:#1A1A1A;border:none;border-radius:100px;padding:8px 18px;font-size:0.78rem;font-weight:800;cursor:pointer;white-space:nowrap;">&#128269; Enrich All</button>';
       bar.innerHTML = '<div style="background:rgba(255,170,0,0.07);border:1px solid rgba(255,170,0,0.2);border-radius:10px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">'
-        + '<div><div style="font-size:0.75rem;font-weight:700;color:#ffaa00;">'+missing+' leads missing owner name</div>'
-        + '<div style="font-size:0.68rem;color:#888;margin-top:1px;">'+haveOwner+' of '+total+' enriched &mdash; Enrich All runs free GIS first, then auto-skip-traces the rest</div></div>'
+        + '<div><div style="font-size:0.75rem;font-weight:700;color:#ffaa00;">'+missing+' leads missing phone/email</div>'
+        + '<div style="font-size:0.68rem;color:#888;margin-top:1px;">'+havePhone+' of '+total+' have phone on file &mdash; Enrich All runs free GIS first, then skip-traces all '+missing+' via Tracerfy</div></div>'
         + actionBtn + '</div>';
     }
   };
@@ -3705,16 +3705,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
     _bbEnrichRunning = false;
     var missed = total - found;
-    if (missed > 0) {
-      // Auto-chain: GIS couldn't find these — submit them to Tracerfy skip trace immediately
-      var bar2 = document.getElementById('bbEnrichBar');
-      if (bar2) bar2.innerHTML = '<div style="background:rgba(74,158,255,0.07);border:1px solid rgba(74,158,255,0.2);border-radius:10px;padding:10px 14px;font-size:0.75rem;color:#4a9eff;font-weight:700;">'
-        + '&#10003; GIS done: '+found+' found &mdash; submitting '+missed+' to Tracerfy&hellip;</div>';
-      await window.adminCanvassSubmitSkipTrace(missed);
-    } else {
-      var bar2 = document.getElementById('bbEnrichBar');
-      if (bar2) bar2.innerHTML = '<div style="background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.2);border-radius:10px;padding:10px 14px;font-size:0.75rem;color:#8DC63F;font-weight:700;">&#10003; All '+total+' leads enriched via free GIS</div>';
-    }
+    // Always chain to Tracerfy — GIS only returns owner names, never phone/email
+    var bar2 = document.getElementById('bbEnrichBar');
+    if (bar2) bar2.innerHTML = '<div style="background:rgba(74,158,255,0.07);border:1px solid rgba(74,158,255,0.2);border-radius:10px;padding:10px 14px;font-size:0.75rem;color:#4a9eff;font-weight:700;">'
+      + '&#10003; GIS done: '+found+' owner names found &mdash; submitting leads to Tracerfy for phone &amp; email&hellip;</div>';
+    await window.adminCanvassSubmitSkipTrace(total);
   };
 
   window.adminCanvassSubmitSkipTrace = async function(missingCount) {
@@ -3722,11 +3717,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (bar) bar.innerHTML = '<div style="background:rgba(74,158,255,0.07);border:1px solid rgba(74,158,255,0.2);border-radius:10px;padding:10px 14px;font-size:0.75rem;color:#4a9eff;font-weight:700;">Building skip trace list&hellip;</div>';
     var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
     var { data: leads } = await c2.from('customers')
-      .select('id,address').eq('lead_source','orphaned_list').is('sold_type',null).is('title_owner',null)
+      .select('id,address').eq('lead_source','orphaned_list').is('sold_type',null).is('phone',null)
       .not('address','is',null).limit(1000);
     leads = leads || [];
     if (!leads.length) {
-      if (bar) bar.innerHTML = '<div style="background:rgba(255,0,0,0.07);border:1px solid rgba(255,0,0,0.2);border-radius:10px;padding:10px 14px;font-size:0.75rem;color:#ff5555;">No unenriched leads found.</div>';
+      if (bar) bar.innerHTML = '<div style="background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.2);border-radius:10px;padding:10px 14px;font-size:0.75rem;color:#8DC63F;font-weight:700;">&#10003; All leads already have phone numbers.</div>';
       return;
     }
     if (bar) bar.innerHTML = '<div style="background:rgba(74,158,255,0.07);border:1px solid rgba(74,158,255,0.2);border-radius:10px;padding:10px 14px;font-size:0.75rem;color:#4a9eff;font-weight:700;">Submitting '+leads.length+' leads to Tracerfy&hellip;</div>';
