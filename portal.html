@@ -1846,6 +1846,26 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '</div>'+
           '<div id="psDebug"></div>'+
         '</div>'+
+        '<div style="background:rgba(255,160,0,0.07);border:1px solid rgba(255,160,0,0.25);border-radius:12px;padding:14px 18px;margin-bottom:16px;">'+
+          '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">'+
+            '<strong style="font-size:0.82rem;color:#FFA000;">&#129302; Accela Permit Scraper</strong>'+
+            '<span id="accelaStatus" style="font-size:0.72rem;color:#888;"></span>'+
+          '</div>'+
+          '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">'+
+            '<select id="accelaCity" style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#ccc;padding:7px 10px;font-size:0.8rem;">'+
+              '<option value="all">All 3 Portals</option>'+
+              '<option value="sandiego">San Diego (DSD)</option>'+
+              '<option value="chulavista">Chula Vista</option>'+
+              '<option value="oceanside">Oceanside</option>'+
+            '</select>'+
+            '<input id="accelaInstaller" type="text" placeholder="Installer name (blank = all 16)" style="flex:1;min-width:160px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#ccc;padding:7px 10px;font-size:0.8rem;">'+
+          '</div>'+
+          '<div style="display:flex;gap:10px;align-items:center;">'+
+            '<button onclick="launchAccelaScraper()" id="accelaLaunchBtn" class="lead-btn" style="padding:9px 22px;font-size:0.82rem;background:rgba(255,160,0,0.15);border:1px solid rgba(255,160,0,0.4);color:#FFA000;width:auto;margin-top:0;">&#129302; Launch Scraper</button>'+
+            '<button onclick="accelaCancelPoll()" id="accelaCancelBtn" style="display:none;padding:9px 16px;font-size:0.8rem;background:none;border:1px solid rgba(255,255,255,0.15);border-radius:10px;color:#666;cursor:pointer;width:auto;margin-top:0;">Stop Polling</button>'+
+          '</div>'+
+          '<div id="accelaNote" style="font-size:0.68rem;color:#666;margin-top:8px;">Runs headless Chromium on GitHub Actions (~5–90 min). Results auto-populate CSV below when done. Requires <code>GITHUB_PAT</code> Netlify env var.</div>'+
+        '</div>'+
         '<div style="margin-bottom:10px;">'+
           '<label style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em;color:#888;display:block;margin-bottom:6px;">Or paste CSV manually</label>'+
           '<textarea id="importCsvInput" style="width:100%;height:180px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:10px;color:#ccc;font-size:0.75rem;padding:12px;font-family:monospace;resize:vertical;" placeholder="first_name,last_name,address,installer,install_year,system_size_kw,notes&#10;John,Smith,1234 Oak Ave San Diego CA 92103,SunPower,2019,6.4,Panel issue&#10;Maria,Jones,567 Elm St La Mesa CA 91942,Sullivan Solar,2018,,"></textarea>'+
@@ -2165,6 +2185,117 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (s.indexOf(',')!==-1||s.indexOf('"')!==-1||s.indexOf('\n')!==-1) return '"'+s.replace(/"/g,'""')+'"';
       return s;
     }
+
+    // ── Accela Scraper (GitHub Actions) ─────────────────────────────────────────
+    var _accelaPollTimer = null;
+
+    window.launchAccelaScraper = async function() {
+      var city = (document.getElementById('accelaCity')||{}).value || 'all';
+      var installer = ((document.getElementById('accelaInstaller')||{}).value || '').trim();
+      var statusEl = document.getElementById('accelaStatus');
+      var noteEl = document.getElementById('accelaNote');
+      var launchBtn = document.getElementById('accelaLaunchBtn');
+      var cancelBtn = document.getElementById('accelaCancelBtn');
+
+      if (statusEl) statusEl.textContent = 'Launching…';
+      if (launchBtn) launchBtn.disabled = true;
+      if (cancelBtn) cancelBtn.style.display = 'inline-block';
+
+      try {
+        var resp = await fetch('/.netlify/functions/trigger-accela-scraper', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ cities: city, installer: installer })
+        });
+        var data = await resp.json();
+        if (data.error) {
+          if (statusEl) statusEl.textContent = 'Error: ' + data.error;
+          if (launchBtn) launchBtn.disabled = false;
+          if (cancelBtn) cancelBtn.style.display = 'none';
+          return;
+        }
+        if (!data.run_id) {
+          if (statusEl) statusEl.textContent = 'Run started but no run_id returned — check GitHub Actions tab.';
+          if (launchBtn) launchBtn.disabled = false;
+          if (cancelBtn) cancelBtn.style.display = 'none';
+          return;
+        }
+        localStorage.setItem('accelaRunId', String(data.run_id));
+        localStorage.setItem('accelaRunCity', city);
+        if (statusEl) statusEl.textContent = 'Queued (run #' + data.run_id + '). Polling every 30s…';
+        if (noteEl) noteEl.innerHTML = 'Running on GitHub Actions. <a href="'+data.html_url+'" target="_blank" style="color:#FFA000;">View run ↗</a>';
+        _accelaPollTimer = setInterval(function(){ _accelaPoll(data.run_id); }, 30000);
+      } catch(e) {
+        if (statusEl) statusEl.textContent = 'Network error: ' + e.message;
+        if (launchBtn) launchBtn.disabled = false;
+        if (cancelBtn) cancelBtn.style.display = 'none';
+      }
+    };
+
+    window.accelaCancelPoll = function() {
+      if (_accelaPollTimer) { clearInterval(_accelaPollTimer); _accelaPollTimer = null; }
+      localStorage.removeItem('accelaRunId');
+      localStorage.removeItem('accelaRunCity');
+      var statusEl = document.getElementById('accelaStatus');
+      var launchBtn = document.getElementById('accelaLaunchBtn');
+      var cancelBtn = document.getElementById('accelaCancelBtn');
+      if (statusEl) statusEl.textContent = 'Polling stopped.';
+      if (launchBtn) launchBtn.disabled = false;
+      if (cancelBtn) cancelBtn.style.display = 'none';
+    };
+
+    async function _accelaPoll(runId) {
+      var statusEl = document.getElementById('accelaStatus');
+      try {
+        var resp = await fetch('/.netlify/functions/check-scraper-run', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ run_id: runId })
+        });
+        var data = await resp.json();
+        if (data.error) {
+          if (statusEl) statusEl.textContent = 'Poll error: ' + data.error;
+          return;
+        }
+        if (data.status !== 'completed') {
+          if (statusEl) statusEl.textContent = (data.status==='queued'?'Queued…':'Running…') + ' (run #'+runId+', polling every 30s)';
+          return;
+        }
+        // Completed
+        if (_accelaPollTimer) { clearInterval(_accelaPollTimer); _accelaPollTimer = null; }
+        localStorage.removeItem('accelaRunId');
+        localStorage.removeItem('accelaRunCity');
+        var launchBtn = document.getElementById('accelaLaunchBtn');
+        var cancelBtn = document.getElementById('accelaCancelBtn');
+        if (launchBtn) launchBtn.disabled = false;
+        if (cancelBtn) cancelBtn.style.display = 'none';
+        if (data.conclusion !== 'success') {
+          if (statusEl) statusEl.textContent = 'Run ' + data.conclusion + '. Check GitHub Actions for details.';
+          return;
+        }
+        if (!data.csv_text) {
+          if (statusEl) statusEl.textContent = 'Run succeeded but no CSV found — scraper returned 0 results.';
+          return;
+        }
+        var ta = document.getElementById('importCsvInput');
+        if (ta) { ta.value = data.csv_text; parseImportCsv(); }
+        if (statusEl) statusEl.textContent = '✓ Done — ' + (data.record_count||0) + ' permits loaded into CSV below.';
+      } catch(e) {
+        if (statusEl) statusEl.textContent = 'Poll error: ' + e.message;
+      }
+    }
+
+    // Resume polling if a run_id was saved before page reload
+    (function _accelaResumePolling() {
+      var savedId = localStorage.getItem('accelaRunId');
+      if (!savedId) return;
+      var statusEl = document.getElementById('accelaStatus');
+      var cancelBtn = document.getElementById('accelaCancelBtn');
+      var launchBtn = document.getElementById('accelaLaunchBtn');
+      if (statusEl) statusEl.textContent = 'Resuming poll for run #' + savedId + '…';
+      if (cancelBtn) cancelBtn.style.display = 'inline-block';
+      if (launchBtn) launchBtn.disabled = true;
+      _accelaPoll(savedId);
+      _accelaPollTimer = setInterval(function(){ _accelaPoll(savedId); }, 30000);
+    })();
   }
 
   async function renderAgentsView() {
