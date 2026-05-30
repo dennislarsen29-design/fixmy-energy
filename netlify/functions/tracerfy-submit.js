@@ -1,6 +1,6 @@
 // tracerfy-submit.js
-// Accepts { leads: [{id, address}, ...] }, POSTs to Tracerfy via JSON body
-// (avoids FormData/Blob issues in Node.js 18).
+// Accepts { leads: [{id, address}, ...] }, POSTs to Tracerfy skip-trace API.
+// Builds multipart/form-data manually — avoids FormData/Blob issues in Node.js 18.
 // Returns { queue_id, estimated_wait_seconds, count } on success.
 exports.handler = async function(event) {
   if (event.httpMethod === 'OPTIONS') {
@@ -28,49 +28,68 @@ exports.handler = async function(event) {
 
   function parseFullAddress(fullAddr) {
     const s = String(fullAddr || '').trim();
-    // "123 Main St, San Diego, CA 92101"
     const m = s.match(/^(.+),\s*([^,]+),\s*([A-Za-z]{2})\s+(\d{5})(?:-\d{4})?$/);
     if (m) return { street: m[1].trim(), city: m[2].trim(), state: m[3].toUpperCase(), zip: m[4] };
-    // "123 Main St, San Diego, CA"
     const m2 = s.match(/^(.+),\s*([^,]+),\s*([A-Za-z]{2})$/);
     if (m2) return { street: m2[1].trim(), city: m2[2].trim(), state: m2[3].toUpperCase(), zip: '' };
-    // fallback
     const parts = s.split(',');
     return { street: (parts[0] || s).trim(), city: (parts[1] || 'San Diego').trim(), state: 'CA', zip: '' };
   }
 
-  // Build records array — json_data is the alternative to csv_file upload
-  const records = leads.map(function(lead) {
+  function csvEsc(v) {
+    const s = String(v == null ? '' : v);
+    return (s.includes(',') || s.includes('"') || s.includes('\n')) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }
+
+  // Build CSV content
+  const rows = ['lead_id,street_address,city,state,zip'];
+  for (const lead of leads) {
     const a = parseFullAddress(lead.address);
-    return { lead_id: String(lead.id), street_address: a.street, city: a.city, state: a.state, zip: a.zip };
-  });
+    rows.push([csvEsc(lead.id), csvEsc(a.street), csvEsc(a.city), a.state, a.zip].join(','));
+  }
+  const csvContent = rows.join('\r\n');
+
+  // Build multipart/form-data body manually (avoids FormData+Blob Node.js 18 issues)
+  const boundary = '----TracerfyBoundary' + Date.now().toString(36);
+  const CRLF = '\r\n';
+
+  function textPart(name, value) {
+    return '--' + boundary + CRLF +
+      'Content-Disposition: form-data; name="' + name + '"' + CRLF + CRLF +
+      value + CRLF;
+  }
+
+  const multipartBody =
+    '--' + boundary + CRLF +
+    'Content-Disposition: form-data; name="csv_file"; filename="leads.csv"' + CRLF +
+    'Content-Type: text/csv' + CRLF + CRLF +
+    csvContent + CRLF +
+    textPart('address_column', 'street_address') +
+    textPart('city_column', 'city') +
+    textPart('state_column', 'state') +
+    textPart('zip_column', 'zip') +
+    textPart('trace_type', 'normal') +
+    '--' + boundary + '--' + CRLF;
 
   try {
     const resp = await fetch('https://tracerfy.com/v1/api/trace/', {
       method: 'POST',
       headers: {
         'Authorization': 'Bearer ' + apiKey,
-        'Content-Type': 'application/json'
+        'Content-Type': 'multipart/form-data; boundary=' + boundary
       },
-      body: JSON.stringify({
-        json_data: records,
-        address_column: 'street_address',
-        city_column: 'city',
-        state_column: 'state',
-        zip_column: 'zip',
-        trace_type: 'normal'
-      })
+      body: multipartBody
     });
 
     const text = await resp.text();
     let data;
     try { data = JSON.parse(text); } catch(e) {
-      return { statusCode: 200, headers: cors, body: JSON.stringify({ error: 'Tracerfy non-JSON: ' + text.slice(0, 200) }) };
+      return { statusCode: 200, headers: cors, body: JSON.stringify({ error: 'Tracerfy non-JSON: ' + text.slice(0, 300) }) };
     }
     if (!resp.ok) {
       const detail = (typeof data === 'object' && data !== null)
-        ? (data.detail || data.message || data.error || JSON.stringify(data).slice(0, 200))
-        : text.slice(0, 200);
+        ? (data.detail || data.message || data.error || JSON.stringify(data).slice(0, 300))
+        : text.slice(0, 300);
       return { statusCode: 200, headers: cors, body: JSON.stringify({ error: 'Tracerfy HTTP ' + resp.status + ': ' + detail }) };
     }
     return { statusCode: 200, headers: cors, body: JSON.stringify({
