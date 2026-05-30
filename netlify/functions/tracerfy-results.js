@@ -105,20 +105,20 @@ function parseResultsCsv(csvText) {
     const row = {};
     headers.forEach((h, idx) => { row[h] = (vals[idx] || '').trim(); });
 
-    const leadId = row['lead_id'];
-    if (!leadId) continue;
+    const leadId = row['lead_id'] || null;
+    const streetAddr = (row['street_address'] || row['address'] || '').trim();
+    if (!leadId && !streetAddr) continue;
 
-    // Primary phone is best; also check mobile_1, landline_1
     const phone = row['primary_phone'] || row['mobile_1'] || row['landline_1'] || null;
     const email = row['email_1'] || null;
 
-    // Owner name: batch trace normal mode returns first_name + last_name per person
+    // Advanced trace returns first_name + last_name for the property owner
     const firstName = row['first_name'] || row['owner_1_first_name'] || '';
     const lastName  = row['last_name']  || row['owner_1_last_name']  || '';
     const ownerName = [firstName, lastName].filter(Boolean).join(' ') || null;
 
     if (phone || email || ownerName) {
-      records.push({ lead_id: leadId, phone, email, owner_name: ownerName });
+      records.push({ lead_id: leadId, street_address: streetAddr, phone, email, owner_name: ownerName });
     }
   }
   return records;

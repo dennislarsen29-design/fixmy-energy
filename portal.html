@@ -3774,15 +3774,34 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }
       var recs = data.records || [];
       var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+
+      // Build street → id map for address-based fallback matching
+      // (Tracerfy may not pass lead_id back through the results CSV)
+      var streetMap = {};
+      var { data: allLeads } = await c2.from('customers')
+        .select('id,address').eq('lead_source','orphaned_list').is('sold_type',null).limit(1000);
+      (allLeads || []).forEach(function(l) {
+        if (l.address) {
+          var street = l.address.split(',')[0].trim().toLowerCase();
+          streetMap[street] = l.id;
+        }
+      });
+
       var updated = 0;
       for (var i = 0; i < recs.length; i++) {
         var r = recs[i];
-        if (!r.lead_id || (!r.phone && !r.email && !r.owner_name)) continue;
+        if (!r.phone && !r.email && !r.owner_name) continue;
+        // Resolve lead_id: use returned id, or match by street address
+        var resolvedId = r.lead_id;
+        if (!resolvedId && r.street_address) {
+          resolvedId = streetMap[r.street_address.trim().toLowerCase()];
+        }
+        if (!resolvedId) continue;
         var upd = {};
         if (r.owner_name) upd.title_owner = r.owner_name;
         if (r.phone) upd.phone = r.phone;
         if (r.email) upd.email = r.email;
-        var res = await c2.from('customers').update(upd).eq('id', r.lead_id);
+        var res = await c2.from('customers').update(upd).eq('id', resolvedId);
         if (!res.error) updated++;
       }
       localStorage.removeItem('bb_skip_trace_queue');
