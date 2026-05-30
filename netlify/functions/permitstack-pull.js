@@ -34,27 +34,37 @@ exports.handler = async function(event) {
   const records = [];
   const seenAddresses = new Set();
 
-  const SD_CITIES = ['SAN DIEGO','CHULA VISTA','EL CAJON','SANTEE','LA MESA','LEMON GROVE',
+  const TARGET_CITIES = ['SAN DIEGO','CHULA VISTA','EL CAJON','SANTEE','LA MESA','LEMON GROVE',
     'NATIONAL CITY','POWAY','LAKESIDE','SPRING VALLEY','RAMONA','ESCONDIDO','VISTA',
     'CARLSBAD','OCEANSIDE','ENCINITAS','DEL MAR','SOLANA BEACH','CORONADO','IMPERIAL BEACH',
     'ALPINE','BONITA','CAMPO','DESCANSO','DULZURA','JAMUL','PINE VALLEY','POTRERO',
-    'RANCHO SANTA FE','SAN MARCOS','SANTEE','VALLEY CENTER'];
+    'RANCHO SANTA FE','SAN MARCOS','SANTEE','VALLEY CENTER',
+    // OC coastal (San Clemente → border)
+    'SAN CLEMENTE','DANA POINT','LAGUNA BEACH','LAGUNA NIGUEL','LAGUNA HILLS',
+    'ALISO VIEJO','LAGUNA WOODS','MISSION VIEJO'];
 
-  function isSanDiegoCounty(street, city, state, zip) {
+  // OC coastal zip codes (San Clemente → Laguna area)
+  const OC_ZIPS = new Set(['92629','92651','92652','92653','92656','92672','92673','92677','92651','92618']);
+
+  function isTargetTerritory(street, city, state, zip) {
     const z = String(zip || '');
     const c = String(city || '').toUpperCase().trim();
     const s = String(state || '').toUpperCase().trim();
+    if (s && s !== 'CA') return false;
     // Zip-based check (most reliable)
     if (/^919\d{2}$/.test(z)) return true;
     if (/^92[012]\d{2}$/.test(z)) return true;
+    if (OC_ZIPS.has(z.slice(0,5))) return true;
     // City name check
-    if (SD_CITIES.includes(c)) return true;
+    if (TARGET_CITIES.includes(c)) return true;
     // State + combined address fallback
     const combined = `${street} ${city} ${state} ${zip}`.toUpperCase();
-    if ((s === 'CA' || combined.includes(', CA')) &&
-        SD_CITIES.some(n => combined.includes(n))) return true;
+    if (TARGET_CITIES.some(n => combined.includes(n))) return true;
     return false;
   }
+
+  // Keep alias for any internal references
+  const isSanDiegoCounty = isTargetTerritory;
 
   function extractKw(text) {
     if (!text) return null;
@@ -202,7 +212,8 @@ exports.handler = async function(event) {
     try {
       // Try SD cities most likely to have solar permits
       const cities = ['San Diego','Chula Vista','El Cajon','Santee','La Mesa',
-                      'Escondido','Poway','Carlsbad','Oceanside','Encinitas','Vista','San Marcos'];
+                      'Escondido','Poway','Carlsbad','Oceanside','Encinitas','Vista','San Marcos',
+                      'San Clemente','Dana Point','Laguna Beach','Laguna Niguel','Aliso Viejo'];
       for (const city of cities) {
         let page = 1;
         while (page <= 10) {

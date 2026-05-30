@@ -283,6 +283,7 @@ These companies have NO successor managing service calls. Targeting them is the 
 | RGS Energy | Delisted/defunct | 2019 | Multi-state | "Real Goods Solar Inc", "RGS Energy", "Alteris Renewables" |
 | Pink Energy | Ch. 7 | Oct 2022 | 17 states | "Pink Energy" |
 | Vision Solar | Ch. 7 | Jul 2021 | Multi-state | "Vision Solar" |
+| Lumio | Ch. 11 bankruptcy | Mar 2024 | Multi-state (CA included) | "Lumio Inc", "1st Light Energy" |
 | Mosaic Solar Loans | Ch. 11 (LENDER only) | Jun 6, 2025 | 500,000+ (financed) | N/A — lender, not installer |
 
 ### Priority 2 — Acquired/Managed (lower priority — successor handling service calls)
