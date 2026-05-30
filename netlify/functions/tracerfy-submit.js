@@ -1,5 +1,6 @@
 // tracerfy-submit.js
-// Accepts { leads: [{id, address}, ...] }, builds a CSV, POSTs to Tracerfy skip-trace API.
+// Accepts { leads: [{id, address}, ...] }, POSTs to Tracerfy via JSON body
+// (avoids FormData/Blob issues in Node.js 18).
 // Returns { queue_id, estimated_wait_seconds, count } on success.
 exports.handler = async function(event) {
   if (event.httpMethod === 'OPTIONS') {
@@ -38,39 +39,39 @@ exports.handler = async function(event) {
     return { street: (parts[0] || s).trim(), city: (parts[1] || 'San Diego').trim(), state: 'CA', zip: '' };
   }
 
-  function csvEsc(v) {
-    const s = String(v == null ? '' : v);
-    return (s.includes(',') || s.includes('"') || s.includes('\n')) ? '"' + s.replace(/"/g, '""') + '"' : s;
-  }
-
-  const rows = ['lead_id,street_address,city,state,zip'];
-  for (const lead of leads) {
+  // Build records array — json_data is the alternative to csv_file upload
+  const records = leads.map(function(lead) {
     const a = parseFullAddress(lead.address);
-    rows.push([csvEsc(lead.id), csvEsc(a.street), csvEsc(a.city), a.state, a.zip].join(','));
-  }
-  const csvContent = rows.join('\n');
-
-  const formData = new FormData();
-  formData.append('csv_file', new Blob([csvContent], { type: 'text/csv' }), 'leads.csv');
-  formData.append('address_column', 'street_address');
-  formData.append('city_column', 'city');
-  formData.append('state_column', 'state');
-  formData.append('zip_column', 'zip');
-  formData.append('trace_type', 'normal');
+    return { lead_id: String(lead.id), street_address: a.street, city: a.city, state: a.state, zip: a.zip };
+  });
 
   try {
     const resp = await fetch('https://tracerfy.com/v1/api/trace/', {
       method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + apiKey },
-      body: formData
+      headers: {
+        'Authorization': 'Bearer ' + apiKey,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        json_data: records,
+        address_column: 'street_address',
+        city_column: 'city',
+        state_column: 'state',
+        zip_column: 'zip',
+        trace_type: 'normal'
+      })
     });
+
     const text = await resp.text();
     let data;
     try { data = JSON.parse(text); } catch(e) {
-      return { statusCode: 200, headers: cors, body: JSON.stringify({ error: 'Tracerfy non-JSON response', raw: text.slice(0, 300) }) };
+      return { statusCode: 200, headers: cors, body: JSON.stringify({ error: 'Tracerfy non-JSON: ' + text.slice(0, 200) }) };
     }
     if (!resp.ok) {
-      return { statusCode: 200, headers: cors, body: JSON.stringify({ error: data.detail || data.message || ('Tracerfy HTTP ' + resp.status), raw: data }) };
+      const detail = (typeof data === 'object' && data !== null)
+        ? (data.detail || data.message || data.error || JSON.stringify(data).slice(0, 200))
+        : text.slice(0, 200);
+      return { statusCode: 200, headers: cors, body: JSON.stringify({ error: 'Tracerfy HTTP ' + resp.status + ': ' + detail }) };
     }
     return { statusCode: 200, headers: cors, body: JSON.stringify({
       queue_id: data.queue_id || data.id,
