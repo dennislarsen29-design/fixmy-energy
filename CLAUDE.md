@@ -264,7 +264,7 @@ Five-channel approach targeting homeowners whose solar installer went out of bus
 4. **fixmy.energy/check** — dedicated landing page for orphaned accounts (draft at `/check-preview.html`)
 5. **Direct mail** — Minuteman Press postcards to enriched address list
 
-Target installers: SunPower (Ch. 11 Aug 2024), Titan Solar (Ch. 7 Jun 2024), Sunnova (Ch. 11 Jun 2025), Mosaic Solar Loans (Ch. 11 Jun 2025), Sullivan Solar (shut down Oct/Nov 2021 — NOT 2019), Petersen Dean (Ch. 11 Jun 2020), Sungevity (Ch. 11 Mar 2017)
+Target installers: SunPower (Ch. 11 Aug 2024), Titan Solar (Ch. 7 Jun 2024), Sunnova (Ch. 11 Jun 2025), Mosaic Solar Loans (Ch. 11 Jun 2025), Sullivan Solar (shut down Oct/Nov 2021 — NOT 2019), Petersen Dean (Ch. 11 Jun 2020), Sungevity (Ch. 11 Mar 2017), Freedom Forever (Ch. 11 Apr 15, 2026)
 
 ## Defunct Solar Installer Database (Marketing Agent Reference)
 
@@ -288,6 +288,7 @@ These companies have NO successor managing service calls. Targeting them is the 
 | Pink Energy | Ch. 7 | Oct 2022 | 17 states | "Pink Energy" |
 | Vision Solar | Ch. 7 | Jul 2021 | Multi-state | "Vision Solar" |
 | Lumio | Ch. 11 bankruptcy | Mar 2024 | Multi-state (CA included) | "Lumio Inc", "1st Light Energy" |
+| Freedom Forever | Ch. 11 bankruptcy | Apr 15, 2026 | Multi-state | "Freedom Forever LLC" |
 | Mosaic Solar Loans | Ch. 11 (LENDER only) | Jun 6, 2025 | 500,000+ (financed) | N/A — lender, not installer |
 
 ### Priority 2 — Acquired/Managed (lower priority — successor handling service calls)
@@ -296,7 +297,7 @@ These companies have NO successor managing service calls. Targeting them is the 
 |---|---|---|
 | Vivint Solar | Acquired by Sunrun 2021 | Sunrun |
 | SolarCity | Acquired by Tesla 2016 | Tesla Energy |
-| Freedom Forever | Still operational as of 2024 | Active — skip |
+| Freedom Forever | Ch. 11 Apr 2026 — now in Priority 1 | — |
 | Complete Solar | Acquired SunPower assets 2024, rebranded | Active as "SunPower" |
 
 ### PermitStack Pull Notes
