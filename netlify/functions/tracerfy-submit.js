@@ -68,7 +68,7 @@ exports.handler = async function(event) {
     textPart('city_column', 'city') +
     textPart('state_column', 'state') +
     textPart('zip_column', 'zip') +
-    textPart('trace_type', 'normal') +
+    textPart('trace_type', 'advanced') +
     '--' + boundary + '--' + CRLF;
 
   try {
