@@ -1851,6 +1851,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       { id:'rgs',       label:'RGS Energy',            names:['Real Goods Solar Inc','RGS Energy','Alteris Renewables'] },
       { id:'pink',      label:'Pink Energy',           names:['Pink Energy'] },
       { id:'vision',    label:'Vision Solar',          names:['Vision Solar'] },
+      { id:'lumio',     label:'Lumio',                 names:['Lumio Inc','1st Light Energy'] },
     ];
     window.PS_INSTALLERS = PS_INSTALLERS;
     var _psBoxOn  = 'width:13px;height:13px;border:1.5px solid rgba(141,198,63,0.7);border-radius:2px;background:rgba(141,198,63,0.18);display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;font-size:9px;color:#8DC63F;line-height:1;';
@@ -1888,9 +1889,30 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '</div>'+
           '<div id="psDebug"></div>'+
         '</div>'+
+        '<div style="background:rgba(255,160,0,0.07);border:1px solid rgba(255,160,0,0.25);border-radius:12px;padding:14px 18px;margin-bottom:16px;">'+
+          '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">'+
+            '<strong style="font-size:0.82rem;color:#FFA000;">&#129302; Accela Permit Scraper</strong>'+
+            '<span id="accelaStatus" style="font-size:0.72rem;color:#888;"></span>'+
+          '</div>'+
+          '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">'+
+            '<select id="accelaCity" style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#ccc;padding:7px 10px;font-size:0.8rem;">'+
+              '<option value="all">All 3 Portals</option>'+
+              '<option value="sandiego">San Diego (DSD)</option>'+
+              '<option value="chulavista">Chula Vista</option>'+
+              '<option value="oceanside">Oceanside</option>'+
+            '</select>'+
+            '<input id="accelaInstaller" type="text" placeholder="Installer name (blank = all 16)" style="flex:1;min-width:160px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#ccc;padding:7px 10px;font-size:0.8rem;">'+
+          '</div>'+
+          '<div style="display:flex;gap:10px;align-items:center;">'+
+            '<button onclick="launchAccelaScraper()" id="accelaLaunchBtn" class="lead-btn" style="padding:9px 22px;font-size:0.82rem;background:rgba(255,160,0,0.15);border:1px solid rgba(255,160,0,0.4);color:#FFA000;width:auto;margin-top:0;">&#129302; Launch Scraper</button>'+
+            '<button onclick="accelaCancelPoll()" id="accelaCancelBtn" style="display:none;padding:9px 16px;font-size:0.8rem;background:none;border:1px solid rgba(255,255,255,0.15);border-radius:10px;color:#666;cursor:pointer;width:auto;margin-top:0;">Stop Polling</button>'+
+          '</div>'+
+          '<div id="accelaNote" style="font-size:0.68rem;color:#666;margin-top:8px;">Runs headless Chromium on GitHub Actions (~5–90 min). Results auto-populate CSV below when done. Requires <code>GITHUB_PAT</code> Netlify env var.</div>'+
+        '</div>'+
         '<div style="margin-bottom:10px;">'+
           '<label style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em;color:#888;display:block;margin-bottom:6px;">Or paste CSV manually</label>'+
           '<textarea id="importCsvInput" style="width:100%;height:180px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:10px;color:#ccc;font-size:0.75rem;padding:12px;font-family:monospace;resize:vertical;" placeholder="first_name,last_name,address,installer,install_year,system_size_kw,notes&#10;John,Smith,1234 Oak Ave San Diego CA 92103,SunPower,2019,6.4,Panel issue&#10;Maria,Jones,567 Elm St La Mesa CA 91942,Sullivan Solar,2018,,"></textarea>'+
+          '<div style="font-size:0.65rem;color:#555;margin-top:5px;">Accepts: PermitStack export · SD Open Data CSV · Accela scraper output · <strong style="color:#666;">CEC GoSolar/CSI bulk export</strong> (auto-detected). CEC data: <a href="https://www.cpuc.ca.gov/industries-and-topics/electrical-energy/demand-side-management/california-solar-initiative/csi-data" target="_blank" style="color:#4a9eff;text-decoration:none;">cpuc.ca.gov → CSI Data</a></div>'+
         '</div>'+
         '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px;">'+
           '<button onclick="parseImportCsv()" class="lead-btn" style="padding:9px 22px;font-size:0.82rem;background:rgba(74,158,255,0.12);border:1px solid rgba(74,158,255,0.3);color:#4a9eff;">&#128269; Parse CSV</button>'+
@@ -1907,7 +1929,45 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (!raw) { document.getElementById('importParseStatus').textContent = 'Paste a CSV first.'; return; }
       var lines = raw.split('\n').map(function(l){ return l.trim(); }).filter(Boolean);
       if (lines.length < 2) { document.getElementById('importParseStatus').textContent = 'Need at least a header row and one data row.'; return; }
-      var headers = lines[0].split(',').map(function(h){ return h.trim().toLowerCase().replace(/\s+/g,'_'); });
+      var headers = lines[0].split(',').map(function(h){ return h.trim().toLowerCase().replace(/\s+/g,'_').replace(/[^a-z0-9_]/g,''); });
+
+      // ── CEC GoSolar / CSI bulk export detection & normalization ───────────────
+      // CEC CSV headers include "host_customer_sector", "system_size_kw_dc", etc.
+      var isCEC = headers.some(function(h){ return /host_customer_sector|system_size_kw_dc|first_permission_to_operate|csi_application_number/.test(h); });
+      if (isCEC) {
+        var cecRows = [];
+        for (var ci=1; ci<lines.length; ci++) {
+          var cv = splitCsvLine(lines[ci]);
+          if (!cv.length) continue;
+          var co = {};
+          headers.forEach(function(h,j){ co[h] = (cv[j]||'').trim(); });
+          // Filter: residential only
+          var sector = (co['host_customer_sector']||co['customer_sector']||'').toLowerCase();
+          if (sector && sector !== 'residential' && sector !== 'res') continue;
+          // Build address: street + city + CA + zip
+          var street = co['host_site_address'] || co['street_address'] || co['address'] || '';
+          var city   = co['city'] || co['host_city'] || '';
+          var zip    = co['zip_code'] || co['zipcode'] || co['zip'] || '';
+          if (!street) continue;
+          var addr = [street, city, 'CA', zip].filter(Boolean).join(', ');
+          // Installer: contractor or third_party_owner
+          var inst = co['contractor'] || co['installer'] || co['third_party_owner'] || co['financing_type_2'] || '';
+          // Year: from first_permission_to_operate_date or application_approval_date
+          var rawDate = co['first_permission_to_operate_date'] || co['application_approval_date'] || co['completed_date'] || '';
+          var yr = rawDate ? String(new Date(rawDate).getFullYear()) : '';
+          if (isNaN(parseInt(yr))) yr = '';
+          // System size
+          var kw = co['system_size_kw_dc'] || co['system_size_kw_ac'] || co['system_size_kw'] || co['system_size'] || '';
+          cecRows.push({ address: addr, installer: inst, install_year: yr, system_size_kw: kw, notes: co['notes'] || '' });
+        }
+        window.importRows = cecRows;
+        window.importEnriched = cecRows.map(function(){ return null; });
+        document.getElementById('importParseStatus').textContent = cecRows.length + ' CEC GoSolar rows parsed (residential only).';
+        renderImportPreview(false);
+        return;
+      }
+
+      // ── Standard CSV ──────────────────────────────────────────────────────────
       var requiredCols = ['address'];
       for (var ri=0; ri<requiredCols.length; ri++) {
         if (headers.indexOf(requiredCols[ri]) === -1) {
@@ -2168,6 +2228,117 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (s.indexOf(',')!==-1||s.indexOf('"')!==-1||s.indexOf('\n')!==-1) return '"'+s.replace(/"/g,'""')+'"';
       return s;
     }
+
+    // ── Accela Scraper (GitHub Actions) ─────────────────────────────────────────
+    var _accelaPollTimer = null;
+
+    window.launchAccelaScraper = async function() {
+      var city = (document.getElementById('accelaCity')||{}).value || 'all';
+      var installer = ((document.getElementById('accelaInstaller')||{}).value || '').trim();
+      var statusEl = document.getElementById('accelaStatus');
+      var noteEl = document.getElementById('accelaNote');
+      var launchBtn = document.getElementById('accelaLaunchBtn');
+      var cancelBtn = document.getElementById('accelaCancelBtn');
+
+      if (statusEl) statusEl.textContent = 'Launching…';
+      if (launchBtn) launchBtn.disabled = true;
+      if (cancelBtn) cancelBtn.style.display = 'inline-block';
+
+      try {
+        var resp = await fetch('/.netlify/functions/trigger-accela-scraper', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ cities: city, installer: installer })
+        });
+        var data = await resp.json();
+        if (data.error) {
+          if (statusEl) statusEl.textContent = 'Error: ' + data.error;
+          if (launchBtn) launchBtn.disabled = false;
+          if (cancelBtn) cancelBtn.style.display = 'none';
+          return;
+        }
+        if (!data.run_id) {
+          if (statusEl) statusEl.textContent = 'Run started but no run_id returned — check GitHub Actions tab.';
+          if (launchBtn) launchBtn.disabled = false;
+          if (cancelBtn) cancelBtn.style.display = 'none';
+          return;
+        }
+        localStorage.setItem('accelaRunId', String(data.run_id));
+        localStorage.setItem('accelaRunCity', city);
+        if (statusEl) statusEl.textContent = 'Queued (run #' + data.run_id + '). Polling every 30s…';
+        if (noteEl) noteEl.innerHTML = 'Running on GitHub Actions. <a href="'+data.html_url+'" target="_blank" style="color:#FFA000;">View run ↗</a>';
+        _accelaPollTimer = setInterval(function(){ _accelaPoll(data.run_id); }, 30000);
+      } catch(e) {
+        if (statusEl) statusEl.textContent = 'Network error: ' + e.message;
+        if (launchBtn) launchBtn.disabled = false;
+        if (cancelBtn) cancelBtn.style.display = 'none';
+      }
+    };
+
+    window.accelaCancelPoll = function() {
+      if (_accelaPollTimer) { clearInterval(_accelaPollTimer); _accelaPollTimer = null; }
+      localStorage.removeItem('accelaRunId');
+      localStorage.removeItem('accelaRunCity');
+      var statusEl = document.getElementById('accelaStatus');
+      var launchBtn = document.getElementById('accelaLaunchBtn');
+      var cancelBtn = document.getElementById('accelaCancelBtn');
+      if (statusEl) statusEl.textContent = 'Polling stopped.';
+      if (launchBtn) launchBtn.disabled = false;
+      if (cancelBtn) cancelBtn.style.display = 'none';
+    };
+
+    async function _accelaPoll(runId) {
+      var statusEl = document.getElementById('accelaStatus');
+      try {
+        var resp = await fetch('/.netlify/functions/check-scraper-run', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ run_id: runId })
+        });
+        var data = await resp.json();
+        if (data.error) {
+          if (statusEl) statusEl.textContent = 'Poll error: ' + data.error;
+          return;
+        }
+        if (data.status !== 'completed') {
+          if (statusEl) statusEl.textContent = (data.status==='queued'?'Queued…':'Running…') + ' (run #'+runId+', polling every 30s)';
+          return;
+        }
+        // Completed
+        if (_accelaPollTimer) { clearInterval(_accelaPollTimer); _accelaPollTimer = null; }
+        localStorage.removeItem('accelaRunId');
+        localStorage.removeItem('accelaRunCity');
+        var launchBtn = document.getElementById('accelaLaunchBtn');
+        var cancelBtn = document.getElementById('accelaCancelBtn');
+        if (launchBtn) launchBtn.disabled = false;
+        if (cancelBtn) cancelBtn.style.display = 'none';
+        if (data.conclusion !== 'success') {
+          if (statusEl) statusEl.textContent = 'Run ' + data.conclusion + '. Check GitHub Actions for details.';
+          return;
+        }
+        if (!data.csv_text) {
+          if (statusEl) statusEl.textContent = 'Run succeeded but no CSV found — scraper returned 0 results.';
+          return;
+        }
+        var ta = document.getElementById('importCsvInput');
+        if (ta) { ta.value = data.csv_text; parseImportCsv(); }
+        if (statusEl) statusEl.textContent = '✓ Done — ' + (data.record_count||0) + ' permits loaded into CSV below.';
+      } catch(e) {
+        if (statusEl) statusEl.textContent = 'Poll error: ' + e.message;
+      }
+    }
+
+    // Resume polling if a run_id was saved before page reload
+    (function _accelaResumePolling() {
+      var savedId = localStorage.getItem('accelaRunId');
+      if (!savedId) return;
+      var statusEl = document.getElementById('accelaStatus');
+      var cancelBtn = document.getElementById('accelaCancelBtn');
+      var launchBtn = document.getElementById('accelaLaunchBtn');
+      if (statusEl) statusEl.textContent = 'Resuming poll for run #' + savedId + '…';
+      if (cancelBtn) cancelBtn.style.display = 'inline-block';
+      if (launchBtn) launchBtn.disabled = true;
+      _accelaPoll(savedId);
+      _accelaPollTimer = setInterval(function(){ _accelaPoll(savedId); }, 30000);
+    })();
   }
 
   async function renderAgentsView() {
@@ -3220,6 +3391,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
     var h = portalNav + '<div style="padding:4px 0 16px;">';
 
+    // ── SDCP territory zip codes (San Diego Community Power service area) ──────
+    var SDCP_ZIPS = new Set([
+      '92037','92101','92102','92103','92104','92105','92106','92107','92108',
+      '92109','92110','92111','92113','92114','92115','92116','92117','92118',
+      '92119','92120','92121','92122','92123','92124','92126','92127','92128',
+      '92129','92130','92131','92132','92134','92135','92136','92139','92140',
+      '92145','92147','92154','92161','92173',
+      '91910','91911','91912','91913','91914','91915',
+      '92007','92024','91932','91941','91942','91943','91944','91950',
+      '91901','91902','91905','91906','91916','91917','91931','91935',
+      '91948','91962','91963','91977','91978','91980'
+    ]);
+
     // ── Quarantine stats + list ─────────────────────────────────────────────
     var bbLeads = adminCustomers.filter(function(x){ return !!x.black_box; });
     var totalImported = adminCustomers.filter(function(x){ return x.lead_source === 'orphaned_list'; }).length;
@@ -3305,7 +3489,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#8DC63F;">Next Door &middot; 1 of '+unvisited.length+' remaining</div>';
         if (distMi) h += '<div style="font-size:0.72rem;color:#888;">'+distMi+'</div>';
         h += '</div>';
-        h += '<div style="font-size:1.05rem;font-weight:700;margin-bottom:4px;">'+(lead.address||'No address')+'</div>';
+        var gpZip = extractZip(lead.address||'');
+        var gpIsSDCP = gpZip && SDCP_ZIPS.has(gpZip);
+        h += '<div style="font-size:1.05rem;font-weight:700;margin-bottom:4px;">'+(lead.address||'No address')+(gpIsSDCP?'<span style="display:inline-block;margin-left:7px;padding:1px 7px;background:rgba(0,150,255,0.15);color:#4AABF7;border-radius:10px;font-size:0.58rem;font-weight:700;vertical-align:middle;">SDCP</span>':'')+'</div>';
         if (ownerName) {
           h += '<div style="font-size:0.8rem;font-weight:600;color:#F3EDE3;margin-bottom:2px;">'+ownerName+'</div>';
         }
@@ -3315,7 +3501,31 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         }
         var gpNoteTop = _parseNotes(lead.notes||'').slice(-1)[0];
         if (gpNoteTop) h += '<div style="font-size:0.7rem;color:#666;margin-bottom:10px;font-style:italic;">'+gpNoteTop.by+': '+gpNoteTop.text.slice(0,60)+(gpNoteTop.text.length>60?'…':'')+'</div>';
-        h += '<a href="'+mapsUrl+'" target="_blank" style="display:inline-block;font-size:0.75rem;font-weight:700;color:#4a9eff;text-decoration:none;background:rgba(74,158,255,0.08);border:1px solid rgba(74,158,255,0.25);border-radius:100px;padding:6px 14px;margin-bottom:14px;">&#128506; Get Directions</a>';
+        h += '<a href="'+mapsUrl+'" target="_blank" style="display:inline-block;font-size:0.75rem;font-weight:700;color:#4a9eff;text-decoration:none;background:rgba(74,158,255,0.08);border:1px solid rgba(74,158,255,0.25);border-radius:100px;padding:6px 14px;margin-bottom:8px;">&#128506; Get Directions</a>';
+        var gpPh = (lead.phone||'').replace(/\D/g,'');
+        var gpRealEmail = (lead.email && !lead.email.endsWith('@pending.fixmy.energy')) ? lead.email : null;
+        if (lead.phone || gpRealEmail) {
+          h += '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:14px;">';
+          if (lead.phone) {
+            if (lead.dnc) {
+              h += '<button onclick="bbDncWarn(\'call\',\''+gpPh+'\')" style="display:inline-flex;align-items:center;gap:4px;padding:5px 13px;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.4);color:#ef4444;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;">&#9940; Call</button>';
+              h += '<button onclick="bbDncWarn(\'text\',\''+gpPh+'\')" style="display:inline-flex;align-items:center;gap:4px;padding:5px 13px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.25);color:#ef4444;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;">&#9940; Text</button>';
+            } else {
+              h += '<a href="tel:'+gpPh+'" style="display:inline-flex;align-items:center;gap:4px;padding:5px 13px;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:100px;font-size:0.72rem;font-weight:700;text-decoration:none;">&#128222; Call</a>';
+              h += '<a href="sms:'+gpPh+'" style="display:inline-flex;align-items:center;gap:4px;padding:5px 13px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);color:#4a9eff;border-radius:100px;font-size:0.72rem;font-weight:700;text-decoration:none;">&#128172; Text</a>';
+            }
+          }
+          if (gpRealEmail) {
+            if (lead.dnc) {
+              h += '<button onclick="bbDncWarn(\'email\',\''+gpRealEmail+'\')" style="display:inline-flex;align-items:center;gap:4px;padding:5px 13px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.25);color:#ef4444;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;">&#9940; Email</button>';
+            } else {
+              h += '<a href="mailto:'+gpRealEmail+'" style="display:inline-flex;align-items:center;gap:4px;padding:5px 13px;background:rgba(255,170,0,0.1);border:1px solid rgba(255,170,0,0.3);color:#ffaa00;border-radius:100px;font-size:0.72rem;font-weight:700;text-decoration:none;">&#9993; Email</a>';
+            }
+          }
+          h += '</div>';
+        } else {
+          h += '<div style="margin-bottom:14px;"></div>';
+        }
         h += '<div style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#666;margin-bottom:8px;">What happened?</div>';
         h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">';
         h += '<button onclick="adminCanvassKnock(\''+lead.id+'\',\'not_home\')" style="padding:14px 8px;border:1px solid rgba(255,255,255,0.15);border-radius:12px;background:rgba(255,255,255,0.06);color:#ccc;font-size:0.8rem;font-weight:700;cursor:pointer;">&#128683; Not Home</button>';
@@ -3409,7 +3619,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             var rawOwner = lead.title_owner || '';
             var cleanOwner = rawOwner.replace(/\s+(TR\s+)?\d{2}-\d{2}-\d{2}$/, '').trim();
             var name = cleanOwner || ((lead.first_name||'')+' '+(lead.last_name||'')).trim() || '—';
-            var noContact = !lead.phone && !lead.email;
+            var realEmail = (lead.email && !lead.email.endsWith('@pending.fixmy.energy')) ? lead.email : null;
+            var noContact = !lead.phone && !realEmail;
             var allNotes = _parseNotes(lead.notes||'');
             var ks = lead.knock_status || '';
             var ksColor = {interested:'#8DC63F',not_home:'#888',not_interested:'#ef4444',already_customer:'#4a9eff'}[ks] || 'rgba(255,255,255,0.12)';
@@ -3422,15 +3633,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             h += '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:5px;">';
             h += '<div style="flex:1;min-width:0;">';
             h += '<div style="font-size:0.85rem;font-weight:700;color:#eee;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="'+name+'">'+name+'</div>';
+            var bbZip = extractZip(lead.address||'');
+            var bbIsSDCP = bbZip && SDCP_ZIPS.has(bbZip);
             h += '<div style="font-size:0.68rem;color:#666;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+(lead.address||'—')+'</div>';
             h += '</div>';
             h += '<button onclick="activateBlackBoxLead(\''+lead.id+'\')" style="width:auto;margin-top:0;flex-shrink:0;padding:5px 12px;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:100px;font-size:0.68rem;font-weight:700;cursor:pointer;white-space:nowrap;">&#128275; Activate</button>';
             h += '</div>';
-            // Chips: APN, installer, kW, status, no-contact
+            // Chips: APN, installer, kW, SDCP, status, no-contact
             h += '<div style="display:flex;gap:5px;flex-wrap:wrap;">';
             if (lead.apn) h += '<span style="font-size:0.6rem;color:#555;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.07);border-radius:4px;padding:1px 6px;">APN '+lead.apn+'</span>';
             if (lead.original_installer) h += '<span style="font-size:0.6rem;color:#888;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.07);border-radius:4px;padding:1px 6px;">'+lead.original_installer+(lead.install_year?' · '+lead.install_year:'')+'</span>';
             if (lead.system_size) h += '<span style="font-size:0.6rem;color:#8DC63F;background:rgba(141,198,63,0.06);border:1px solid rgba(141,198,63,0.18);border-radius:4px;padding:1px 6px;">'+lead.system_size+' kW</span>';
+            if (bbIsSDCP) h += '<span style="font-size:0.6rem;font-weight:700;color:#4AABF7;background:rgba(0,150,255,0.08);border:1px solid rgba(0,150,255,0.25);border-radius:4px;padding:1px 6px;">SDCP</span>';
+            if (lead.dnc) h += '<span style="font-size:0.6rem;font-weight:700;color:#ef4444;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.35);border-radius:4px;padding:1px 6px;">&#9940; DNC</span>';
             if (ks) h += '<span style="font-size:0.6rem;font-weight:700;color:'+ksColor+';background:rgba(255,255,255,0.03);border:1px solid '+ksColor+'55;border-radius:4px;padding:1px 6px;">'+ksLabel+'</span>';
             if (noContact) h += '<span style="font-size:0.6rem;font-weight:700;color:#ffaa00;background:rgba(255,170,0,0.06);border:1px solid rgba(255,170,0,0.25);border-radius:4px;padding:1px 6px;">&#128222; No contact</span>';
             h += '</div>';
@@ -3446,16 +3661,25 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             h += '</div>';
 
             // ── Contact actions ─────────────────────────────────────────────────
-            if (lead.phone || lead.email) {
+            if (lead.phone || realEmail) {
               var p = (lead.phone||'').replace(/\D/g,'');
               h += '<div style="padding:7px 12px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;border-bottom:1px solid rgba(255,255,255,0.05);">';
               if (lead.phone) {
-                h += '<a href="tel:'+p+'" style="width:auto;margin-top:0;padding:5px 13px;border-radius:100px;font-size:0.68rem;font-weight:700;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;text-decoration:none;">&#128222; Call</a>';
-                h += '<a href="sms:'+p+'" style="width:auto;margin-top:0;padding:5px 13px;border-radius:100px;font-size:0.68rem;font-weight:700;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);color:#4a9eff;text-decoration:none;">&#128172; Text</a>';
+                if (lead.dnc) {
+                  h += '<button onclick="bbDncWarn(\'call\',\''+p+'\')" style="width:auto;margin-top:0;padding:5px 13px;border-radius:100px;font-size:0.68rem;font-weight:700;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.4);color:#ef4444;cursor:pointer;">&#9940; Call</button>';
+                  h += '<button onclick="bbDncWarn(\'text\',\''+p+'\')" style="width:auto;margin-top:0;padding:5px 13px;border-radius:100px;font-size:0.68rem;font-weight:700;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.25);color:#ef4444;cursor:pointer;">&#9940; Text</button>';
+                } else {
+                  h += '<a href="tel:'+p+'" style="width:auto;margin-top:0;padding:5px 13px;border-radius:100px;font-size:0.68rem;font-weight:700;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;text-decoration:none;">&#128222; Call</a>';
+                  h += '<a href="sms:'+p+'" style="width:auto;margin-top:0;padding:5px 13px;border-radius:100px;font-size:0.68rem;font-weight:700;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);color:#4a9eff;text-decoration:none;">&#128172; Text</a>';
+                }
                 h += '<span style="font-size:0.62rem;color:#555;">'+lead.phone+'</span>';
               }
-              if (lead.email) {
-                h += '<a href="mailto:'+lead.email+'" style="width:auto;margin-top:0;padding:5px 13px;border-radius:100px;font-size:0.68rem;font-weight:700;background:rgba(255,170,0,0.1);border:1px solid rgba(255,170,0,0.3);color:#ffaa00;text-decoration:none;">&#9993; Email</a>';
+              if (realEmail) {
+                if (lead.dnc) {
+                  h += '<button onclick="bbDncWarn(\'email\',\''+realEmail+'\')" style="width:auto;margin-top:0;padding:5px 13px;border-radius:100px;font-size:0.68rem;font-weight:700;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.25);color:#ef4444;cursor:pointer;">&#9940; Email</button>';
+                } else {
+                  h += '<a href="mailto:'+realEmail+'" style="width:auto;margin-top:0;padding:5px 13px;border-radius:100px;font-size:0.68rem;font-weight:700;background:rgba(255,170,0,0.1);border:1px solid rgba(255,170,0,0.3);color:#ffaa00;text-decoration:none;">&#9993; Email</a>';
+                }
               }
               h += '</div>';
             }
@@ -3643,6 +3867,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     } catch(e) {
       if (btn) { btn.textContent = 'Error — try again'; btn.disabled = false; }
     }
+  };
+
+  window.bbDncWarn = function(type, value) {
+    var link = type === 'call' ? 'tel:'+value : type === 'text' ? 'sms:'+value : 'mailto:'+value;
+    var overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.8);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;';
+    overlay.innerHTML =
+      '<div style="background:#1a1a1a;border:1px solid rgba(239,68,68,0.4);border-radius:16px;padding:24px;max-width:340px;width:100%;box-sizing:border-box;">'+
+      '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#ef4444;margin-bottom:10px;">&#9940; DNC Registry Warning</div>'+
+      '<div style="font-size:0.82rem;color:#ccc;line-height:1.55;margin-bottom:18px;">This number is on the <strong style="color:#eee;">National Do Not Call Registry</strong>. Cold calling without prior consent is prohibited by FTC rules.<br><br>You may knock the door and obtain verbal consent in person before dialing.</div>'+
+      '<div style="display:flex;gap:10px;">'+
+      '<button onclick="this.closest(\'[style*=z-index\\:9999]\').remove()" style="flex:1;padding:12px 8px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);border-radius:10px;color:#888;cursor:pointer;font-size:0.8rem;">Cancel</button>'+
+      '<a href="'+link+'" onclick="setTimeout(function(){document.querySelector(\'[style*=z-index\\\\:9999]\')&&document.querySelector(\'[style*=z-index\\\\:9999]\').remove()},200)" style="flex:1;padding:12px 8px;background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.4);border-radius:10px;color:#ef4444;cursor:pointer;font-size:0.8rem;font-weight:700;text-align:center;text-decoration:none;display:block;">Proceed Anyway</a>'+
+      '</div></div>';
+    document.body.appendChild(overlay);
+    overlay.addEventListener('click', function(e){ if(e.target===overlay) overlay.remove(); });
   };
 
   window.activateBlackBoxLead = async function(id) {
@@ -3846,10 +4086,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       });
 
       var updated = 0;
+
+      // Build street → customer ID map for address-based fallback
+      // (Tracerfy advanced trace does not echo back our custom lead_id column)
+      var streetMap = {};
+      adminCustomers.filter(function(x){ return x.lead_source === 'orphaned_list'; }).forEach(function(l) {
+        if (l.address) streetMap[l.address.split(',')[0].trim().toLowerCase()] = l.id;
+      });
+
       for (var i = 0; i < recs.length; i++) {
         var r = recs[i];
         if (!r.phone && !r.email && !r.owner_name) continue;
-        // Resolve lead_id: use returned id, or match by street address
         var resolvedId = r.lead_id;
         if (!resolvedId && r.street_address) {
           resolvedId = streetMap[r.street_address.trim().toLowerCase()];
@@ -3859,8 +4106,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         if (r.owner_name) upd.title_owner = r.owner_name;
         if (r.phone) upd.phone = r.phone;
         if (r.email) upd.email = r.email;
+        upd.dnc = r.dnc || false;
         var res = await c2.from('customers').update(upd).eq('id', resolvedId);
-        if (!res.error) updated++;
+        if (!res.error) {
+          updated++;
+          var mem = adminCustomers.find(function(x){ return x.id === resolvedId; });
+          if (mem) { if (r.owner_name) mem.title_owner = r.owner_name; if (r.phone) mem.phone = r.phone; if (r.email) mem.email = r.email; mem.dnc = upd.dnc; }
+          var canv = (window.adminCanvassLeads||[]).find(function(x){ return x.id === resolvedId; });
+          if (canv) { if (r.owner_name) canv.title_owner = r.owner_name; if (r.phone) canv.phone = r.phone; if (r.email) canv.email = r.email; canv.dnc = upd.dnc; }
+        }
       }
       localStorage.removeItem('bb_skip_trace_queue');
       if (bar) bar.innerHTML = '<div style="background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.2);border-radius:10px;padding:10px 14px;">'
@@ -3889,6 +4143,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     { id:'rgs',       label:'RGS Energy',             names:['Real Goods Solar Inc','RGS Energy','Alteris Renewables'] },
     { id:'pink',      label:'Pink Energy',            names:['Pink Energy'] },
     { id:'vision',    label:'Vision Solar',           names:['Vision Solar'] },
+    { id:'lumio',     label:'Lumio',                  names:['Lumio Inc','1st Light Energy'] },
   ];
   window.BB_SD_INSTALLERS = BB_SD_INSTALLERS;
 
