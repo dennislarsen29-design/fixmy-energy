@@ -55,6 +55,7 @@ exports.handler = async function(event) {
   formData.append('address_column', 'street_address');
   formData.append('city_column', 'city');
   formData.append('state_column', 'state');
+  formData.append('zip_column', 'zip');
   formData.append('trace_type', 'normal');
 
   try {
