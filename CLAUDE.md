@@ -173,7 +173,7 @@ Scheduling: `diagnostic_date, install_date, arrival_end, arrival_window, install
 Financial: `invoice_status, invoice_number, invoice_amount, invoice_url, invoice_items`
 Deposit: `deposit_status, deposit_amount, ops_milestone1_status, ops_milestone1_amount`
 Assignment: `assigned_ops, ops_payout_status, rep_id, setter_name`
-Lead info: `lead_source, referred_by, referral_incentive_paid, lead_temp`
+Lead info: `lead_source, referred_by, referral_incentive_paid, lead_temp, dnc`
 Title: `title_owner, apn, title_confirmed`
 Solar: `system_size, utility, monthly_bill, nem_status`
 Agreement: `agreement_status, agreement_url, agreement_signed_at, agreement_signature`
@@ -217,7 +217,11 @@ Sign & Pay: `sign_token, sign_token_expires_at, stripe_payment_intent_id`
 - Antoinette M2/M3 milestone invoicing (planned — see plan file)
 - **GHL field mapping (optional cleanup):** Change First Name from `{{trigger.full_name}}` → `{{trigger.firstName}}`, add Last Name → `{{trigger.lastName}}` — works either way with current payload
 - **fixmy.energy/check:** Live at `/check` (redirects to FAQ section on main site); installer-specific pages live at `/sunpower`, `/titan`, `/sunnova`, `/mosaic`, etc.
-- **CPUC/SDG&E NEM data request:** Letter drafted below — not yet sent
+- **CPUC NEM data — online request option:** CPUC has an online public records portal in addition to email/mail. Review submission process and required attachments before sending. Draft letter already in CLAUDE.md. Do NOT submit yet — understand the form format first.
+- **CPUC/SDG&E NEM data request (mail/email):** Letter drafted below — not yet sent
+- **CEC GoSolar / CSI bulk CSV:** Download residential solar permit data from cpuc.ca.gov → Industries → Electrical Energy → Demand Side Management → California Solar Initiative → CSI Data → "Current Incentive Claim Data". Paste into Import tab → auto-detected and parsed.
+- **Accela scraper (local Playwright script):** `scripts/accela-scraper.js` targets SD DSD, Chula Vista, Oceanside Accela portals. Run locally: `node scripts/accela-scraper.js`. Output CSV imports via Import tab. See scripts/README for usage.
+- **Cloak Browser (anti-detect):** Noted as a future tool for platforms with aggressive fingerprint-based bot detection (Indeed, LinkedIn, real estate portals). Not needed for Accela or government AHJ sites. Revisit if standard Playwright hits detection walls on commercial platforms.
 - **SD County permit data pull + scoring model walkthrough:** Not yet delivered
 - **Minuteman Press direct mail strategy doc:** Not yet delivered
 - **Golf course solar panel protection:** New service scope — see Future Services section below

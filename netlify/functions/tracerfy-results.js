@@ -55,7 +55,7 @@ exports.handler = async function(event) {
       return { statusCode: 200, headers: cors, body: JSON.stringify({ status: 'pending' }) };
     }
 
-    // Complete — download the CSV (includes our custom lead_id column)
+    // Complete — download the CSV
     const csvResp = await fetch(queueData.download_url);
     if (!csvResp.ok) {
       return { statusCode: 200, headers: cors, body: JSON.stringify({ error: 'CSV download failed: HTTP ' + csvResp.status }) };
@@ -105,20 +105,25 @@ function parseResultsCsv(csvText) {
     const row = {};
     headers.forEach((h, idx) => { row[h] = (vals[idx] || '').trim(); });
 
-    const leadId = row['lead_id'];
-    if (!leadId) continue;
+    const leadId = row['lead_id'] || null;
+    // Tracerfy advanced trace does not echo back custom columns — fall back to street address matching
+    const streetAddr = (row['street_address'] || row['address'] || '').trim();
+    if (!leadId && !streetAddr) continue;
 
-    // Primary phone is best; also check mobile_1, landline_1
     const phone = row['primary_phone'] || row['mobile_1'] || row['landline_1'] || null;
     const email = row['email_1'] || null;
 
-    // Owner name: batch trace normal mode returns first_name + last_name per person
+    // Advanced trace returns first_name + last_name for the property owner
     const firstName = row['first_name'] || row['owner_1_first_name'] || '';
     const lastName  = row['last_name']  || row['owner_1_last_name']  || '';
     const ownerName = [firstName, lastName].filter(Boolean).join(' ') || null;
 
+    // DNC flag — Tracerfy may use any of these field names across CSV versions
+    const dncRaw = row['do_not_call'] || row['dnc'] || row['primary_phone_dnc'] || row['mobile_1_dnc'] || row['phone_dnc'] || '';
+    const dnc = ['true', 'yes', '1', 'y'].includes(dncRaw.toLowerCase().trim());
+
     if (phone || email || ownerName) {
-      records.push({ lead_id: leadId, phone, email, owner_name: ownerName });
+      records.push({ lead_id: leadId, street_address: streetAddr, phone, email, owner_name: ownerName, dnc });
     }
   }
   return records;

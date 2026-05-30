@@ -1849,6 +1849,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<div style="margin-bottom:10px;">'+
           '<label style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em;color:#888;display:block;margin-bottom:6px;">Or paste CSV manually</label>'+
           '<textarea id="importCsvInput" style="width:100%;height:180px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:10px;color:#ccc;font-size:0.75rem;padding:12px;font-family:monospace;resize:vertical;" placeholder="first_name,last_name,address,installer,install_year,system_size_kw,notes&#10;John,Smith,1234 Oak Ave San Diego CA 92103,SunPower,2019,6.4,Panel issue&#10;Maria,Jones,567 Elm St La Mesa CA 91942,Sullivan Solar,2018,,"></textarea>'+
+          '<div style="font-size:0.65rem;color:#555;margin-top:5px;">Accepts: PermitStack export · SD Open Data CSV · Accela scraper output · <strong style="color:#666;">CEC GoSolar/CSI bulk export</strong> (auto-detected). CEC data: <a href="https://www.cpuc.ca.gov/industries-and-topics/electrical-energy/demand-side-management/california-solar-initiative/csi-data" target="_blank" style="color:#4a9eff;text-decoration:none;">cpuc.ca.gov → CSI Data</a></div>'+
         '</div>'+
         '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px;">'+
           '<button onclick="parseImportCsv()" class="lead-btn" style="padding:9px 22px;font-size:0.82rem;background:rgba(74,158,255,0.12);border:1px solid rgba(74,158,255,0.3);color:#4a9eff;">&#128269; Parse CSV</button>'+
@@ -1865,7 +1866,45 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (!raw) { document.getElementById('importParseStatus').textContent = 'Paste a CSV first.'; return; }
       var lines = raw.split('\n').map(function(l){ return l.trim(); }).filter(Boolean);
       if (lines.length < 2) { document.getElementById('importParseStatus').textContent = 'Need at least a header row and one data row.'; return; }
-      var headers = lines[0].split(',').map(function(h){ return h.trim().toLowerCase().replace(/\s+/g,'_'); });
+      var headers = lines[0].split(',').map(function(h){ return h.trim().toLowerCase().replace(/\s+/g,'_').replace(/[^a-z0-9_]/g,''); });
+
+      // ── CEC GoSolar / CSI bulk export detection & normalization ───────────────
+      // CEC CSV headers include "host_customer_sector", "system_size_kw_dc", etc.
+      var isCEC = headers.some(function(h){ return /host_customer_sector|system_size_kw_dc|first_permission_to_operate|csi_application_number/.test(h); });
+      if (isCEC) {
+        var cecRows = [];
+        for (var ci=1; ci<lines.length; ci++) {
+          var cv = splitCsvLine(lines[ci]);
+          if (!cv.length) continue;
+          var co = {};
+          headers.forEach(function(h,j){ co[h] = (cv[j]||'').trim(); });
+          // Filter: residential only
+          var sector = (co['host_customer_sector']||co['customer_sector']||'').toLowerCase();
+          if (sector && sector !== 'residential' && sector !== 'res') continue;
+          // Build address: street + city + CA + zip
+          var street = co['host_site_address'] || co['street_address'] || co['address'] || '';
+          var city   = co['city'] || co['host_city'] || '';
+          var zip    = co['zip_code'] || co['zipcode'] || co['zip'] || '';
+          if (!street) continue;
+          var addr = [street, city, 'CA', zip].filter(Boolean).join(', ');
+          // Installer: contractor or third_party_owner
+          var inst = co['contractor'] || co['installer'] || co['third_party_owner'] || co['financing_type_2'] || '';
+          // Year: from first_permission_to_operate_date or application_approval_date
+          var rawDate = co['first_permission_to_operate_date'] || co['application_approval_date'] || co['completed_date'] || '';
+          var yr = rawDate ? String(new Date(rawDate).getFullYear()) : '';
+          if (isNaN(parseInt(yr))) yr = '';
+          // System size
+          var kw = co['system_size_kw_dc'] || co['system_size_kw_ac'] || co['system_size_kw'] || co['system_size'] || '';
+          cecRows.push({ address: addr, installer: inst, install_year: yr, system_size_kw: kw, notes: co['notes'] || '' });
+        }
+        window.importRows = cecRows;
+        window.importEnriched = cecRows.map(function(){ return null; });
+        document.getElementById('importParseStatus').textContent = cecRows.length + ' CEC GoSolar rows parsed (residential only).';
+        renderImportPreview(false);
+        return;
+      }
+
+      // ── Standard CSV ──────────────────────────────────────────────────────────
       var requiredCols = ['address'];
       for (var ri=0; ri<requiredCols.length; ri++) {
         if (headers.indexOf(requiredCols[ri]) === -1) {
@@ -3294,11 +3333,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         if (lead.phone || gpRealEmail) {
           h += '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:14px;">';
           if (lead.phone) {
-            h += '<a href="tel:'+gpPh+'" style="display:inline-flex;align-items:center;gap:4px;padding:5px 13px;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:100px;font-size:0.72rem;font-weight:700;text-decoration:none;">&#128222; Call</a>';
-            h += '<a href="sms:'+gpPh+'" style="display:inline-flex;align-items:center;gap:4px;padding:5px 13px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);color:#4a9eff;border-radius:100px;font-size:0.72rem;font-weight:700;text-decoration:none;">&#128172; Text</a>';
+            if (lead.dnc) {
+              h += '<button onclick="bbDncWarn(\'call\',\''+gpPh+'\')" style="display:inline-flex;align-items:center;gap:4px;padding:5px 13px;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.4);color:#ef4444;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;">&#9940; Call</button>';
+              h += '<button onclick="bbDncWarn(\'text\',\''+gpPh+'\')" style="display:inline-flex;align-items:center;gap:4px;padding:5px 13px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.25);color:#ef4444;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;">&#9940; Text</button>';
+            } else {
+              h += '<a href="tel:'+gpPh+'" style="display:inline-flex;align-items:center;gap:4px;padding:5px 13px;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:100px;font-size:0.72rem;font-weight:700;text-decoration:none;">&#128222; Call</a>';
+              h += '<a href="sms:'+gpPh+'" style="display:inline-flex;align-items:center;gap:4px;padding:5px 13px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);color:#4a9eff;border-radius:100px;font-size:0.72rem;font-weight:700;text-decoration:none;">&#128172; Text</a>';
+            }
           }
           if (gpRealEmail) {
-            h += '<a href="mailto:'+gpRealEmail+'" style="display:inline-flex;align-items:center;gap:4px;padding:5px 13px;background:rgba(255,170,0,0.1);border:1px solid rgba(255,170,0,0.3);color:#ffaa00;border-radius:100px;font-size:0.72rem;font-weight:700;text-decoration:none;">&#9993; Email</a>';
+            if (lead.dnc) {
+              h += '<button onclick="bbDncWarn(\'email\',\''+gpRealEmail+'\')" style="display:inline-flex;align-items:center;gap:4px;padding:5px 13px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.25);color:#ef4444;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;">&#9940; Email</button>';
+            } else {
+              h += '<a href="mailto:'+gpRealEmail+'" style="display:inline-flex;align-items:center;gap:4px;padding:5px 13px;background:rgba(255,170,0,0.1);border:1px solid rgba(255,170,0,0.3);color:#ffaa00;border-radius:100px;font-size:0.72rem;font-weight:700;text-decoration:none;">&#9993; Email</a>';
+            }
           }
           h += '</div>';
         } else {
@@ -3423,6 +3471,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             if (lead.original_installer) h += '<span style="font-size:0.6rem;color:#888;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.07);border-radius:4px;padding:1px 6px;">'+lead.original_installer+(lead.install_year?' · '+lead.install_year:'')+'</span>';
             if (lead.system_size) h += '<span style="font-size:0.6rem;color:#8DC63F;background:rgba(141,198,63,0.06);border:1px solid rgba(141,198,63,0.18);border-radius:4px;padding:1px 6px;">'+lead.system_size+' kW</span>';
             if (bbIsSDCP) h += '<span style="font-size:0.6rem;font-weight:700;color:#4AABF7;background:rgba(0,150,255,0.08);border:1px solid rgba(0,150,255,0.25);border-radius:4px;padding:1px 6px;">SDCP</span>';
+            if (lead.dnc) h += '<span style="font-size:0.6rem;font-weight:700;color:#ef4444;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.35);border-radius:4px;padding:1px 6px;">&#9940; DNC</span>';
             if (ks) h += '<span style="font-size:0.6rem;font-weight:700;color:'+ksColor+';background:rgba(255,255,255,0.03);border:1px solid '+ksColor+'55;border-radius:4px;padding:1px 6px;">'+ksLabel+'</span>';
             if (noContact) h += '<span style="font-size:0.6rem;font-weight:700;color:#ffaa00;background:rgba(255,170,0,0.06);border:1px solid rgba(255,170,0,0.25);border-radius:4px;padding:1px 6px;">&#128222; No contact</span>';
             h += '</div>';
@@ -3442,12 +3491,21 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
               var p = (lead.phone||'').replace(/\D/g,'');
               h += '<div style="padding:7px 12px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;border-bottom:1px solid rgba(255,255,255,0.05);">';
               if (lead.phone) {
-                h += '<a href="tel:'+p+'" style="width:auto;margin-top:0;padding:5px 13px;border-radius:100px;font-size:0.68rem;font-weight:700;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;text-decoration:none;">&#128222; Call</a>';
-                h += '<a href="sms:'+p+'" style="width:auto;margin-top:0;padding:5px 13px;border-radius:100px;font-size:0.68rem;font-weight:700;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);color:#4a9eff;text-decoration:none;">&#128172; Text</a>';
+                if (lead.dnc) {
+                  h += '<button onclick="bbDncWarn(\'call\',\''+p+'\')" style="width:auto;margin-top:0;padding:5px 13px;border-radius:100px;font-size:0.68rem;font-weight:700;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.4);color:#ef4444;cursor:pointer;">&#9940; Call</button>';
+                  h += '<button onclick="bbDncWarn(\'text\',\''+p+'\')" style="width:auto;margin-top:0;padding:5px 13px;border-radius:100px;font-size:0.68rem;font-weight:700;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.25);color:#ef4444;cursor:pointer;">&#9940; Text</button>';
+                } else {
+                  h += '<a href="tel:'+p+'" style="width:auto;margin-top:0;padding:5px 13px;border-radius:100px;font-size:0.68rem;font-weight:700;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;text-decoration:none;">&#128222; Call</a>';
+                  h += '<a href="sms:'+p+'" style="width:auto;margin-top:0;padding:5px 13px;border-radius:100px;font-size:0.68rem;font-weight:700;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);color:#4a9eff;text-decoration:none;">&#128172; Text</a>';
+                }
                 h += '<span style="font-size:0.62rem;color:#555;">'+lead.phone+'</span>';
               }
               if (realEmail) {
-                h += '<a href="mailto:'+realEmail+'" style="width:auto;margin-top:0;padding:5px 13px;border-radius:100px;font-size:0.68rem;font-weight:700;background:rgba(255,170,0,0.1);border:1px solid rgba(255,170,0,0.3);color:#ffaa00;text-decoration:none;">&#9993; Email</a>';
+                if (lead.dnc) {
+                  h += '<button onclick="bbDncWarn(\'email\',\''+realEmail+'\')" style="width:auto;margin-top:0;padding:5px 13px;border-radius:100px;font-size:0.68rem;font-weight:700;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.25);color:#ef4444;cursor:pointer;">&#9940; Email</button>';
+                } else {
+                  h += '<a href="mailto:'+realEmail+'" style="width:auto;margin-top:0;padding:5px 13px;border-radius:100px;font-size:0.68rem;font-weight:700;background:rgba(255,170,0,0.1);border:1px solid rgba(255,170,0,0.3);color:#ffaa00;text-decoration:none;">&#9993; Email</a>';
+                }
               }
               h += '</div>';
             }
@@ -3637,6 +3695,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
   };
 
+  window.bbDncWarn = function(type, value) {
+    var link = type === 'call' ? 'tel:'+value : type === 'text' ? 'sms:'+value : 'mailto:'+value;
+    var overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.8);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;';
+    overlay.innerHTML =
+      '<div style="background:#1a1a1a;border:1px solid rgba(239,68,68,0.4);border-radius:16px;padding:24px;max-width:340px;width:100%;box-sizing:border-box;">'+
+      '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#ef4444;margin-bottom:10px;">&#9940; DNC Registry Warning</div>'+
+      '<div style="font-size:0.82rem;color:#ccc;line-height:1.55;margin-bottom:18px;">This number is on the <strong style="color:#eee;">National Do Not Call Registry</strong>. Cold calling without prior consent is prohibited by FTC rules.<br><br>You may knock the door and obtain verbal consent in person before dialing.</div>'+
+      '<div style="display:flex;gap:10px;">'+
+      '<button onclick="this.closest(\'[style*=z-index\\:9999]\').remove()" style="flex:1;padding:12px 8px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);border-radius:10px;color:#888;cursor:pointer;font-size:0.8rem;">Cancel</button>'+
+      '<a href="'+link+'" onclick="setTimeout(function(){document.querySelector(\'[style*=z-index\\\\:9999]\')&&document.querySelector(\'[style*=z-index\\\\:9999]\').remove()},200)" style="flex:1;padding:12px 8px;background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.4);border-radius:10px;color:#ef4444;cursor:pointer;font-size:0.8rem;font-weight:700;text-align:center;text-decoration:none;display:block;">Proceed Anyway</a>'+
+      '</div></div>';
+    document.body.appendChild(overlay);
+    overlay.addEventListener('click', function(e){ if(e.target===overlay) overlay.remove(); });
+  };
+
   window.activateBlackBoxLead = async function(id) {
     var rec = adminCustomers.find(function(x){ return x.id === id; });
     if (!rec) return;
@@ -3822,15 +3896,36 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var recs = data.records || [];
       var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
       var updated = 0;
+
+      // Build street → customer ID map for address-based fallback
+      // (Tracerfy advanced trace does not echo back our custom lead_id column)
+      var streetMap = {};
+      adminCustomers.filter(function(x){ return x.lead_source === 'orphaned_list'; }).forEach(function(l) {
+        if (l.address) streetMap[l.address.split(',')[0].trim().toLowerCase()] = l.id;
+      });
+
       for (var i = 0; i < recs.length; i++) {
         var r = recs[i];
-        if (!r.lead_id || (!r.phone && !r.email && !r.owner_name)) continue;
+        if (!r.phone && !r.email && !r.owner_name) continue;
+        var resolvedId = r.lead_id;
+        if (!resolvedId && r.street_address) {
+          resolvedId = streetMap[r.street_address.trim().toLowerCase()];
+        }
+        if (!resolvedId) continue;
         var upd = {};
         if (r.owner_name) upd.title_owner = r.owner_name;
         if (r.phone) upd.phone = r.phone;
         if (r.email) upd.email = r.email;
-        var res = await c2.from('customers').update(upd).eq('id', r.lead_id);
-        if (!res.error) updated++;
+        upd.dnc = r.dnc || false;
+        var res = await c2.from('customers').update(upd).eq('id', resolvedId);
+        if (!res.error) {
+          updated++;
+          // Update in-memory arrays so badge renders without reload
+          var mem = adminCustomers.find(function(x){ return x.id === resolvedId; });
+          if (mem) { if (r.owner_name) mem.title_owner = r.owner_name; if (r.phone) mem.phone = r.phone; if (r.email) mem.email = r.email; mem.dnc = upd.dnc; }
+          var canv = (window.adminCanvassLeads||[]).find(function(x){ return x.id === resolvedId; });
+          if (canv) { if (r.owner_name) canv.title_owner = r.owner_name; if (r.phone) canv.phone = r.phone; if (r.email) canv.email = r.email; canv.dnc = upd.dnc; }
+        }
       }
       localStorage.removeItem('bb_skip_trace_queue');
       if (bar) bar.innerHTML = '<div style="background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.2);border-radius:10px;padding:10px 14px;">'
@@ -3859,6 +3954,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     { id:'rgs',       label:'RGS Energy',             names:['Real Goods Solar Inc','RGS Energy','Alteris Renewables'] },
     { id:'pink',      label:'Pink Energy',            names:['Pink Energy'] },
     { id:'vision',    label:'Vision Solar',           names:['Vision Solar'] },
+    { id:'lumio',     label:'Lumio',                  names:['Lumio Inc','1st Light Energy'] },
   ];
   window.BB_SD_INSTALLERS = BB_SD_INSTALLERS;
 
