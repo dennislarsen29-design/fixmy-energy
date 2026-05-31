@@ -4834,6 +4834,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         (c.address ? '<button class="lead-btn ghost" data-addr="'+(c.address||'').replace(/"/g,'&quot;')+'" onclick="navigator.clipboard.writeText(this.dataset.addr).then((function(b){var o=b.innerHTML;b.innerHTML=\'&#10003;\';setTimeout(function(){b.innerHTML=o;},1500);}).bind(this))" title="Copy address">&#128205;</button>' : '')+
         (c.lead_category!=='new_solar'&&(c.step||1)<7 ? '<button class="lead-btn ghost" data-id="'+c.id+'" onclick="adminQuickAdvanceStep(this.dataset.id)" title="Advance step">&#8594;</button>' : '')+
         (isTT && !c.tt_confirmed ? '<button class="lead-btn ghost" data-id="'+c.id+'" onclick="confirmTTLead(this.dataset.id)" style="color:#9b6de8;border-color:rgba(155,109,232,0.35);">&#10003; Confirm</button>' :
+          (isTT ? '<button class="lead-btn ghost" data-id="'+c.id+'" onclick="sendTTReminder(this.dataset.id)" style="color:#4a9eff;border-color:rgba(74,158,255,0.35);" title="Send reminder SMS + Email">&#128241; Reminder</button>' : '')+
           '<button class="lead-btn ghost" data-id="'+c.id+'" onclick="openProposalBuilder(this.dataset.id)" style="color:#8DC63F;border-color:rgba(141,198,63,0.3);">&#128196; Proposal</button>')+
         (CURRENT_ROLE === 'admin' ? '<button class="lead-btn ghost" data-id="'+c.id+'" onclick="deleteLead(this.dataset.id)" style="color:#ef4444;border-color:rgba(239,68,68,0.25);" title="Delete lead">&#128465;</button>' : '')+
       '</div></div>'+
@@ -5470,6 +5471,55 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }).catch(function(e){ console.warn('GHL confirm:', e); });
       renderAdminView(adminView);
     } catch(e) { alert('Could not confirm: '+e.message); }
+  }
+
+  async function sendTTReminder(id) {
+    var rec = adminCustomers.find(function(x){ return x.id===id; });
+    if (!rec) return;
+    var name = [rec.first_name, rec.last_name].filter(Boolean).join(' ');
+    var apptLine = rec.diagnostic_date ? ' for ' + new Date(rec.diagnostic_date).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : '';
+    // Build overlay instead of blocking confirm()
+    var overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;';
+    overlay.innerHTML =
+      '<div style="background:#1a1a1a;border:1px solid rgba(74,158,255,0.3);border-radius:16px;padding:24px;max-width:340px;width:100%;">'+
+      '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#4a9eff;margin-bottom:10px;">&#128241; Send Appointment Reminder</div>'+
+      '<div style="font-size:0.85rem;color:#ccc;margin-bottom:6px;"><strong style="color:#fff;">'+name+'</strong></div>'+
+      (apptLine ? '<div style="font-size:0.78rem;color:#888;margin-bottom:16px;">'+apptLine+'</div>' : '<div style="font-size:0.78rem;color:#888;margin-bottom:16px;">No appointment date set</div>')+
+      '<div style="font-size:0.8rem;color:#aaa;margin-bottom:18px;">Send confirmation SMS + Email through GHL now?</div>'+
+      '<div style="display:flex;gap:10px;">'+
+      '<button id="ttRemCancel" style="flex:1;padding:10px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);border-radius:10px;color:#888;cursor:pointer;font-size:0.8rem;">Cancel</button>'+
+      '<button id="ttRemSend" style="flex:1;padding:10px;background:rgba(74,158,255,0.15);border:1px solid rgba(74,158,255,0.4);border-radius:10px;color:#4a9eff;cursor:pointer;font-size:0.8rem;font-weight:700;">&#128241; Send Now</button>'+
+      '</div>'+
+      '<div id="ttRemStatus" style="margin-top:10px;font-size:0.75rem;text-align:center;min-height:18px;"></div>'+
+      '</div>';
+    document.body.appendChild(overlay);
+    overlay.addEventListener('click', function(e){ if (e.target === overlay) overlay.remove(); });
+    document.getElementById('ttRemCancel').onclick = function(){ overlay.remove(); };
+    document.getElementById('ttRemSend').onclick = async function() {
+      var btn = document.getElementById('ttRemSend');
+      var status = document.getElementById('ttRemStatus');
+      btn.disabled = true; btn.textContent = 'Sending…';
+      try {
+        var r = await fetch('/.netlify/functions/ghl-calendar', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ trigger: 'top_tier_reminder', firstName: rec.first_name, lastName: rec.last_name||'', email: rec.email, phone: rec.phone, address: rec.address })
+        });
+        var d = await r.json();
+        if (d.ok || d.contactId) {
+          status.style.color = '#8DC63F';
+          status.textContent = '✓ Reminder sent via GHL';
+          btn.textContent = '✓ Sent';
+          setTimeout(function(){ overlay.remove(); }, 1500);
+        } else {
+          throw new Error(d.error || 'Unknown error');
+        }
+      } catch(e) {
+        status.style.color = '#ef4444';
+        status.textContent = 'Error: ' + e.message;
+        btn.disabled = false; btn.textContent = '📱 Send Now';
+      }
+    };
   }
 
   async function saveLeadEditor() {
