@@ -3945,7 +3945,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           + '<button onclick="adminCanvassPollSkipTrace(\''+queueInfo.queue_id+'\','+missing+')" style="width:auto;margin-top:0;background:#4a9eff;color:#fff;border:none;border-radius:100px;padding:8px 18px;font-size:0.78rem;font-weight:800;cursor:pointer;white-space:nowrap;">&#9681; Check Results</button>'
           + '<button onclick="localStorage.removeItem(\'bb_skip_trace_queue\');adminCanvassLoadEnrichBar()" style="width:auto;margin-top:0;background:none;border:none;color:#555;font-size:0.72rem;cursor:pointer;text-decoration:underline;padding:0;">&#10005; Reset</button>'
           + '</div>'
-        : '<button onclick="adminCanvassEnrichAll()" style="width:auto;margin-top:0;background:#ffaa00;color:#1A1A1A;border:none;border-radius:100px;padding:8px 18px;font-size:0.78rem;font-weight:800;cursor:pointer;white-space:nowrap;">&#128269; Enrich All</button>';
+        : '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
+          + '<button onclick="adminCanvassEnrichAll()" style="width:auto;margin-top:0;background:#ffaa00;color:#1A1A1A;border:none;border-radius:100px;padding:8px 18px;font-size:0.78rem;font-weight:800;cursor:pointer;white-space:nowrap;">&#128269; Enrich All</button>'
+          + '<button onclick="bbShowTracerfyPaste()" style="width:auto;margin-top:0;background:none;border:1px solid rgba(255,170,0,0.3);border-radius:100px;color:#ffaa00;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#128196; Paste Tracerfy CSV</button>'
+          + '</div>';
       bar.innerHTML = '<div style="background:rgba(255,170,0,0.07);border:1px solid rgba(255,170,0,0.2);border-radius:10px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">'
         + '<div><div style="font-size:0.75rem;font-weight:700;color:#ffaa00;">'+missing+' leads missing phone/email</div>'
         + '<div style="font-size:0.68rem;color:#888;margin-top:1px;">'+havePhone+' of '+total+' have phone on file &mdash; Enrich All runs free GIS first, then skip-traces all '+missing+' via Tracerfy</div></div>'
@@ -4124,6 +4127,102 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     } catch(e) {
       if (bar) bar.innerHTML = '<div style="background:rgba(255,0,0,0.07);border:1px solid rgba(255,0,0,0.2);border-radius:10px;padding:10px 14px;font-size:0.75rem;color:#ff5555;">Error: '+e.message+'</div>';
     }
+  };
+
+  // ── Black Box: Paste Tracerfy CSV fallback ──────────────────────────────────
+  window.bbShowTracerfyPaste = function() {
+    var existing = document.getElementById('bbTracerfyPasteBox');
+    if (existing) { existing.remove(); return; }
+    var bar = document.getElementById('bbEnrichBar');
+    if (!bar) return;
+    var box = document.createElement('div');
+    box.id = 'bbTracerfyPasteBox';
+    box.style.cssText = 'background:rgba(255,170,0,0.06);border:1px solid rgba(255,170,0,0.25);border-radius:12px;padding:14px;margin-top:10px;';
+    box.innerHTML = '<div style="font-size:0.75rem;font-weight:700;color:#ffaa00;margin-bottom:8px;">&#128196; Paste Tracerfy Results CSV</div>'
+      + '<textarea id="bbTracerfyRaw" style="width:100%;height:140px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:#ccc;font-size:0.7rem;padding:8px;font-family:monospace;resize:vertical;" placeholder="Paste the full CSV content from the Tracerfy results file here…"></textarea>'
+      + '<div style="display:flex;gap:8px;margin-top:8px;align-items:center;">'
+      + '<button onclick="bbProcessTracerfyCsv()" style="width:auto;margin-top:0;background:#ffaa00;color:#1A1A1A;border:none;border-radius:100px;padding:7px 18px;font-size:0.78rem;font-weight:800;cursor:pointer;">&#9889; Process CSV</button>'
+      + '<span id="bbTracerfyPasteStatus" style="font-size:0.72rem;color:#888;"></span>'
+      + '</div>';
+    bar.parentNode.insertBefore(box, bar.nextSibling);
+  };
+
+  window.bbProcessTracerfyCsv = async function() {
+    var raw = (document.getElementById('bbTracerfyRaw')||{}).value || '';
+    var statusEl = document.getElementById('bbTracerfyPasteStatus');
+    if (!raw.trim()) { if (statusEl) statusEl.textContent = 'Paste CSV first.'; return; }
+    if (statusEl) statusEl.textContent = 'Parsing…';
+
+    var lines = raw.trim().split('\n').map(function(l){ return l.trim(); }).filter(Boolean);
+    if (lines.length < 2) { if (statusEl) statusEl.textContent = 'Need header + at least one data row.'; return; }
+
+    // Parse CSV respecting quoted fields
+    function parseCsvLine(line) {
+      var result = [], cur = '', inQ = false;
+      for (var i = 0; i < line.length; i++) {
+        var c = line[i];
+        if (c === '"') { inQ = !inQ; }
+        else if (c === ',' && !inQ) { result.push(cur.trim()); cur = ''; }
+        else { cur += c; }
+      }
+      result.push(cur.trim());
+      return result;
+    }
+
+    var headers = parseCsvLine(lines[0]).map(function(h){ return h.toLowerCase().replace(/\s+/g,'_').replace(/[^a-z0-9_]/g,''); });
+    var records = [];
+    for (var i = 1; i < lines.length; i++) {
+      var vals = parseCsvLine(lines[i]);
+      var row = {};
+      headers.forEach(function(h, j){ row[h] = (vals[j]||'').trim(); });
+      var leadId = row['lead_id'] || null;
+      var streetAddr = (row['street_address'] || row['address'] || '').trim();
+      if (!leadId && !streetAddr) continue;
+      var phone = row['primary_phone'] || row['mobile_1'] || row['landline_1'] || null;
+      var email = row['email_1'] || row['email'] || null;
+      var firstName = row['first_name'] || row['owner_1_first_name'] || '';
+      var lastName  = row['last_name']  || row['owner_1_last_name']  || '';
+      var ownerName = [firstName, lastName].filter(Boolean).join(' ') || null;
+      var dncRaw = row['do_not_call'] || row['dnc'] || row['primary_phone_dnc'] || row['mobile_1_dnc'] || row['phone_dnc'] || '';
+      var dnc = ['true','yes','1','y'].includes(dncRaw.toLowerCase().trim());
+      if (phone || email || ownerName) {
+        records.push({ lead_id: leadId, street_address: streetAddr, phone: phone||null, email: email||null, owner_name: ownerName||null, dnc: dnc });
+      }
+    }
+
+    if (!records.length) { if (statusEl) statusEl.textContent = 'No usable records found in CSV.'; return; }
+    if (statusEl) statusEl.textContent = 'Matching ' + records.length + ' records to leads…';
+
+    // Build street map for fallback matching
+    var streetMap = {};
+    adminCustomers.filter(function(x){ return x.lead_source === 'orphaned_list'; }).forEach(function(l){
+      if (l.address) streetMap[l.address.split(',')[0].trim().toLowerCase()] = l.id;
+    });
+
+    var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var updated = 0, skipped = 0;
+    for (var ri = 0; ri < records.length; ri++) {
+      var r = records[ri];
+      var resolvedId = r.lead_id;
+      if (!resolvedId && r.street_address) resolvedId = streetMap[r.street_address.trim().toLowerCase()];
+      if (!resolvedId) { skipped++; continue; }
+      var upd = { dnc: r.dnc || false };
+      if (r.owner_name) upd.title_owner = r.owner_name;
+      if (r.phone) upd.phone = r.phone;
+      if (r.email) upd.email = r.email;
+      var res = await c2.from('customers').update(upd).eq('id', resolvedId);
+      if (!res.error) {
+        updated++;
+        var mem = adminCustomers.find(function(x){ return x.id === resolvedId; });
+        if (mem) { if (r.owner_name) mem.title_owner = r.owner_name; if (r.phone) mem.phone = r.phone; if (r.email) mem.email = r.email; mem.dnc = upd.dnc; }
+        var canv = (window.adminCanvassLeads||[]).find(function(x){ return x.id === resolvedId; });
+        if (canv) { if (r.owner_name) canv.title_owner = r.owner_name; if (r.phone) canv.phone = r.phone; if (r.email) canv.email = r.email; canv.dnc = upd.dnc; }
+      }
+      if (statusEl && ri % 20 === 0) statusEl.textContent = 'Updating… (' + ri + '/' + records.length + ')';
+    }
+
+    if (statusEl) statusEl.textContent = '✓ Done — ' + updated + ' leads updated, ' + skipped + ' unmatched.';
+    adminCanvassLoadEnrichBar();
   };
 
   // ── Black Box: Pull More Leads from PermitStack ─────────────────────────────
