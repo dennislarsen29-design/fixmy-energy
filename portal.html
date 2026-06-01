@@ -3870,6 +3870,71 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
   };
 
+  window.generateProposalInsight = async function(id) {
+    var rec = adminCustomers.find(function(x){ return x.id === id; });
+    if (!rec) return;
+    var btn = document.getElementById('propInsightBtn');
+    var ta  = document.getElementById('propInsightText');
+    if (btn) { btn.disabled = true; btn.textContent = '…'; }
+    try {
+      var r = await fetch('/.netlify/functions/generate-proposal-insight', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          notes: rec.notes || '',
+          system_size: rec.system_size || null,
+          monthly_bill: rec.monthly_bill || null,
+          nem_status: rec.nem_status || '',
+          installer: rec.installer || '',
+          issue: 'inverter underperforming'
+        })
+      });
+      var d = await r.json();
+      if (d.insight && ta) ta.value = d.insight;
+      else if (ta) ta.value = 'Could not generate insight: ' + (d.error || 'unknown error');
+    } catch(e) {
+      if (ta) ta.value = 'Error: ' + e.message;
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '✨ Generate'; }
+    }
+  };
+
+  window.propShowScenario = function(type, bill) {
+    var detail = document.getElementById('propSavingsDetail');
+    if (!detail) return;
+    if (!bill || bill <= 0) { detail.style.display = 'block'; detail.innerHTML = '<div style="font-size:0.78rem;color:#666;">Add a monthly bill amount to the customer profile to calculate savings.</div>'; return; }
+    var rates   = { conservative: 0.40, moderate: 0.75, significant: 0.90 };
+    var colors  = { conservative: '#4a9eff', moderate: '#ffaa00', significant: '#8DC63F' };
+    var descs   = {
+      conservative: 'Inverter restored + modest panel gains. Some grid dependency on high-usage days.',
+      moderate: 'Strong daily solar generation + Powerwall handles evening peaks.',
+      significant: 'Near grid independence — Powerwall virtually eliminates SDG&E charges year-round.'
+    };
+    var labels  = { conservative: 'Conservative', moderate: 'Moderate', significant: 'Significant' };
+    var rate    = rates[type];
+    var monthly = Math.round(bill * rate);
+    var annual  = monthly * 12;
+    var yr20    = Math.round(annual * 20 * 1.3);
+    var color   = colors[type];
+    detail.style.display = 'block';
+    detail.innerHTML =
+      '<div style="font-size:0.72rem;font-weight:700;color:'+color+';margin-bottom:10px;">'+labels[type]+' Scenario</div>'+
+      '<div style="display:flex;gap:12px;margin-bottom:10px;">'+
+        '<div style="flex:1;text-align:center;">'+
+          '<div style="font-size:0.65rem;color:#666;margin-bottom:4px;">Monthly</div>'+
+          '<div style="font-size:1.2rem;font-weight:700;color:'+color+';">~$'+monthly+'</div>'+
+        '</div>'+
+        '<div style="flex:1;text-align:center;">'+
+          '<div style="font-size:0.65rem;color:#666;margin-bottom:4px;">Annual</div>'+
+          '<div style="font-size:1.2rem;font-weight:700;color:#fff;">~$'+annual.toLocaleString()+'</div>'+
+        '</div>'+
+        '<div style="flex:1;text-align:center;">'+
+          '<div style="font-size:0.65rem;color:#666;margin-bottom:4px;">20-Year Value</div>'+
+          '<div style="font-size:1.2rem;font-weight:700;color:#fff;">~$'+yr20.toLocaleString()+'</div>'+
+        '</div>'+
+      '</div>'+
+      '<div style="font-size:0.72rem;color:#888;line-height:1.5;">'+descs[type]+'</div>';
+  };
+
   window.bbDncWarn = function(type, value) {
     var link = type === 'call' ? 'tel:'+value : type === 'text' ? 'sms:'+value : 'mailto:'+value;
     var overlay = document.createElement('div');
@@ -4886,6 +4951,39 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       return '<button onclick="var _m=document.getElementById(\'proposalModal\');if(_m)_m.remove();openProposalBuilder(\''+c.id+'\',\''+t.key+'\')" style="flex:1;padding:7px 4px;border:none;border-radius:7px;font-size:0.68rem;font-weight:700;cursor:pointer;'+(active?'background:'+t.bg+';color:'+t.fg+';':'background:transparent;color:#555;')+'">'+t.label+'</button>';
     }).join('');
 
+    // AI Insight + Savings Scenarios (inverter_swap only)
+    var existingInsight = (existing && existing.insight) || '';
+    var aiInsightHtml = '';
+    var savingsHtml = '';
+    if (serviceType === 'inverter_swap') {
+      aiInsightHtml =
+        '<div style="background:rgba(255,170,0,0.06);border:1px solid rgba(255,170,0,0.2);border-radius:12px;padding:16px;margin-bottom:14px;">'+
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">'+
+          '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#ffaa00;">&#10024; AI System Insight</div>'+
+          '<button id="propInsightBtn" onclick="generateProposalInsight(\''+c.id+'\')" style="font-size:0.72rem;padding:5px 12px;background:rgba(255,170,0,0.12);border:1px solid rgba(255,170,0,0.3);border-radius:8px;color:#ffaa00;cursor:pointer;font-weight:600;">&#10024; Generate</button>'+
+        '</div>'+
+        '<textarea id="propInsightText" placeholder="Tap Generate for an AI-drafted insight, then edit as needed before sending..." rows="4" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:#ccc;padding:10px;font-size:0.82rem;resize:vertical;box-sizing:border-box;line-height:1.5;">'+existingInsight.replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</textarea>'+
+        '<div style="font-size:0.68rem;color:#555;margin-top:5px;">Rep reviews and edits before sending to customer.</div>'+
+        '</div>';
+
+      var bill = parseFloat(c.monthly_bill) || 0;
+      var billNote = bill > 0
+        ? '<div style="font-size:0.75rem;color:#aaa;margin-bottom:10px;">Based on current bill of <strong style="color:#fff;">$'+bill.toFixed(0)+'/mo</strong></div>'
+        : '<div style="font-size:0.75rem;color:#666;margin-bottom:10px;">Add monthly bill to customer profile to see savings estimates.</div>';
+      savingsHtml =
+        '<div style="background:rgba(74,158,255,0.05);border:1px solid rgba(74,158,255,0.18);border-radius:12px;padding:16px;margin-bottom:14px;">'+
+        '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#4a9eff;margin-bottom:10px;">&#128202; Projected Savings &mdash; Option 2</div>'+
+        billNote+
+        '<div style="display:flex;gap:6px;margin-bottom:10px;">'+
+          '<button onclick="propShowScenario(\'conservative\','+bill+')" style="flex:1;padding:8px 4px;background:rgba(74,158,255,0.08);border:1px solid rgba(74,158,255,0.25);border-radius:8px;color:#4a9eff;cursor:pointer;font-size:0.72rem;font-weight:700;">Conservative</button>'+
+          '<button onclick="propShowScenario(\'moderate\','+bill+')" style="flex:1;padding:8px 4px;background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.25);border-radius:8px;color:#ffaa00;cursor:pointer;font-size:0.72rem;font-weight:700;">Moderate</button>'+
+          '<button onclick="propShowScenario(\'significant\','+bill+')" style="flex:1;padding:8px 4px;background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.25);border-radius:8px;color:#8DC63F;cursor:pointer;font-size:0.72rem;font-weight:700;">Significant</button>'+
+        '</div>'+
+        '<div id="propSavingsDetail" style="display:none;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:14px;"></div>'+
+        '<div style="font-size:0.65rem;color:#555;margin-top:8px;">SDG&amp;E NEM 1 &mdash; 10 Tesla 420W panels + Tesla Powerwall 3 (13.5 kWh, non-export)</div>'+
+        '</div>';
+    }
+
     var optionsHtml = '';
     if (!catalog.length) {
       optionsHtml = '<div style="padding:20px;text-align:center;color:#555;font-size:0.82rem;">No active catalog entries for this service type.</div>';
@@ -4951,11 +5049,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           tabsHtml+
         '</div>'+
         acceptedBanner+
+        aiInsightHtml+
+        savingsHtml+
         optionsHtml+
         '<div style="display:flex;gap:10px;justify-content:flex-end;">'+
           '<button onclick="var _m=document.getElementById(\'proposalModal\');if(_m)_m.remove();" style="padding:10px 20px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:100px;color:#aaa;cursor:pointer;font-size:0.85rem;">Cancel</button>'+
-          '<button onclick="sendProposal(\''+c.id+'\')" style="padding:10px 24px;background:#8DC63F;color:#000;border:none;border-radius:100px;font-weight:700;cursor:pointer;font-size:0.85rem;">&#128228; Send to Customer</button>'+
+          '<button id="propSendBtn" onclick="sendProposal(\''+c.id+'\')" style="padding:10px 24px;background:#8DC63F;color:#000;border:none;border-radius:100px;font-weight:700;cursor:pointer;font-size:0.85rem;">&#128228; Send to Customer</button>'+
         '</div>'+
+        '<div id="propSaveStatus" style="margin-top:8px;font-size:0.78rem;text-align:center;min-height:18px;"></div>'+
       '</div>';
     document.body.appendChild(modal);
     modal._catalog = catalog;
@@ -4963,8 +5064,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
   async function sendProposal(id) {
     var modal = document.getElementById('proposalModal');
+    var sendBtn = document.getElementById('propSendBtn');
+    var statusEl = document.getElementById('propSaveStatus');
     var catalog = (modal && modal._catalog) || [];
     var serviceType = (document.getElementById('prop_service_type')||{}).value || 'battery_retrofit';
+    var insight = ((document.getElementById('propInsightText')||{}).value || '').trim() || null;
+
+    if (sendBtn) { sendBtn.disabled = true; sendBtn.textContent = 'Saving…'; }
+
     var options = [];
     for (var i = 0; i < catalog.length; i++) {
       var row = catalog[i];
@@ -5000,21 +5107,29 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (aPortEl) opt.aurora_portal_url = aPortEl.value.trim() || null;
       options.push(opt);
     }
-    if (!options.length) { alert('Enable at least one option.'); return; }
+    if (!options.length) {
+      if (statusEl) { statusEl.style.color = '#ef4444'; statusEl.textContent = 'Enable at least one option first.'; }
+      if (sendBtn) { sendBtn.disabled = false; sendBtn.innerHTML = '&#128228; Send to Customer'; }
+      return;
+    }
     try {
       var client = supabase.createClient(SUPA_URL, SUPA_KEY);
       var proposal = { status: 'sent', created_at: new Date().toISOString(), options: options, accepted_option: null, financing: null, loan_term: null };
+      if (insight) proposal.insight = insight;
       var { error } = await client.from('customers').update({ proposal: proposal }).eq('id', id);
       if (error) throw error;
       var verify = await client.from('customers').select('id,proposal').eq('id', id).limit(1);
       if (verify.error) throw verify.error;
       var saved = verify.data && verify.data[0] && verify.data[0].proposal;
-      if (!saved) throw new Error('Proposal column may not exist in Supabase. Run: ALTER TABLE customers ADD COLUMN IF NOT EXISTS proposal jsonb;');
+      if (!saved) throw new Error('Proposal column may not exist — run: ALTER TABLE customers ADD COLUMN IF NOT EXISTS proposal jsonb;');
       var idx = adminCustomers.findIndex(function(x){ return x.id===id; });
       if (idx > -1) adminCustomers[idx].proposal = proposal;
-      if (modal) modal.remove();
-      alert('Proposal saved and verified ✓');
-    } catch(e) { alert('Save error: '+e.message); }
+      if (statusEl) { statusEl.style.color = '#8DC63F'; statusEl.textContent = '✓ Proposal saved — customer can view via their magic link.'; }
+      setTimeout(function(){ if (modal && modal.parentNode) modal.remove(); }, 1800);
+    } catch(e) {
+      if (statusEl) { statusEl.style.color = '#ef4444'; statusEl.textContent = '✗ ' + e.message; }
+      if (sendBtn) { sendBtn.disabled = false; sendBtn.innerHTML = '&#128228; Send to Customer'; }
+    }
   }
 
   async function acceptProposal(custId, optionId, financing, loanTerm) {
