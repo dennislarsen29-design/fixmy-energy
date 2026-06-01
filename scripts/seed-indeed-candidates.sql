@@ -1,0 +1,23 @@
+-- Indeed candidates batch insert — Solar Energy Consultant role
+-- Applied May 29–31, 2026 via Indeed
+-- Run in Supabase Dashboard → SQL Editor
+
+INSERT INTO candidates (first_name, last_name, phone, sales_experience, source, status, notes, created_at)
+VALUES
+  ('Alana',     'Dixon',       NULL,           true,  'indeed', 'applied', 'Sales Manager at Krannich Solar. Indeed qualifiers: US auth, Sales. TOP CANDIDATE — only applicant with direct solar industry experience.',              '2026-05-30 06:53:00+00'),
+  ('James',     'Dragoo',      NULL,           true,  'indeed', 'applied', 'HP Sales Manager, managed 250 employees. Indeed qualifiers: DL, US auth, Sales. Cover letter submitted. Strong ops/mgmt background.',                    '2026-05-31 00:14:00+00'),
+  ('Robert',    'Buller',      NULL,           true,  'indeed', 'applied', 'Indeed qualifiers: DL, US auth, Leadership, Sales.',                                                                                                      '2026-05-30 16:03:00+00'),
+  ('Victor',    'Franchetti',  NULL,           true,  'indeed', 'applied', 'Indeed qualifiers: DL, US auth, Leadership, Sales.',                                                                                                      '2026-05-30 04:05:00+00'),
+  ('Carson',    'Pugh',        NULL,           true,  'indeed', 'applied', 'Indeed qualifiers: DL, US auth, Leadership, Sales.',                                                                                                      '2026-05-30 02:56:00+00'),
+  ('Brett',     'Banaszak',    NULL,           true,  'indeed', 'applied', 'Indeed qualifiers: DL, US auth, Leadership, Sales.',                                                                                                      '2026-05-29 23:56:00+00'),
+  ('Ivan',      'Yalda',       NULL,           true,  'indeed', 'applied', 'Indeed qualifiers: DL, US auth, Leadership, Sales.',                                                                                                      '2026-05-31 00:06:00+00'),
+  ('Manulito',  'Loman',       NULL,           true,  'indeed', 'applied', 'Indeed qualifiers: DL, US auth, Leadership, Sales.',                                                                                                      '2026-05-31 00:27:00+00'),
+  ('Caitlin',   'McLeod',      NULL,           true,  'indeed', 'applied', 'Indeed qualifiers: US auth, Leadership, Sales.',                                                                                                          '2026-05-31 01:21:00+00'),
+  ('alwin',     'jones',       NULL,           true,  'indeed', 'applied', 'Indeed qualifiers: DL, US auth, Leadership, Sales.',                                                                                                      '2026-05-31 02:25:00+00'),
+  ('Brian',     'Jordan',      NULL,           true,  'indeed', 'applied', 'Indeed qualifiers: DL, US auth, Sales.',                                                                                                                  '2026-05-30 12:35:00+00'),
+  ('Ukiah',     'Dublinski',   NULL,           true,  'indeed', 'applied', 'Indeed qualifiers: US auth, Leadership, Sales.',                                                                                                          '2026-05-30 22:32:00+00'),
+  ('Jaymark',   'Liedle',      NULL,           false, 'indeed', 'applied', 'Indeed qualifiers: DL, US auth, Leadership. No sales qualifier.',                                                                                         '2026-05-30 00:48:00+00'),
+  ('Sarah',     'Glancy',      NULL,           false, 'indeed', 'applied', 'Indeed qualifiers: US auth, Leadership. No sales qualifier.',                                                                                             '2026-05-30 04:57:00+00'),
+  ('Robert',    'Shelton',     NULL,           false, 'indeed', 'applied', 'Applied as Robert Shelton III. Indeed qualifiers: DL, US auth. No sales or leadership qualifiers.',                                                       '2026-05-31 02:27:00+00'),
+  ('Fred',      'Havens',      '760-473-9635', false, 'indeed', 'applied', 'Cover letter: Titan Fire delivery driver + Legoland lifeguard. No relevant sales or solar background. Indeed qualifiers: US auth only.',                '2026-05-31 00:54:00+00'),
+  ('michael',   'mcglone',     NULL,           false, 'indeed', 'applied', 'Indeed qualifiers: US auth only. Minimal qualifications submitted.',                                                                                       '2026-05-30 03:56:00+00');
