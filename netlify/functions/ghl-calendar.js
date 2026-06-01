@@ -82,7 +82,11 @@ exports.handler = async function(event) {
 
   // ── 3. Fire GHL workflow trigger webhook if provided ─────────────────────
   if (trigger) {
-    const webhookUrl = process.env.GHL_TT_WEBHOOK;
+    // Reminder triggers go to dedicated reminder workflow; all others go to master TT webhook
+    const reminderTriggers = ['top_tier_reminder', 'top_tier_confirmed'];
+    const webhookUrl = reminderTriggers.includes(trigger)
+      ? (process.env.GHL_TT_REMINDER_WEBHOOK || process.env.GHL_TT_WEBHOOK)
+      : process.env.GHL_TT_WEBHOOK;
     if (webhookUrl) {
       try {
         await fetch(webhookUrl, {

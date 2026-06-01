@@ -173,7 +173,7 @@ Scheduling: `diagnostic_date, install_date, arrival_end, arrival_window, install
 Financial: `invoice_status, invoice_number, invoice_amount, invoice_url, invoice_items`
 Deposit: `deposit_status, deposit_amount, ops_milestone1_status, ops_milestone1_amount`
 Assignment: `assigned_ops, ops_payout_status, rep_id, setter_name`
-Lead info: `lead_source, referred_by, referral_incentive_paid, lead_temp`
+Lead info: `lead_source, referred_by, referral_incentive_paid, lead_temp, dnc`
 Title: `title_owner, apn, title_confirmed`
 Solar: `system_size, utility, monthly_bill, nem_status`
 Agreement: `agreement_status, agreement_url, agreement_signed_at, agreement_signature`
@@ -217,7 +217,11 @@ Sign & Pay: `sign_token, sign_token_expires_at, stripe_payment_intent_id`
 - Antoinette M2/M3 milestone invoicing (planned — see plan file)
 - **GHL field mapping (optional cleanup):** Change First Name from `{{trigger.full_name}}` → `{{trigger.firstName}}`, add Last Name → `{{trigger.lastName}}` — works either way with current payload
 - **fixmy.energy/check:** Live at `/check` (redirects to FAQ section on main site); installer-specific pages live at `/sunpower`, `/titan`, `/sunnova`, `/mosaic`, etc.
-- **CPUC/SDG&E NEM data request:** Letter drafted below — not yet sent
+- **CPUC NEM data — online request option:** CPUC has an online public records portal in addition to email/mail. Review submission process and required attachments before sending. Draft letter already in CLAUDE.md. Do NOT submit yet — understand the form format first.
+- **CPUC/SDG&E NEM data request (mail/email):** Letter drafted below — not yet sent
+- **CEC GoSolar / CSI bulk CSV:** Download residential solar permit data from cpuc.ca.gov → Industries → Electrical Energy → Demand Side Management → California Solar Initiative → CSI Data → "Current Incentive Claim Data". Paste into Import tab → auto-detected and parsed.
+- **Accela scraper (local Playwright script):** `scripts/accela-scraper.js` targets SD DSD, Chula Vista, Oceanside Accela portals. Run locally: `node scripts/accela-scraper.js`. Output CSV imports via Import tab. See scripts/README for usage.
+- **Cloak Browser (anti-detect):** Noted as a future tool for platforms with aggressive fingerprint-based bot detection (Indeed, LinkedIn, real estate portals). Not needed for Accela or government AHJ sites. Revisit if standard Playwright hits detection walls on commercial platforms.
 - **SD County permit data pull + scoring model walkthrough:** Not yet delivered
 - **Minuteman Press direct mail strategy doc:** Not yet delivered
 - **Golf course solar panel protection:** New service scope — see Future Services section below
@@ -260,7 +264,48 @@ Five-channel approach targeting homeowners whose solar installer went out of bus
 4. **fixmy.energy/check** — dedicated landing page for orphaned accounts (draft at `/check-preview.html`)
 5. **Direct mail** — Minuteman Press postcards to enriched address list
 
-Target installers: SunPower (Ch. 11 Aug 2024), Titan Solar (Ch. 7 Jun 2024), Sunnova (Ch. 11 Jun 2025), Mosaic Solar Loans (Ch. 11 Jun 2025), Sullivan Solar (shut down Oct/Nov 2021 — NOT 2019), Petersen Dean (Ch. 11 Jun 2020), Sungevity (Ch. 11 Mar 2017)
+Target installers: SunPower (Ch. 11 Aug 2024), Titan Solar (Ch. 7 Jun 2024), Sunnova (Ch. 11 Jun 2025), Mosaic Solar Loans (Ch. 11 Jun 2025), Sullivan Solar (shut down Oct/Nov 2021 — NOT 2019), Petersen Dean (Ch. 11 Jun 2020), Sungevity (Ch. 11 Mar 2017), Freedom Forever (Ch. 11 Apr 15, 2026)
+
+## Defunct Solar Installer Database (Marketing Agent Reference)
+
+### Priority 1 — Truly Orphaned (no active service entity)
+These companies have NO successor managing service calls. Targeting them is the highest-priority opportunity.
+
+| Company | Event | Date | CA Customers | Permit Name Variations |
+|---|---|---|---|---|
+| SunPower | Ch. 11 → sold assets | Aug 5, 2024 | ~600,000 US | "SunPower Corporation", "Complete Solar Inc", "BRS Field Ops" |
+| Titan Solar | Ch. 7 liquidation | Jun 20, 2024 | 150,000+ / 22 states | "Titan Solar Power", "Titan Solar" |
+| Sunnova | Ch. 11 bankruptcy | Jun 9, 2025 | ~500,000 US | "Sunnova Energy International", "Sunnova Energy" |
+| Sullivan Solar | Shut down (no BK) | Oct/Nov 2021 | 9,000+ (SD only) | "Sullivan Solar Power", "Sullivan Solar Power of California" |
+| Petersen Dean | Ch. 11 bankruptcy | Jun 11, 2020 | Thousands (CA) | "Petersen-Dean", "Petersen Dean", "Red Rose Inc", "PetersenDean" |
+| Sungevity | Ch. 11 bankruptcy | Mar 14, 2017 | Tens of thousands | "Sungevity Inc", "Horizon Solar Power", "Solar Spectrum" |
+| Kota Energy | Shut down ~2022 | ~2022 | AZ/TX/UT/NM focus | "Kota Energy Group LLC", "Kota Energy Group" |
+| OneRoof Energy | Shut down 2016 | 2016 | CA focused | "OneRoof Energy Inc" |
+| Verengo | Shut down 2014 | 2014 | CA only (SD/LA) | "Verengo Inc", "Verengo Solar" |
+| American Solar Direct | Shut down 2019 | 2019 | CA only | "American Solar Direct Inc" |
+| ADT Solar | Shut down 2023 | Jan 2023 | 22 states | "ADT Solar LLC" |
+| RGS Energy | Delisted/defunct | 2019 | Multi-state | "Real Goods Solar Inc", "RGS Energy", "Alteris Renewables" |
+| Pink Energy | Ch. 7 | Oct 2022 | 17 states | "Pink Energy" |
+| Vision Solar | Ch. 7 | Jul 2021 | Multi-state | "Vision Solar" |
+| Lumio | Ch. 11 bankruptcy | Mar 2024 | Multi-state (CA included) | "Lumio Inc", "1st Light Energy" |
+| Freedom Forever | Ch. 11 bankruptcy | Apr 15, 2026 | Multi-state | "Freedom Forever LLC" |
+| Mosaic Solar Loans | Ch. 11 (LENDER only) | Jun 6, 2025 | 500,000+ (financed) | N/A — lender, not installer |
+
+### Priority 2 — Acquired/Managed (lower priority — successor handling service calls)
+
+| Company | Status | Successor |
+|---|---|---|
+| Vivint Solar | Acquired by Sunrun 2021 | Sunrun |
+| SolarCity | Acquired by Tesla 2016 | Tesla Energy |
+| Freedom Forever | Ch. 11 Apr 2026 — now in Priority 1 | — |
+| Complete Solar | Acquired SunPower assets 2024, rebranded | Active as "SunPower" |
+
+### PermitStack Pull Notes
+- SunPower is rarely listed as "SunPower" on permits — use "Complete Solar Inc" or "BRS Field Ops" as primary search terms
+- SD County zip filter: 919xx (El Cajon, La Mesa, Santee, Lakeside) + 920xx (San Diego, Chula Vista, Poway)
+- System size kW extracted from permit description text via regex when not a dedicated field
+- Mosaic is a LENDER not an installer — leads from Mosaic are homeowners with outstanding loans, not necessarily broken systems
+- Portal Import tab → "Pull Live from PermitStack" button fires `permitstack-pull.js` for each selected installer, deduplicates by address, auto-populates CSV textarea
 
 ## CPUC / SDG&E NEM Data — Public Records Request Draft
 
