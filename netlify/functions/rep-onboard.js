@@ -146,6 +146,39 @@ exports.handler = async function(event) {
     } catch(e) {
       console.warn('GHL upsert exception (non-fatal):', e.message);
     }
+
+    // 4. Admin SMS notification to Dennis (non-fatal)
+    try {
+      const ADMIN_PHONE = '+18012328301';
+      const marketLabels = { san_diego_ca: 'San Diego CA', augusta_ga: 'Augusta GA', north_augusta_sc: 'North Augusta SC', travel_team: 'Travel Team' };
+      const roleLabels   = { local_full_time: 'Full-Time Local', local_part_time: 'Part-Time Local', travel_team: 'Travel Team' };
+      const mktLabel  = marketLabels[market]  || market  || 'Unknown Market';
+      const roleLabel = roleLabels[role_type] || role_type || 'Unknown Role';
+
+      // Upsert Dennis as GHL contact to get contactId
+      const adminUpsert = await fetch('https://services.leadconnectorhq.com/contacts/upsert', {
+        method:  'POST',
+        headers: { 'Authorization': 'Bearer ' + GHL_API_KEY, 'Content-Type': 'application/json', 'Version': '2021-07-28' },
+        body: JSON.stringify({ locationId: GHL_LOCATION_ID, firstName: 'Dennis', lastName: 'Larsen', phone: ADMIN_PHONE })
+      });
+      const adminContact = adminUpsert.ok ? await adminUpsert.json() : null;
+      const adminContactId = adminContact && (adminContact.id || (adminContact.contact && adminContact.contact.id));
+
+      if (adminContactId) {
+        await fetch('https://services.leadconnectorhq.com/conversations/messages', {
+          method:  'POST',
+          headers: { 'Authorization': 'Bearer ' + GHL_API_KEY, 'Content-Type': 'application/json', 'Version': '2021-07-28' },
+          body: JSON.stringify({
+            type:       'SMS',
+            contactId:  adminContactId,
+            message:    '⚡ New rep onboarded: ' + full_name + ' — ' + mktLabel + ' / ' + roleLabel + '. Visit fixmy.energy/portal → Team & Hiring to complete their setup checklist.'
+          })
+        });
+        console.log('[rep-onboard] Admin SMS sent for', full_name);
+      }
+    } catch(e) {
+      console.warn('Admin SMS exception (non-fatal):', e.message);
+    }
   }
 
   return {
