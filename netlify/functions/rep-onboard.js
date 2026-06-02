@@ -260,6 +260,7 @@ exports.handler = async function(event) {
     body: JSON.stringify({
       success:    true,
       id:         repId,
+      code:       repCode,
       portal_url: 'https://fixmy.energy/portal'
     })
   };
