@@ -209,25 +209,47 @@ Sign & Pay: `sign_token, sign_token_expires_at, stripe_payment_intent_id`
 - `lead_source` field on customers tracks attribution: direct_mail | self_generated | referral | inbound_web
 
 ## Known Pending Items
+
+### High Priority
+- **CPUC NEM data — online PRR submission (HIGH PRIORITY):** Letter sent via email; CPUC responded directing submission through their online Public Records Request portal at cpuc.ca.gov. Have not submitted online PRR yet. Same content as the draft letter below — need to find and fill out the online form. DO NOT submit until the online form is located and the format/attachment requirements are understood.
+- **Google Ads mobile CTA page (HIGH PRIORITY):** The current ads landing page CTA is hard to use on mobile. Need a dedicated, simple page with a single actionable CTA (book appointment) optimized for mobile traffic from Google Ads. Unique URL so it can be linked directly from ads. Should be separate from the main site but easy to navigate to company webpage.
+- **Lead capture / funnel tracking broken (HIGH PRIORITY):** Google Sheets lead capture integration is broken — sending traffic to "booked appointment" confirmation instead of capturing partial lead data (visitors who didn't complete booking). Need to fix so partial captures are tracked separately for retargeting. Also: social retargeting (Facebook/Instagram pixel) not yet built despite having ad traffic — low-hanging fruit for warm audience retargeting.
+- **Google Ads video creative (HIGH PRIORITY):** Current video ads are low quality. Need better video assets. (Not a dev task — Dennis action item.)
+
+### Medium Priority / On Hold
 - Add `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `SUPA_SERVICE_KEY` to Netlify env vars (sign+pay won't work until these are set)
 - Add Netlify PAT to `.claude/settings.local.json` to enable Netlify MCP
-- Restrict Google Maps API key to domain in Google Cloud Console
+- **Google Maps API key restriction:** Previously caused a tech issue when restricted — leave unrestricted for now. Revisit carefully if security becomes a concern.
 - Battery Retrofit Agreement flow (needs agreement template content from Dennis)
 - Top Tier pipeline (planned — see plan file)
 - Antoinette M2/M3 milestone invoicing (planned — see plan file)
 - **GHL field mapping (optional cleanup):** Change First Name from `{{trigger.full_name}}` → `{{trigger.firstName}}`, add Last Name → `{{trigger.lastName}}` — works either way with current payload
 - **fixmy.energy/check:** Live at `/check` (redirects to FAQ section on main site); installer-specific pages live at `/sunpower`, `/titan`, `/sunnova`, `/mosaic`, etc.
-- **CPUC NEM data — online request option:** CPUC has an online public records portal in addition to email/mail. Review submission process and required attachments before sending. Draft letter already in CLAUDE.md. Do NOT submit yet — understand the form format first.
-- **CPUC/SDG&E NEM data request (mail/email):** Letter drafted below — not yet sent
+- **CPUC/SDG&E NEM data request:** Draft letter in CLAUDE.md. Email sent; CPUC directed to online PRR portal. Online submission pending (see High Priority above).
 - **CEC GoSolar / CSI bulk CSV:** Download residential solar permit data from cpuc.ca.gov → Industries → Electrical Energy → Demand Side Management → California Solar Initiative → CSI Data → "Current Incentive Claim Data". Paste into Import tab → auto-detected and parsed.
 - **Accela scraper (local Playwright script):** `scripts/accela-scraper.js` targets SD DSD, Chula Vista, Oceanside Accela portals. Run locally: `node scripts/accela-scraper.js`. Output CSV imports via Import tab. See scripts/README for usage.
-- **Cloak Browser (anti-detect):** Noted as a future tool for platforms with aggressive fingerprint-based bot detection (Indeed, LinkedIn, real estate portals). Not needed for Accela or government AHJ sites. Revisit if standard Playwright hits detection walls on commercial platforms.
+- **Cloak Browser (anti-detect):** Noted as a future tool for platforms with aggressive fingerprint-based bot detection. Revisit if Playwright hits detection walls on commercial platforms.
 - **SD County permit data pull + scoring model walkthrough:** Not yet delivered
 - **Minuteman Press direct mail strategy doc:** Not yet delivered
 - **Golf course solar panel protection:** New service scope — see Future Services section below
-- **GTM conversion tracking audit:** GTM-TSJVG2GT is installed. Verify GA4 + Google Ads conversion events fire on booking completion. Use Tag Assistant Chrome extension to confirm.
+- **GTM conversion tracking audit:** GTM-TSJVG2GT is installed. Verify GA4 + Google Ads conversion events fire on booking completion. Use Tag Assistant Chrome extension to confirm. (Likely related to the broken lead capture flow above.)
 - **Switch from Smith.AI to Quoya (GHL built-in AI agent):** Smith.AI webhooks no longer needed — `call-inbound.js` function can be repurposed or removed. Quoya migration is halfway completed in GHL. Finish configuring Quoya workflow to handle inbound calls and missed-call SMS follow-up.
-- **Customer photo upload SMS notification:** ✅ Built — `notify-photo-upload.js` fires after every customer upload. **Needs 3 Netlify env vars to go live:** `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`. Rep phones in `team_members`: Dennis Larsen (tech4) and Cristina Huang (tech5) are set. Add phone for any additional reps who should receive notifications.
+- **Customer photo upload SMS notification:** ✅ Built — `notify-photo-upload.js` fires after every customer upload. **Decision: Use GHL LC Phone instead of Twilio** (see SMS tooling decision below). Needs GHL workflow built to replace the Twilio path. Rep phones in `team_members`: Dennis Larsen (tech4) and Cristina Huang (tech5) are set.
+
+### Deferred (budget/timing)
+- **BBB accreditation:** Valuable but deferred — limited budget, build other lead revenues + partner credibility first. Revisit when revenue stabilizes. Apply at bbb.org/apply (~$400-600/yr, 3-week process). Contact: (858) 737-7164, Business Relations dept.
+- **GHL SMS/calendar workflows:** Skipping GHL workflow automation for now, keep items on To Do.
+
+## SMS Tooling Decision — GHL LC Phone over Twilio
+**Recommendation: Use GHL's built-in LC Phone (Lead Connector) for all SMS — do not set up Twilio.**
+
+Rationale for slim-budget operation:
+- GHL subscription already paid — LC Phone costs per message (~$0.008/segment) but no additional monthly fee or account setup
+- Twilio adds a second vendor: account, billing, API keys, monitoring — unnecessary overhead
+- GHL SMS integrates natively with GHL workflows, so photo-upload notifications and other alerts can be GHL workflow triggers (no Netlify function code needed)
+- Exception: only use Twilio if you need programmatic SMS outside GHL's control flow (e.g., real-time alerts from a Netlify function that can't reach GHL) — not the case here
+
+**Action needed:** Build a GHL webhook-triggered workflow that fires when a customer uploads a photo (via the portal's `notify-photo-upload.js`) → sends SMS to assigned rep via LC Phone. Remove the Twilio path from the Netlify function once the GHL workflow is live.
 
 ## Future Services
 
