@@ -4734,8 +4734,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           : '';
         var redline = parseFloat(row.redline) || 0;
         var minRepComm = parseFloat(row.min_rep_commission) || 0;
+        var maxRepComm = parseFloat(row.max_rep_commission) || 0;
         var commHtml = redline > 0
-          ? '<div id="propComm_'+i+'" data-min-comm="'+minRepComm+'" style="margin-top:10px;padding:10px 14px;background:rgba(255,170,0,0.05);border:1px solid rgba(255,170,0,0.15);border-radius:8px;">'+
+          ? '<div id="propComm_'+i+'" data-min-comm="'+minRepComm+'" data-max-comm="'+maxRepComm+'" style="margin-top:10px;padding:10px 14px;background:rgba(255,170,0,0.05);border:1px solid rgba(255,170,0,0.15);border-radius:8px;">'+
               (CURRENT_ROLE === 'admin'
                 ? '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#555;margin-bottom:8px;">Commission</div>'+
                   '<div style="display:flex;gap:10px;align-items:flex-end;margin-bottom:8px;">'+
@@ -4935,9 +4936,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // ── DIAGNOSTIC FEE MODAL ──────────────────────────────────────────────────
   var _diagPendingUpdates = null;
 
+  var DIAG_COMM_MAX = 800;
   function calcDiagCommission(fee) {
     var base = 250;
-    return fee > base ? Math.round((fee - base) * 0.40 * 100) / 100 : 0;
+    var raw = fee > base ? Math.round((fee - base) * 0.40 * 100) / 100 : 0;
+    return Math.min(raw, DIAG_COMM_MAX);
+  }
+  function diagCommIsCapped(fee) {
+    var base = 250;
+    return fee > base && (fee - base) * 0.40 > DIAG_COMM_MAX;
   }
 
   window.propCalcComm = function(i) {
@@ -4952,22 +4959,27 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var purchasePrice = parseFloat(priceEl.value) || 0;
     var partPrice     = partEl ? (parseFloat(partEl.value) || null) : null;
     var redline       = redlineEl ? (parseFloat(redlineEl.value) || 0) : 0;
-    var minComm       = commDiv   ? (parseFloat(commDiv.dataset.minComm) || 0) : 0;
+    var minComm       = commDiv ? (parseFloat(commDiv.dataset.minComm) || 0) : 0;
+    var maxComm       = commDiv ? (parseFloat(commDiv.dataset.maxComm) || 0) : 0;
+    function capComm(raw) { return maxComm > 0 ? Math.min(raw, maxComm) : raw; }
+    function maxTag(raw)  { return maxComm > 0 && raw > maxComm ? ' <span style="font-size:0.65rem;color:#f59e0b;">(max)</span>' : ''; }
     var grossCash = Math.max(0, purchasePrice - redline);
-    var repCash   = Math.round(grossCash * 0.40 * 100) / 100;
-    var repPart   = null;
+    var repCashRaw = Math.round(grossCash * 0.40 * 100) / 100;
+    var repCash    = capComm(repCashRaw);
+    var repPart    = null;
     if (partPrice !== null && partPrice > 0) {
-      var grossPart = Math.max(0, partPrice - redline);
-      repPart = Math.round(grossPart * 0.40 * 100) / 100;
+      var grossPart  = Math.max(0, partPrice - redline);
+      var repPartRaw = Math.round(grossPart * 0.40 * 100) / 100;
+      repPart = capComm(repPartRaw);
       if (grossEl) grossEl.innerHTML =
         '$'+grossCash.toFixed(2)+' <span style="font-size:0.65rem;color:#666;">(cash)</span>'+
         ' &nbsp;·&nbsp; $'+grossPart.toFixed(2)+' <span style="font-size:0.65rem;color:#666;">(finance)</span>';
       repEl.innerHTML =
-        '$'+repCash.toFixed(2)+' <span style="font-size:0.72rem;color:#888;">(cash)</span>'+
-        ' &nbsp;·&nbsp; $'+repPart.toFixed(2)+' <span style="font-size:0.72rem;color:#888;">(finance)</span>';
+        '$'+repCash.toFixed(2)+maxTag(repCashRaw)+' <span style="font-size:0.72rem;color:#888;">(cash)</span>'+
+        ' &nbsp;·&nbsp; $'+repPart.toFixed(2)+maxTag(repPartRaw)+' <span style="font-size:0.72rem;color:#888;">(finance)</span>';
     } else {
       if (grossEl) grossEl.textContent = '$'+grossCash.toFixed(2);
-      repEl.textContent = '$'+repCash.toFixed(2);
+      repEl.innerHTML = '$'+repCash.toFixed(2)+maxTag(repCashRaw);
     }
     if (warnEl && minComm > 0) {
       var lowest = repPart !== null ? Math.min(repCash, repPart) : repCash;
@@ -5037,7 +5049,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       btn.style.color        = active ? '#8DC63F' : '#aaa';
     });
     var comm = calcDiagCommission(fee);
-    document.getElementById('diagFeeCommAmt').textContent = '$'+comm.toFixed(2);
+    var amtEl = document.getElementById('diagFeeCommAmt');
+    if (amtEl) amtEl.innerHTML = '$'+comm.toFixed(2)+(diagCommIsCapped(fee)?' <span style="font-size:0.7rem;color:#f59e0b;">(max)</span>':'');
     var w = document.getElementById('diagFeeCommWarn'); if (w) w.style.display = comm < 90 ? 'flex' : 'none';
   }
 
@@ -5049,7 +5062,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (btn) { btn.style.background='rgba(255,255,255,0.04)'; btn.style.borderColor='rgba(255,255,255,0.1)'; btn.style.color='#aaa'; }
     });
     var comm = calcDiagCommission(fee);
-    document.getElementById('diagFeeCommAmt').textContent = '$'+comm.toFixed(2);
+    var amtEl = document.getElementById('diagFeeCommAmt');
+    if (amtEl) amtEl.innerHTML = '$'+comm.toFixed(2)+(diagCommIsCapped(fee)?' <span style="font-size:0.7rem;color:#f59e0b;">(max)</span>':'');
     var w = document.getElementById('diagFeeCommWarn'); if (w) w.style.display = comm < 90 ? 'flex' : 'none';
   }
 
@@ -7864,9 +7878,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '</div>'+
         '<div style="font-weight:700;font-size:1rem;margin-bottom:16px;">'+(rec.first_name||'')+' '+(rec.last_name||'')+'</div>'+
         '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;" id="sDiagPresets">'+presetsHtml+'</div>'+
-        '<div style="margin-bottom:18px;">'+
+        '<div style="margin-bottom:14px;">'+
           '<label style="font-size:0.68rem;color:#666;display:block;margin-bottom:6px;">Custom Amount ($)</label>'+
-          '<input type="number" id="sDiagCustom" min="149" max="999" step="1" value="'+existing+'" oninput="window._sDiagFee=parseFloat(this.value)||349;[250,349,449,499,599].forEach(function(f){var b=document.getElementById(\'sDiagBtn_\'+f);if(b){b.style.background=\'rgba(255,255,255,0.04)\';b.style.borderColor=\'rgba(255,255,255,0.1)\';b.style.color=\'#aaa\';}});" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:9px 12px;font-size:0.9rem;box-sizing:border-box;"/>'+
+          '<input type="number" id="sDiagCustom" min="149" max="9999" step="1" value="'+existing+'" oninput="window._sDiagFee=parseFloat(this.value)||349;[250,349,449,499,599].forEach(function(f){var b=document.getElementById(\'sDiagBtn_\'+f);if(b){b.style.background=\'rgba(255,255,255,0.04)\';b.style.borderColor=\'rgba(255,255,255,0.1)\';b.style.color=\'#aaa\';}}); sDiagUpdateComm();" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:9px 12px;font-size:0.9rem;box-sizing:border-box;"/>'+
+        '</div>'+
+        '<div style="background:rgba(255,170,0,0.06);border:1px solid rgba(255,170,0,0.2);border-radius:8px;margin-bottom:14px;overflow:hidden;">'+
+          '<div style="padding:10px 14px;display:flex;justify-content:space-between;align-items:center;">'+
+            '<span style="font-size:0.8rem;color:#aaa;">Your Commissions</span>'+
+            '<span id="sDiagCommAmt" style="font-weight:700;color:#ffaa00;"></span>'+
+          '</div>'+
+          '<div id="sDiagCommWarn" style="display:none;align-items:center;gap:6px;padding:7px 12px;background:rgba(239,68,68,0.08);border-top:1px solid rgba(239,68,68,0.3);font-size:0.72rem;color:#ef4444;font-weight:600;">&#9888; Manager approval required — below $90 minimum</div>'+
         '</div>'+
         '<div style="display:flex;gap:10px;justify-content:flex-end;">'+
           '<button onclick="document.getElementById(\'salesDiagModal\').remove()" style="padding:10px 18px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:100px;color:#aaa;cursor:pointer;font-size:0.85rem;">Cancel</button>'+
@@ -7875,7 +7896,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       document.body.appendChild(modal);
       window._sDiagFee = existing;
       window._sDiagRec = rec;
+      setTimeout(window.sDiagUpdateComm, 0);
     }
+    window.sDiagUpdateComm = function() {
+      var fee  = window._sDiagFee || 349;
+      var comm = calcDiagCommission(fee);
+      var el   = document.getElementById('sDiagCommAmt');
+      var w    = document.getElementById('sDiagCommWarn');
+      if (el) el.innerHTML = '$'+comm.toFixed(2)+(diagCommIsCapped(fee)?' <span style="font-size:0.68rem;color:#f59e0b;">(max)</span>':'');
+      if (w)  w.style.display = comm < 90 ? 'flex' : 'none';
+    };
     window.salesDiagFeeSelect = function(fee) {
       window._sDiagFee = fee;
       document.getElementById('sDiagCustom').value = fee;
@@ -7887,6 +7917,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         b.style.borderColor  = a ? 'rgba(141,198,63,0.4)'  : 'rgba(255,255,255,0.1)';
         b.style.color        = a ? '#8DC63F' : '#aaa';
       });
+      window.sDiagUpdateComm();
     };
     window.confirmSalesDiagFee = async function(id) {
       var fee = window._sDiagFee || 349;
@@ -8303,12 +8334,26 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '</div>';
 
         h += '<div style="background:#fff;border:1px solid rgba(0,0,0,0.09);border-radius:12px;padding:16px;margin-bottom:12px;">';
-        h += ssSection('Minimum Commission Thresholds (Manager Approval Required Below)');
-        h += ssRow('Diagnostic', '$90.00 rep commission');
-        h += ssRow('Tesla Inverter Swap (Option 1)', '$400.00 rep commission');
-        h += ssRow('System Expansion / Panel Add-On', '$2,000.00 rep commission');
-        h += ssRow('Battery Retrofit', '$2,000.00 rep commission');
-        h += '<div style="margin-top:8px;font-size:0.68rem;color:#888;font-style:italic;">Zero margin = $0 rep commission. These are minimums, not targets.</div>';
+        h += ssSection('Commission Thresholds');
+        h += '<div style="display:grid;grid-template-columns:1fr auto auto;gap:0;border-radius:8px;overflow:hidden;border:1px solid rgba(0,0,0,0.08);">'+
+          '<div style="padding:7px 10px;background:#f5f5f5;font-size:0.65rem;font-weight:700;color:#999;text-transform:uppercase;letter-spacing:0.06em;">Product</div>'+
+          '<div style="padding:7px 10px;background:#f5f5f5;font-size:0.65rem;font-weight:700;color:#ef4444;text-transform:uppercase;letter-spacing:0.06em;text-align:right;">Min ⚠</div>'+
+          '<div style="padding:7px 10px;background:#f5f5f5;font-size:0.65rem;font-weight:700;color:#f59e0b;text-transform:uppercase;letter-spacing:0.06em;text-align:right;">Max 🔒</div>'+
+          ['Diagnostic','$90','$800',
+           'Inverter Swap','$400','$2,000',
+           'Battery Retrofit','$2,000','$5,000',
+           'Expansion / Add-On','$2,000','$7,000',
+           'New Solar','—','No limit'
+          ].reduce(function(acc, v, idx) {
+            var col = idx % 3;
+            var row = Math.floor(idx / 3);
+            var bg = row % 2 === 0 ? '#fff' : '#fafafa';
+            var align = col > 0 ? 'text-align:right;' : '';
+            var color = col === 1 ? 'color:#ef4444;' : col === 2 ? 'color:#f59e0b;' : 'color:#333;';
+            return acc + '<div style="padding:8px 10px;background:'+bg+';font-size:0.78rem;font-weight:'+(col===0?'400':'700')+';'+align+color+'border-top:1px solid rgba(0,0,0,0.05);">'+v+'</div>';
+          }, '')+
+        '</div>'+
+        '<div style="margin-top:8px;font-size:0.68rem;color:#888;font-style:italic;">Below min = manager approval required before confirming. Above max = excess margin stays with Solar Review.</div>';
         h += '</div>';
 
         h += '<div style="background:rgba(141,198,63,0.06);border:1px solid rgba(141,198,63,0.2);border-radius:10px;padding:12px;font-size:0.78rem;color:#3d6b12;line-height:1.6;">' +
