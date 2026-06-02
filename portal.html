@@ -3898,41 +3898,91 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
   };
 
-  window.propShowScenario = function(type, bill) {
+  window.propShowScenario = function(type, bill, sysKw) {
     var detail = document.getElementById('propSavingsDetail');
     if (!detail) return;
-    if (!bill || bill <= 0) { detail.style.display = 'block'; detail.innerHTML = '<div style="font-size:0.78rem;color:#666;">Add a monthly bill amount to the customer profile to calculate savings.</div>'; return; }
-    var rates   = { conservative: 0.40, moderate: 0.75, significant: 0.90 };
-    var colors  = { conservative: '#4a9eff', moderate: '#ffaa00', significant: '#8DC63F' };
-    var descs   = {
-      conservative: 'Inverter restored + modest panel gains. Some grid dependency on high-usage days.',
-      moderate: 'Strong daily solar generation + Powerwall handles evening peaks.',
-      significant: 'Near grid independence — Powerwall virtually eliminates SDG&E charges year-round.'
+    bill = parseFloat(bill) || 0;
+    sysKw = parseFloat(sysKw) || 0;
+    if (!bill) {
+      detail.style.display = 'block';
+      detail.innerHTML = '<div style="font-size:0.78rem;color:#666;">Add monthly bill to customer profile to calculate savings.</div>';
+      return;
+    }
+
+    // SDG&E confirmed effective rate (verified from actual bill: $3,115 / 6,877 kWh = $0.453/kWh)
+    // Tier 1: 41¢/kWh | Tier 2: 52¢/kWh | Blended: ~45¢/kWh
+    var blendedRate = 0.453;
+    // San Diego specific yield — NREL NSRDB (residential tilted array, ~1,600 kWh/kW/yr)
+    var specificYield = 1600;
+    // New capacity: 10 × Tesla 420W panels
+    var newPanelKw = 4.2;
+    var newPanelAnnualKwh = newPanelKw * specificYield; // 6,720 kWh/yr
+
+    // Escalation rates — verified from CPUC SB 695 reports and BLS data:
+    // Conservative 5%/yr  — below CPUC official avg; floor for skeptical customers
+    // Moderate     7%/yr  — CPUC SB 695 official: SDG&E avg 2016–2024 = 7%/yr
+    // Significant 10%/yr  — CPUC 2023 SB 695 projected 10.4%/yr; recent 4-yr CAGR = 13.4%
+    var configs = {
+      conservative: { label:'Conservative', color:'#4a9eff', offsetPct:0.55, r:0.05, rLabel:'5%/yr', rSrc:'below CPUC avg — conservative floor', note:'Inverter restored · Panels added · Basic Powerwall backup' },
+      moderate:     { label:'Moderate',     color:'#ffaa00', offsetPct:0.75, r:0.07, rLabel:'7%/yr', rSrc:'CPUC SB 695 official avg 2016–2024',   note:'Full bundle optimized · Powerwall covers evening peaks' },
+      significant:  { label:'Significant',  color:'#8DC63F', offsetPct:0.90, r:0.10, rLabel:'10%/yr',rSrc:'CPUC 2023 SB 695 projection; EV/AI/electrification drivers', note:'NEM 1 preserved · Near grid independence · Recent 4-yr CAGR: 13.4%' }
     };
-    var labels  = { conservative: 'Conservative', moderate: 'Moderate', significant: 'Significant' };
-    var rate    = rates[type];
-    var monthly = Math.round(bill * rate);
-    var annual  = monthly * 12;
-    var yr20    = Math.round(annual * 20 * 1.3);
-    var color   = colors[type];
+    var cfg = configs[type];
+
+    // Year 1 savings
+    var monthlySaved = bill * cfg.offsetPct;
+    var annualSaved  = monthlySaved * 12;
+
+    // 20-year savings — geometric series (each year's savings grow as SDG&E rates rise)
+    // S = Year1 × [(1+r)^20 − 1] / r
+    var factor20 = (Math.pow(1 + cfg.r, 20) - 1) / cfg.r;
+    var total20yr = annualSaved * factor20;
+
+    // Inverter recovery callout — at estimated 25% output, 75% of generation is lost
+    var inverterHtml = '';
+    if (sysKw > 0) {
+      var recovKwh = sysKw * specificYield * 0.75;
+      var recovMo  = Math.round(recovKwh * blendedRate / 12);
+      inverterHtml =
+        '<div style="background:rgba(255,170,0,0.06);border:1px solid rgba(255,170,0,0.18);border-radius:8px;padding:9px 12px;margin-top:10px;">'+
+        '<div style="font-size:0.67rem;font-weight:700;color:#ffaa00;margin-bottom:3px;">⚡ Inverter Recovery</div>'+
+        '<div style="font-size:0.7rem;color:#aaa;line-height:1.5;">'+
+          'At 25% output your <strong style="color:#ccc;">'+sysKw+' kW</strong> system loses ~<strong style="color:#fff;">'+Math.round(recovKwh).toLocaleString()+' kWh/yr</strong> in generation — '+
+          'roughly <strong style="color:#ffaa00;">$'+recovMo+'/month</strong> paid to SDG&E that your solar should cover. A new inverter restores this immediately.'+
+        '</div>'+
+        '</div>';
+    }
+
+    // New panel value line
+    var newPanelMo = Math.round(newPanelAnnualKwh * blendedRate / 12);
+    var fmt = function(n){ return '$'+Math.round(n).toLocaleString(); };
+
     detail.style.display = 'block';
     detail.innerHTML =
-      '<div style="font-size:0.72rem;font-weight:700;color:'+color+';margin-bottom:10px;">'+labels[type]+' Scenario</div>'+
-      '<div style="display:flex;gap:12px;margin-bottom:10px;">'+
-        '<div style="flex:1;text-align:center;">'+
-          '<div style="font-size:0.65rem;color:#666;margin-bottom:4px;">Monthly</div>'+
-          '<div style="font-size:1.2rem;font-weight:700;color:'+color+';">~$'+monthly+'</div>'+
+      '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;">'+
+        '<div style="font-size:0.75rem;font-weight:700;color:'+cfg.color+';">'+cfg.label+' Scenario</div>'+
+        '<div style="font-size:0.62rem;color:#555;">'+cfg.rLabel+' SDG&E escalation <span title="'+cfg.rSrc+'" style="color:#444;cursor:help;">ⓘ</span></div>'+
+      '</div>'+
+      '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:10px;">'+
+        '<div style="background:rgba(255,255,255,0.04);border-radius:8px;padding:10px;text-align:center;">'+
+          '<div style="font-size:0.63rem;color:#666;margin-bottom:3px;">Monthly</div>'+
+          '<div style="font-size:1.2rem;font-weight:700;color:'+cfg.color+';">~'+fmt(monthlySaved)+'</div>'+
         '</div>'+
-        '<div style="flex:1;text-align:center;">'+
-          '<div style="font-size:0.65rem;color:#666;margin-bottom:4px;">Annual</div>'+
-          '<div style="font-size:1.2rem;font-weight:700;color:#fff;">~$'+annual.toLocaleString()+'</div>'+
+        '<div style="background:rgba(255,255,255,0.04);border-radius:8px;padding:10px;text-align:center;">'+
+          '<div style="font-size:0.63rem;color:#666;margin-bottom:3px;">Year 1</div>'+
+          '<div style="font-size:1.2rem;font-weight:700;color:#fff;">~'+fmt(annualSaved)+'</div>'+
         '</div>'+
-        '<div style="flex:1;text-align:center;">'+
-          '<div style="font-size:0.65rem;color:#666;margin-bottom:4px;">20-Year Value</div>'+
-          '<div style="font-size:1.2rem;font-weight:700;color:#fff;">~$'+yr20.toLocaleString()+'</div>'+
+        '<div style="background:rgba(255,255,255,0.04);border-radius:8px;padding:10px;text-align:center;">'+
+          '<div style="font-size:0.63rem;color:#666;margin-bottom:3px;">20-Year Est.</div>'+
+          '<div style="font-size:1.2rem;font-weight:700;color:#fff;">~'+fmt(total20yr)+'</div>'+
         '</div>'+
       '</div>'+
-      '<div style="font-size:0.72rem;color:#888;line-height:1.5;">'+descs[type]+'</div>';
+      '<div style="font-size:0.67rem;color:#666;line-height:1.6;">'+
+        Math.round(cfg.offsetPct*100)+'% bill offset · '+
+        '10 × 420W panels add ~'+Math.round(newPanelAnnualKwh).toLocaleString()+' kWh/yr (~$'+newPanelMo+'/mo) · '+
+        cfg.note+
+      '</div>'+
+      inverterHtml;
   };
 
   window.bbDncWarn = function(type, value) {
@@ -4975,9 +5025,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#4a9eff;margin-bottom:10px;">&#128202; Projected Savings &mdash; Option 2</div>'+
         billNote+
         '<div style="display:flex;gap:6px;margin-bottom:10px;">'+
-          '<button onclick="propShowScenario(\'conservative\','+bill+')" style="flex:1;padding:8px 4px;background:rgba(74,158,255,0.08);border:1px solid rgba(74,158,255,0.25);border-radius:8px;color:#4a9eff;cursor:pointer;font-size:0.72rem;font-weight:700;">Conservative</button>'+
-          '<button onclick="propShowScenario(\'moderate\','+bill+')" style="flex:1;padding:8px 4px;background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.25);border-radius:8px;color:#ffaa00;cursor:pointer;font-size:0.72rem;font-weight:700;">Moderate</button>'+
-          '<button onclick="propShowScenario(\'significant\','+bill+')" style="flex:1;padding:8px 4px;background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.25);border-radius:8px;color:#8DC63F;cursor:pointer;font-size:0.72rem;font-weight:700;">Significant</button>'+
+          '<button onclick="propShowScenario(\'conservative\','+bill+','+(c.system_size||0)+')" style="flex:1;padding:8px 4px;background:rgba(74,158,255,0.08);border:1px solid rgba(74,158,255,0.25);border-radius:8px;color:#4a9eff;cursor:pointer;font-size:0.72rem;font-weight:700;">Conservative</button>'+
+          '<button onclick="propShowScenario(\'moderate\','+bill+','+(c.system_size||0)+')" style="flex:1;padding:8px 4px;background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.25);border-radius:8px;color:#ffaa00;cursor:pointer;font-size:0.72rem;font-weight:700;">Moderate</button>'+
+          '<button onclick="propShowScenario(\'significant\','+bill+','+(c.system_size||0)+')" style="flex:1;padding:8px 4px;background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.25);border-radius:8px;color:#8DC63F;cursor:pointer;font-size:0.72rem;font-weight:700;">Significant</button>'+
         '</div>'+
         '<div id="propSavingsDetail" style="display:none;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:14px;"></div>'+
         '<div style="font-size:0.65rem;color:#555;margin-top:8px;">SDG&amp;E NEM 1 &mdash; 10 Tesla 420W panels + Tesla Powerwall 3 (13.5 kWh, non-export)</div>'+
