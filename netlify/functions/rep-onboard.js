@@ -192,7 +192,7 @@ exports.handler = async function(event) {
         method:  'POST',
         headers: { 'Authorization': 'Bearer ' + RESEND_API_KEY, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          from:    'FixMy.Energy <dennis@fixmy.energy>',
+          from:    'FixMy.Energy <info@fixmy.energy>',
           to:      [email],
           subject: 'Welcome to the Team — Your Portal Login',
           html: `
