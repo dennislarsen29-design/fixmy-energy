@@ -2169,6 +2169,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '<span id="importParseStatus" style="font-size:0.72rem;color:#888;"></span>'+
         '</div>'+
         '<div id="importPreviewArea"></div>'+
+      '</div>'+
+      '<div style="background:rgba(255,170,0,0.06);border:1px solid rgba(255,170,0,0.2);border-radius:12px;padding:14px 18px;margin-top:16px;">'+
+        '<strong style="font-size:0.82rem;color:#ffaa00;">&#128242; Update Contacts from Tracefy CSV</strong>'+
+        '<div style="font-size:0.72rem;color:#888;margin-top:6px;margin-bottom:10px;">Paste a Tracefy export CSV with <code style="background:rgba(255,255,255,0.06);padding:1px 5px;border-radius:3px;">address, phone, email, dnc</code> columns. Matches existing orphaned leads by address and updates contact info only &mdash; no new records created.</div>'+
+        '<textarea id="tracefyCsvInput" style="width:100%;height:120px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:10px;color:#ccc;font-size:0.75rem;padding:12px;font-family:monospace;resize:vertical;box-sizing:border-box;" placeholder="address,phone,email,dnc&#10;1234 Oak Ave San Diego CA 92103,6195550100,jane@email.com,false"></textarea>'+
+        '<div style="display:flex;gap:10px;align-items:center;margin-top:8px;">'+
+          '<button onclick="runTracefyUpdate()" class="lead-btn" style="padding:9px 22px;font-size:0.82rem;background:rgba(255,170,0,0.12);border:1px solid rgba(255,170,0,0.35);color:#ffaa00;width:auto;margin-top:0;">&#128242; Update Contacts</button>'+
+          '<span id="tracefyUpdateStatus" style="font-size:0.72rem;color:#888;"></span>'+
+        '</div>'+
       '</div>';
 
     window.importRows = [];
@@ -2366,6 +2375,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           apn:                 en.apn   || null,
           black_box:           true
         };
+        if (typeof window.calcLeadScore === 'function') rec.lead_score = window.calcLeadScore(rec);
         return rec;
       });
 
@@ -2399,6 +2409,44 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         .catch(function(err) {
           if (statusEl) statusEl.textContent = 'Error: ' + err.message;
         });
+    };
+
+    window.runTracefyUpdate = async function() {
+      var raw = (document.getElementById('tracefyCsvInput').value||'').trim();
+      var statusEl = document.getElementById('tracefyUpdateStatus');
+      if (!raw) { if (statusEl) statusEl.textContent = 'Paste a CSV first.'; return; }
+      if (statusEl) statusEl.textContent = 'Processing…';
+      var lines = raw.split('\n').map(function(l){ return l.trim(); }).filter(Boolean);
+      if (lines.length < 2) { if (statusEl) statusEl.textContent = 'Need header + at least one row.'; return; }
+      var headers = lines[0].split(',').map(function(h){ return h.trim().toLowerCase().replace(/\s+/g,'_'); });
+      var normAddr = function(a){ return (a||'').toLowerCase().replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim(); };
+      var rows = [];
+      for (var i = 1; i < lines.length; i++) {
+        var vals = lines[i].split(',');
+        var obj = {};
+        headers.forEach(function(h,j){ obj[h] = (vals[j]||'').trim(); });
+        if (obj.address) rows.push(obj);
+      }
+      if (!rows.length) { if (statusEl) statusEl.textContent = 'No valid rows found.'; return; }
+      var sc = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var { data: existing } = await sc.from('customers').select('id,address').eq('lead_source','orphaned_list').limit(5000);
+      var addrMap = {};
+      (existing||[]).forEach(function(e){ addrMap[normAddr(e.address)] = e.id; });
+      var matched = 0, updated = 0, skipped = 0;
+      var now = new Date().toISOString();
+      for (var ri = 0; ri < rows.length; ri++) {
+        var row = rows[ri];
+        var id = addrMap[normAddr(row.address)];
+        if (!id) { skipped++; continue; }
+        matched++;
+        var upd = { enrichment_source: 'tracefy', enriched_at: now };
+        if (row.phone) upd.phone = row.phone;
+        if (row.email) upd.email = row.email;
+        if (row.dnc !== undefined && row.dnc !== '') upd.dnc = (row.dnc === 'true' || row.dnc === '1' || row.dnc === 'yes' || row.dnc === 'TRUE');
+        var res = await sc.from('customers').update(upd).eq('id', id);
+        if (!res.error) updated++;
+      }
+      if (statusEl) statusEl.textContent = 'Matched ' + matched + ' of ' + rows.length + ' rows — updated ' + updated + ' leads, skipped ' + skipped + '.';
     };
 
     window.psToggleChk = function(id) {
@@ -3790,7 +3838,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '</div>';
         var gpZip = extractZip(lead.address||'');
         var gpIsSDCP = gpZip && SDCP_ZIPS.has(gpZip);
-        h += '<div style="font-size:1.05rem;font-weight:700;margin-bottom:4px;">'+(lead.address||'No address')+(gpIsSDCP?'<span style="display:inline-block;margin-left:7px;padding:1px 7px;background:rgba(0,150,255,0.15);color:#4AABF7;border-radius:10px;font-size:0.58rem;font-weight:700;vertical-align:middle;">SDCP</span>':'')+'</div>';
+        h += '<div style="font-size:1.05rem;font-weight:700;margin-bottom:4px;">'+(lead.address||'No address')+(gpIsSDCP?'<span style="display:inline-block;margin-left:7px;padding:1px 7px;background:rgba(0,150,255,0.15);color:#4AABF7;border-radius:10px;font-size:0.58rem;font-weight:700;vertical-align:middle;">SDCP</span>':'')+(lead.lead_score != null ? leadScoreBadge(lead.lead_score) : '')+'</div>';
         if (ownerName) {
           h += '<div style="font-size:0.8rem;font-weight:600;color:#F3EDE3;margin-bottom:2px;">'+ownerName+'</div>';
         }
@@ -4049,7 +4097,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
     var { data: rawLeads, error: lErr } = await c2
       .from('customers')
-      .select('id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step')
+      .select('id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,original_installer,install_year')
       .eq('lead_source','orphaned_list')
       .eq('black_box', true)
       .is('sold_type', null)
@@ -4698,6 +4746,33 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     { id:'lumio',     label:'Lumio',                  names:['Lumio Inc','1st Light Energy'] },
   ];
   window.BB_SD_INSTALLERS = BB_SD_INSTALLERS;
+
+  window.calcLeadScore = function(lead) {
+    var score = 0;
+    var yr = parseInt(lead.install_year) || 0;
+    var age = yr > 0 ? (new Date().getFullYear() - yr) : 0;
+    if (age >= 10) score += 40; else if (age >= 8) score += 30;
+    else if (age >= 6) score += 20; else if (age >= 1) score += 10;
+    if (lead.phone) score += 15;
+    if (lead.email) score += 15;
+    if (lead.title_owner) score += 10;
+    if (lead.title_confirmed) score += 5;
+    var inst = (lead.original_installer || '').toLowerCase();
+    if (inst.includes('sunpower') || inst.includes('titan')) score += 15;
+    else if (inst.includes('sullivan') || inst.includes('freedom forever') || inst.includes('pink energy')) score += 12;
+    else if (inst.includes('sunnova') || inst.includes('petersen')) score += 10;
+    else score += 8;
+    var av = parseInt(lead.assessed_value) || 0;
+    if (av >= 500000) score += 10; else if (av >= 350000) score += 7; else if (av >= 200000) score += 4;
+    if (lead.tax_delinquent) score -= 10;
+    return Math.max(0, Math.min(100, score));
+  };
+
+  window.leadScoreBadge = function(score) {
+    if (score == null) return '';
+    var color = score >= 80 ? '#8DC63F' : score >= 60 ? '#ffaa00' : '#888';
+    return '<span style="display:inline-block;margin-left:6px;padding:1px 7px;background:rgba(0,0,0,0.3);border:1px solid '+color+';color:'+color+';border-radius:10px;font-size:0.58rem;font-weight:700;vertical-align:middle;">'+score+'</span>';
+  };
 
   window.bbPsToggleAll = function(checked) {
     (window.BB_SD_INSTALLERS||[]).forEach(function(ins){
@@ -8352,11 +8427,38 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             h += '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#8DC63F;">Next Door · 1 of '+unvisited.length+' remaining</div>';
             if (distMi) h += '<div style="font-size:0.72rem;color:#888;">'+distMi+'</div>';
             h += '</div>';
-            h += '<div style="font-size:1.05rem;font-weight:700;margin-bottom:2px;">'+(lead.address||'No address')+'</div>';
-            if (fullName) h += '<div style="font-size:0.75rem;color:#888;margin-bottom:2px;">'+fullName+'</div>';
+            var tZip = extractZip(lead.address||'');
+            var tIsSDCP = tZip && SDCP_ZIPS.has(tZip);
+            h += '<div style="font-size:1.05rem;font-weight:700;margin-bottom:4px;">'+(lead.address||'No address')+(tIsSDCP?'<span style="display:inline-block;margin-left:7px;padding:1px 7px;background:rgba(0,150,255,0.15);color:#4AABF7;border-radius:10px;font-size:0.58rem;font-weight:700;vertical-align:middle;">SDCP</span>':'')+(lead.lead_score != null ? leadScoreBadge(lead.lead_score) : '')+'</div>';
+            if (lead.dnc) h += '<span style="display:inline-block;margin-bottom:6px;padding:2px 8px;background:rgba(239,68,68,0.15);color:#ef4444;border-radius:10px;font-size:0.62rem;font-weight:700;">DNC</span>';
+            if (fullName) h += '<div style="font-size:0.8rem;font-weight:600;color:#F3EDE3;margin-bottom:2px;">'+fullName+'</div>';
             var tNotePreview = _parseNotes(lead.notes||'').slice(-1)[0];
             if (tNotePreview) h += '<div style="font-size:0.7rem;color:#666;margin-bottom:10px;font-style:italic;">'+tNotePreview.by+': '+tNotePreview.text.slice(0,60)+(tNotePreview.text.length>60?'…':'')+'</div>';
-            h += '<a href="'+mapsUrl+'" target="_blank" style="display:inline-block;font-size:0.75rem;font-weight:700;color:#4a9eff;text-decoration:none;background:rgba(74,158,255,0.08);border:1px solid rgba(74,158,255,0.25);border-radius:100px;padding:6px 14px;margin-bottom:14px;">🗺 Get Directions</a>';
+            h += '<a href="'+mapsUrl+'" target="_blank" style="display:inline-block;font-size:0.75rem;font-weight:700;color:#4a9eff;text-decoration:none;background:rgba(74,158,255,0.08);border:1px solid rgba(74,158,255,0.25);border-radius:100px;padding:6px 14px;margin-bottom:8px;">🗺 Get Directions</a>';
+            var tPh = (lead.phone||'').replace(/\D/g,'');
+            var tRealEmail = (lead.email && !lead.email.endsWith('@pending.fixmy.energy')) ? lead.email : null;
+            if (lead.phone || tRealEmail) {
+              h += '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:14px;">';
+              if (lead.phone) {
+                if (lead.dnc) {
+                  h += '<button onclick="bbDncWarn(\'call\',\''+tPh+'\')" style="display:inline-flex;align-items:center;gap:4px;padding:5px 13px;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.4);color:#ef4444;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;">&#9940; Call</button>';
+                  h += '<button onclick="bbDncWarn(\'text\',\''+tPh+'\')" style="display:inline-flex;align-items:center;gap:4px;padding:5px 13px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.25);color:#ef4444;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;">&#9940; Text</button>';
+                } else {
+                  h += '<a href="tel:'+tPh+'" style="display:inline-flex;align-items:center;gap:4px;padding:5px 13px;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:100px;font-size:0.72rem;font-weight:700;text-decoration:none;">&#128222; Call</a>';
+                  h += '<a href="sms:'+tPh+'" style="display:inline-flex;align-items:center;gap:4px;padding:5px 13px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);color:#4a9eff;border-radius:100px;font-size:0.72rem;font-weight:700;text-decoration:none;">&#128172; Text</a>';
+                }
+              }
+              if (tRealEmail) {
+                if (lead.dnc) {
+                  h += '<button onclick="bbDncWarn(\'email\',\''+tRealEmail+'\')" style="display:inline-flex;align-items:center;gap:4px;padding:5px 13px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.25);color:#ef4444;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;">&#9940; Email</button>';
+                } else {
+                  h += '<a href="mailto:'+tRealEmail+'" style="display:inline-flex;align-items:center;gap:4px;padding:5px 13px;background:rgba(255,170,0,0.1);border:1px solid rgba(255,170,0,0.3);color:#ffaa00;border-radius:100px;font-size:0.72rem;font-weight:700;text-decoration:none;">&#9993; Email</a>';
+                }
+              }
+              h += '</div>';
+            } else {
+              h += '<div style="margin-bottom:14px;"></div>';
+            }
 
             // Outcome buttons
             h += '<div style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#666;margin-bottom:8px;">What happened?</div>';
@@ -8810,7 +8912,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
       var { data: rawLeads, error: lErr } = await c2
         .from('customers')
-        .select('id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step')
+        .select('id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,original_installer,install_year')
         .eq('lead_source','orphaned_list')
         .is('sold_type', null)
         .order('created_at', {ascending: false})
