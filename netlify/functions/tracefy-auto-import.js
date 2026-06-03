@@ -36,13 +36,22 @@ exports.handler = async function(event) {
   const SUPA_SERVICE_KEY = process.env.SUPA_SERVICE_KEY;
   const supabase = createClient(SUPA_URL, SUPA_SERVICE_KEY || process.env.SUPA_KEY);
 
-  // Accept either raw CSV string or JSON { csv: "..." }
+  // Accept: raw CSV body, JSON { csv: "..." }, JSON { csv_url: "..." }, or base64 attachment
   let csvText = '';
   const contentType = (event.headers['content-type'] || '').toLowerCase();
   if (contentType.includes('application/json')) {
     try {
       const parsed = JSON.parse(event.body || '{}');
-      csvText = parsed.csv || parsed.data || '';
+      if (parsed.csv_url) {
+        // Zapier sends attachment as a CDN URL — fetch the file content
+        const urlResp = await fetch(parsed.csv_url);
+        if (!urlResp.ok) {
+          return { statusCode: 502, body: JSON.stringify({ error: 'Failed to fetch CSV from URL: ' + urlResp.status }) };
+        }
+        csvText = await urlResp.text();
+      } else {
+        csvText = parsed.csv || parsed.data || '';
+      }
     } catch(e) {
       return { statusCode: 400, body: JSON.stringify({ error: 'Invalid JSON' }) };
     }
