@@ -43,12 +43,25 @@ exports.handler = async function(event) {
     try {
       const parsed = JSON.parse(event.body || '{}');
       if (parsed.csv_url) {
-        // Zapier sends attachment as a CDN URL — fetch the file content
+        // Direct file URL — fetch content
         const urlResp = await fetch(parsed.csv_url);
         if (!urlResp.ok) {
           return { statusCode: 502, body: JSON.stringify({ error: 'Failed to fetch CSV from URL: ' + urlResp.status }) };
         }
         csvText = await urlResp.text();
+      } else if (parsed.body_html) {
+        // Tracerfy sends a Download button link in the email body — extract URL from HTML
+        const match = parsed.body_html.match(/href=["'](https?:\/\/[^"']+)["'][^>]*>[\s\S]*?[Dd]ownload/i)
+          || parsed.body_html.match(/href=["'](https?:\/\/(?:tracerfy|app\.tracerfy)[^"']+)["']/i)
+          || parsed.body_html.match(/href=["'](https?:\/\/[^"']+\.csv[^"']*)["']/i);
+        if (!match) {
+          return { statusCode: 400, body: JSON.stringify({ error: 'No download URL found in email body' }) };
+        }
+        const dlResp = await fetch(match[1]);
+        if (!dlResp.ok) {
+          return { statusCode: 502, body: JSON.stringify({ error: 'Failed to fetch CSV from download link: ' + dlResp.status }) };
+        }
+        csvText = await dlResp.text();
       } else {
         csvText = parsed.csv || parsed.data || '';
       }
