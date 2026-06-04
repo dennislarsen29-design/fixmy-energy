@@ -154,6 +154,49 @@ exports.handler = async function(event) {
 
   function normAddr(a) { return String(a || '').toLowerCase().replace(/\s+/g, ' ').trim(); }
 
+  // Returns false if the permit record has invalid address, system size, or install year.
+  function qualifyPermit(rec) {
+    const street = (rec.address || '').split(',')[0].trim();
+    if (!street || !/^\d/.test(street)) return false;
+    if (street.split(/\s+/).length < 2) return false;
+    if (rec.system_size != null && (rec.system_size < 0.5 || rec.system_size > 100)) return false;
+    const yr = rec.install_year;
+    if (yr != null && (yr < 2005 || yr > new Date().getFullYear())) return false;
+    return true;
+  }
+
+  // 0–100 lead quality score based on system age and installer risk tier.
+  function calcLeadScore(rec) {
+    let score = 0;
+    const yr = rec.install_year;
+    if (yr) {
+      const age = new Date().getFullYear() - yr;
+      score += age >= 10 ? 40 : age >= 8 ? 30 : age >= 6 ? 20 : 10;
+    }
+    const riskMap = {
+      'SunPower': 15, 'Titan Solar': 15, 'Sullivan Solar': 12,
+      'Freedom Forever': 12, 'Sunnova': 10, 'Petersen Dean': 10,
+      'Pink Energy': 10, 'Vision Solar': 10
+    };
+    score += riskMap[rec.original_installer] || 8;
+    if (rec.system_size) score += 5;
+    return Math.min(score, 100);
+  }
+
+  // 0–10 address completeness score — used to gate SANDAG and Tracerfy submissions.
+  function addressQualityScore(address) {
+    if (!address) return 0;
+    let score = 0;
+    const parts = address.split(',');
+    const street = (parts[0] || '').trim();
+    if (/^\d+/.test(street)) score += 3;
+    if (street.split(/\s+/).length >= 3) score += 2;
+    if (parts.length >= 3) score += 2;
+    if (/\b\d{5}\b/.test(address)) score += 2;
+    if (address.length > 20) score += 1;
+    return score;
+  }
+
   // ── Supabase helpers ───────────────────────────────────────────────────────
 
   async function supaFetch(path, opts) {
@@ -237,8 +280,7 @@ exports.handler = async function(event) {
             if (!street || !isTarget(street, city, state, zip)) continue;
             const key = normAddr(fullAddress);
             if (!key || seenLocal.has(key) || existingAddrs.has(key)) continue;
-            seenLocal.add(key);
-            newRecs.push({
+            const candidate = {
               address: fullAddress,
               lead_category: 'fixmy',
               step: 1,
@@ -250,7 +292,11 @@ exports.handler = async function(event) {
               notes: installer.name
                 + (systemSizeKw ? ' · ' + systemSizeKw + 'kW' : '')
                 + (installYear ? ' · Installed ' + installYear : '')
-            });
+            };
+            if (!qualifyPermit(candidate)) continue;
+            seenLocal.add(key);
+            candidate.lead_score = calcLeadScore(candidate);
+            newRecs.push(candidate);
           }
           if (batch.length < 1000) break;
           offset += 1000;
@@ -268,7 +314,14 @@ exports.handler = async function(event) {
   const pullSummary = [];
   let allNewRecords = [];
 
-  for (const installer of INSTALLERS) {
+  // Run high-value installers first so they get the most time budget
+  const PRIORITY_ORDER = ['SunPower', 'Titan Solar', 'Sullivan Solar', 'Sunnova', 'Freedom Forever'];
+  const sortedInstallers = [...INSTALLERS].sort(function(a, b) {
+    const ai = PRIORITY_ORDER.indexOf(a.name), bi = PRIORITY_ORDER.indexOf(b.name);
+    return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
+  });
+
+  for (const installer of sortedInstallers) {
     if (overGlobal()) { stamp('Phase 1: global deadline — stopping installer loop'); break; }
     const found = await pullInstaller(installer);
     pullSummary.push({ name: installer.name, new: found.length });
@@ -307,7 +360,8 @@ exports.handler = async function(event) {
   const unenrichedRes = await supaFetch(
     '/customers?lead_source=eq.orphaned_list&title_owner=is.null&select=id,address&limit=2000'
   );
-  const toEnrich = (Array.isArray(unenrichedRes.data) ? unenrichedRes.data : []).filter(r => r.address);
+  const toEnrich = (Array.isArray(unenrichedRes.data) ? unenrichedRes.data : [])
+    .filter(r => r.address && addressQualityScore(r.address) >= 4);
   stamp(`Phase 2: ${toEnrich.length} leads need owner lookup`);
 
   const regridKey = process.env.REGRID_KEY;
@@ -405,10 +459,14 @@ exports.handler = async function(event) {
 
   if (tracerfyKey) {
     const noContactRes = await supaFetch(
-      '/customers?lead_source=eq.orphaned_list&sold_type=is.null&phone=is.null&email=is.null&select=id,address&limit=10000'
+      '/customers?lead_source=eq.orphaned_list&sold_type=is.null&phone=is.null&email=is.null&select=id,address,install_year&limit=10000'
     );
-    const skipLeads = (Array.isArray(noContactRes.data) ? noContactRes.data : []).filter(r => r.address);
-    stamp(`Phase 3: ${skipLeads.length} leads have no contact info`);
+    const allNoContact = (Array.isArray(noContactRes.data) ? noContactRes.data : []).filter(r => r.address);
+    // Filter to complete addresses only, then sort newest install year first (highest value leads)
+    const skipLeads = allNoContact
+      .filter(l => addressQualityScore(l.address) >= 5)
+      .sort((a, b) => (b.install_year || 0) - (a.install_year || 0));
+    stamp(`Phase 3: ${skipLeads.length}/${allNoContact.length} leads pass address quality filter`);
 
     if (skipLeads.length === 0) {
       tracerfyResult = 'no leads needed skip-trace';
