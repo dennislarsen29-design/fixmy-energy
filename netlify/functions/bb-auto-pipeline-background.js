@@ -415,7 +415,13 @@ exports.handler = async function(event) {
           if (Array.isArray(features) && features.length) {
             const f = (features[0].properties && features[0].properties.fields) || features[0].fields || {};
             const owner = f.owner || f.owner2 || null;
-            if (owner) return { owner, apn: f.parcelnumb || f.apn || null };
+            if (owner) {
+              const rawVal = String(f.parval || f.improvval || f.landval || '').replace(/[$,\s]/g, '');
+              const assessedValue = rawVal ? (parseInt(rawVal, 10) || null) : null;
+              const taxDelinquent = f.tax_delinquent != null
+                ? (String(f.tax_delinquent).toUpperCase() === 'Y' || f.tax_delinquent === true) : null;
+              return { owner, apn: f.parcelnumb || f.apn || null, assessed_value: assessedValue, tax_delinquent: taxDelinquent };
+            }
           }
         }
       } catch(e) {}
@@ -468,7 +474,7 @@ exports.handler = async function(event) {
     const allNoContact = (Array.isArray(noContactRes.data) ? noContactRes.data : []).filter(r => r.address);
     // Filter to complete addresses only, then sort newest install year first (highest value leads)
     const skipLeads = allNoContact
-      .filter(l => addressQualityScore(l.address) >= 5)
+      .filter(l => addressQualityScore(l.address) >= 9)
       .sort((a, b) => (b.install_year || 0) - (a.install_year || 0));
     stamp(`Phase 3: ${skipLeads.length}/${allNoContact.length} leads pass address quality filter`);
 

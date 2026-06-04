@@ -4211,9 +4211,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         lead.title_owner = data.owner;
         lead.apn = data.apn || lead.apn || null;
         var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
-        c2.from('customers').update({ title_owner: data.owner, apn: data.apn||null }).eq('id', id);
+        var upd = { title_owner: data.owner, apn: data.apn||null };
+        if (data.assessed_value) upd.assessed_value = data.assessed_value;
+        if (data.tax_delinquent != null) upd.tax_delinquent = data.tax_delinquent;
+        c2.from('customers').update(upd).eq('id', id);
         var rec = adminCustomers.find(function(r){ return r.id === id; });
-        if (rec) { rec.title_owner = data.owner; rec.apn = data.apn||null; }
+        if (rec) {
+          rec.title_owner = data.owner; rec.apn = data.apn||null;
+          if (data.assessed_value) rec.assessed_value = data.assessed_value;
+          if (data.tax_delinquent != null) rec.tax_delinquent = data.tax_delinquent;
+        }
         renderAdminCanvassView();
       } else {
         if (btn) { btn.textContent = 'Not found in GIS'; btn.disabled = false; }
@@ -4531,23 +4538,40 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (bar) bar.innerHTML = '<div style="background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.2);border-radius:10px;padding:10px 14px;font-size:0.75rem;color:#8DC63F;font-weight:700;">&#10003; All leads already have phone numbers.</div>';
       return;
     }
-    if (bar) bar.innerHTML = '<div style="background:rgba(74,158,255,0.07);border:1px solid rgba(74,158,255,0.2);border-radius:10px;padding:10px 14px;font-size:0.75rem;color:#4a9eff;font-weight:700;">Submitting '+leads.length+' leads to Tracerfy&hellip;</div>';
+    // Guard credits — only submit addresses with house number, full street, city/state, and zip
+    function _addrQScore(address) {
+      if (!address) return 0;
+      var score = 0, parts = address.split(','), street = (parts[0]||'').trim();
+      if (/^\d+/.test(street)) score += 3;
+      if (street.split(/\s+/).length >= 3) score += 2;
+      if (parts.length >= 3) score += 2;
+      if (/\b\d{5}\b/.test(address)) score += 2;
+      if (address.length > 20) score += 1;
+      return score;
+    }
+    var qualifiedLeads = leads.filter(function(l){ return _addrQScore(l.address) >= 9; });
+    var droppedCount = leads.length - qualifiedLeads.length;
+    if (!qualifiedLeads.length) {
+      if (bar) bar.innerHTML = '<div style="background:rgba(255,170,0,0.07);border:1px solid rgba(255,170,0,0.2);border-radius:10px;padding:10px 14px;font-size:0.75rem;color:#ffaa00;font-weight:700;">No leads with complete addresses (house number + street + city + zip). Import cleaner data before skip-tracing.</div>';
+      return;
+    }
+    if (bar) bar.innerHTML = '<div style="background:rgba(74,158,255,0.07);border:1px solid rgba(74,158,255,0.2);border-radius:10px;padding:10px 14px;font-size:0.75rem;color:#4a9eff;font-weight:700;">Submitting '+qualifiedLeads.length+' leads to Tracerfy'+(droppedCount?' ('+droppedCount+' incomplete addresses skipped)':'')+'&hellip;</div>';
     try {
       var resp = await fetch('/.netlify/functions/tracerfy-submit', {
         method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ leads: leads.map(function(l){ return { id: l.id, address: l.address }; }) })
+        body: JSON.stringify({ leads: qualifiedLeads.map(function(l){ return { id: l.id, address: l.address }; }) })
       });
       var data = await resp.json();
       if (data.error) {
         if (bar) bar.innerHTML = '<div style="background:rgba(255,0,0,0.07);border:1px solid rgba(255,0,0,0.2);border-radius:10px;padding:10px 14px;font-size:0.75rem;color:#ff5555;">Skip trace error: '+data.error+'</div>';
         return;
       }
-      localStorage.setItem('bb_skip_trace_queue', JSON.stringify({ queue_id: data.queue_id, count: leads.length, submitted_at: Date.now() }));
+      localStorage.setItem('bb_skip_trace_queue', JSON.stringify({ queue_id: data.queue_id, count: qualifiedLeads.length, submitted_at: Date.now() }));
       var waitMin = Math.ceil((data.estimated_wait_seconds || 120) / 60);
       if (bar) bar.innerHTML = '<div style="background:rgba(74,158,255,0.07);border:1px solid rgba(74,158,255,0.2);border-radius:10px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">'
-        + '<div><div style="font-size:0.75rem;font-weight:700;color:#4a9eff;">&#8987; Skip trace submitted &mdash; '+leads.length+' leads</div>'
+        + '<div><div style="font-size:0.75rem;font-weight:700;color:#4a9eff;">&#8987; Skip trace submitted &mdash; '+qualifiedLeads.length+' leads'+(droppedCount?' ('+droppedCount+' bad addresses excluded)':'')+'</div>'
         + '<div style="font-size:0.68rem;color:#888;margin-top:1px;">Ready in ~'+waitMin+' min &mdash; ID: '+data.queue_id+'</div></div>'
-        + '<button onclick="adminCanvassPollSkipTrace(\''+data.queue_id+'\','+leads.length+')" style="width:auto;margin-top:0;background:#4a9eff;color:#fff;border:none;border-radius:100px;padding:8px 14px;font-size:0.75rem;font-weight:800;cursor:pointer;">&#9681; Check Results</button>'
+        + '<button onclick="adminCanvassPollSkipTrace(\''+data.queue_id+'\','+qualifiedLeads.length+')" style="width:auto;margin-top:0;background:#4a9eff;color:#fff;border:none;border-radius:100px;padding:8px 14px;font-size:0.75rem;font-weight:800;cursor:pointer;">&#9681; Check Results</button>'
         + '</div>';
     } catch(e) {
       if (bar) bar.innerHTML = '<div style="background:rgba(255,0,0,0.07);border:1px solid rgba(255,0,0,0.2);border-radius:10px;padding:10px 14px;font-size:0.75rem;color:#ff5555;">Error: '+e.message+'</div>';

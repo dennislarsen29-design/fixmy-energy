@@ -39,10 +39,12 @@ exports.handler = async function(event) {
     const f = (feat.properties && feat.properties.fields) || feat.fields || {};
     const owner = f.owner || f.owner2 || f.mail_name || null;
     const apn   = f.parcelnumb || f.parcelnumb_formatted || f.apn || null;
-    const assessedValue = parseInt(f.parval || f.improvval || f.landval || 0) || null;
-    const taxDelinquent = f.tax_delinquent
-      ? (String(f.tax_delinquent).toUpperCase() === 'Y' || f.tax_delinquent === true) : false;
-    return owner ? { owner, apn, assessed_value: assessedValue || null, tax_delinquent: taxDelinquent || null } : null;
+    const rawVal = String(f.parval || f.improvval || f.landval || '').replace(/[$,\s]/g, '');
+    const assessedValue = rawVal ? (parseInt(rawVal, 10) || null) : null;
+    const taxDelinquent = f.tax_delinquent != null
+      ? (String(f.tax_delinquent).toUpperCase() === 'Y' || f.tax_delinquent === true)
+      : null;
+    return owner ? { owner, apn, assessed_value: assessedValue, tax_delinquent: taxDelinquent } : null;
   }
 
   // ── 1. Regrid lat/lon — most precise ──────────────────────────────────────
@@ -145,7 +147,7 @@ exports.handler = async function(event) {
         const owner = attr.OWN_NAME1 || null;
         const apn   = attr.APN_8 || null;
         if (owner) {
-          return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner, apn, source: 'sandag' }) };
+          return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner, apn, assessed_value: null, tax_delinquent: null, source: 'sandag' }) };
         }
       }
       tried.push('sandag:ok_no_data');
@@ -173,7 +175,7 @@ exports.handler = async function(event) {
         const owner = attr.OWN_NAME1 || null;
         const apn   = attr.APN_8 || null;
         if (owner) {
-          return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner, apn, source: 'sandag_south' }) };
+          return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner, apn, assessed_value: null, tax_delinquent: null, source: 'sandag_south' }) };
         }
       }
       tried.push('sandag_south:ok_no_data');
@@ -199,7 +201,7 @@ exports.handler = async function(event) {
         const owner = attr.OWN_NAME1 || null;
         const apn   = attr.APN_8 || null;
         if (owner) {
-          return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner, apn, source: 'sd_city' }) };
+          return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner, apn, assessed_value: null, tax_delinquent: null, source: 'sd_city' }) };
         }
       }
       tried.push('sd_city:ok_no_data');
