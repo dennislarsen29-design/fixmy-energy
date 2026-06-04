@@ -4423,6 +4423,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var { count: noContact } = await c2.from('customers').select('id',{count:'exact',head:true}).eq('lead_source','orphaned_list').is('sold_type',null).is('phone',null).is('email',null);
     var { count: noOwner }   = await c2.from('customers').select('id',{count:'exact',head:true}).eq('lead_source','orphaned_list').is('sold_type',null).is('title_owner',null).or('phone.not.is.null,email.not.is.null');
     total = total||0; noContact = noContact||0; noOwner = noOwner||0;
+    window._bbBlackBoxTotal = total; // share with Lead Insights header
     var statEl = document.getElementById('bbStatImported');
     if (statEl) statEl.textContent = total.toLocaleString();
     if (!bar) return;
@@ -4496,7 +4497,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var data = await resp.json();
         if (data.owner) {
           found++;
-          await c2.from('customers').update({ title_owner: data.owner, apn: data.apn || null }).eq('id', lead.id);
+          var upd = { title_owner: data.owner, apn: data.apn || null };
+          if (data.assessed_value) upd.assessed_value = data.assessed_value;
+          if (data.tax_delinquent != null) upd.tax_delinquent = data.tax_delinquent;
+          await c2.from('customers').update(upd).eq('id', lead.id);
+          var cached = adminCustomers.find(function(r){ return r.id === lead.id; });
+          if (cached) Object.assign(cached, upd);
         } else {
           failed++;
         }
@@ -4824,12 +4830,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var { data } = await c2.from('pipeline_state').select('value').eq('key','bb_pipeline_runs_remaining').limit(1);
       var remaining = data && data.length ? parseInt(data[0].value, 10) : 0;
       if (remaining > 0) {
-        statusEl.innerHTML = '&#9203; Nightly pipeline active &mdash; <strong style="color:#8DC63F;">'+remaining+' run'+(remaining===1?'':'s')+' remaining</strong>'
+        statusEl.innerHTML = '&#9203; Nightly pipeline active &mdash; <strong style="color:#8DC63F;">'+remaining+' night'+(remaining===1?'':'s')+' remaining</strong>'
+          + '<span style="color:#555;font-size:0.62rem;margin-left:6px;">Runs at 2am PDT · pulls new permits → enriches owners → skip-traces contacts</span>'
           + ' &nbsp;<button onclick="bbResetPipelineRuns(3)" style="background:none;border:none;color:#555;font-size:0.65rem;cursor:pointer;text-decoration:underline;padding:0;">Reset to 3</button>'
           + ' &nbsp;<button onclick="bbResetPipelineRuns(0)" style="background:none;border:none;color:#555;font-size:0.65rem;cursor:pointer;text-decoration:underline;padding:0;">Disable</button>';
       } else {
-        statusEl.innerHTML = '&#9744; Nightly pipeline <strong style="color:#555;">disabled</strong> (0 runs remaining)'
-          + ' &nbsp;<button onclick="bbResetPipelineRuns(3)" style="background:none;border:none;color:#4a9eff;font-size:0.65rem;cursor:pointer;text-decoration:underline;padding:0;">Re-enable (3 runs)</button>';
+        statusEl.innerHTML = '&#9744; Nightly pipeline <strong style="color:#555;">off</strong>'
+          + '<span style="color:#555;font-size:0.62rem;margin-left:6px;">Re-enable to auto-pull new permits &amp; run enrichment overnight · 3 nights per activation · runs at 2am PDT</span>'
+          + ' &nbsp;<button onclick="bbResetPipelineRuns(3)" style="background:none;border:none;color:#4a9eff;font-size:0.65rem;cursor:pointer;text-decoration:underline;padding:0;">Re-enable (3 nights)</button>';
       }
     })();
   };
@@ -4943,7 +4951,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // Use cached full dataset if available, else fetch all from Supabase
     var leads = window._bbInsightsCache;
     if (!leads) {
-      var cachedTotal = adminCustomers.filter(function(c){ return c.lead_source==='orphaned_list'; }).length;
+      var cachedTotal = window._bbBlackBoxTotal || window._bbInsightsTotalCount || adminCustomers.filter(function(c){ return c.lead_source==='orphaned_list'; }).length;
       var loadingH = '<div style="background:rgba(141,198,63,0.06);border:1px solid rgba(141,198,63,0.18);border-radius:10px;overflow:hidden;">';
       loadingH += '<div onclick="window._bbInsightsOpen='+(!isOpen)+';adminCanvassLoadInsights();" style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;cursor:pointer;">';
       loadingH += '<div style="font-size:0.72rem;font-weight:700;color:#8DC63F;">&#128202; Lead Insights</div>';
@@ -6503,6 +6511,24 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             body: JSON.stringify({ trigger: ttTrigger, firstName: updates.first_name||cRec.first_name, lastName: updates.last_name||cRec.last_name, email: updates.email||cRec.email, phone: updates.phone||cRec.phone, address: updates.address||cRec.address, diagnosticDate: ttTrigger === 'top_tier_missed' ? (cRec.diagnostic_date||null) : undefined })
           }).catch(function(e){ console.warn('GHL TT trigger:', e); });
         }
+      }
+      // Fire GHL nurture sequence when a FixMy lead moves to step 7 (Not Sold / Dead)
+      if (isFixMySave && stepVal === 7 && (cRec.step||1) !== 7) {
+        var nurtureFirst = updates.first_name||cRec.first_name||null;
+        var nurtureLast = updates.last_name||cRec.last_name||null;
+        fetch('/.netlify/functions/ghl-diag-agreement', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({
+            firstName: nurtureFirst, lastName: nurtureLast,
+            full_name: ((nurtureFirst||'') + ' ' + (nurtureLast||'')).trim() || null,
+            email: updates.email||cRec.email||null,
+            phone: updates.phone||cRec.phone||null,
+            address1: updates.address||cRec.address||null,
+            source: 'Not Sold — Nurture Enrolled',
+            tags: ['not-sold-nurture','30-day-follow-up'],
+            customField: { rep_name: updates.rep_id||cRec.rep_id||null }
+          })
+        }).catch(function(e){ console.warn('Nurture trigger:', e); });
       }
       var savedEl=document.getElementById('edSaved'); if(savedEl) savedEl.style.display='inline';
       if (diagConverting) {
