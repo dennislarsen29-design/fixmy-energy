@@ -18,9 +18,7 @@ exports.handler = async function(event) {
   const corsHeaders = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' };
 
   const key = process.env.REGRID_KEY;
-  if (!key) {
-    return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner: null, apn: null, debug: 'REGRID_KEY env var not set' }) };
-  }
+  // Do NOT bail if key is missing — Regrid steps are skipped, but SANDAG runs regardless.
 
   let address, lat, lng;
   try {
@@ -45,7 +43,7 @@ exports.handler = async function(event) {
   }
 
   // ── 1. Regrid lat/lon — most precise ──────────────────────────────────────
-  if (lat != null && lng != null) {
+  if (key && lat != null && lng != null) {
     try {
       const url = 'https://app.regrid.com/api/v1/search.json?lat=' + lat +
         '&lon=' + lng + '&radius=0';
@@ -72,7 +70,7 @@ exports.handler = async function(event) {
   }
 
   // ── 2. Regrid address search ───────────────────────────────────────────────
-  try {
+  if (key) try {
     const url = 'https://app.regrid.com/api/v1/search.json?query=' +
       encodeURIComponent(address) + '&limit=3';
     const resp = await fetch(url, { headers: regridHeaders });
@@ -97,7 +95,7 @@ exports.handler = async function(event) {
   }
 
   // ── 3. Regrid typeahead fallback ──────────────────────────────────────────
-  try {
+  if (key) try {
     const url = 'https://app.regrid.com/api/v1/typeahead.json?query=' +
       encodeURIComponent(address) + '&limit=3';
     const resp = await fetch(url, { headers: regridHeaders });
