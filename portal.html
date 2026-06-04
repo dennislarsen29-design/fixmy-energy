@@ -4885,20 +4885,46 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var done = '&#10003; '+inserted+' new leads imported!';
     if (dupeCount) done += ' ('+dupeCount+' already existed)';
     if (prog) prog.innerHTML = done;
-    setTimeout(function(){ adminCanvassLoadEnrichBar(); }, 500);
+    window._bbInsightsCache = null;
+    setTimeout(function(){ adminCanvassLoadEnrichBar(); adminCanvassLoadInsights(); }, 500);
   };
 
   // ── Black Box Lead Insights Dashboard ─────────────────────────────────────
-  function adminCanvassLoadInsights() {
+  async function adminCanvassLoadInsights() {
     var el = document.getElementById('bbInsightsPanel');
     if (!el) return;
 
-    var leads = adminCustomers.filter(function(c){ return c.lead_source === 'orphaned_list'; });
-    var total = leads.length;
     var isOpen = !!window._bbInsightsOpen;
 
+    // Use cached full dataset if available, else fetch all from Supabase
+    var leads = window._bbInsightsCache;
+    if (!leads) {
+      var cachedTotal = adminCustomers.filter(function(c){ return c.lead_source==='orphaned_list'; }).length;
+      var loadingH = '<div style="background:rgba(141,198,63,0.06);border:1px solid rgba(141,198,63,0.18);border-radius:10px;overflow:hidden;">';
+      loadingH += '<div onclick="window._bbInsightsOpen='+(!isOpen)+';adminCanvassLoadInsights();" style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;cursor:pointer;">';
+      loadingH += '<div style="font-size:0.72rem;font-weight:700;color:#8DC63F;">&#128202; Lead Insights</div>';
+      loadingH += '<div style="font-size:0.72rem;color:#888;">' + (isOpen ? 'Loading&hellip;' : cachedTotal.toLocaleString() + ' permits') + '&nbsp;&nbsp;' + (isOpen ? '' : '&#9660;') + '</div>';
+      loadingH += '</div></div>';
+      el.innerHTML = loadingH;
+      if (!isOpen) return;
+
+      var sc2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var all = [], off = 0;
+      while (true) {
+        var res2 = await sc2.from('customers').select('address,install_year,original_installer').eq('lead_source','orphaned_list').range(off, off+999);
+        if (res2.error || !res2.data || !res2.data.length) break;
+        all = all.concat(res2.data);
+        if (res2.data.length < 1000) break;
+        off += 1000;
+      }
+      window._bbInsightsCache = all;
+      leads = all;
+    }
+
+    var total = leads.length;
+
     var h = '<div style="background:rgba(141,198,63,0.06);border:1px solid rgba(141,198,63,0.18);border-radius:10px;overflow:hidden;">';
-    h += '<div onclick="window._bbInsightsOpen='+(!isOpen)+';adminCanvassLoadInsights();" style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;cursor:pointer;">';
+    h += '<div onclick="window._bbInsightsOpen='+(!isOpen)+';window._bbInsightsCache=null;adminCanvassLoadInsights();" style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;cursor:pointer;">';
     h += '<div style="font-size:0.72rem;font-weight:700;color:#8DC63F;">&#128202; Lead Insights</div>';
     h += '<div style="font-size:0.72rem;color:#888;">' + total.toLocaleString() + ' permits&nbsp;&nbsp;' + (isOpen ? '&#9650;' : '&#9660;') + '</div>';
     h += '</div>';
@@ -4995,7 +5021,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           h += 'style="display:flex;align-items:center;justify-content:space-between;padding:3px 5px;border-radius:4px;cursor:pointer;margin-bottom:1px;" ';
           h += 'onmouseover="this.style.background=\'rgba(141,198,63,0.12)\'" onmouseout="this.style.background=\'none\'">';
           h += '<div style="font-size:0.65rem;color:#ccc;">'+zip+'</div>';
-          h += '<div style="font-size:0.65rem;font-weight:700;color:#8DC63F;">'+byZip[zip].toLocaleString()+'</div>';
+          h += '<div style="font-size:0.65rem;font-weight:700;color:#8DC63F;min-width:36px;text-align:right;">'+byZip[zip].toLocaleString()+'</div>';
           h += '</div>';
         });
         h += '</div></div>';
