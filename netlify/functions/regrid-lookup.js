@@ -18,9 +18,7 @@ exports.handler = async function(event) {
   const corsHeaders = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' };
 
   const key = process.env.REGRID_KEY;
-  if (!key) {
-    return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner: null, apn: null, debug: 'REGRID_KEY env var not set' }) };
-  }
+  // Do NOT bail if key is missing — Regrid steps are skipped, but SANDAG runs regardless.
 
   let address, lat, lng;
   try {
@@ -41,11 +39,16 @@ exports.handler = async function(event) {
     const f = (feat.properties && feat.properties.fields) || feat.fields || {};
     const owner = f.owner || f.owner2 || f.mail_name || null;
     const apn   = f.parcelnumb || f.parcelnumb_formatted || f.apn || null;
-    return owner ? { owner, apn } : null;
+    const rawVal = String(f.parval || f.improvval || f.landval || '').replace(/[$,\s]/g, '');
+    const assessedValue = rawVal ? (parseInt(rawVal, 10) || null) : null;
+    const taxDelinquent = f.tax_delinquent != null
+      ? (String(f.tax_delinquent).toUpperCase() === 'Y' || f.tax_delinquent === true)
+      : null;
+    return owner ? { owner, apn, assessed_value: assessedValue, tax_delinquent: taxDelinquent } : null;
   }
 
   // ── 1. Regrid lat/lon — most precise ──────────────────────────────────────
-  if (lat != null && lng != null) {
+  if (key && lat != null && lng != null) {
     try {
       const url = 'https://app.regrid.com/api/v1/search.json?lat=' + lat +
         '&lon=' + lng + '&radius=0';
@@ -72,7 +75,7 @@ exports.handler = async function(event) {
   }
 
   // ── 2. Regrid address search ───────────────────────────────────────────────
-  try {
+  if (key) try {
     const url = 'https://app.regrid.com/api/v1/search.json?query=' +
       encodeURIComponent(address) + '&limit=3';
     const resp = await fetch(url, { headers: regridHeaders });
@@ -97,7 +100,7 @@ exports.handler = async function(event) {
   }
 
   // ── 3. Regrid typeahead fallback ──────────────────────────────────────────
-  try {
+  if (key) try {
     const url = 'https://app.regrid.com/api/v1/typeahead.json?query=' +
       encodeURIComponent(address) + '&limit=3';
     const resp = await fetch(url, { headers: regridHeaders });
@@ -118,8 +121,8 @@ exports.handler = async function(event) {
   }
 
   // ── Helper: ArcGIS spatial point query params (most reliable when lat/lng known) ──
-  function arcgisPointParams(lat, lng, outFields) {
-    return '&geometry=' + encodeURIComponent(JSON.stringify({ x: lng, y: lat })) +
+  function arcgisPointParams(qlat, qlng, outFields) {
+    return '&geometry=' + encodeURIComponent(JSON.stringify({ x: qlng, y: qlat })) +
       '&geometryType=esriGeometryPoint&spatialRel=esriSpatialRelIntersects&inSR=4326' +
       '&outFields=' + outFields + '&f=json&resultRecordCount=1';
   }
@@ -128,11 +131,39 @@ exports.handler = async function(event) {
   const addrUpper = address.toUpperCase().replace(/,.*/, '').trim();
   const addrParts = addrUpper.split(' ').slice(0, 4).join(' ');
 
+  // ── 3.5. Census Bureau geocoder — free, no key, resolves lat/lng for spatial queries ──
+  // Text LIKE searches against SANDAG fail when street-type abbreviations differ.
+  // Spatial point queries are exact and bypass that entirely.
+  let resolvedLat = lat, resolvedLng = lng;
+  if (resolvedLat == null || resolvedLng == null) {
+    try {
+      const geocodeUrl = 'https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?'
+        + 'address=' + encodeURIComponent(address)
+        + '&benchmark=Public_AR_Current&format=json';
+      const geocodeResp = await fetch(geocodeUrl, { headers: { 'Accept': 'application/json' } });
+      if (geocodeResp.ok) {
+        const geocodeData = await geocodeResp.json();
+        const matches = geocodeData.result && geocodeData.result.addressMatches;
+        if (Array.isArray(matches) && matches.length) {
+          resolvedLat = matches[0].coordinates.y;
+          resolvedLng = matches[0].coordinates.x;
+          tried.push('census_geocode:ok');
+        } else {
+          tried.push('census_geocode:no_match');
+        }
+      } else {
+        tried.push('census_geocode:' + geocodeResp.status);
+      }
+    } catch(e) {
+      tried.push('census_geocode:err:' + e.message);
+    }
+  }
+
   // ── 4. SANDAG geo.sandag.org — spatial if lat/lng available, text fallback ─
   try {
     const baseUrl = 'https://geo.sandag.org/server/rest/services/Hosted/Parcels/FeatureServer/0/query?';
-    const query = (lat != null && lng != null)
-      ? 'where=1%3D1' + arcgisPointParams(lat, lng, 'SITUS_ADDRESS,OWN_NAME1,APN_8')
+    const query = (resolvedLat != null && resolvedLng != null)
+      ? 'where=1%3D1' + arcgisPointParams(resolvedLat, resolvedLng, 'SITUS_ADDRESS,OWN_NAME1,APN_8')
       : 'where=' + encodeURIComponent("SITUS_ADDRESS LIKE '" + addrParts + "%'") + '&outFields=SITUS_ADDRESS,OWN_NAME1,APN_8&f=json&resultRecordCount=1';
     const resp = await fetch(baseUrl + query, {
       headers: { 'Accept': 'application/json', 'Referer': 'https://sdgis.sandag.org/' }
@@ -144,7 +175,7 @@ exports.handler = async function(event) {
         const owner = attr.OWN_NAME1 || null;
         const apn   = attr.APN_8 || null;
         if (owner) {
-          return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner, apn, source: 'sandag' }) };
+          return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner, apn, assessed_value: null, tax_delinquent: null, source: 'sandag' }) };
         }
       }
       tried.push('sandag:ok_no_data');
@@ -159,8 +190,8 @@ exports.handler = async function(event) {
   // ── 5. SANDAG Parcels_South — spatial if lat/lng available ───────────────
   try {
     const baseUrl = 'https://geo.sandag.org/server/rest/services/Hosted/Parcels_South/FeatureServer/0/query?';
-    const query = (lat != null && lng != null)
-      ? 'where=1%3D1' + arcgisPointParams(lat, lng, 'SITUS_ADDRESS,OWN_NAME1,APN_8')
+    const query = (resolvedLat != null && resolvedLng != null)
+      ? 'where=1%3D1' + arcgisPointParams(resolvedLat, resolvedLng, 'SITUS_ADDRESS,OWN_NAME1,APN_8')
       : 'where=' + encodeURIComponent("SITUS_ADDRESS LIKE '" + addrParts + "%'") + '&outFields=SITUS_ADDRESS,OWN_NAME1,APN_8&f=json&resultRecordCount=1';
     const resp = await fetch(baseUrl + query, {
       headers: { 'Accept': 'application/json', 'Referer': 'https://sdgis.sandag.org/' }
@@ -172,7 +203,7 @@ exports.handler = async function(event) {
         const owner = attr.OWN_NAME1 || null;
         const apn   = attr.APN_8 || null;
         if (owner) {
-          return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner, apn, source: 'sandag_south' }) };
+          return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner, apn, assessed_value: null, tax_delinquent: null, source: 'sandag_south' }) };
         }
       }
       tried.push('sandag_south:ok_no_data');
@@ -186,8 +217,8 @@ exports.handler = async function(event) {
   // ── 6. City of SD — webmaps.sandiego.gov GeocoderMerged — spatial if lat/lng ──
   try {
     const baseUrl = 'https://webmaps.sandiego.gov/arcgis/rest/services/GeocoderMerged/MapServer/1/query?';
-    const query = (lat != null && lng != null)
-      ? 'where=1%3D1' + arcgisPointParams(lat, lng, 'SITUS_STREET,OWN_NAME1,APN_8')
+    const query = (resolvedLat != null && resolvedLng != null)
+      ? 'where=1%3D1' + arcgisPointParams(resolvedLat, resolvedLng, 'SITUS_STREET,OWN_NAME1,APN_8')
       : 'where=' + encodeURIComponent("SITUS_STREET LIKE '" + addrParts + "%'") + '&outFields=SITUS_STREET,OWN_NAME1,APN_8&f=json&resultRecordCount=1';
     const url = baseUrl + query;
     const resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
@@ -198,7 +229,7 @@ exports.handler = async function(event) {
         const owner = attr.OWN_NAME1 || null;
         const apn   = attr.APN_8 || null;
         if (owner) {
-          return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner, apn, source: 'sd_city' }) };
+          return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner, apn, assessed_value: null, tax_delinquent: null, source: 'sd_city' }) };
         }
       }
       tried.push('sd_city:ok_no_data');
@@ -210,5 +241,6 @@ exports.handler = async function(event) {
     console.error('SD City GIS error:', e.message);
   }
 
+  console.error('regrid-lookup: no owner found for "' + address.slice(0, 60) + '" — tried: ' + tried.join(' | '));
   return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner: null, apn: null, debug: tried.join(' | ') }) };
 };

@@ -151,7 +151,7 @@ exports.handler = async function(event) {
     try {
       const ADMIN_PHONE = '+18012328301';
       const marketLabels = { san_diego_ca: 'San Diego CA', augusta_ga: 'Augusta GA', north_augusta_sc: 'North Augusta SC', travel_team: 'Travel Team' };
-      const roleLabels   = { local_full_time: 'Full-Time Local', local_part_time: 'Part-Time Local', travel_team: 'Travel Team' };
+      const roleLabels   = { part_time_locals_only: 'Part Time, Locals Only', part_time_locals_blitz: 'Part Time, Locals + Blitz', full_time_locals_only: 'Full Time, Locals Only', full_time_locals_blitz: 'Full Time, Locals + Blitz' };
       const mktLabel  = marketLabels[market]  || market  || 'Unknown Market';
       const roleLabel = roleLabels[role_type] || role_type || 'Unknown Role';
 
@@ -192,7 +192,7 @@ exports.handler = async function(event) {
         method:  'POST',
         headers: { 'Authorization': 'Bearer ' + RESEND_API_KEY, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          from:    'FixMy.Energy <dennis@fixmy.energy>',
+          from:    'FixMy.Energy <info@fixmy.energy>',
           to:      [email],
           subject: 'Welcome to the Team — Your Portal Login',
           html: `
@@ -260,6 +260,7 @@ exports.handler = async function(event) {
     body: JSON.stringify({
       success:    true,
       id:         repId,
+      code:       repCode,
       portal_url: 'https://fixmy.energy/portal'
     })
   };

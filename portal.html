@@ -979,13 +979,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '</div>';
     }
 
-    // Store full data for modal access (keyed by sanitized uid)
-    window._teamModalData = window._teamModalData || {};
-    activeMembers.forEach(function(u){
-      var uid = (u.id||'').replace(/[^a-z0-9_]/gi,'_');
-      window._teamModalData[uid] = {u: u, role: roleDisplay[u.role]||u.role, needsAgreement: ['rep','tech','setter'].indexOf(u.role) > -1, agreements: agreements};
-    });
-
     // Use DB team members; fall back to hardcoded arrays if table not yet seeded
     var dbMembers = adminTeamMembers.length ? adminTeamMembers : (
       SALES_REPS.map(function(r){return Object.assign({},r,{role:'rep',active:true});}).concat(
@@ -997,6 +990,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var inactiveMembers = dbMembers.filter(function(m){ return m.active===false; });
     var roleSections = [{key:'rep',label:'Phone Setters',ag:true},{key:'tech',label:'Techs / Sales',ag:true},{key:'setter',label:'Inside Setters',ag:true},{key:'ops',label:'Ops Partners',ag:false}];
     var roleDisplay = {rep:'Phone Setter',tech:'Tech / Sales',setter:'Inside Setter',ops:'Ops'};
+
+    // Store full data for modal access (keyed by sanitized uid)
+    window._teamModalData = window._teamModalData || {};
+    activeMembers.forEach(function(u){
+      var uid = (u.id||'').replace(/[^a-z0-9_]/gi,'_');
+      window._teamModalData[uid] = {u: u, role: roleDisplay[u.role]||u.role, needsAgreement: ['rep','tech','setter'].indexOf(u.role) > -1, agreements: agreements};
+    });
 
     var h = portalNav;
 
@@ -2182,6 +2182,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '<span id="importParseStatus" style="font-size:0.72rem;color:#888;"></span>'+
         '</div>'+
         '<div id="importPreviewArea"></div>'+
+      '</div>'+
+      '<div style="background:rgba(255,170,0,0.06);border:1px solid rgba(255,170,0,0.2);border-radius:12px;padding:14px 18px;margin-top:16px;">'+
+        '<strong style="font-size:0.82rem;color:#ffaa00;">&#128242; Update Contacts from Tracefy CSV</strong>'+
+        '<div style="font-size:0.72rem;color:#888;margin-top:6px;margin-bottom:10px;">Paste a Tracefy export CSV with <code style="background:rgba(255,255,255,0.06);padding:1px 5px;border-radius:3px;">address, phone, email, dnc</code> columns. Matches existing orphaned leads by address and updates contact info only &mdash; no new records created.</div>'+
+        '<textarea id="tracefyCsvInput" style="width:100%;height:120px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:10px;color:#ccc;font-size:0.75rem;padding:12px;font-family:monospace;resize:vertical;box-sizing:border-box;" placeholder="address,phone,email,dnc&#10;1234 Oak Ave San Diego CA 92103,6195550100,jane@email.com,false"></textarea>'+
+        '<div style="display:flex;gap:10px;align-items:center;margin-top:8px;">'+
+          '<button onclick="runTracefyUpdate()" class="lead-btn" style="padding:9px 22px;font-size:0.82rem;background:rgba(255,170,0,0.12);border:1px solid rgba(255,170,0,0.35);color:#ffaa00;width:auto;margin-top:0;">&#128242; Update Contacts</button>'+
+          '<span id="tracefyUpdateStatus" style="font-size:0.72rem;color:#888;"></span>'+
+        '</div>'+
       '</div>';
 
     window.importRows = [];
@@ -2379,6 +2388,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           apn:                 en.apn   || null,
           black_box:           true
         };
+        if (typeof window.calcLeadScore === 'function') rec.lead_score = window.calcLeadScore(rec);
         return rec;
       });
 
@@ -2414,6 +2424,44 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         });
     };
 
+    window.runTracefyUpdate = async function() {
+      var raw = (document.getElementById('tracefyCsvInput').value||'').trim();
+      var statusEl = document.getElementById('tracefyUpdateStatus');
+      if (!raw) { if (statusEl) statusEl.textContent = 'Paste a CSV first.'; return; }
+      if (statusEl) statusEl.textContent = 'Processing…';
+      var lines = raw.split('\n').map(function(l){ return l.trim(); }).filter(Boolean);
+      if (lines.length < 2) { if (statusEl) statusEl.textContent = 'Need header + at least one row.'; return; }
+      var headers = lines[0].split(',').map(function(h){ return h.trim().toLowerCase().replace(/\s+/g,'_'); });
+      var normAddr = function(a){ return (a||'').toLowerCase().replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim(); };
+      var rows = [];
+      for (var i = 1; i < lines.length; i++) {
+        var vals = lines[i].split(',');
+        var obj = {};
+        headers.forEach(function(h,j){ obj[h] = (vals[j]||'').trim(); });
+        if (obj.address) rows.push(obj);
+      }
+      if (!rows.length) { if (statusEl) statusEl.textContent = 'No valid rows found.'; return; }
+      var sc = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var { data: existing } = await sc.from('customers').select('id,address').eq('lead_source','orphaned_list').limit(5000);
+      var addrMap = {};
+      (existing||[]).forEach(function(e){ addrMap[normAddr(e.address)] = e.id; });
+      var matched = 0, updated = 0, skipped = 0;
+      var now = new Date().toISOString();
+      for (var ri = 0; ri < rows.length; ri++) {
+        var row = rows[ri];
+        var id = addrMap[normAddr(row.address)];
+        if (!id) { skipped++; continue; }
+        matched++;
+        var upd = { enrichment_source: 'tracefy', enriched_at: now };
+        if (row.phone) upd.phone = row.phone;
+        if (row.email) upd.email = row.email;
+        if (row.dnc !== undefined && row.dnc !== '') upd.dnc = (row.dnc === 'true' || row.dnc === '1' || row.dnc === 'yes' || row.dnc === 'TRUE');
+        var res = await sc.from('customers').update(upd).eq('id', id);
+        if (!res.error) updated++;
+      }
+      if (statusEl) statusEl.textContent = 'Matched ' + matched + ' of ' + rows.length + ' rows — updated ' + updated + ' leads, skipped ' + skipped + '.';
+    };
+
     window.psToggleChk = function(id) {
       var c = document.getElementById('psChk_'+id), b = document.getElementById('psBox_'+id);
       if (!c) return;
@@ -2444,7 +2492,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var allRecords = [], errors = [], allLogs = [];
       for (var i=0; i<checked.length; i++) {
         var ins = checked[i];
-        if (prog) prog.textContent = '('+(i+1)+'/'+checked.length+') '+ins.label+'…';
+        var runningTotal = allRecords.length ? ' · +'+allRecords.length+' permits' : '';
+        if (prog) prog.textContent = '('+(i+1)+'/'+checked.length+') '+ins.label+'…'+runningTotal;
         try {
           var resp = await fetch('/.netlify/functions/permitstack-pull', {
             method: 'POST', headers: {'Content-Type':'application/json'},
@@ -2454,6 +2503,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             var errMsg = ins.label+': server error '+resp.status+(resp.status===504||resp.status===502?' (timeout — try fewer installers at once)':'');
             errors.push(errMsg);
             allLogs.push(errMsg);
+            if (prog) prog.textContent = '('+(i+1)+'/'+checked.length+') '+ins.label+' ✗'+(allRecords.length?' · +'+allRecords.length+' permits':'');
             continue;
           }
           var data;
@@ -2464,7 +2514,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           }
           if (data.error) { errors.push(ins.label+': '+data.error); console.error('PermitStack ('+ins.label+'):', data.error); }
           if (data.log && data.log.length) allLogs = allLogs.concat(data.log.map(function(l){ return ins.label+': '+l; }));
+          var prevLen = allRecords.length;
           if (data.records && data.records.length) allRecords = allRecords.concat(data.records);
+          var newCount = allRecords.length - prevLen;
+          if (prog) prog.textContent = '('+(i+1)+'/'+checked.length+') '+ins.label+' ✓ +'+newCount+' · total: '+allRecords.length+' permits';
         } catch(e) { errors.push(ins.label+': '+e.message); console.error('PermitStack pull error for '+ins.label+':', e); }
       }
       if (!allRecords.length) {
@@ -3675,10 +3728,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px;">';
     h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;">&#128230; Black Box &mdash; Quarantined Leads</div>';
     h += '<div style="display:flex;gap:10px;align-items:center;">';
-    h += '<span style="font-size:0.72rem;color:#888;"><strong style="color:#eee;">'+totalImported+'</strong> imported &middot; <strong style="color:#8DC63F;">'+totalActivated+'</strong> activated (<strong style="color:#8DC63F;">'+convPct+'%</strong>)</span>';
+    h += '<span style="font-size:0.72rem;color:#888;"><strong id="bbStatImported" style="color:#eee;">'+totalImported+'</strong> imported &middot; <strong style="color:#8DC63F;">'+totalActivated+'</strong> activated (<strong style="color:#8DC63F;">'+convPct+'%</strong>)</span>';
     h += '</div></div>';
     h += '<div id="bbEnrichBar" style="margin-bottom:12px;"></div>';
     if (CURRENT_ROLE === 'admin') h += '<div id="bbPullBar" style="margin-bottom:12px;"></div>';
+    if (CURRENT_ROLE === 'admin') h += '<div id="bbInsightsPanel" style="margin-bottom:12px;"></div>';
     h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;margin-bottom:12px;">&#128205; Routes</div>';
 
     // ── Doorstep Intel + QR — two-column header ────────────────────────────────
@@ -3803,7 +3857,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '</div>';
         var gpZip = extractZip(lead.address||'');
         var gpIsSDCP = gpZip && SDCP_ZIPS.has(gpZip);
-        h += '<div style="font-size:1.05rem;font-weight:700;margin-bottom:4px;">'+(lead.address||'No address')+(gpIsSDCP?'<span style="display:inline-block;margin-left:7px;padding:1px 7px;background:rgba(0,150,255,0.15);color:#4AABF7;border-radius:10px;font-size:0.58rem;font-weight:700;vertical-align:middle;">SDCP</span>':'')+'</div>';
+        h += '<div style="font-size:1.05rem;font-weight:700;margin-bottom:4px;">'+(lead.address||'No address')+(gpIsSDCP?'<span style="display:inline-block;margin-left:7px;padding:1px 7px;background:rgba(0,150,255,0.15);color:#4AABF7;border-radius:10px;font-size:0.58rem;font-weight:700;vertical-align:middle;">SDCP</span>':'')+(lead.lead_score != null ? leadScoreBadge(lead.lead_score) : '')+'</div>';
         if (ownerName) {
           h += '<div style="font-size:0.8rem;font-weight:600;color:#F3EDE3;margin-bottom:2px;">'+ownerName+'</div>';
         }
@@ -4036,6 +4090,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     document.getElementById('dashBody').innerHTML = h;
     setTimeout(adminCanvassLoadEnrichBar, 0);
     if (CURRENT_ROLE === 'admin') setTimeout(adminCanvassLoadPullBar, 0);
+    if (CURRENT_ROLE === 'admin') setTimeout(adminCanvassLoadInsights, 0);
   }
 
   function adminCanvassHaversine(lat1, lng1, lat2, lng2) {
@@ -4062,7 +4117,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
     var { data: rawLeads, error: lErr } = await c2
       .from('customers')
-      .select('id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step')
+      .select('id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,original_installer,install_year')
       .eq('lead_source','orphaned_list')
       .eq('black_box', true)
       .is('sold_type', null)
@@ -4169,9 +4224,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         lead.title_owner = data.owner;
         lead.apn = data.apn || lead.apn || null;
         var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
-        c2.from('customers').update({ title_owner: data.owner, apn: data.apn||null }).eq('id', id);
+        var upd = { title_owner: data.owner, apn: data.apn||null };
+        if (data.assessed_value) upd.assessed_value = data.assessed_value;
+        if (data.tax_delinquent != null) upd.tax_delinquent = data.tax_delinquent;
+        c2.from('customers').update(upd).eq('id', id);
         var rec = adminCustomers.find(function(r){ return r.id === id; });
-        if (rec) { rec.title_owner = data.owner; rec.apn = data.apn||null; }
+        if (rec) {
+          rec.title_owner = data.owner; rec.apn = data.apn||null;
+          if (data.assessed_value) rec.assessed_value = data.assessed_value;
+          if (data.tax_delinquent != null) rec.tax_delinquent = data.tax_delinquent;
+        }
         renderAdminCanvassView();
       } else {
         if (btn) { btn.textContent = 'Not found in GIS'; btn.disabled = false; }
@@ -4377,28 +4439,39 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var bar = document.getElementById('bbEnrichBar');
     if (!bar) return;
     var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
-    var { count: total } = await c2.from('customers').select('id', {count:'exact',head:true}).eq('lead_source','orphaned_list').is('sold_type',null);
-    var { count: havePhone } = await c2.from('customers').select('id', {count:'exact',head:true}).eq('lead_source','orphaned_list').is('sold_type',null).not('phone','is',null);
-    total = total || 0; havePhone = havePhone || 0;
-    var missing = total - havePhone;
+    var { count: total }     = await c2.from('customers').select('id',{count:'exact',head:true}).eq('lead_source','orphaned_list').is('sold_type',null);
+    var { count: noContact } = await c2.from('customers').select('id',{count:'exact',head:true}).eq('lead_source','orphaned_list').is('sold_type',null).is('phone',null).is('email',null);
+    var { count: noOwner }   = await c2.from('customers').select('id',{count:'exact',head:true}).eq('lead_source','orphaned_list').is('sold_type',null).is('title_owner',null).or('phone.not.is.null,email.not.is.null');
+    total = total||0; noContact = noContact||0; noOwner = noOwner||0;
+    window._bbBlackBoxTotal = total; // share with Lead Insights header
+    var statEl = document.getElementById('bbStatImported');
+    if (statEl) statEl.textContent = total.toLocaleString();
     if (!bar) return;
-    if (missing === 0) {
-      bar.innerHTML = '<div style="background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.2);border-radius:10px;padding:10px 14px;font-size:0.75rem;color:#8DC63F;font-weight:700;">&#10003; All '+total+' leads have phone numbers on file</div>';
+    var queueInfo = null;
+    try { var qi = localStorage.getItem('bb_skip_trace_queue'); if (qi) queueInfo = JSON.parse(qi); } catch(e) {}
+
+    if (noContact === 0 && noOwner === 0) {
+      bar.innerHTML = '<div style="background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.2);border-radius:10px;padding:10px 14px;font-size:0.75rem;color:#8DC63F;font-weight:700;">&#10003; All '+total+' leads fully enriched — owner + contact on file</div>';
+    } else if (noContact === 0 && noOwner > 0) {
+      bar.innerHTML = '<div style="background:rgba(255,170,0,0.07);border:1px solid rgba(255,170,0,0.2);border-radius:10px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">'
+        + '<div><div style="font-size:0.75rem;font-weight:700;color:#ffaa00;">'+noOwner+' leads missing owner name</div>'
+        + '<div style="font-size:0.68rem;color:#888;margin-top:1px;">All leads have phone/email &mdash; run Regrid owner lookup to fill the remaining '+noOwner+' title owners</div></div>'
+        + '<button onclick="adminCanvassEnrichAll()" style="width:auto;margin-top:0;background:rgba(255,170,0,0.12);color:#ffaa00;border:1px solid rgba(255,170,0,0.35);border-radius:100px;padding:8px 18px;font-size:0.78rem;font-weight:800;cursor:pointer;white-space:nowrap;">&#128269; Run Owner Lookup</button>'
+        + '</div>';
     } else {
-      var queueInfo = null;
-      try { var qi = localStorage.getItem('bb_skip_trace_queue'); if (qi) queueInfo = JSON.parse(qi); } catch(e) {}
       var actionBtn = queueInfo && queueInfo.queue_id
         ? '<div style="display:flex;align-items:center;gap:8px;">'
-          + '<button onclick="adminCanvassPollSkipTrace(\''+queueInfo.queue_id+'\','+missing+')" style="width:auto;margin-top:0;background:#4a9eff;color:#fff;border:none;border-radius:100px;padding:8px 18px;font-size:0.78rem;font-weight:800;cursor:pointer;white-space:nowrap;">&#9681; Check Results</button>'
+          + '<button onclick="adminCanvassPollSkipTrace(\''+queueInfo.queue_id+'\','+noContact+')" style="width:auto;margin-top:0;background:#4a9eff;color:#fff;border:none;border-radius:100px;padding:8px 18px;font-size:0.78rem;font-weight:800;cursor:pointer;white-space:nowrap;">&#9681; Check Results</button>'
           + '<button onclick="localStorage.removeItem(\'bb_skip_trace_queue\');adminCanvassLoadEnrichBar()" style="width:auto;margin-top:0;background:none;border:none;color:#555;font-size:0.72rem;cursor:pointer;text-decoration:underline;padding:0;">&#10005; Reset</button>'
           + '</div>'
         : '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
-          + '<button onclick="adminCanvassEnrichAll()" style="width:auto;margin-top:0;background:#ffaa00;color:#1A1A1A;border:none;border-radius:100px;padding:8px 18px;font-size:0.78rem;font-weight:800;cursor:pointer;white-space:nowrap;">&#128269; Enrich All</button>'
-          + '<button onclick="bbShowTracerfyPaste()" style="width:auto;margin-top:0;background:none;border:1px solid rgba(255,170,0,0.3);border-radius:100px;color:#ffaa00;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#128196; Paste Tracerfy CSV</button>'
+          + '<button onclick="adminCanvassEnrichAll()" style="width:auto;margin-top:0;background:#8DC63F;color:#000;border:none;border-radius:100px;padding:8px 16px;font-size:0.75rem;font-weight:800;cursor:pointer;white-space:nowrap;">&#128269; Free: Owners</button>'
+          + '<button onclick="adminCanvassSubmitSkipTrace('+noContact+')" style="width:auto;margin-top:0;background:#4a9eff;color:#fff;border:none;border-radius:100px;padding:8px 16px;font-size:0.75rem;font-weight:800;cursor:pointer;white-space:nowrap;">&#128222; Skip Trace</button>'
+          + '<button onclick="bbShowTracerfyPaste()" style="width:auto;margin-top:0;background:none;border:1px solid rgba(255,255,255,0.12);border-radius:100px;color:#888;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#128196; Paste CSV</button>'
           + '</div>';
-      bar.innerHTML = '<div style="background:rgba(255,170,0,0.07);border:1px solid rgba(255,170,0,0.2);border-radius:10px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">'
-        + '<div><div style="font-size:0.75rem;font-weight:700;color:#ffaa00;">'+missing+' leads missing phone/email</div>'
-        + '<div style="font-size:0.68rem;color:#888;margin-top:1px;">'+havePhone+' of '+total+' have phone on file &mdash; Enrich All runs free GIS first, then skip-traces all '+missing+' via Tracerfy</div></div>'
+      bar.innerHTML = '<div style="background:rgba(239,68,68,0.07);border:1px solid rgba(239,68,68,0.2);border-radius:10px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">'
+        + '<div><div style="font-size:0.75rem;font-weight:700;color:#ef4444;">'+noContact+' leads have no contact info</div>'
+        + '<div style="font-size:0.68rem;color:#888;margin-top:1px;">'+(total-noContact)+' of '+total+' have phone or email &mdash; GIS owner lookup is free &middot; skip-trace adds phone/email (paid)</div></div>'
         + actionBtn + '</div>';
     }
   };
@@ -4420,7 +4493,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       .limit(1000);
 
     leads = leads || [];
-    var total = leads.length, found = 0, failed = 0;
+    var total = leads.length, found = 0, failed = 0, firstDebug = null;
 
     function updateProgress() {
       var done = found + failed;
@@ -4429,7 +4502,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (prog) prog.innerHTML = '<div style="font-size:0.75rem;color:#4a9eff;font-weight:700;margin-bottom:6px;">Enriching&hellip; '+done+' of '+total+' &mdash; '+found+' owners found</div>'
         + '<div style="background:rgba(255,255,255,0.08);border-radius:100px;height:6px;overflow:hidden;">'
         + '<div style="background:#4a9eff;height:6px;border-radius:100px;width:'+pct+'%;transition:width 0.3s;"></div></div>'
-        + '<div style="font-size:0.65rem;color:#555;margin-top:4px;">'+pct+'% &mdash; do not close this tab</div>';
+        + '<div style="font-size:0.65rem;color:#555;margin-top:4px;">'+pct+'% &mdash; do not close this tab</div>'
+        + (firstDebug ? '<div style="font-size:0.6rem;color:#555;margin-top:3px;word-break:break-all;">⚠ Last miss: '+firstDebug+'</div>' : '');
     }
 
     for (var i = 0; i < leads.length; i++) {
@@ -4444,9 +4518,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var data = await resp.json();
         if (data.owner) {
           found++;
-          await c2.from('customers').update({ title_owner: data.owner, apn: data.apn || null }).eq('id', lead.id);
+          var upd = { title_owner: data.owner, apn: data.apn || null };
+          if (data.assessed_value) upd.assessed_value = data.assessed_value;
+          if (data.tax_delinquent != null) upd.tax_delinquent = data.tax_delinquent;
+          await c2.from('customers').update(upd).eq('id', lead.id);
+          var cached = adminCustomers.find(function(r){ return r.id === lead.id; });
+          if (cached) Object.assign(cached, upd);
         } else {
           failed++;
+          if (!firstDebug && data.debug) firstDebug = lead.address.split(',')[0] + ' → ' + data.debug;
         }
       } catch(e) { failed++; }
       updateProgress();
@@ -4455,12 +4535,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
 
     _bbEnrichRunning = false;
-    var missed = total - found;
-    // Always chain to Tracerfy — GIS only returns owner names, never phone/email
     var bar2 = document.getElementById('bbEnrichBar');
-    if (bar2) bar2.innerHTML = '<div style="background:rgba(74,158,255,0.07);border:1px solid rgba(74,158,255,0.2);border-radius:10px;padding:10px 14px;font-size:0.75rem;color:#4a9eff;font-weight:700;">'
-      + '&#10003; GIS done: '+found+' owner names found &mdash; submitting leads to Tracerfy for phone &amp; email&hellip;</div>';
-    await window.adminCanvassSubmitSkipTrace(total);
+    if (bar2) bar2.innerHTML = '<div style="background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.2);border-radius:10px;padding:10px 14px;font-size:0.75rem;color:#8DC63F;font-weight:700;">'
+      + '&#10003; Free enrichment done: '+found+' owner names added &mdash; run Skip Trace to add phone &amp; email'
+      + (firstDebug ? '<div style="font-size:0.65rem;color:#888;font-weight:400;margin-top:4px;">Missed: '+firstDebug+'</div>' : '')
+      + '</div>';
+    setTimeout(adminCanvassLoadEnrichBar, 1200);
   };
 
   window.adminCanvassSubmitSkipTrace = async function(missingCount) {
@@ -4475,23 +4555,40 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (bar) bar.innerHTML = '<div style="background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.2);border-radius:10px;padding:10px 14px;font-size:0.75rem;color:#8DC63F;font-weight:700;">&#10003; All leads already have phone numbers.</div>';
       return;
     }
-    if (bar) bar.innerHTML = '<div style="background:rgba(74,158,255,0.07);border:1px solid rgba(74,158,255,0.2);border-radius:10px;padding:10px 14px;font-size:0.75rem;color:#4a9eff;font-weight:700;">Submitting '+leads.length+' leads to Tracerfy&hellip;</div>';
+    // Guard credits — only submit addresses with house number, full street, city/state, and zip
+    function _addrQScore(address) {
+      if (!address) return 0;
+      var score = 0, parts = address.split(','), street = (parts[0]||'').trim();
+      if (/^\d+/.test(street)) score += 3;
+      if (street.split(/\s+/).length >= 3) score += 2;
+      if (parts.length >= 3) score += 2;
+      if (/\b\d{5}\b/.test(address)) score += 2;
+      if (address.length > 20) score += 1;
+      return score;
+    }
+    var qualifiedLeads = leads.filter(function(l){ return _addrQScore(l.address) >= 9; });
+    var droppedCount = leads.length - qualifiedLeads.length;
+    if (!qualifiedLeads.length) {
+      if (bar) bar.innerHTML = '<div style="background:rgba(255,170,0,0.07);border:1px solid rgba(255,170,0,0.2);border-radius:10px;padding:10px 14px;font-size:0.75rem;color:#ffaa00;font-weight:700;">No leads with complete addresses (house number + street + city + zip). Import cleaner data before skip-tracing.</div>';
+      return;
+    }
+    if (bar) bar.innerHTML = '<div style="background:rgba(74,158,255,0.07);border:1px solid rgba(74,158,255,0.2);border-radius:10px;padding:10px 14px;font-size:0.75rem;color:#4a9eff;font-weight:700;">Submitting '+qualifiedLeads.length+' leads to Tracerfy'+(droppedCount?' ('+droppedCount+' incomplete addresses skipped)':'')+'&hellip;</div>';
     try {
       var resp = await fetch('/.netlify/functions/tracerfy-submit', {
         method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ leads: leads.map(function(l){ return { id: l.id, address: l.address }; }) })
+        body: JSON.stringify({ leads: qualifiedLeads.map(function(l){ return { id: l.id, address: l.address }; }) })
       });
       var data = await resp.json();
       if (data.error) {
         if (bar) bar.innerHTML = '<div style="background:rgba(255,0,0,0.07);border:1px solid rgba(255,0,0,0.2);border-radius:10px;padding:10px 14px;font-size:0.75rem;color:#ff5555;">Skip trace error: '+data.error+'</div>';
         return;
       }
-      localStorage.setItem('bb_skip_trace_queue', JSON.stringify({ queue_id: data.queue_id, count: leads.length, submitted_at: Date.now() }));
+      localStorage.setItem('bb_skip_trace_queue', JSON.stringify({ queue_id: data.queue_id, count: qualifiedLeads.length, submitted_at: Date.now() }));
       var waitMin = Math.ceil((data.estimated_wait_seconds || 120) / 60);
       if (bar) bar.innerHTML = '<div style="background:rgba(74,158,255,0.07);border:1px solid rgba(74,158,255,0.2);border-radius:10px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">'
-        + '<div><div style="font-size:0.75rem;font-weight:700;color:#4a9eff;">&#8987; Skip trace submitted &mdash; '+leads.length+' leads</div>'
+        + '<div><div style="font-size:0.75rem;font-weight:700;color:#4a9eff;">&#8987; Skip trace submitted &mdash; '+qualifiedLeads.length+' leads'+(droppedCount?' ('+droppedCount+' bad addresses excluded)':'')+'</div>'
         + '<div style="font-size:0.68rem;color:#888;margin-top:1px;">Ready in ~'+waitMin+' min &mdash; ID: '+data.queue_id+'</div></div>'
-        + '<button onclick="adminCanvassPollSkipTrace(\''+data.queue_id+'\','+leads.length+')" style="width:auto;margin-top:0;background:#4a9eff;color:#fff;border:none;border-radius:100px;padding:8px 14px;font-size:0.75rem;font-weight:800;cursor:pointer;">&#9681; Check Results</button>'
+        + '<button onclick="adminCanvassPollSkipTrace(\''+data.queue_id+'\','+qualifiedLeads.length+')" style="width:auto;margin-top:0;background:#4a9eff;color:#fff;border:none;border-radius:100px;padding:8px 14px;font-size:0.75rem;font-weight:800;cursor:pointer;">&#9681; Check Results</button>'
         + '</div>';
     } catch(e) {
       if (bar) bar.innerHTML = '<div style="background:rgba(255,0,0,0.07);border:1px solid rgba(255,0,0,0.2);border-radius:10px;padding:10px 14px;font-size:0.75rem;color:#ff5555;">Error: '+e.message+'</div>';
@@ -4712,6 +4809,33 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   ];
   window.BB_SD_INSTALLERS = BB_SD_INSTALLERS;
 
+  window.calcLeadScore = function(lead) {
+    var score = 0;
+    var yr = parseInt(lead.install_year) || 0;
+    var age = yr > 0 ? (new Date().getFullYear() - yr) : 0;
+    if (age >= 10) score += 40; else if (age >= 8) score += 30;
+    else if (age >= 6) score += 20; else if (age >= 1) score += 10;
+    if (lead.phone) score += 15;
+    if (lead.email) score += 15;
+    if (lead.title_owner) score += 10;
+    if (lead.title_confirmed) score += 5;
+    var inst = (lead.original_installer || '').toLowerCase();
+    if (inst.includes('sunpower') || inst.includes('titan')) score += 15;
+    else if (inst.includes('sullivan') || inst.includes('freedom forever') || inst.includes('pink energy')) score += 12;
+    else if (inst.includes('sunnova') || inst.includes('petersen')) score += 10;
+    else score += 8;
+    var av = parseInt(lead.assessed_value) || 0;
+    if (av >= 500000) score += 10; else if (av >= 350000) score += 7; else if (av >= 200000) score += 4;
+    if (lead.tax_delinquent) score -= 10;
+    return Math.max(0, Math.min(100, score));
+  };
+
+  window.leadScoreBadge = function(score) {
+    if (score == null) return '';
+    var color = score >= 80 ? '#8DC63F' : score >= 60 ? '#ffaa00' : '#888';
+    return '<span style="display:inline-block;margin-left:6px;padding:1px 7px;background:rgba(0,0,0,0.3);border:1px solid '+color+';color:'+color+';border-radius:10px;font-size:0.58rem;font-weight:700;vertical-align:middle;">'+score+'</span>';
+  };
+
   window.bbPsToggleAll = function(checked) {
     (window.BB_SD_INSTALLERS||[]).forEach(function(ins){
       var el = document.getElementById('bbPsChk_'+ins.id);
@@ -4732,11 +4856,31 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       + '<span id="bbPullProgress" style="font-size:0.68rem;color:#888;"></span>'
       + '</div>'
       + '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:10px;">'+checksHtml+'</div>'
-      + '<div style="display:flex;gap:8px;align-items:center;">'
+      + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">'
       + '<button onclick="adminCanvassPullAndImport()" style="width:auto;margin-top:0;background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;padding:8px 18px;font-size:0.78rem;font-weight:800;cursor:pointer;">&#9889; Pull &amp; Import</button>'
+      + '<button onclick="adminCanvassRunFullPipeline()" style="width:auto;margin-top:0;background:rgba(74,158,255,0.15);color:#4a9eff;border:1px solid rgba(74,158,255,0.3);border-radius:100px;padding:8px 16px;font-size:0.75rem;font-weight:700;cursor:pointer;">&#128260; Run Full Pipeline</button>'
       + '<label style="font-size:0.68rem;color:#666;cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;gap:3px;"><input type="checkbox" id="bbPsSelectAll" checked onchange="window.bbPsToggleAll(this.checked)" style="accent-color:#8DC63F;width:11px;height:11px;">All</label>'
       + '</div>'
+      + '<div id="bbPipelineStatus" style="margin-top:8px;font-size:0.65rem;color:#555;"></div>'
       + '</div>';
+    // Async: load pipeline run budget from Supabase
+    (async function() {
+      var statusEl = document.getElementById('bbPipelineStatus');
+      if (!statusEl) return;
+      var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var { data } = await c2.from('pipeline_state').select('value').eq('key','bb_pipeline_runs_remaining').limit(1);
+      var remaining = data && data.length ? parseInt(data[0].value, 10) : 0;
+      if (remaining > 0) {
+        statusEl.innerHTML = '&#9203; Nightly pipeline active &mdash; <strong style="color:#8DC63F;">'+remaining+' night'+(remaining===1?'':'s')+' remaining</strong>'
+          + '<span style="color:#555;font-size:0.62rem;margin-left:6px;">Runs at 2am PDT · pulls new permits → enriches owners → skip-traces contacts</span>'
+          + ' &nbsp;<button onclick="bbResetPipelineRuns(3)" style="background:none;border:none;color:#555;font-size:0.65rem;cursor:pointer;text-decoration:underline;padding:0;">Reset to 3</button>'
+          + ' &nbsp;<button onclick="bbResetPipelineRuns(0)" style="background:none;border:none;color:#555;font-size:0.65rem;cursor:pointer;text-decoration:underline;padding:0;">Disable</button>';
+      } else {
+        statusEl.innerHTML = '&#9744; Nightly pipeline <strong style="color:#555;">off</strong>'
+          + '<span style="color:#555;font-size:0.62rem;margin-left:6px;">Re-enable to auto-pull new permits &amp; run enrichment overnight · 3 nights per activation · runs at 2am PDT</span>'
+          + ' &nbsp;<button onclick="bbResetPipelineRuns(3)" style="background:none;border:none;color:#4a9eff;font-size:0.65rem;cursor:pointer;text-decoration:underline;padding:0;">Re-enable (3 nights)</button>';
+      }
+    })();
   };
 
   window.adminCanvassPullAndImport = async function() {
@@ -4749,23 +4893,31 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var allRecords = [], allLogs = [], firstError = null;
     for (var i = 0; i < checked.length; i++) {
       var ins = checked[i];
-      if (prog) prog.textContent = '('+(i+1)+'/'+checked.length+') '+ins.label+'…';
+      var runningTot = allRecords.length ? ' · +'+allRecords.length+' permits' : '';
+      if (prog) prog.textContent = '('+(i+1)+'/'+checked.length+') '+ins.label+'…'+runningTot;
       try {
         var resp = await fetch('/.netlify/functions/permitstack-pull', {
           method: 'POST', headers: {'Content-Type':'application/json'},
           body: JSON.stringify({ installer: ins.label, names: ins.names })
         });
-        if (!resp.ok) { allLogs.push(ins.label+': HTTP '+resp.status); continue; }
+        if (!resp.ok) { allLogs.push(ins.label+': HTTP '+resp.status); if (prog) prog.textContent = '('+(i+1)+'/'+checked.length+') '+ins.label+' ✗'+(allRecords.length?' · +'+allRecords.length+' permits':''); continue; }
         var data; try { data = await resp.json(); } catch(e) { allLogs.push(ins.label+': parse error'); continue; }
         if (data.error && !firstError) firstError = ins.label+': '+data.error;
         if (data.log && Array.isArray(data.log)) allLogs = allLogs.concat(data.log);
+        var prevLen = allRecords.length;
         if (data.records && data.records.length) allRecords = allRecords.concat(data.records);
+        var newCt = allRecords.length - prevLen;
+        if (prog) prog.textContent = '('+(i+1)+'/'+checked.length+') '+ins.label+' ✓ +'+newCt+' · total: '+allRecords.length+' permits';
       } catch(e) { allLogs.push(ins.label+': '+e.message); console.error('BB pull error:', e); }
     }
     if (allLogs.length) { console.group('PermitStack pull debug'); allLogs.forEach(function(l){ console.log(l); }); console.groupEnd(); }
+    var _logHtml = allLogs.length
+      ? '<details style="margin-top:6px;font-size:0.65rem;"><summary style="cursor:pointer;color:#555;padding:2px 0;">Debug log ('+allLogs.length+' messages)</summary>'
+        + '<pre style="background:rgba(0,0,0,0.4);padding:8px;border-radius:6px;overflow-x:auto;max-height:180px;overflow-y:auto;color:#888;white-space:pre-wrap;word-break:break-all;margin-top:4px;">'+allLogs.map(function(l){return l.replace(/&/g,'&amp;').replace(/</g,'&lt;');}).join('\n')+'</pre></details>'
+      : '';
     if (!allRecords.length) {
       var msg = firstError ? 'Pull error: '+firstError : 'No new SD County permits found.';
-      if (prog) { prog.textContent = msg; prog.title = allLogs.slice(0,8).join('\n'); }
+      if (prog) prog.innerHTML = msg + _logHtml;
       return;
     }
     var existingAddrs = new Set(adminCustomers.map(function(c){ return (c.address||'').toLowerCase().replace(/\s+/g,' ').trim(); }));
@@ -4801,8 +4953,181 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var done = '&#10003; '+inserted+' new leads imported!';
     if (dupeCount) done += ' ('+dupeCount+' already existed)';
     if (prog) prog.innerHTML = done;
-    setTimeout(function(){ adminCanvassLoadEnrichBar(); }, 500);
+    window._bbInsightsCache = null;
+    setTimeout(function(){ adminCanvassLoadEnrichBar(); adminCanvassLoadInsights(); }, 500);
   };
+
+  // ── Run Full Pipeline (background function — pull + enrich + skip-trace) ──
+  window.adminCanvassRunFullPipeline = async function() {
+    var prog = document.getElementById('bbPullProgress');
+    if (prog) prog.innerHTML = '&#9203; Starting full pipeline&hellip;';
+    try {
+      var resp = await fetch('/.netlify/functions/bb-auto-pipeline-background', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}'
+      });
+      if (resp.status === 202 || resp.ok) {
+        if (prog) prog.innerHTML = '&#10003; Pipeline running in background (pull + enrich + skip-trace). '
+          + 'Results will be ready in ~15 min. <span style="color:#555;">Refresh the page after.</span>';
+      } else {
+        if (prog) prog.innerHTML = '&#10007; Pipeline start failed: HTTP ' + resp.status;
+      }
+    } catch(e) {
+      if (prog) prog.innerHTML = '&#10007; ' + e.message;
+    }
+  };
+
+  window.bbResetPipelineRuns = async function(n) {
+    var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+    await c2.from('pipeline_state').upsert({ key: 'bb_pipeline_runs_remaining', value: String(n), updated_at: new Date().toISOString() });
+    adminCanvassLoadPullBar(); // refresh to show new count
+  };
+
+  // ── Black Box Lead Insights Dashboard ─────────────────────────────────────
+  async function adminCanvassLoadInsights() {
+    var el = document.getElementById('bbInsightsPanel');
+    if (!el) return;
+
+    var isOpen = !!window._bbInsightsOpen;
+
+    // Use cached full dataset if available, else fetch all from Supabase
+    var leads = window._bbInsightsCache;
+    if (!leads) {
+      var cachedTotal = window._bbBlackBoxTotal || window._bbInsightsTotalCount || adminCustomers.filter(function(c){ return c.lead_source==='orphaned_list'; }).length;
+      var loadingH = '<div style="background:rgba(141,198,63,0.06);border:1px solid rgba(141,198,63,0.18);border-radius:10px;overflow:hidden;">';
+      loadingH += '<div onclick="window._bbInsightsOpen='+(!isOpen)+';adminCanvassLoadInsights();" style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;cursor:pointer;">';
+      loadingH += '<div style="font-size:0.72rem;font-weight:700;color:#8DC63F;">&#128202; Lead Insights</div>';
+      loadingH += '<div style="font-size:0.72rem;color:#888;">' + (isOpen ? 'Loading&hellip;' : (window._bbInsightsTotalCount || cachedTotal).toLocaleString() + ' permits') + '&nbsp;&nbsp;' + (isOpen ? '' : '&#9660;') + '</div>';
+      loadingH += '</div></div>';
+      el.innerHTML = loadingH;
+      if (!isOpen) return;
+
+      var sc2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var all = [], off = 0;
+      while (true) {
+        var res2 = await sc2.from('customers').select('address,install_year,original_installer').eq('lead_source','orphaned_list').range(off, off+999);
+        if (res2.error || !res2.data || !res2.data.length) break;
+        all = all.concat(res2.data);
+        if (res2.data.length < 1000) break;
+        off += 1000;
+      }
+      window._bbInsightsCache = all;
+      window._bbInsightsTotalCount = all.length;
+      leads = all;
+    }
+
+    var total = leads.length;
+
+    var h = '<div style="background:rgba(141,198,63,0.06);border:1px solid rgba(141,198,63,0.18);border-radius:10px;overflow:hidden;">';
+    h += '<div onclick="window._bbInsightsOpen='+(!isOpen)+';window._bbInsightsCache=null;adminCanvassLoadInsights();" style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;cursor:pointer;">';
+    h += '<div style="font-size:0.72rem;font-weight:700;color:#8DC63F;">&#128202; Lead Insights</div>';
+    h += '<div style="font-size:0.72rem;color:#888;">' + total.toLocaleString() + ' permits&nbsp;&nbsp;' + (isOpen ? '&#9650;' : '&#9660;') + '</div>';
+    h += '</div>';
+
+    if (isOpen) {
+      h += '<div style="padding:0 12px 14px;border-top:1px solid rgba(141,198,63,0.12);">';
+
+      var byYear = {}, byInstaller = {}, byZip = {};
+      leads.forEach(function(c) {
+        var yr = c.install_year ? String(c.install_year) : 'Unknown';
+        byYear[yr] = (byYear[yr] || 0) + 1;
+        var inst = c.original_installer || 'Unknown';
+        byInstaller[inst] = (byInstaller[inst] || 0) + 1;
+        var zm = (c.address || '').match(/\b(\d{5})\b/);
+        var zip = zm ? zm[1] : 'Unknown';
+        byZip[zip] = (byZip[zip] || 0) + 1;
+      });
+
+      var yearKeys = Object.keys(byYear).filter(function(k){ return k !== 'Unknown'; }).sort(function(a,b){ return b-a; });
+      if (byYear['Unknown']) yearKeys.push('Unknown');
+      var instKeys = Object.keys(byInstaller).sort(function(a,b){ return byInstaller[b]-byInstaller[a]; });
+      var zipKeys  = Object.keys(byZip).sort(function(a,b){ return byZip[b]-byZip[a]; }).slice(0,15);
+      var maxYr    = Math.max.apply(null, yearKeys.map(function(k){ return byYear[k]; }));
+
+      var drill = window._bbInsightsDrill;
+      if (drill) {
+        var drillLeads = drill.type === 'installer'
+          ? leads.filter(function(c){ return (c.original_installer||'Unknown') === drill.key; })
+          : leads.filter(function(c){ var m=(c.address||'').match(/\b(\d{5})\b/); return (m?m[1]:'Unknown')===drill.key; });
+
+        h += '<div style="display:flex;align-items:center;gap:8px;padding:10px 0 6px;">';
+        h += '<button onclick="window._bbInsightsDrill=null;adminCanvassLoadInsights();" style="background:none;border:none;color:#8DC63F;cursor:pointer;font-size:0.8rem;padding:0;">&#8592; Back</button>';
+        h += '<div style="font-size:0.72rem;font-weight:700;color:#ddd;">' + drill.key + ' &mdash; ' + drillLeads.length.toLocaleString() + ' leads</div>';
+        h += '</div>';
+
+        var dByYr = {};
+        drillLeads.forEach(function(c){ var yr=c.install_year?String(c.install_year):'Unknown'; dByYr[yr]=(dByYr[yr]||0)+1; });
+        var dYrKeys = Object.keys(dByYr).filter(function(k){ return k!=='Unknown'; }).sort(function(a,b){ return b-a; });
+        if (dByYr['Unknown']) dYrKeys.push('Unknown');
+        var dMax = Math.max.apply(null, dYrKeys.map(function(k){ return dByYr[k]; }));
+
+        h += '<div style="margin-bottom:8px;">';
+        dYrKeys.forEach(function(yr) {
+          var cnt=dByYr[yr], pct=Math.round(cnt/dMax*100);
+          h += '<div style="display:flex;align-items:center;gap:5px;margin-bottom:3px;">';
+          h += '<div style="width:36px;font-size:0.62rem;color:#888;text-align:right;">'+yr+'</div>';
+          h += '<div style="flex:1;background:rgba(255,255,255,0.06);border-radius:2px;height:9px;"><div style="width:'+pct+'%;background:#8DC63F;height:9px;border-radius:2px;"></div></div>';
+          h += '<div style="width:32px;font-size:0.62rem;color:#aaa;text-align:right;">'+cnt+'</div>';
+          h += '</div>';
+        });
+        h += '</div>';
+
+        h += '<div style="font-size:0.62rem;color:#666;margin-bottom:4px;">Addresses ('+Math.min(drillLeads.length,100)+' of '+drillLeads.length.toLocaleString()+')</div>';
+        h += '<div style="max-height:220px;overflow-y:auto;">';
+        drillLeads.slice(0,100).forEach(function(c){
+          h += '<div style="font-size:0.65rem;color:#999;padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.04);">'+(c.address||'—')+'</div>';
+        });
+        if (drillLeads.length > 100) h += '<div style="font-size:0.62rem;color:#555;padding:4px 0;">+'+(drillLeads.length-100)+' more&hellip;</div>';
+        h += '</div>';
+      } else {
+        h += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-top:10px;">';
+
+        // By Year
+        h += '<div><div style="font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#555;margin-bottom:7px;">By Year</div>';
+        yearKeys.forEach(function(yr) {
+          var cnt=byYear[yr], pct=Math.round(cnt/maxYr*100);
+          h += '<div style="display:flex;align-items:center;gap:5px;margin-bottom:3px;">';
+          h += '<div style="width:34px;font-size:0.62rem;color:#888;text-align:right;flex-shrink:0;">'+yr.slice(-4)+'</div>';
+          h += '<div style="flex:1;background:rgba(255,255,255,0.06);border-radius:2px;height:9px;"><div style="width:'+pct+'%;background:#8DC63F;height:9px;border-radius:2px;"></div></div>';
+          h += '<div style="width:30px;font-size:0.62rem;color:#aaa;text-align:right;flex-shrink:0;">'+cnt+'</div>';
+          h += '</div>';
+        });
+        h += '</div>';
+
+        // By Installer
+        h += '<div><div style="font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#555;margin-bottom:7px;">By Installer</div>';
+        h += '<div style="max-height:210px;overflow-y:auto;">';
+        instKeys.forEach(function(inst) {
+          var short = inst.replace(/ Solar Power$/,'').replace(/ Solar$/,'').replace(/ Energy$/,'').replace(/ LLC$/,'').replace(/ Inc$/,'');
+          h += '<div onclick="window._bbInsightsDrill={type:\'installer\',key:\''+inst.replace(/\\/g,'\\\\').replace(/'/g,"\\'")+'\'};adminCanvassLoadInsights();" ';
+          h += 'style="display:flex;align-items:center;justify-content:space-between;padding:3px 5px;border-radius:4px;cursor:pointer;margin-bottom:1px;" ';
+          h += 'onmouseover="this.style.background=\'rgba(141,198,63,0.12)\'" onmouseout="this.style.background=\'none\'">';
+          h += '<div style="font-size:0.65rem;color:#ccc;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:95px;" title="'+inst+'">'+short+'</div>';
+          h += '<div style="font-size:0.65rem;font-weight:700;color:#8DC63F;flex-shrink:0;margin-left:4px;">'+byInstaller[inst].toLocaleString()+'</div>';
+          h += '</div>';
+        });
+        h += '</div></div>';
+
+        // By Zip
+        h += '<div><div style="font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#555;margin-bottom:7px;">Top Zips</div>';
+        h += '<div style="max-height:210px;overflow-y:auto;">';
+        zipKeys.forEach(function(zip) {
+          h += '<div onclick="window._bbInsightsDrill={type:\'zip\',key:\''+zip+'\'};adminCanvassLoadInsights();" ';
+          h += 'style="display:flex;align-items:center;justify-content:space-between;padding:3px 5px;border-radius:4px;cursor:pointer;margin-bottom:1px;" ';
+          h += 'onmouseover="this.style.background=\'rgba(141,198,63,0.12)\'" onmouseout="this.style.background=\'none\'">';
+          h += '<div style="font-size:0.65rem;color:#ccc;">'+zip+'</div>';
+          h += '<div style="font-size:0.65rem;font-weight:700;color:#8DC63F;min-width:36px;text-align:right;">'+byZip[zip].toLocaleString()+'</div>';
+          h += '</div>';
+        });
+        h += '</div></div>';
+
+        h += '</div>';
+      }
+      h += '</div>';
+    }
+
+    h += '</div>';
+    el.innerHTML = h;
+  }
 
   // ── Finance View — Commission Ledger + Ops Payouts ─────────────────────────
   async function renderFinanceView() {
@@ -6228,6 +6553,24 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           }).catch(function(e){ console.warn('GHL TT trigger:', e); });
         }
       }
+      // Fire GHL nurture sequence when a FixMy lead moves to step 7 (Not Sold / Dead)
+      if (isFixMySave && stepVal === 7 && (cRec.step||1) !== 7) {
+        var nurtureFirst = updates.first_name||cRec.first_name||null;
+        var nurtureLast = updates.last_name||cRec.last_name||null;
+        fetch('/.netlify/functions/ghl-diag-agreement', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({
+            firstName: nurtureFirst, lastName: nurtureLast,
+            full_name: ((nurtureFirst||'') + ' ' + (nurtureLast||'')).trim() || null,
+            email: updates.email||cRec.email||null,
+            phone: updates.phone||cRec.phone||null,
+            address1: updates.address||cRec.address||null,
+            source: 'Not Sold — Nurture Enrolled',
+            tags: ['not-sold-nurture','30-day-follow-up'],
+            customField: { rep_name: updates.rep_id||cRec.rep_id||null }
+          })
+        }).catch(function(e){ console.warn('Nurture trigger:', e); });
+      }
       var savedEl=document.getElementById('edSaved'); if(savedEl) savedEl.style.display='inline';
       if (diagConverting) {
         setTimeout(function(){ var el=document.getElementById('edSaved'); if(el) el.style.display='none'; openDiagSchedulingModal(id, Object.assign({}, cRec, updates)); }, 1200);
@@ -7533,6 +7876,27 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             return;
           }
 
+          // Check team_members (tech/rep/setter) before customer lookup
+          var tmResp = await client.from('team_members').select('*').eq('email', cleanEmail).eq('active', true).limit(1);
+          if (!tmResp.error && tmResp.data && tmResp.data.length) {
+            var tm = tmResp.data[0];
+            if (rawUc.trim() === tm.code) {
+              if (sessionStorage.getItem('showWelcome_' + cleanEmail)) {
+                sessionStorage.setItem('showWelcome_' + tm.id, '1');
+                sessionStorage.removeItem('showWelcome_' + cleanEmail);
+              }
+              sessionStorage.setItem('user', JSON.stringify(Object.assign({}, tm, { isTech: tm.role==='tech', isRep: tm.role==='rep', isSetter: tm.role==='setter' })));
+              history.replaceState(null, '', location.pathname);
+              if (tm.role === 'setter') { loadSetterDashboard(tm); }
+              else if (tm.role === 'rep') { loadRepDashboard(tm); }
+              else { loadTechDashboard(tm); }
+              return;
+            } else {
+              showMagicLinkError('Access code incorrect.', 'Check your welcome email for the correct code or contact info@fixmy.energy.');
+              return;
+            }
+          }
+
           // Validate inputs
           if(!cleanEmail || !cleanEmail.includes('@')) {
             showMagicLinkError('Invalid link — email address missing or malformed.',
@@ -7950,6 +8314,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     function renderSales() {
       var h = '<div id="editorSlot"></div>';
 
+      // Welcome banner (first login after onboarding, shown once per session after agreement signed)
+      var _showWelcome = agreementSigned && (function(){ try { return !!sessionStorage.getItem('showWelcome_' + person.id); } catch(e){ return false; } })();
+      if (_showWelcome) {
+        var _wName = person.preferred_name || (person.name ? person.name.split(' ')[0] : 'there');
+        h += '<div style="background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.35);border-radius:10px;padding:14px 16px;margin-bottom:14px;display:flex;align-items:flex-start;gap:12px;">' +
+          '<span style="font-size:1.3rem;flex-shrink:0;">⚡</span>' +
+          '<div style="flex:1;">' +
+            '<div style="font-size:0.88rem;font-weight:700;color:#8DC63F;margin-bottom:4px;">Welcome to the team, ' + _wName + '!</div>' +
+            '<div style="font-size:0.75rem;color:#aaa;line-height:1.55;">Your portal is live. Start with the <strong style="color:#f0f0f0;">Training tab</strong> to get oriented, then log your first lead. Your welcome email has your login credentials for future reference.</div>' +
+          '</div>' +
+          '<button onclick="window.dismissWelcome(\'' + person.id + '\')" style="flex-shrink:0;background:none;border:none;color:#555;font-size:1rem;cursor:pointer;padding:0 4px;line-height:1;" title="Dismiss">&times;</button>' +
+        '</div>';
+      }
+
       // Agreement pending banner
       if (!agreementSigned) {
         h += '<div style="background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.3);border-radius:10px;padding:12px 14px;margin-bottom:14px;display:flex;align-items:flex-start;gap:10px;">' +
@@ -8330,11 +8708,38 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             h += '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#8DC63F;">Next Door · 1 of '+unvisited.length+' remaining</div>';
             if (distMi) h += '<div style="font-size:0.72rem;color:#888;">'+distMi+'</div>';
             h += '</div>';
-            h += '<div style="font-size:1.05rem;font-weight:700;margin-bottom:2px;">'+(lead.address||'No address')+'</div>';
-            if (fullName) h += '<div style="font-size:0.75rem;color:#888;margin-bottom:2px;">'+fullName+'</div>';
+            var tZip = extractZip(lead.address||'');
+            var tIsSDCP = tZip && SDCP_ZIPS.has(tZip);
+            h += '<div style="font-size:1.05rem;font-weight:700;margin-bottom:4px;">'+(lead.address||'No address')+(tIsSDCP?'<span style="display:inline-block;margin-left:7px;padding:1px 7px;background:rgba(0,150,255,0.15);color:#4AABF7;border-radius:10px;font-size:0.58rem;font-weight:700;vertical-align:middle;">SDCP</span>':'')+(lead.lead_score != null ? leadScoreBadge(lead.lead_score) : '')+'</div>';
+            if (lead.dnc) h += '<span style="display:inline-block;margin-bottom:6px;padding:2px 8px;background:rgba(239,68,68,0.15);color:#ef4444;border-radius:10px;font-size:0.62rem;font-weight:700;">DNC</span>';
+            if (fullName) h += '<div style="font-size:0.8rem;font-weight:600;color:#F3EDE3;margin-bottom:2px;">'+fullName+'</div>';
             var tNotePreview = _parseNotes(lead.notes||'').slice(-1)[0];
             if (tNotePreview) h += '<div style="font-size:0.7rem;color:#666;margin-bottom:10px;font-style:italic;">'+tNotePreview.by+': '+tNotePreview.text.slice(0,60)+(tNotePreview.text.length>60?'…':'')+'</div>';
-            h += '<a href="'+mapsUrl+'" target="_blank" style="display:inline-block;font-size:0.75rem;font-weight:700;color:#4a9eff;text-decoration:none;background:rgba(74,158,255,0.08);border:1px solid rgba(74,158,255,0.25);border-radius:100px;padding:6px 14px;margin-bottom:14px;">🗺 Get Directions</a>';
+            h += '<a href="'+mapsUrl+'" target="_blank" style="display:inline-block;font-size:0.75rem;font-weight:700;color:#4a9eff;text-decoration:none;background:rgba(74,158,255,0.08);border:1px solid rgba(74,158,255,0.25);border-radius:100px;padding:6px 14px;margin-bottom:8px;">🗺 Get Directions</a>';
+            var tPh = (lead.phone||'').replace(/\D/g,'');
+            var tRealEmail = (lead.email && !lead.email.endsWith('@pending.fixmy.energy')) ? lead.email : null;
+            if (lead.phone || tRealEmail) {
+              h += '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:14px;">';
+              if (lead.phone) {
+                if (lead.dnc) {
+                  h += '<button onclick="bbDncWarn(\'call\',\''+tPh+'\')" style="display:inline-flex;align-items:center;gap:4px;padding:5px 13px;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.4);color:#ef4444;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;">&#9940; Call</button>';
+                  h += '<button onclick="bbDncWarn(\'text\',\''+tPh+'\')" style="display:inline-flex;align-items:center;gap:4px;padding:5px 13px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.25);color:#ef4444;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;">&#9940; Text</button>';
+                } else {
+                  h += '<a href="tel:'+tPh+'" style="display:inline-flex;align-items:center;gap:4px;padding:5px 13px;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:100px;font-size:0.72rem;font-weight:700;text-decoration:none;">&#128222; Call</a>';
+                  h += '<a href="sms:'+tPh+'" style="display:inline-flex;align-items:center;gap:4px;padding:5px 13px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);color:#4a9eff;border-radius:100px;font-size:0.72rem;font-weight:700;text-decoration:none;">&#128172; Text</a>';
+                }
+              }
+              if (tRealEmail) {
+                if (lead.dnc) {
+                  h += '<button onclick="bbDncWarn(\'email\',\''+tRealEmail+'\')" style="display:inline-flex;align-items:center;gap:4px;padding:5px 13px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.25);color:#ef4444;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;">&#9940; Email</button>';
+                } else {
+                  h += '<a href="mailto:'+tRealEmail+'" style="display:inline-flex;align-items:center;gap:4px;padding:5px 13px;background:rgba(255,170,0,0.1);border:1px solid rgba(255,170,0,0.3);color:#ffaa00;border-radius:100px;font-size:0.72rem;font-weight:700;text-decoration:none;">&#9993; Email</a>';
+                }
+              }
+              h += '</div>';
+            } else {
+              h += '<div style="margin-bottom:14px;"></div>';
+            }
 
             // Outcome buttons
             h += '<div style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#666;margin-bottom:8px;">What happened?</div>';
@@ -8424,16 +8829,26 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         if (trainingTab === 'tech') {
           h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#888;margin-bottom:14px;">Tools You\'ll Use Every Day</div>';
           var tools = [
-            { icon:'⬛', name:'Black Box', desc:'Our proprietary lead + canvass system. Where your pipeline lives — GPS-routed door knocking, lead status, appointment history.', tips:['View and manage your assigned leads','GPS-route to nearest uncontacted orphaned accounts','Log knock outcomes and schedule callbacks'] },
-            { icon:'🔧', name:'Top Tier Solar Ops', desc:'Ops coordination for scheduling installs, tracking job milestones, and coordinating with install partners.', tips:['Job scheduling and dispatch','Install milestone tracking','Partner coordination and job notes'] },
-            { icon:'☀️', name:'Open Solar', desc:'System design tool for sizing proposals and generating homeowner-ready reports from satellite data.', tips:['Satellite-based panel layout tool','Production estimates by month','One-click customer proposal PDF'] },
-            { icon:'🔺', name:'Aurora Solar', desc:'3D roof modeling and shading analysis for accurate proposals on complex roofs.', tips:['3D roof model from address alone','Shading analysis by month and season','Bankable production estimates for financing'] },
-            { icon:'💬', name:'Discord', desc:'Team communication hub — daily market updates, deal support, and a full resource library.', tips:['Post deals and get fast feedback','Daily market intel from lead reps','Training resources and script library'] },
-            { icon:'🔋', name:'Battery Types', desc:'LFP vs NMC chemistry, AC vs DC coupling, kWh sizing for backup vs. bill savings. Know this cold.', tips:['Tesla Powerwall 3: 13.5 kWh, integrated inverter','LFP = longer cycle life, safer chemistry','Size for critical loads vs. whole-home backup'] }
+            { icon:'⬛', name:'Black Box', desc:'Our proprietary lead + canvass system. Where your pipeline lives — GPS-routed door knocking, lead status, appointment history.', tips:['View and manage your assigned leads','GPS-route to nearest uncontacted orphaned accounts','Log knock outcomes and schedule callbacks'], action:'internal', actionLabel:'Open Black Box', actionTarget:'canvass' },
+            { icon:'🔧', name:'Top Tier Solar Ops', desc:'Ops coordination for scheduling installs, tracking job milestones, and coordinating with install partners.', tips:['Job scheduling and dispatch','Install milestone tracking','Partner coordination and job notes'], action:'internal', actionLabel:'Open Top Tier', actionTarget:'jobs' },
+            { icon:'☀️', name:'Open Solar', desc:'System design tool for sizing proposals and generating homeowner-ready reports from satellite data.', tips:['Satellite-based panel layout tool','Production estimates by month','One-click customer proposal PDF'], action:'url', actionLabel:'Launch Open Solar', actionTarget:'https://app.opensolar.com' },
+            { icon:'🔺', name:'Aurora Solar', desc:'3D roof modeling and shading analysis for accurate proposals on complex roofs.', tips:['3D roof model from address alone','Shading analysis by month and season','Bankable production estimates for financing'], action:'url', actionLabel:'Launch Aurora', actionTarget:'https://app.aurorasolar.com' },
+            { icon:'💬', name:'Discord', desc:'Team communication hub — daily market updates, deal support, and a full resource library.', tips:['Post deals and get fast feedback','Daily market intel from lead reps','Training resources and script library'], action:'discord', actionLabel: person.discord_sr_sent ? '✓ Connected' : '⏳ Invite Pending', actionDisabled: true },
+            { icon:'🔋', name:'Battery Types', desc:'LFP vs NMC chemistry, AC vs DC coupling, kWh sizing for backup vs. bill savings. Know this cold.', tips:['Tesla Powerwall 3: 13.5 kWh, integrated inverter — DC-coupled, no separate inverter needed','LFP (lithium iron phosphate) = longer cycle life, safer, better for daily cycling','NMC = higher energy density, used in older installs — check before quoting','AC-coupled = battery added to existing solar system; DC-coupled = new builds only','Size for critical loads (~10 kWh) vs. whole-home backup (20+ kWh)'], action:null }
           ];
           tools.forEach(function(t) {
             h += '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:14px;padding:18px;margin-bottom:12px;">';
-            h += '<div style="font-size:1.1rem;margin-bottom:6px;">'+t.icon+' <strong style="font-size:0.88rem;">'+t.name+'</strong></div>';
+            h += '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:6px;">';
+            h += '<div style="font-size:1.1rem;">'+t.icon+' <strong style="font-size:0.88rem;">'+t.name+'</strong></div>';
+            if (t.action === 'url') {
+              h += '<a href="'+t.actionTarget+'" target="_blank" style="flex-shrink:0;font-size:0.7rem;font-weight:700;color:#1A1A1A;background:#8DC63F;border-radius:100px;padding:5px 12px;text-decoration:none;white-space:nowrap;">'+t.actionLabel+' →</a>';
+            } else if (t.action === 'internal') {
+              h += '<button onclick="salesSetView(\''+t.actionTarget+'\')" style="flex-shrink:0;font-size:0.7rem;font-weight:700;color:#1A1A1A;background:#8DC63F;border:none;border-radius:100px;padding:5px 12px;cursor:pointer;white-space:nowrap;">'+t.actionLabel+' →</button>';
+            } else if (t.action === 'discord') {
+              var isSent = person.discord_sr_sent;
+              h += '<span style="flex-shrink:0;font-size:0.7rem;font-weight:700;padding:5px 12px;border-radius:100px;white-space:nowrap;background:'+(isSent?'rgba(141,198,63,0.12)':'rgba(255,255,255,0.07)')+';color:'+(isSent?'#8DC63F':'#888')+';">'+t.actionLabel+'</span>';
+            }
+            h += '</div>';
             h += '<div style="font-size:0.78rem;color:#aaa;margin-bottom:10px;line-height:1.5;">'+t.desc+'</div>';
             h += '<ul style="list-style:none;padding:0;margin:0;">';
             t.tips.forEach(function(tip){ h += '<li style="font-size:0.73rem;color:#888;padding:3px 0 3px 14px;position:relative;"><span style="position:absolute;left:0;color:#8DC63F;">→</span>'+tip+'</li>'; });
@@ -8586,6 +9001,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       openNewLead(person.id, person.name, config.setterMode);
     };
     window.salesSetView = function(v) { salesView=v; sessionStorage.setItem('salesView_'+person.id,v); renderSales(); };
+    window.dismissWelcome = function(id) { try { sessionStorage.removeItem('showWelcome_'+id); } catch(e){} renderSales(); };
     // Sub-category setters — called from inline onclick in catSubTabs
     Object.defineProperty(window, 'salesLeadCat', { get: function(){ return salesLeadCat; }, set: function(v){ salesLeadCat=v; try{sessionStorage.setItem('salesLeadCat_'+person.id,v);}catch(e){} }, configurable:true });
     Object.defineProperty(window, 'salesJobCat',  { get: function(){ return salesJobCat;  }, set: function(v){ salesJobCat=v;  try{sessionStorage.setItem('salesJobCat_'+person.id,v); }catch(e){} }, configurable:true });
@@ -8777,7 +9193,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
       var { data: rawLeads, error: lErr } = await c2
         .from('customers')
-        .select('id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step')
+        .select('id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,original_installer,install_year')
         .eq('lead_source','orphaned_list')
         .is('sold_type', null)
         .order('created_at', {ascending: false})
