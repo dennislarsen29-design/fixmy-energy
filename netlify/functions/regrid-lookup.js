@@ -121,8 +121,8 @@ exports.handler = async function(event) {
   }
 
   // ── Helper: ArcGIS spatial point query params (most reliable when lat/lng known) ──
-  function arcgisPointParams(lat, lng, outFields) {
-    return '&geometry=' + encodeURIComponent(JSON.stringify({ x: lng, y: lat })) +
+  function arcgisPointParams(qlat, qlng, outFields) {
+    return '&geometry=' + encodeURIComponent(JSON.stringify({ x: qlng, y: qlat })) +
       '&geometryType=esriGeometryPoint&spatialRel=esriSpatialRelIntersects&inSR=4326' +
       '&outFields=' + outFields + '&f=json&resultRecordCount=1';
   }
@@ -131,11 +131,39 @@ exports.handler = async function(event) {
   const addrUpper = address.toUpperCase().replace(/,.*/, '').trim();
   const addrParts = addrUpper.split(' ').slice(0, 4).join(' ');
 
+  // ── 3.5. Census Bureau geocoder — free, no key, resolves lat/lng for spatial queries ──
+  // Text LIKE searches against SANDAG fail when street-type abbreviations differ.
+  // Spatial point queries are exact and bypass that entirely.
+  let resolvedLat = lat, resolvedLng = lng;
+  if (resolvedLat == null || resolvedLng == null) {
+    try {
+      const geocodeUrl = 'https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?'
+        + 'address=' + encodeURIComponent(address)
+        + '&benchmark=Public_AR_Current&format=json';
+      const geocodeResp = await fetch(geocodeUrl, { headers: { 'Accept': 'application/json' } });
+      if (geocodeResp.ok) {
+        const geocodeData = await geocodeResp.json();
+        const matches = geocodeData.result && geocodeData.result.addressMatches;
+        if (Array.isArray(matches) && matches.length) {
+          resolvedLat = matches[0].coordinates.y;
+          resolvedLng = matches[0].coordinates.x;
+          tried.push('census_geocode:ok');
+        } else {
+          tried.push('census_geocode:no_match');
+        }
+      } else {
+        tried.push('census_geocode:' + geocodeResp.status);
+      }
+    } catch(e) {
+      tried.push('census_geocode:err:' + e.message);
+    }
+  }
+
   // ── 4. SANDAG geo.sandag.org — spatial if lat/lng available, text fallback ─
   try {
     const baseUrl = 'https://geo.sandag.org/server/rest/services/Hosted/Parcels/FeatureServer/0/query?';
-    const query = (lat != null && lng != null)
-      ? 'where=1%3D1' + arcgisPointParams(lat, lng, 'SITUS_ADDRESS,OWN_NAME1,APN_8')
+    const query = (resolvedLat != null && resolvedLng != null)
+      ? 'where=1%3D1' + arcgisPointParams(resolvedLat, resolvedLng, 'SITUS_ADDRESS,OWN_NAME1,APN_8')
       : 'where=' + encodeURIComponent("SITUS_ADDRESS LIKE '" + addrParts + "%'") + '&outFields=SITUS_ADDRESS,OWN_NAME1,APN_8&f=json&resultRecordCount=1';
     const resp = await fetch(baseUrl + query, {
       headers: { 'Accept': 'application/json', 'Referer': 'https://sdgis.sandag.org/' }
@@ -162,8 +190,8 @@ exports.handler = async function(event) {
   // ── 5. SANDAG Parcels_South — spatial if lat/lng available ───────────────
   try {
     const baseUrl = 'https://geo.sandag.org/server/rest/services/Hosted/Parcels_South/FeatureServer/0/query?';
-    const query = (lat != null && lng != null)
-      ? 'where=1%3D1' + arcgisPointParams(lat, lng, 'SITUS_ADDRESS,OWN_NAME1,APN_8')
+    const query = (resolvedLat != null && resolvedLng != null)
+      ? 'where=1%3D1' + arcgisPointParams(resolvedLat, resolvedLng, 'SITUS_ADDRESS,OWN_NAME1,APN_8')
       : 'where=' + encodeURIComponent("SITUS_ADDRESS LIKE '" + addrParts + "%'") + '&outFields=SITUS_ADDRESS,OWN_NAME1,APN_8&f=json&resultRecordCount=1';
     const resp = await fetch(baseUrl + query, {
       headers: { 'Accept': 'application/json', 'Referer': 'https://sdgis.sandag.org/' }
@@ -189,8 +217,8 @@ exports.handler = async function(event) {
   // ── 6. City of SD — webmaps.sandiego.gov GeocoderMerged — spatial if lat/lng ──
   try {
     const baseUrl = 'https://webmaps.sandiego.gov/arcgis/rest/services/GeocoderMerged/MapServer/1/query?';
-    const query = (lat != null && lng != null)
-      ? 'where=1%3D1' + arcgisPointParams(lat, lng, 'SITUS_STREET,OWN_NAME1,APN_8')
+    const query = (resolvedLat != null && resolvedLng != null)
+      ? 'where=1%3D1' + arcgisPointParams(resolvedLat, resolvedLng, 'SITUS_STREET,OWN_NAME1,APN_8')
       : 'where=' + encodeURIComponent("SITUS_STREET LIKE '" + addrParts + "%'") + '&outFields=SITUS_STREET,OWN_NAME1,APN_8&f=json&resultRecordCount=1';
     const url = baseUrl + query;
     const resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
