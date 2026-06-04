@@ -58,6 +58,39 @@ exports.handler = async function(event) {
     'Prefer': 'return=minimal'
   };
 
+  // ── Run-limit gate ────────────────────────────────────────────────────────
+  // Reads bb_pipeline_runs_remaining from Supabase pipeline_state table.
+  // Decrements on each run; stops when it hits 0.
+  // To re-enable: UPDATE pipeline_state SET value='3' WHERE key='bb_pipeline_runs_remaining';
+  // Manual HTTP trigger bypasses this check (use for ad-hoc runs).
+  const isScheduled = !event.httpMethod; // Netlify cron events have no httpMethod
+  if (isScheduled) {
+    try {
+      const stateResp = await fetch(
+        SUPA_REST + "/pipeline_state?key=eq.bb_pipeline_runs_remaining&select=value",
+        { headers: { apikey: supaKey, Authorization: 'Bearer ' + supaKey, Accept: 'application/json' } }
+      );
+      const stateRows = stateResp.ok ? await stateResp.json() : [];
+      const remaining = Array.isArray(stateRows) && stateRows.length ? parseInt(stateRows[0].value, 10) : 0;
+      if (remaining <= 0) {
+        console.log('bb-auto-pipeline: auto-disabled (runs_remaining=0). Update pipeline_state to re-enable.');
+        return { statusCode: 200, headers: cors, body: JSON.stringify({ status: 'disabled', message: 'runs_remaining=0 — update pipeline_state to re-enable' }) };
+      }
+      // Decrement before running so a crash doesn't silently repeat
+      await fetch(
+        SUPA_REST + "/pipeline_state?key=eq.bb_pipeline_runs_remaining",
+        {
+          method: 'PATCH',
+          headers: { apikey: supaKey, Authorization: 'Bearer ' + supaKey, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
+          body: JSON.stringify({ value: String(remaining - 1), updated_at: new Date().toISOString() })
+        }
+      );
+      console.log(`bb-auto-pipeline: run ${remaining} of 3 starting (${remaining - 1} remaining after this)`);
+    } catch(e) {
+      console.log('bb-auto-pipeline: could not read run limit — proceeding anyway:', e.message);
+    }
+  }
+
   const log = [];
   function stamp(msg) {
     const ts = new Date().toISOString().slice(11, 19);
