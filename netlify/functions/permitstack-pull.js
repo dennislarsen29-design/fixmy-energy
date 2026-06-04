@@ -107,7 +107,7 @@ exports.handler = async function(event) {
     const sname = String(p.address_street_name || p.street_name || '').trim();
     const sfx   = String(p.address_sfx || p.address_street_type || p.street_type || p.address_suffix || '').trim();
     const street = [num, dir, sname, sfx].filter(Boolean).join(' ')
-      || String(p.address || p.site_address || p.property_address || '').split(',')[0].trim();
+      || String(p.street_address || p.address || p.site_address || p.property_address || '').split(',')[0].trim();
     const city  = String(p.address_city || p.city || defaultCity || 'San Diego').trim();
     const state = 'CA';
     const zip   = String(p.address_zip || p.zipcode || p.zip_code || p.zip || '').replace(/\D/g,'').slice(0, 5);
