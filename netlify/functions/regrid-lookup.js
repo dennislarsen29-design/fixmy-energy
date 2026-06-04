@@ -213,5 +213,6 @@ exports.handler = async function(event) {
     console.error('SD City GIS error:', e.message);
   }
 
+  console.error('regrid-lookup: no owner found for "' + address.slice(0, 60) + '" — tried: ' + tried.join(' | '));
   return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner: null, apn: null, debug: tried.join(' | ') }) };
 };
