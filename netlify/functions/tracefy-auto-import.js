@@ -1,5 +1,3 @@
-const { createClient } = require('@supabase/supabase-js');
-
 const SUPA_URL = 'https://kbtobyoumvbcxfbugsid.supabase.co';
 
 function normAddress(addr) {
@@ -24,7 +22,6 @@ exports.handler = async function(event) {
     return { statusCode: 405, body: JSON.stringify({ error: 'Method not allowed' }) };
   }
 
-  // Validate shared secret (set TRACEFY_WEBHOOK_SECRET in Netlify env vars)
   const WEBHOOK_SECRET = process.env.TRACEFY_WEBHOOK_SECRET;
   if (WEBHOOK_SECRET) {
     const provided = event.headers['x-webhook-secret'] || event.headers['x-tracefy-secret'];
@@ -33,24 +30,28 @@ exports.handler = async function(event) {
     }
   }
 
-  const SUPA_SERVICE_KEY = process.env.SUPA_SERVICE_KEY;
-  const supabase = createClient(SUPA_URL, SUPA_SERVICE_KEY || process.env.SUPA_KEY);
+  const SUPA_SERVICE_KEY = process.env.SUPA_SERVICE_KEY || process.env.SUPA_KEY;
+  const supaHeaders = {
+    'apikey': SUPA_SERVICE_KEY,
+    'Authorization': 'Bearer ' + SUPA_SERVICE_KEY,
+    'Content-Type': 'application/json',
+    'Prefer': 'return=minimal'
+  };
 
-  // Accept: raw CSV body, JSON { csv: "..." }, JSON { csv_url: "..." }, or base64 attachment
+  // Accept: raw CSV body, JSON { csv }, { csv_url }, { body_html }, or base64 attachment
   let csvText = '';
   const contentType = (event.headers['content-type'] || '').toLowerCase();
   if (contentType.includes('application/json')) {
     try {
       const parsed = JSON.parse(event.body || '{}');
       if (parsed.csv_url) {
-        // Direct file URL — fetch content
         const urlResp = await fetch(parsed.csv_url);
         if (!urlResp.ok) {
           return { statusCode: 502, body: JSON.stringify({ error: 'Failed to fetch CSV from URL: ' + urlResp.status }) };
         }
         csvText = await urlResp.text();
       } else if (parsed.body_html) {
-        // Tracerfy sends a Download button link in the email body — extract URL from HTML
+        // Tracerfy email body — extract the Download link URL
         const match = parsed.body_html.match(/href=["'](https?:\/\/[^"']+)["'][^>]*>[\s\S]*?[Dd]ownload/i)
           || parsed.body_html.match(/href=["'](https?:\/\/(?:tracerfy|app\.tracerfy)[^"']+)["']/i)
           || parsed.body_html.match(/href=["'](https?:\/\/[^"']+\.csv[^"']*)["']/i);
@@ -70,7 +71,6 @@ exports.handler = async function(event) {
     }
   } else {
     csvText = event.body || '';
-    // Handle base64-encoded attachment from Zapier
     if (event.isBase64Encoded) {
       csvText = Buffer.from(csvText, 'base64').toString('utf8');
     }
@@ -98,12 +98,12 @@ exports.handler = async function(event) {
     return { statusCode: 200, body: JSON.stringify({ matched: 0, updated: 0, skipped: 0 }) };
   }
 
-  // Load all orphaned leads for address matching (batch to avoid timeout)
-  const { data: existing } = await supabase
-    .from('customers')
-    .select('id,address')
-    .eq('lead_source', 'orphaned_list')
-    .limit(5000);
+  // Load orphaned leads for address matching
+  const existingResp = await fetch(
+    SUPA_URL + '/rest/v1/customers?lead_source=eq.orphaned_list&select=id,address&limit=5000',
+    { headers: supaHeaders }
+  );
+  const existing = existingResp.ok ? await existingResp.json() : [];
 
   const addrMap = {};
   (existing || []).forEach(e => { addrMap[normAddress(e.address)] = e.id; });
@@ -123,18 +123,19 @@ exports.handler = async function(event) {
       upd.dnc = row.dnc === 'true' || row.dnc === '1' || row.dnc === 'yes' || row.dnc === 'TRUE';
     }
 
-    const { error } = await supabase.from('customers').update(upd).eq('id', id);
-    if (!error) updated++;
+    const patchResp = await fetch(SUPA_URL + '/rest/v1/customers?id=eq.' + id, {
+      method: 'PATCH',
+      headers: supaHeaders,
+      body: JSON.stringify(upd)
+    });
+    if (patchResp.ok || patchResp.status === 204) updated++;
   }
 
   return {
     statusCode: 200,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      total_rows: rows.length,
-      matched,
-      updated,
-      skipped,
+      total_rows: rows.length, matched, updated, skipped,
       message: `Matched ${matched} of ${rows.length} rows — updated ${updated} leads`
     })
   };
