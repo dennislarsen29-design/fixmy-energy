@@ -370,12 +370,33 @@ exports.handler = async function(event) {
     const addrUpper = address.toUpperCase().replace(/,.*/, '').trim();
     const addrParts = addrUpper.split(' ').slice(0, 4).join(' ');
 
-    // Primary: SANDAG Parcels (fast, free, no auth)
+    function arcgisPoint(qlat, qlng, outFields) {
+      return '&geometry=' + encodeURIComponent(JSON.stringify({ x: qlng, y: qlat }))
+        + '&geometryType=esriGeometryPoint&spatialRel=esriSpatialRelIntersects&inSR=4326'
+        + '&outFields=' + outFields + '&f=json&resultRecordCount=1';
+    }
+
+    // Geocode first — spatial queries are far more reliable than text LIKE matching
+    let lat = null, lng = null;
     try {
-      const url = 'https://geo.sandag.org/server/rest/services/Hosted/Parcels/FeatureServer/0/query?'
-        + 'where=' + encodeURIComponent("SITUS_ADDRESS LIKE '" + addrParts + "%'")
-        + '&outFields=OWN_NAME1,APN_8&f=json&resultRecordCount=1';
-      const resp = await fetchWithTimeout(url,
+      const geocodeResp = await fetchWithTimeout(
+        'https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?address='
+          + encodeURIComponent(address) + '&benchmark=Public_AR_Current&format=json',
+        { headers: { Accept: 'application/json' } }, 6000);
+      if (geocodeResp.ok) {
+        const gd = await geocodeResp.json();
+        const m = gd.result && gd.result.addressMatches;
+        if (Array.isArray(m) && m.length) { lat = m[0].coordinates.y; lng = m[0].coordinates.x; }
+      }
+    } catch(e) {}
+
+    // Primary: SANDAG Parcels — spatial if geocoded, text fallback
+    try {
+      const q = (lat != null)
+        ? 'where=1%3D1' + arcgisPoint(lat, lng, 'OWN_NAME1,APN_8')
+        : 'where=' + encodeURIComponent("SITUS_ADDRESS LIKE '" + addrParts + "%'") + '&outFields=OWN_NAME1,APN_8&f=json&resultRecordCount=1';
+      const resp = await fetchWithTimeout(
+        'https://geo.sandag.org/server/rest/services/Hosted/Parcels/FeatureServer/0/query?' + q,
         { headers: { Accept: 'application/json', Referer: 'https://sdgis.sandag.org/' } }, 5000);
       if (resp.ok) {
         const d = await resp.json();
@@ -388,10 +409,11 @@ exports.handler = async function(event) {
 
     // Fallback: SANDAG Parcels_South
     try {
-      const url = 'https://geo.sandag.org/server/rest/services/Hosted/Parcels_South/FeatureServer/0/query?'
-        + 'where=' + encodeURIComponent("SITUS_ADDRESS LIKE '" + addrParts + "%'")
-        + '&outFields=OWN_NAME1,APN_8&f=json&resultRecordCount=1';
-      const resp = await fetchWithTimeout(url,
+      const q = (lat != null)
+        ? 'where=1%3D1' + arcgisPoint(lat, lng, 'OWN_NAME1,APN_8')
+        : 'where=' + encodeURIComponent("SITUS_ADDRESS LIKE '" + addrParts + "%'") + '&outFields=OWN_NAME1,APN_8&f=json&resultRecordCount=1';
+      const resp = await fetchWithTimeout(
+        'https://geo.sandag.org/server/rest/services/Hosted/Parcels_South/FeatureServer/0/query?' + q,
         { headers: { Accept: 'application/json', Referer: 'https://sdgis.sandag.org/' } }, 5000);
       if (resp.ok) {
         const d = await resp.json();
