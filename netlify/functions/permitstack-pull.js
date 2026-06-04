@@ -27,43 +27,56 @@ exports.handler = async function(event) {
   }
 
   const BASE         = 'https://api.permit-stack.com/v1';
-  const BASE_SD_CITY = 'https://data.sandiego.gov/resource/nt65-c7a7.json';   // City of SD DSD permits (Socrata)
-  const BASE_SD_CTY  = 'https://data.sandiegocounty.gov/resource/dyzh-7eat.json'; // SD County building permits
+  const BASE_SD_CITY = 'https://data.sandiego.gov/resource/nt65-c7a7.json';
+  const BASE_SD_CTY  = 'https://data.sandiegocounty.gov/resource/dyzh-7eat.json';
   const psHeaders = { 'X-API-Key': apiKey, 'Accept': 'application/json' };
   const log = [];
   const records = [];
   const seenAddresses = new Set();
 
+  // Hard stop 4 seconds before Netlify's 26-second function timeout
+  const DEADLINE = Date.now() + 22000;
+  function overBudget() { return Date.now() > DEADLINE; }
+  function msLeft() { return DEADLINE - Date.now(); }
+
+  // All fetch calls go through here — aborts if per-request timeout OR global deadline hit
+  async function fetchWithTimeout(url, opts, perRequestMs) {
+    const remaining = msLeft();
+    const timeoutMs = Math.min(perRequestMs || 7000, remaining - 300);
+    if (timeoutMs <= 0) throw new Error('over_budget');
+    const ctrl = new AbortController();
+    const tid = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      return await fetch(url, { ...(opts || {}), signal: ctrl.signal });
+    } finally {
+      clearTimeout(tid);
+    }
+  }
+
   const TARGET_CITIES = ['SAN DIEGO','CHULA VISTA','EL CAJON','SANTEE','LA MESA','LEMON GROVE',
     'NATIONAL CITY','POWAY','LAKESIDE','SPRING VALLEY','RAMONA','ESCONDIDO','VISTA',
     'CARLSBAD','OCEANSIDE','ENCINITAS','DEL MAR','SOLANA BEACH','CORONADO','IMPERIAL BEACH',
     'ALPINE','BONITA','CAMPO','DESCANSO','DULZURA','JAMUL','PINE VALLEY','POTRERO',
-    'RANCHO SANTA FE','SAN MARCOS','SANTEE','VALLEY CENTER',
-    // OC coastal (San Clemente → border)
+    'RANCHO SANTA FE','SAN MARCOS','VALLEY CENTER',
     'SAN CLEMENTE','DANA POINT','LAGUNA BEACH','LAGUNA NIGUEL','LAGUNA HILLS',
     'ALISO VIEJO','LAGUNA WOODS','MISSION VIEJO'];
 
-  // OC coastal zip codes (San Clemente → Laguna area)
-  const OC_ZIPS = new Set(['92629','92651','92652','92653','92656','92672','92673','92677','92651','92618']);
+  const OC_ZIPS = new Set(['92629','92651','92652','92653','92656','92672','92673','92677','92618']);
 
   function isTargetTerritory(street, city, state, zip) {
     const z = String(zip || '');
     const c = String(city || '').toUpperCase().trim();
     const s = String(state || '').toUpperCase().trim();
     if (s && s !== 'CA') return false;
-    // Zip-based check (most reliable)
     if (/^919\d{2}$/.test(z)) return true;
     if (/^92[012]\d{2}$/.test(z)) return true;
     if (OC_ZIPS.has(z.slice(0,5))) return true;
-    // City name check
     if (TARGET_CITIES.includes(c)) return true;
-    // State + combined address fallback
     const combined = `${street} ${city} ${state} ${zip}`.toUpperCase();
     if (TARGET_CITIES.some(n => combined.includes(n))) return true;
     return false;
   }
 
-  // Keep alias for any internal references
   const isSanDiegoCounty = isTargetTerritory;
 
   function extractKw(text) {
@@ -88,7 +101,6 @@ exports.handler = async function(event) {
              permitId: p.id || p.permit_id || p.permit_number || '' };
   }
 
-  // ── Helper: extract one address record from a Socrata row ────────────────────
   function extractSocrataAddress(p, defaultCity) {
     const num   = String(p.address_number || p.address_number_start || p.street_number || '').trim();
     const dir   = String(p.address_direction || p.address_street_direction || p.direction || '').trim();
@@ -108,16 +120,21 @@ exports.handler = async function(event) {
              permitId: p.permit_number || p.permit_id || p.record_id || p.project_id || '' };
   }
 
-  // ── Strategy 0a: City of San Diego Open Data (Socrata) ────────────────────────
-  // Use ONLY $q (full-text search) — do NOT combine with $where, which fails when
-  // field names differ from what we expect and returns HTTP 4xx or empty results.
+  // ── Strategy 0a: City of San Diego Open Data (Socrata) ──
   async function trySDOpenData(name) {
     let found = 0, sampleLogged = false;
     try {
       let offset = 0;
-      while (offset < 5000) {
+      while (offset < 2000) {
+        if (overBudget()) { log.push(`SD city open data: time budget exceeded at offset ${offset}`); break; }
         const url = BASE_SD_CITY + '?$q=' + encodeURIComponent(name) + '&$limit=1000&$offset=' + offset;
-        const resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
+        let resp;
+        try {
+          resp = await fetchWithTimeout(url, { headers: { 'Accept': 'application/json' } }, 7000);
+        } catch(e) {
+          log.push(`SD city open data: fetch error (${e.message})`);
+          break;
+        }
         if (resp.status === 404) { log.push(`SD city open data: 404`); return 0; }
         if (!resp.ok) {
           const t = await resp.text().catch(() => '');
@@ -149,7 +166,7 @@ exports.handler = async function(event) {
         }
         if (batch.length < 1000) break;
         offset += 1000;
-        await sleep(150);
+        await sleep(50);
       }
       log.push(`SD city open data "${name}": ${found} fetched, ${records.length} SD matches so far`);
     } catch(e) {
@@ -158,14 +175,21 @@ exports.handler = async function(event) {
     return found;
   }
 
-  // ── Strategy 0b: SD County Open Data (data.sandiegocounty.gov) ────────────────
+  // ── Strategy 0b: SD County Open Data ──
   async function trySDCountyOpenData(name) {
     let found = 0, sampleLogged = false;
     try {
       let offset = 0;
-      while (offset < 5000) {
+      while (offset < 2000) {
+        if (overBudget()) { log.push(`SD county open data: time budget exceeded at offset ${offset}`); break; }
         const url = BASE_SD_CTY + '?$q=' + encodeURIComponent(name) + '&$limit=1000&$offset=' + offset;
-        const resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
+        let resp;
+        try {
+          resp = await fetchWithTimeout(url, { headers: { 'Accept': 'application/json' } }, 7000);
+        } catch(e) {
+          log.push(`SD county open data: fetch error (${e.message})`);
+          break;
+        }
         if (resp.status === 404) { log.push(`SD county open data: 404`); return 0; }
         if (!resp.ok) {
           const t = await resp.text().catch(() => '');
@@ -197,7 +221,7 @@ exports.handler = async function(event) {
         }
         if (batch.length < 1000) break;
         offset += 1000;
-        await sleep(150);
+        await sleep(50);
       }
       log.push(`SD county open data "${name}": ${found} fetched, ${records.length} SD matches so far`);
     } catch(e) {
@@ -206,26 +230,36 @@ exports.handler = async function(event) {
     return found;
   }
 
-  // ── Strategy 1: Direct permits/search endpoint (city-filtered, most efficient) ──
+  // ── Strategy 1: Direct permits/search endpoint ──
   async function tryDirectSearch(name) {
     let found = 0;
+    // Top 8 SD cities only — keep within time budget
+    const cities = ['San Diego','Chula Vista','El Cajon','La Mesa','Santee','Escondido','Poway','Oceanside'];
     try {
-      // Try SD cities most likely to have solar permits
-      const cities = ['San Diego','Chula Vista','El Cajon','Santee','La Mesa',
-                      'Escondido','Poway','Carlsbad','Oceanside','Encinitas','Vista','San Marcos',
-                      'San Clemente','Dana Point','Laguna Beach','Laguna Niguel','Aliso Viejo'];
       for (const city of cities) {
-        let page = 1;
-        while (page <= 10) {
+        if (overBudget()) { log.push(`direct search: time budget exceeded at city "${city}"`); break; }
+        let page = 1, retries429 = 0;
+        while (page <= 5) {
+          if (overBudget()) break;
           const url = `${BASE}/permits/search?city=${encodeURIComponent(city)}&keyword=${encodeURIComponent(name)}&per_page=100&page=${page}`;
-          const resp = await fetch(url, { headers: psHeaders });
+          let resp;
+          try {
+            resp = await fetchWithTimeout(url, { headers: psHeaders }, 6000);
+          } catch(e) {
+            log.push(`direct search ${city} p${page}: fetch error (${e.message})`);
+            break;
+          }
           if (resp.status === 404) { log.push(`direct search: 404 (endpoint not available)`); return -1; }
-          if (resp.status === 429) { await sleep(1000); continue; }
+          if (resp.status === 429) {
+            retries429++;
+            if (retries429 > 2) { log.push(`direct search ${city}: 429 rate limit, skipping city`); break; }
+            await sleep(500);
+            continue;
+          }
           if (!resp.ok) { log.push(`direct search ${city}: HTTP ${resp.status}`); break; }
           const data = await resp.json();
           const batch = data.permits || data.results || data.data || [];
 
-          // Log raw sample on very first batch
           if (found === 0 && page === 1 && batch.length > 0) {
             const s = batch[0];
             log.push(`[DIRECT keys] ${Object.keys(s).join(', ')}`);
@@ -235,11 +269,9 @@ exports.handler = async function(event) {
 
           if (!batch.length) break;
           found += batch.length;
-
           for (const p of batch) {
-            const { street, city: c, state, zip, fullAddress, desc, systemSizeKw, installYear, permitId } = parseRecord(p);
-            if (!fullAddress) continue;
-            if (!isSanDiegoCounty(street, c, state, zip)) continue;
+            const { street, city: c, state, zip, fullAddress, systemSizeKw, installYear, permitId } = parseRecord(p);
+            if (!fullAddress || !isSanDiegoCounty(street, c, state, zip)) continue;
             const key = fullAddress.toLowerCase().replace(/\s+/g, ' ');
             if (seenAddresses.has(key)) continue;
             seenAddresses.add(key);
@@ -248,10 +280,9 @@ exports.handler = async function(event) {
               notes: `${installer}${systemSizeKw ? ` · ${systemSizeKw}kW` : ''}${installYear ? ` · Installed ${installYear}` : ''}`,
               permit_id: permitId });
           }
-
           if (batch.length < 100) break;
           page++;
-          await sleep(100);
+          await sleep(50);
         }
       }
       log.push(`direct search "${name}": ${found} total fetched, ${records.length} SD matches`);
@@ -262,11 +293,18 @@ exports.handler = async function(event) {
     return found;
   }
 
-  // ── Strategy 2: Contractor search → permit pages (original approach) ──
+  // ── Strategy 2: Contractor search → permit pages ──
   async function searchContractor(name) {
+    if (overBudget()) return [];
     try {
       const url = `${BASE}/contractors/search?name=${encodeURIComponent(name)}&per_page=20`;
-      const resp = await fetch(url, { headers: psHeaders });
+      let resp;
+      try {
+        resp = await fetchWithTimeout(url, { headers: psHeaders }, 6000);
+      } catch(e) {
+        log.push(`contractor search "${name}": fetch error (${e.message})`);
+        return [];
+      }
       if (!resp.ok) { log.push(`contractor search "${name}": HTTP ${resp.status}`); return []; }
       const data = await resp.json();
       const results = data.contractors || data.results || data.data || [];
@@ -281,89 +319,96 @@ exports.handler = async function(event) {
   async function pullContractorPermits(contractorId) {
     let page = 1, totalFetched = 0, sampleLogged = false;
     while (true) {
+      if (overBudget()) { log.push(`id=${contractorId}: time budget exceeded at page ${page}`); break; }
       const url = `${BASE}/contractors/${contractorId}/permits?per_page=100&page=${page}`;
+      let resp;
       try {
-        const resp = await fetch(url, { headers: psHeaders });
-        if (resp.status === 429) { log.push(`id=${contractorId} p${page}: 429 — skipping`); break; }
-        if (!resp.ok) { log.push(`id=${contractorId} p${page}: HTTP ${resp.status}`); break; }
-        const data = await resp.json();
-        const batch = data.permits || data.results || data.data || [];
-        if (!batch.length) break;
-        totalFetched += batch.length;
-
-        if (!sampleLogged && batch.length > 0) {
-          sampleLogged = true;
-          const s = batch[0];
-          log.push(`[CONTR keys] ${Object.keys(s).join(', ')}`);
-          const parsed = parseRecord(s);
-          log.push(`[CONTR addr] street="${parsed.street}" city="${parsed.city}" state="${parsed.state}" zip="${parsed.zip}"`);
-          // Also try fetching permit detail to see if more fields exist
-          if (parsed.permitId) {
-            try {
-              const dr = await fetch(`${BASE}/permits/${parsed.permitId}`, { headers: psHeaders });
-              if (dr.ok) {
-                const dd = await dr.json();
-                const dp = parseRecord(dd.permit || dd);
-                log.push(`[DETAIL keys] ${Object.keys(dd.permit||dd).join(', ')}`);
-                log.push(`[DETAIL addr] street="${dp.street}" city="${dp.city}" state="${dp.state}" zip="${dp.zip}"`);
-              }
-            } catch(e2) { log.push(`[DETAIL] error: ${e2.message}`); }
-          }
-        }
-
-        for (const p of batch) {
-          const { street, city, state, zip, fullAddress, desc, systemSizeKw, installYear, permitId } = parseRecord(p);
-          if (!fullAddress || !isSanDiegoCounty(street, city, state, zip)) continue;
-          const key = fullAddress.toLowerCase().replace(/\s+/g, ' ');
-          if (seenAddresses.has(key)) continue;
-          seenAddresses.add(key);
-          records.push({ address: fullAddress, installer, install_year: installYear || '',
-            system_size_kw: systemSizeKw || '',
-            notes: `${installer}${systemSizeKw ? ` · ${systemSizeKw}kW` : ''}${installYear ? ` · Installed ${installYear}` : ''}`,
-            permit_id: permitId });
-        }
-
-        if (batch.length < 100) break;
-        page++;
-        if (page > 30) { log.push(`id=${contractorId}: page cap (3000)`); break; }
-        await sleep(100);
+        resp = await fetchWithTimeout(url, { headers: psHeaders }, 6000);
       } catch(e) {
-        log.push(`id=${contractorId} p${page}: ${e.message}`); break;
+        log.push(`id=${contractorId} p${page}: fetch error (${e.message})`); break;
       }
+      if (resp.status === 429) { log.push(`id=${contractorId} p${page}: 429 — skipping`); break; }
+      if (!resp.ok) { log.push(`id=${contractorId} p${page}: HTTP ${resp.status}`); break; }
+      const data = await resp.json();
+      const batch = data.permits || data.results || data.data || [];
+      if (!batch.length) break;
+      totalFetched += batch.length;
+
+      if (!sampleLogged && batch.length > 0) {
+        sampleLogged = true;
+        const s = batch[0];
+        log.push(`[CONTR keys] ${Object.keys(s).join(', ')}`);
+        const parsed = parseRecord(s);
+        log.push(`[CONTR addr] street="${parsed.street}" city="${parsed.city}" state="${parsed.state}" zip="${parsed.zip}"`);
+        if (parsed.permitId && !overBudget()) {
+          try {
+            const dr = await fetchWithTimeout(`${BASE}/permits/${parsed.permitId}`, { headers: psHeaders }, 5000);
+            if (dr.ok) {
+              const dd = await dr.json();
+              const dp = parseRecord(dd.permit || dd);
+              log.push(`[DETAIL keys] ${Object.keys(dd.permit||dd).join(', ')}`);
+              log.push(`[DETAIL addr] street="${dp.street}" city="${dp.city}" state="${dp.state}" zip="${dp.zip}"`);
+            }
+          } catch(e2) { log.push(`[DETAIL] error: ${e2.message}`); }
+        }
+      }
+
+      for (const p of batch) {
+        const { street, city, state, zip, fullAddress, systemSizeKw, installYear, permitId } = parseRecord(p);
+        if (!fullAddress || !isSanDiegoCounty(street, city, state, zip)) continue;
+        const key = fullAddress.toLowerCase().replace(/\s+/g, ' ');
+        if (seenAddresses.has(key)) continue;
+        seenAddresses.add(key);
+        records.push({ address: fullAddress, installer, install_year: installYear || '',
+          system_size_kw: systemSizeKw || '',
+          notes: `${installer}${systemSizeKw ? ` · ${systemSizeKw}kW` : ''}${installYear ? ` · Installed ${installYear}` : ''}`,
+          permit_id: permitId });
+      }
+      if (batch.length < 100) break;
+      page++;
+      if (page > 20) { log.push(`id=${contractorId}: page cap (2000)`); break; }
+      await sleep(50);
     }
     return totalFetched;
   }
 
-  // ── Strategy 0: SD open data — city + county (always run — full street addresses) ──
+  // ── Run strategies in order ──
   for (const name of names) {
+    if (overBudget()) { log.push(`Skipping "${name}" — over budget`); break; }
     await trySDOpenData(name);
-    await sleep(200);
+    if (overBudget()) break;
+    await sleep(50);
+    if (overBudget()) break;
     await trySDCountyOpenData(name);
-    await sleep(200);
+    if (overBudget()) break;
+    await sleep(50);
   }
 
-  // ── Run Strategy 1 first, fall back to Strategy 2 ──
   let directResult = -1;
-  for (const name of names) {
-    directResult = await tryDirectSearch(name);
-    if (directResult >= 0) break; // endpoint exists, use it for remaining names
-    await sleep(200);
+  if (!overBudget()) {
+    for (const name of names) {
+      if (overBudget()) break;
+      directResult = await tryDirectSearch(name);
+      if (directResult >= 0) break;
+      await sleep(50);
+    }
   }
 
-  if (directResult < 0) {
-    // Direct endpoint not available — use contractor approach
+  if (directResult < 0 && !overBudget()) {
     log.push(`falling back to contractor search`);
     const contractorIds = new Set();
     for (const name of names) {
+      if (overBudget()) break;
       const contractors = await searchContractor(name);
       for (const c of contractors) {
         const id = c.id || c.contractor_id;
         if (id) contractorIds.add(String(id));
       }
-      await sleep(300);
+      await sleep(50);
     }
     log.push(`${installer}: found ${contractorIds.size} contractor(s)`);
     for (const cid of contractorIds) {
+      if (overBudget()) break;
       const fetched = await pullContractorPermits(cid);
       log.push(`${installer} id=${cid}: ${fetched} fetched, ${records.length} SD matches`);
     }
