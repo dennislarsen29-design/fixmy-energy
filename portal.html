@@ -3740,6 +3740,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '</div></div>';
     h += '<div id="bbEnrichBar" style="margin-bottom:12px;"></div>';
     if (CURRENT_ROLE === 'admin') h += '<div id="bbPullBar" style="margin-bottom:12px;"></div>';
+    if (CURRENT_ROLE === 'admin') h += '<div id="bbPhase0Panel" style="margin-bottom:12px;"></div>';
     if (CURRENT_ROLE === 'admin') h += '<div id="bbInsightsPanel" style="margin-bottom:12px;"></div>';
     h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;margin-bottom:12px;">&#128205; Routes</div>';
 
@@ -4086,6 +4087,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     setTimeout(adminCanvassLoadEnrichBar, 0);
     if (CURRENT_ROLE === 'admin') setTimeout(adminCanvassLoadPullBar, 0);
     if (CURRENT_ROLE === 'admin') setTimeout(adminCanvassLoadInsights, 0);
+    if (CURRENT_ROLE === 'admin') setTimeout(adminCanvassLoadPhase0Panel, 200);
 
     // Fixed QR panel — persists in top-right corner while on Black Box tab
     (function(){
@@ -5026,6 +5028,63 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     adminCanvassLoadPullBar(); // refresh to show new count
   };
 
+  // ── Phase 0 AI Insights + Zip Expansion Status Panel ─────────────────────
+  async function adminCanvassLoadPhase0Panel() {
+    var el = document.getElementById('bbPhase0Panel');
+    if (!el) return;
+    try {
+      var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var { data: rows } = await c2.from('pipeline_state')
+        .select('key,value').in('key', ['phase0_insights','expansion_index']);
+      rows = rows || [];
+      var insightsRow = rows.find(function(r){ return r.key === 'phase0_insights'; });
+      var expRow = rows.find(function(r){ return r.key === 'expansion_index'; });
+      var expIndex = expRow ? (parseInt(expRow.value, 10) || 0) : 0;
+      var totalExpZips = 72; // EXPANSION_QUEUE.length
+      var h = '';
+
+      // ── Zip expansion status chip ─────────────────────────────────────────
+      var sdOnly = expIndex === 0;
+      var expLabel = sdOnly
+        ? 'San Diego County only'
+        : 'San Diego County + ' + expIndex + ' extra zips (OC' + (expIndex > 20 ? ' + Riverside' : '') + ')';
+      h += '<div style="background:rgba(74,158,255,0.06);border:1px solid rgba(74,158,255,0.2);border-radius:10px;padding:10px 14px;margin-bottom:8px;">';
+      h += '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;">';
+      h += '<div style="font-size:0.7rem;font-weight:700;color:#4a9eff;">&#128205; Coverage: ' + expLabel + '</div>';
+      if (expIndex < totalExpZips) {
+        h += '<div style="font-size:0.63rem;color:#555;">+5 zips added tonight (' + (totalExpZips - expIndex) + ' remaining)</div>';
+      } else {
+        h += '<div style="font-size:0.63rem;color:#8DC63F;">Fully expanded &#10003;</div>';
+      }
+      h += '</div></div>';
+
+      // ── Phase 0 AI insights card ──────────────────────────────────────────
+      if (insightsRow && insightsRow.value && insightsRow.value !== '{}') {
+        var parsed = null;
+        try { parsed = JSON.parse(insightsRow.value); } catch(e) {}
+        if (parsed && parsed.summary) {
+          h += '<div style="background:rgba(141,198,63,0.05);border:1px solid rgba(141,198,63,0.2);border-radius:10px;padding:10px 14px;">';
+          h += '<div style="font-size:0.7rem;font-weight:700;color:#8DC63F;margin-bottom:6px;">&#129302; Tonight\'s Pipeline Intelligence</div>';
+          h += '<div style="font-size:0.72rem;color:#ccc;margin-bottom:5px;">' + parsed.summary + '</div>';
+          if (parsed.topOpportunity) {
+            h += '<div style="font-size:0.68rem;color:#888;margin-bottom:3px;"><span style="color:#ffaa00;font-weight:700;">Top opportunity:</span> ' + parsed.topOpportunity + '</div>';
+          }
+          if (parsed.marketingAngle) {
+            h += '<div style="font-size:0.68rem;color:#888;margin-bottom:3px;"><span style="color:#4a9eff;font-weight:700;">Marketing angle:</span> ' + parsed.marketingAngle + '</div>';
+          }
+          if (parsed.missingVariants && parsed.missingVariants.length) {
+            h += '<div style="font-size:0.68rem;color:#555;margin-top:4px;">Try also: ' + parsed.missingVariants.join(', ') + '</div>';
+          }
+          h += '</div>';
+        }
+      }
+
+      el.innerHTML = h || '';
+    } catch(e) {
+      // Phase 0 panel is non-critical — fail silently
+    }
+  }
+
   // ── Black Box Lead Insights Dashboard ─────────────────────────────────────
   async function adminCanvassLoadInsights() {
     var el = document.getElementById('bbInsightsPanel');
@@ -5061,29 +5120,39 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
     var total = leads.length;
 
+    // Aggregate once — used both in header chips and expanded view
+    var byYear = {}, byInstaller = {}, byZip = {};
+    leads.forEach(function(c) {
+      var yr = c.install_year ? String(c.install_year) : 'Unknown';
+      byYear[yr] = (byYear[yr] || 0) + 1;
+      var inst = c.original_installer || 'Unknown';
+      byInstaller[inst] = (byInstaller[inst] || 0) + 1;
+      var zm = (c.address || '').match(/\b(\d{5})\b/);
+      var zip = zm ? zm[1] : 'Unknown';
+      byZip[zip] = (byZip[zip] || 0) + 1;
+    });
+    var instKeys = Object.keys(byInstaller).sort(function(a,b){ return byInstaller[b]-byInstaller[a]; });
+
+    // Portfolio summary chips — top 5 installers always visible in header
+    var top5 = instKeys.slice(0, 5).map(function(inst) {
+      var short = inst.replace(/ Solar Power$/,'').replace(/ Solar$/,'').replace(/ Energy$/,'').replace(/ LLC$/,'').replace(/ Inc$/,'');
+      return '<span style="color:#ccc;">' + short + '</span>: <span style="color:#8DC63F;font-weight:700;">' + byInstaller[inst].toLocaleString() + '</span>';
+    }).join('&nbsp;&nbsp;&#183;&nbsp;&nbsp;');
+
     var h = '<div style="background:rgba(141,198,63,0.06);border:1px solid rgba(141,198,63,0.18);border-radius:10px;overflow:hidden;">';
-    h += '<div onclick="window._bbInsightsOpen='+(!isOpen)+';window._bbInsightsCache=null;adminCanvassLoadInsights();" style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;cursor:pointer;">';
-    h += '<div style="font-size:0.72rem;font-weight:700;color:#8DC63F;">&#128202; Lead Insights</div>';
-    h += '<div style="font-size:0.72rem;color:#888;">' + total.toLocaleString() + ' permits&nbsp;&nbsp;' + (isOpen ? '&#9650;' : '&#9660;') + '</div>';
+    h += '<div onclick="window._bbInsightsOpen='+(!isOpen)+';window._bbInsightsCache=null;adminCanvassLoadInsights();" style="cursor:pointer;">';
+    h += '<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;">';
+    h += '<div style="font-size:0.72rem;font-weight:700;color:#8DC63F;">&#128202; Lead Portfolio &mdash; ' + total.toLocaleString() + ' permits</div>';
+    h += '<div style="font-size:0.72rem;color:#888;">' + (isOpen ? '&#9650;' : '&#9660;') + '</div>';
+    h += '</div>';
+    h += '<div style="padding:0 12px 10px;font-size:0.63rem;word-break:break-word;">' + top5 + '</div>';
     h += '</div>';
 
     if (isOpen) {
       h += '<div style="padding:0 12px 14px;border-top:1px solid rgba(141,198,63,0.12);">';
 
-      var byYear = {}, byInstaller = {}, byZip = {};
-      leads.forEach(function(c) {
-        var yr = c.install_year ? String(c.install_year) : 'Unknown';
-        byYear[yr] = (byYear[yr] || 0) + 1;
-        var inst = c.original_installer || 'Unknown';
-        byInstaller[inst] = (byInstaller[inst] || 0) + 1;
-        var zm = (c.address || '').match(/\b(\d{5})\b/);
-        var zip = zm ? zm[1] : 'Unknown';
-        byZip[zip] = (byZip[zip] || 0) + 1;
-      });
-
       var yearKeys = Object.keys(byYear).filter(function(k){ return k !== 'Unknown'; }).sort(function(a,b){ return b-a; });
       if (byYear['Unknown']) yearKeys.push('Unknown');
-      var instKeys = Object.keys(byInstaller).sort(function(a,b){ return byInstaller[b]-byInstaller[a]; });
       var zipKeys  = Object.keys(byZip).sort(function(a,b){ return byZip[b]-byZip[a]; }).slice(0,15);
       var maxYr    = Math.max.apply(null, yearKeys.map(function(k){ return byYear[k]; }));
 
