@@ -131,33 +131,35 @@ exports.handler = async function(event) {
   const addrUpper = address.toUpperCase().replace(/,.*/, '').trim();
   const addrParts = addrUpper.split(' ').slice(0, 4).join(' ');
 
-  // ── 3.5. Census Bureau geocoder — free, no key, resolves lat/lng for spatial queries ──
-  // Text LIKE searches against SANDAG fail when street-type abbreviations differ.
-  // Spatial point queries are exact and bypass that entirely.
-  let resolvedLat = lat, resolvedLng = lng;
-  if (resolvedLat == null || resolvedLng == null) {
-    try {
-      const geocodeUrl = 'https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?'
-        + 'address=' + encodeURIComponent(address)
-        + '&benchmark=Public_AR_Current&format=json';
-      const geocodeResp = await fetch(geocodeUrl, { headers: { 'Accept': 'application/json' } });
-      if (geocodeResp.ok) {
-        const geocodeData = await geocodeResp.json();
-        const matches = geocodeData.result && geocodeData.result.addressMatches;
-        if (Array.isArray(matches) && matches.length) {
-          resolvedLat = matches[0].coordinates.y;
-          resolvedLng = matches[0].coordinates.x;
-          tried.push('census_geocode:ok');
-        } else {
-          tried.push('census_geocode:no_match');
-        }
+  // ── 3.5. Census Bureau geocoder — always run for SANDAG spatial accuracy ────
+  // Input lat/lng may be Google Maps street-centerline coords (from permit import).
+  // Street-centerline points fall OUTSIDE parcel polygons → SANDAG spatial query misses.
+  // Census Bureau geocoder returns address-matched coordinates that land inside parcels.
+  // Always geocode fresh; fall back to input coords only if Census can't resolve.
+  let resolvedLat = null, resolvedLng = null;
+  try {
+    const geocodeUrl = 'https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?'
+      + 'address=' + encodeURIComponent(address)
+      + '&benchmark=Public_AR_Current&format=json';
+    const geocodeResp = await fetch(geocodeUrl, { headers: { 'Accept': 'application/json' } });
+    if (geocodeResp.ok) {
+      const geocodeData = await geocodeResp.json();
+      const matches = geocodeData.result && geocodeData.result.addressMatches;
+      if (Array.isArray(matches) && matches.length) {
+        resolvedLat = matches[0].coordinates.y;
+        resolvedLng = matches[0].coordinates.x;
+        tried.push('census_geocode:ok');
       } else {
-        tried.push('census_geocode:' + geocodeResp.status);
+        tried.push('census_geocode:no_match');
       }
-    } catch(e) {
-      tried.push('census_geocode:err:' + e.message);
+    } else {
+      tried.push('census_geocode:' + geocodeResp.status);
     }
+  } catch(e) {
+    tried.push('census_geocode:err:' + e.message);
   }
+  // Fall back to caller-supplied coords only when Census can't resolve
+  if (resolvedLat == null) { resolvedLat = lat; resolvedLng = lng; }
 
   // ── 4. SANDAG geo.sandag.org — spatial if lat/lng available, text fallback ─
   try {
