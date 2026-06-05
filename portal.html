@@ -4253,12 +4253,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var upd = { title_owner: data.owner, apn: data.apn||null };
         if (data.assessed_value) upd.assessed_value = data.assessed_value;
         if (data.tax_delinquent != null) upd.tax_delinquent = data.tax_delinquent;
+        if (data.lat != null) upd.lat = data.lat;
+        if (data.lng != null) upd.lng = data.lng;
         c2.from('customers').update(upd).eq('id', id);
         var rec = adminCustomers.find(function(r){ return r.id === id; });
         if (rec) {
           rec.title_owner = data.owner; rec.apn = data.apn||null;
           if (data.assessed_value) rec.assessed_value = data.assessed_value;
           if (data.tax_delinquent != null) rec.tax_delinquent = data.tax_delinquent;
+          if (data.lat != null) { rec.lat = data.lat; lead.lat = data.lat; }
+          if (data.lng != null) { rec.lng = data.lng; lead.lng = data.lng; }
         }
         renderAdminCanvassView();
       } else {
@@ -4506,58 +4510,72 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (_bbEnrichRunning) return;
     _bbEnrichRunning = true;
     var bar = document.getElementById('bbEnrichBar');
-    if (bar) bar.innerHTML = '<div style="background:rgba(74,158,255,0.07);border:1px solid rgba(74,158,255,0.2);border-radius:10px;padding:10px 14px;" id="bbEnrichProgress"><div style="font-size:0.75rem;color:#4a9eff;font-weight:700;">Starting enrichment&hellip;</div></div>';
+    if (bar) bar.innerHTML = '<div style="background:rgba(74,158,255,0.07);border:1px solid rgba(74,158,255,0.2);border-radius:10px;padding:10px 14px;" id="bbEnrichProgress"><div style="font-size:0.75rem;color:#4a9eff;font-weight:700;">Counting leads to enrich&hellip;</div></div>';
 
     var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
-    var { data: leads } = await c2.from('customers')
-      .select('id,address,lat,lng')
-      .eq('lead_source','orphaned_list')
-      .is('sold_type',null)
-      .is('title_owner',null)
-      .not('address','is',null)
-      .order('created_at',{ascending:true})
-      .limit(1000);
+    var PAGE_SIZE = 500;
+    var pageOffset = 0, grandTotal = 0, found = 0, failed = 0, firstDebug = null;
 
-    leads = leads || [];
-    var total = leads.length, found = 0, failed = 0, firstDebug = null;
+    // Get total count for accurate progress bar
+    var { count } = await c2.from('customers')
+      .select('id', { count: 'exact', head: true })
+      .eq('lead_source','orphaned_list').is('sold_type',null).is('title_owner',null).not('address','is',null);
+    grandTotal = count || 0;
 
     function updateProgress() {
       var done = found + failed;
-      var pct = total ? Math.round(done/total*100) : 0;
+      var pct = grandTotal ? Math.round(done / grandTotal * 100) : 0;
       var prog = document.getElementById('bbEnrichProgress');
-      if (prog) prog.innerHTML = '<div style="font-size:0.75rem;color:#4a9eff;font-weight:700;margin-bottom:6px;">Enriching&hellip; '+done+' of '+total+' &mdash; '+found+' owners found</div>'
+      if (prog) prog.innerHTML = '<div style="font-size:0.75rem;color:#4a9eff;font-weight:700;margin-bottom:6px;">Enriching&hellip; '+done+' of '+grandTotal+' &mdash; '+found+' owners found</div>'
         + '<div style="background:rgba(255,255,255,0.08);border-radius:100px;height:6px;overflow:hidden;">'
         + '<div style="background:#4a9eff;height:6px;border-radius:100px;width:'+pct+'%;transition:width 0.3s;"></div></div>'
-        + '<div style="font-size:0.65rem;color:#555;margin-top:4px;">'+pct+'% &mdash; do not close this tab</div>'
+        + '<div style="font-size:0.65rem;color:#555;margin-top:4px;">'+pct+'% &mdash; keep tab active &mdash; or use Re-enable for overnight run</div>'
         + (firstDebug ? '<div style="font-size:0.6rem;color:#555;margin-top:3px;word-break:break-all;">⚠ Last miss: '+firstDebug+'</div>' : '');
     }
 
-    for (var i = 0; i < leads.length; i++) {
-      var lead = leads[i];
-      try {
-        var body = { address: lead.address };
-        if (lead.lat) body.lat = lead.lat;
-        if (lead.lng) body.lng = lead.lng;
-        var resp = await fetch('/.netlify/functions/regrid-lookup', {
-          method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
-        });
-        var data = await resp.json();
-        if (data.owner) {
-          found++;
-          var upd = { title_owner: data.owner, apn: data.apn || null };
-          if (data.assessed_value) upd.assessed_value = data.assessed_value;
-          if (data.tax_delinquent != null) upd.tax_delinquent = data.tax_delinquent;
-          await c2.from('customers').update(upd).eq('id', lead.id);
-          var cached = adminCustomers.find(function(r){ return r.id === lead.id; });
-          if (cached) Object.assign(cached, upd);
-        } else {
-          failed++;
-          if (!firstDebug && data.debug) firstDebug = lead.address.split(',')[0] + ' → ' + data.debug;
-        }
-      } catch(e) { failed++; }
-      updateProgress();
-      // 350ms between requests to respect public GIS rate limits
-      await new Promise(function(r){ setTimeout(r, 350); });
+    // Paginate through ALL unenriched leads
+    while (true) {
+      if (!_bbEnrichRunning) break; // allow cancel
+      var { data: leads } = await c2.from('customers')
+        .select('id,address,lat,lng')
+        .eq('lead_source','orphaned_list').is('sold_type',null).is('title_owner',null)
+        .not('address','is',null).order('created_at',{ascending:true})
+        .range(pageOffset, pageOffset + PAGE_SIZE - 1);
+      leads = leads || [];
+      if (!leads.length) break;
+
+      for (var i = 0; i < leads.length; i++) {
+        if (!_bbEnrichRunning) break;
+        var lead = leads[i];
+        try {
+          var body = { address: lead.address };
+          if (lead.lat) body.lat = lead.lat;
+          if (lead.lng) body.lng = lead.lng;
+          var resp = await fetch('/.netlify/functions/regrid-lookup', {
+            method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
+          });
+          var data = await resp.json();
+          if (data.owner) {
+            found++;
+            var upd = { title_owner: data.owner, apn: data.apn || null };
+            if (data.assessed_value) upd.assessed_value = data.assessed_value;
+            if (data.tax_delinquent != null) upd.tax_delinquent = data.tax_delinquent;
+            if (data.lat != null) upd.lat = data.lat;
+            if (data.lng != null) upd.lng = data.lng;
+            await c2.from('customers').update(upd).eq('id', lead.id);
+            var cached = adminCustomers.find(function(r){ return r.id === lead.id; });
+            if (cached) Object.assign(cached, upd);
+          } else {
+            failed++;
+            if (!firstDebug && data.debug) firstDebug = lead.address.split(',')[0] + ' → ' + data.debug;
+          }
+        } catch(e) { failed++; }
+        updateProgress();
+        await new Promise(function(r){ setTimeout(r, 350); });
+      }
+
+      pageOffset += PAGE_SIZE;
+      if (leads.length < PAGE_SIZE) break; // last page
     }
 
     _bbEnrichRunning = false;

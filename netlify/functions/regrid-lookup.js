@@ -60,7 +60,7 @@ exports.handler = async function(event) {
                          data.results || data.features || [];
         const parsed = parseRegridFeature(Array.isArray(features) ? features[0] : null);
         if (parsed) {
-          return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ ...parsed, source: 'regrid_latlon' }) };
+          return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ ...parsed, lat, lng, source: 'regrid_latlon' }) };
         }
         tried.push('regrid_latlon:ok_no_data');
       } else {
@@ -86,7 +86,7 @@ exports.handler = async function(event) {
                        data.results || data.features || [];
       const parsed = parseRegridFeature(Array.isArray(features) ? features[0] : null);
       if (parsed) {
-        return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ ...parsed, source: 'regrid_search' }) };
+        return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ ...parsed, lat: lat || null, lng: lng || null, source: 'regrid_search' }) };
       }
       tried.push('regrid_search:ok_no_data');
     } else {
@@ -109,7 +109,7 @@ exports.handler = async function(event) {
       const results = data.results || [];
       const parsed = parseRegridFeature(Array.isArray(results) ? results[0] : null);
       if (parsed) {
-        return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ ...parsed, source: 'regrid_typeahead' }) };
+        return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ ...parsed, lat: lat || null, lng: lng || null, source: 'regrid_typeahead' }) };
       }
       tried.push('regrid_typeahead:ok_no_data');
     } else {
@@ -175,7 +175,7 @@ exports.handler = async function(event) {
         const owner = attr.OWN_NAME1 || null;
         const apn   = attr.APN_8 || null;
         if (owner) {
-          return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner, apn, assessed_value: null, tax_delinquent: null, source: 'sandag' }) };
+          return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner, apn, assessed_value: null, tax_delinquent: null, lat: resolvedLat, lng: resolvedLng, source: 'sandag' }) };
         }
       }
       tried.push('sandag:ok_no_data');
@@ -203,7 +203,7 @@ exports.handler = async function(event) {
         const owner = attr.OWN_NAME1 || null;
         const apn   = attr.APN_8 || null;
         if (owner) {
-          return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner, apn, assessed_value: null, tax_delinquent: null, source: 'sandag_south' }) };
+          return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner, apn, assessed_value: null, tax_delinquent: null, lat: resolvedLat, lng: resolvedLng, source: 'sandag_south' }) };
         }
       }
       tried.push('sandag_south:ok_no_data');
@@ -229,7 +229,7 @@ exports.handler = async function(event) {
         const owner = attr.OWN_NAME1 || null;
         const apn   = attr.APN_8 || null;
         if (owner) {
-          return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner, apn, assessed_value: null, tax_delinquent: null, source: 'sd_city' }) };
+          return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner, apn, assessed_value: null, tax_delinquent: null, lat: resolvedLat, lng: resolvedLng, source: 'sd_city' }) };
         }
       }
       tried.push('sd_city:ok_no_data');

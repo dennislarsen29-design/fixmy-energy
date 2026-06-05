@@ -63,7 +63,8 @@ exports.handler = async function(event) {
   // Decrements on each run; stops when it hits 0.
   // To re-enable: UPDATE pipeline_state SET value='3' WHERE key='bb_pipeline_runs_remaining';
   // Manual HTTP trigger bypasses this check (use for ad-hoc runs).
-  const isScheduled = !event.httpMethod; // Netlify cron events have no httpMethod
+  // Netlify scheduled functions may set httpMethod to null/undefined OR pass triggerType='schedule'
+  const isScheduled = !event.httpMethod || event.triggerType === 'schedule';
   if (isScheduled) {
     try {
       const stateResp = await fetch(
@@ -77,7 +78,7 @@ exports.handler = async function(event) {
         return { statusCode: 200, headers: cors, body: JSON.stringify({ status: 'disabled', message: 'runs_remaining=0 — update pipeline_state to re-enable' }) };
       }
       // Decrement before running so a crash doesn't silently repeat
-      await fetch(
+      const patchResp = await fetch(
         SUPA_REST + "/pipeline_state?key=eq.bb_pipeline_runs_remaining",
         {
           method: 'PATCH',
@@ -85,7 +86,11 @@ exports.handler = async function(event) {
           body: JSON.stringify({ value: String(remaining - 1), updated_at: new Date().toISOString() })
         }
       );
-      console.log(`bb-auto-pipeline: run ${remaining} of 3 starting (${remaining - 1} remaining after this)`);
+      if (!patchResp.ok) {
+        const errText = await patchResp.text().catch(() => '');
+        console.error('bb-auto-pipeline: failed to decrement run counter:', patchResp.status, errText);
+      }
+      console.log(`bb-auto-pipeline: run ${remaining} allowed remaining, decrementing to ${remaining - 1}`);
     } catch(e) {
       console.log('bb-auto-pipeline: could not read run limit — proceeding anyway:', e.message);
     }
@@ -402,7 +407,7 @@ exports.handler = async function(event) {
         const d = await resp.json();
         if (d.features && d.features.length && d.features[0].attributes.OWN_NAME1) {
           const a = d.features[0].attributes;
-          return { owner: a.OWN_NAME1, apn: a.APN_8 || null };
+          return { owner: a.OWN_NAME1, apn: a.APN_8 || null, lat, lng };
         }
       }
     } catch(e) {}
@@ -419,7 +424,7 @@ exports.handler = async function(event) {
         const d = await resp.json();
         if (d.features && d.features.length && d.features[0].attributes.OWN_NAME1) {
           const a = d.features[0].attributes;
-          return { owner: a.OWN_NAME1, apn: a.APN_8 || null };
+          return { owner: a.OWN_NAME1, apn: a.APN_8 || null, lat, lng };
         }
       }
     } catch(e) {}
@@ -442,7 +447,7 @@ exports.handler = async function(event) {
               const assessedValue = rawVal ? (parseInt(rawVal, 10) || null) : null;
               const taxDelinquent = f.tax_delinquent != null
                 ? (String(f.tax_delinquent).toUpperCase() === 'Y' || f.tax_delinquent === true) : null;
-              return { owner, apn: f.parcelnumb || f.apn || null, assessed_value: assessedValue, tax_delinquent: taxDelinquent };
+              return { owner, apn: f.parcelnumb || f.apn || null, assessed_value: assessedValue, tax_delinquent: taxDelinquent, lat, lng };
             }
           }
         }
@@ -469,6 +474,8 @@ exports.handler = async function(event) {
         const upd = { title_owner: r.owner, apn: r.apn };
         if (r.assessed_value) upd.assessed_value = r.assessed_value;
         if (r.tax_delinquent != null) upd.tax_delinquent = r.tax_delinquent;
+        if (r.lat != null) upd.lat = r.lat;
+        if (r.lng != null) upd.lng = r.lng;
         updates.push(supaUpdate(batch[j].id, upd));
       }
     }
