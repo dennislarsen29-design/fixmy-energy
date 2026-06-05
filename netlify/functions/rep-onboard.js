@@ -36,10 +36,16 @@ exports.handler = async function(event) {
     return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: 'Invalid JSON' }) };
   }
 
-  const { full_name, preferred_name, email, phone, market, role_type, source, ec_name, ec_phone } = body;
+  const { full_name, preferred_name, email, phone, market, role_type, source, ec_name, ec_phone, _test } = body;
 
   if (!full_name || !email || !phone || !market) {
     return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: 'full_name, email, phone, and market are required' }) };
+  }
+
+  // Test mode: skip all DB/GHL inserts and return mock success (use ?test=1 in URL)
+  if (_test) {
+    console.log('[rep-onboard] TEST MODE — skipping all inserts for', email);
+    return { statusCode: 200, headers: CORS, body: JSON.stringify({ success: true, id: 'test_preview', code: 'TEST1234', portal_url: 'https://fixmy.energy/portal', _test: true }) };
   }
 
   const supaHeaders = {
