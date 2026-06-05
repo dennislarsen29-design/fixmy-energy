@@ -137,8 +137,8 @@ exports.handler = async function(event) {
   // Census Bureau geocoder returns address-matched coordinates that land inside parcels.
   // Always geocode fresh; fall back to input coords only if Census can't resolve.
   //
-  // Permit addresses are stored as "123 MAIN ST, CITY, CA, 92001" (comma before zip).
-  // Census geocoder expects "CA 92001" (no comma before zip) — normalize before calling.
+  // Permit addresses stored as "CITY, CA, 92001" (extra comma before zip).
+  // Census geocoder expects "CA 92001" — normalize before calling.
   const censusAddress = address.replace(/, ([A-Z]{2}), (\d{5})/, ', $1 $2');
   let resolvedLat = null, resolvedLng = null;
   try {
@@ -165,11 +165,19 @@ exports.handler = async function(event) {
   // Fall back to caller-supplied coords only when Census can't resolve
   if (resolvedLat == null) { resolvedLat = lat; resolvedLng = lng; }
 
-  // ── 4. SANDAG geo.sandag.org — spatial only (text fallback removed: field name unknown) ─
-  if (resolvedLat == null || resolvedLng == null) tried.push('sandag:skip_no_coords');
+  // ── Helper: extract owner from any SANDAG-style attributes object ────────
+  function parseSandagOwner(attr) {
+    return attr.OWN_NAME1 || attr.OWNER_NAME || attr.OWNER || attr.OWN_NAME ||
+           attr.OWNERNME1 || attr.OWN1 || attr.OWNER1 || attr.PARCEL_OWNER || null;
+  }
+  function parseSandagApn(attr) {
+    return attr.APN_8 || attr.APN || attr.PARCEL_NBR || attr.ASSESSOR_PARCEL_NUMBER || null;
+  }
+
+  // ── 4. SANDAG geo.sandag.org — spatial only, outFields=* to avoid field-name errors ─
   if (resolvedLat != null && resolvedLng != null) try {
     const baseUrl = 'https://geo.sandag.org/server/rest/services/Hosted/Parcels/FeatureServer/0/query?';
-    const query = 'where=1%3D1' + arcgisPointParams(resolvedLat, resolvedLng, 'OWN_NAME1,APN_8');
+    const query = 'where=1%3D1' + arcgisPointParams(resolvedLat, resolvedLng, '*');
     const resp = await fetch(baseUrl + query, {
       headers: { 'Accept': 'application/json', 'Referer': 'https://sdgis.sandag.org/' }
     });
@@ -179,12 +187,12 @@ exports.handler = async function(event) {
         tried.push('sandag:arcgis_err:' + data.error.code + ':' + String(data.error.message||'').slice(0,40));
       } else if (data.features && data.features.length) {
         const attr = data.features[0].attributes;
-        const owner = attr.OWN_NAME1 || null;
-        const apn   = attr.APN_8 || null;
+        const owner = parseSandagOwner(attr);
+        const apn   = parseSandagApn(attr);
         if (owner) {
           return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner, apn, assessed_value: null, tax_delinquent: null, lat: resolvedLat, lng: resolvedLng, source: 'sandag' }) };
         }
-        tried.push('sandag:ok_no_owner');
+        tried.push('sandag:ok_no_owner:fields=' + Object.keys(attr).join(',').slice(0, 80));
       } else {
         tried.push('sandag:ok_no_data');
       }
@@ -199,7 +207,7 @@ exports.handler = async function(event) {
   // ── 5. SANDAG Parcels_South — spatial only ───────────────────────────────
   if (resolvedLat != null && resolvedLng != null) try {
     const baseUrl = 'https://geo.sandag.org/server/rest/services/Hosted/Parcels_South/FeatureServer/0/query?';
-    const query = 'where=1%3D1' + arcgisPointParams(resolvedLat, resolvedLng, 'OWN_NAME1,APN_8');
+    const query = 'where=1%3D1' + arcgisPointParams(resolvedLat, resolvedLng, '*');
     const resp = await fetch(baseUrl + query, {
       headers: { 'Accept': 'application/json', 'Referer': 'https://sdgis.sandag.org/' }
     });
@@ -209,8 +217,8 @@ exports.handler = async function(event) {
         tried.push('sandag_south:arcgis_err:' + data.error.code + ':' + String(data.error.message||'').slice(0,40));
       } else if (data.features && data.features.length) {
         const attr = data.features[0].attributes;
-        const owner = attr.OWN_NAME1 || null;
-        const apn   = attr.APN_8 || null;
+        const owner = parseSandagOwner(attr);
+        const apn   = parseSandagApn(attr);
         if (owner) {
           return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner, apn, assessed_value: null, tax_delinquent: null, lat: resolvedLat, lng: resolvedLng, source: 'sandag_south' }) };
         }

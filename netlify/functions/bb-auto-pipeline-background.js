@@ -470,7 +470,7 @@ Respond ONLY with compact JSON (no prose):
     }
 
     // Geocode first — spatial queries are far more reliable than text LIKE matching
-    // Normalize "CA, 92001" → "CA 92001" — Census geocoder rejects comma before zip
+    // Normalize "CITY, CA, 92001" → "CITY, CA 92001" — Census rejects comma before zip
     const censusAddr = address.replace(/, ([A-Z]{2}), (\d{5})/, ', $1 $2');
     let lat = null, lng = null;
     try {
@@ -485,32 +485,38 @@ Respond ONLY with compact JSON (no prose):
       }
     } catch(e) {}
 
-    // Primary: SANDAG Parcels — spatial only (text fallback removed: SITUS_ADDRESS field doesn't exist)
+    // Helper: extract owner from SANDAG attributes using multiple field name candidates
+    function sandagOwner(a) {
+      return a.OWN_NAME1 || a.OWNER_NAME || a.OWNER || a.OWN_NAME || a.OWNERNME1 || a.OWN1 || null;
+    }
+    function sandagApn(a) { return a.APN_8 || a.APN || a.PARCEL_NBR || null; }
+
+    // Primary: SANDAG Parcels — spatial only, outFields=* avoids field-name errors
     if (lat != null) try {
-      const q = 'where=1%3D1' + arcgisPoint(lat, lng, 'OWN_NAME1,APN_8');
+      const q = 'where=1%3D1' + arcgisPoint(lat, lng, '*');
       const resp = await fetchWithTimeout(
         'https://geo.sandag.org/server/rest/services/Hosted/Parcels/FeatureServer/0/query?' + q,
         { headers: { Accept: 'application/json', Referer: 'https://sdgis.sandag.org/' } }, 5000);
       if (resp.ok) {
         const d = await resp.json();
-        if (d.features && d.features.length && d.features[0].attributes.OWN_NAME1) {
-          const a = d.features[0].attributes;
-          return { owner: a.OWN_NAME1, apn: a.APN_8 || null, lat, lng };
+        if (!d.error && d.features && d.features.length) {
+          const owner = sandagOwner(d.features[0].attributes);
+          if (owner) return { owner, apn: sandagApn(d.features[0].attributes), lat, lng };
         }
       }
     } catch(e) {}
 
     // Fallback: SANDAG Parcels_South — spatial only
     if (lat != null) try {
-      const q = 'where=1%3D1' + arcgisPoint(lat, lng, 'OWN_NAME1,APN_8');
+      const q = 'where=1%3D1' + arcgisPoint(lat, lng, '*');
       const resp = await fetchWithTimeout(
         'https://geo.sandag.org/server/rest/services/Hosted/Parcels_South/FeatureServer/0/query?' + q,
         { headers: { Accept: 'application/json', Referer: 'https://sdgis.sandag.org/' } }, 5000);
       if (resp.ok) {
         const d = await resp.json();
-        if (d.features && d.features.length && d.features[0].attributes.OWN_NAME1) {
-          const a = d.features[0].attributes;
-          return { owner: a.OWN_NAME1, apn: a.APN_8 || null, lat, lng };
+        if (!d.error && d.features && d.features.length) {
+          const owner = sandagOwner(d.features[0].attributes);
+          if (owner) return { owner, apn: sandagApn(d.features[0].attributes), lat, lng };
         }
       }
     } catch(e) {}
