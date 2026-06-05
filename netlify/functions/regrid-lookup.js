@@ -148,7 +148,7 @@ exports.handler = async function(event) {
       if (Array.isArray(matches) && matches.length) {
         resolvedLat = matches[0].coordinates.y;
         resolvedLng = matches[0].coordinates.x;
-        tried.push('census_geocode:ok');
+        tried.push('census_geocode:ok:' + resolvedLat.toFixed(4) + ',' + resolvedLng.toFixed(4));
       } else {
         tried.push('census_geocode:no_match');
       }
@@ -172,15 +172,19 @@ exports.handler = async function(event) {
     });
     if (resp.ok) {
       const data = await resp.json();
-      if (data.features && data.features.length) {
+      if (data.error) {
+        tried.push('sandag:arcgis_err:' + data.error.code + ':' + String(data.error.message||'').slice(0,40));
+      } else if (data.features && data.features.length) {
         const attr = data.features[0].attributes;
         const owner = attr.OWN_NAME1 || null;
         const apn   = attr.APN_8 || null;
         if (owner) {
           return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner, apn, assessed_value: null, tax_delinquent: null, lat: resolvedLat, lng: resolvedLng, source: 'sandag' }) };
         }
+        tried.push('sandag:ok_no_owner');
+      } else {
+        tried.push('sandag:ok_no_data');
       }
-      tried.push('sandag:ok_no_data');
     } else {
       tried.push('sandag:' + resp.status);
     }
@@ -200,15 +204,19 @@ exports.handler = async function(event) {
     });
     if (resp.ok) {
       const data = await resp.json();
-      if (data.features && data.features.length) {
+      if (data.error) {
+        tried.push('sandag_south:arcgis_err:' + data.error.code + ':' + String(data.error.message||'').slice(0,40));
+      } else if (data.features && data.features.length) {
         const attr = data.features[0].attributes;
         const owner = attr.OWN_NAME1 || null;
         const apn   = attr.APN_8 || null;
         if (owner) {
           return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner, apn, assessed_value: null, tax_delinquent: null, lat: resolvedLat, lng: resolvedLng, source: 'sandag_south' }) };
         }
+        tried.push('sandag_south:ok_no_owner');
+      } else {
+        tried.push('sandag_south:ok_no_data');
       }
-      tried.push('sandag_south:ok_no_data');
     } else {
       tried.push('sandag_south:' + resp.status);
     }
@@ -226,15 +234,19 @@ exports.handler = async function(event) {
     const resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
     if (resp.ok) {
       const data = await resp.json();
-      if (data.features && data.features.length) {
+      if (data.error) {
+        tried.push('sd_city:arcgis_err:' + data.error.code + ':' + String(data.error.message||'').slice(0,40));
+      } else if (data.features && data.features.length) {
         const attr = data.features[0].attributes;
         const owner = attr.OWN_NAME1 || null;
         const apn   = attr.APN_8 || null;
         if (owner) {
           return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner, apn, assessed_value: null, tax_delinquent: null, lat: resolvedLat, lng: resolvedLng, source: 'sd_city' }) };
         }
+        tried.push('sd_city:ok_no_owner');
+      } else {
+        tried.push('sd_city:ok_no_data');
       }
-      tried.push('sd_city:ok_no_data');
     } else {
       tried.push('sd_city:' + resp.status);
     }
