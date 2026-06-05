@@ -1,4 +1,4 @@
-var CACHE = 'fixmy-v2';
+var CACHE = 'fixmy-v3';
 
 // Pre-cache the shell on install
 self.addEventListener('install', function(e) {
@@ -20,7 +20,7 @@ self.addEventListener('activate', function(e) {
 
 // Fetch strategy:
 //   - Supabase + Netlify functions → network-only (never cache live data)
-//   - portal.html → stale-while-revalidate (instant load, updates in background)
+//   - portal.html → network-first (always latest when online, cache fallback offline)
 //   - Everything else → cache-first with network fallback
 self.addEventListener('fetch', function(e) {
   var url = e.request.url;
@@ -30,16 +30,16 @@ self.addEventListener('fetch', function(e) {
   if (url.includes('supabase.co') || url.includes('.netlify/functions') || url.includes('googleapis.com/maps/api')) return;
 
   if (url.includes('portal.html') || url === self.location.origin + '/') {
-    // Stale-while-revalidate for the app shell
+    // Network-first for the app shell — users always get the latest when online
     e.respondWith(
-      caches.open(CACHE).then(function(cache) {
-        return cache.match(e.request).then(function(cached) {
-          var fetchPromise = fetch(e.request).then(function(resp) {
-            if (resp.ok) cache.put(e.request, resp.clone());
-            return resp;
-          });
-          return cached || fetchPromise;
-        });
+      fetch(e.request).then(function(resp) {
+        if (resp.ok) {
+          var clone = resp.clone();
+          caches.open(CACHE).then(function(c) { c.put(e.request, clone); });
+        }
+        return resp;
+      }).catch(function() {
+        return caches.match(e.request);
       })
     );
     return;
