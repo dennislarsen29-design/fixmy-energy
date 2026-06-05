@@ -237,7 +237,7 @@ Sign & Pay: `sign_token, sign_token_expires_at, stripe_payment_intent_id`
 - **Customer photo upload SMS notification:** ✅ Built — `notify-photo-upload.js` fires after every customer upload. **Decision: Use GHL LC Phone instead of Twilio** (see SMS tooling decision below). Needs GHL workflow built to replace the Twilio path. Rep phones in `team_members`: Dennis Larsen (tech4) and Cristina Huang (tech5) are set.
 
 ### Deferred (budget/timing)
-- **BBB accreditation:** Valuable but deferred — limited budget, build other lead revenues + partner credibility first. Revisit when revenue stabilizes. Apply at bbb.org/apply (~$400-600/yr, 3-week process). Contact: (858) 737-7164, Business Relations dept.
+- **BBB accreditation:** Valuable but deferred — limited budget, build other lead revenues + partner credibility first. Revisit when revenue stabilizes. Apply at bbb.org/apply (~$400-600/yr, 3-week process).
 - **GHL SMS/calendar workflows:** Skipping GHL workflow automation for now, keep items on To Do.
 
 ## SMS Tooling Decision — GHL LC Phone over Twilio
