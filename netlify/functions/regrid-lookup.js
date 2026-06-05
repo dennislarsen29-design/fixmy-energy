@@ -136,10 +136,14 @@ exports.handler = async function(event) {
   // Street-centerline points fall OUTSIDE parcel polygons → SANDAG spatial query misses.
   // Census Bureau geocoder returns address-matched coordinates that land inside parcels.
   // Always geocode fresh; fall back to input coords only if Census can't resolve.
+  //
+  // Permit addresses are stored as "123 MAIN ST, CITY, CA, 92001" (comma before zip).
+  // Census geocoder expects "CA 92001" (no comma before zip) — normalize before calling.
+  const censusAddress = address.replace(/, ([A-Z]{2}), (\d{5})/, ', $1 $2');
   let resolvedLat = null, resolvedLng = null;
   try {
     const geocodeUrl = 'https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?'
-      + 'address=' + encodeURIComponent(address)
+      + 'address=' + encodeURIComponent(censusAddress)
       + '&benchmark=Public_AR_Current&format=json';
     const geocodeResp = await fetch(geocodeUrl, { headers: { 'Accept': 'application/json' } });
     if (geocodeResp.ok) {
@@ -161,12 +165,11 @@ exports.handler = async function(event) {
   // Fall back to caller-supplied coords only when Census can't resolve
   if (resolvedLat == null) { resolvedLat = lat; resolvedLng = lng; }
 
-  // ── 4. SANDAG geo.sandag.org — spatial if lat/lng available, text fallback ─
-  try {
+  // ── 4. SANDAG geo.sandag.org — spatial only (text fallback removed: field name unknown) ─
+  if (resolvedLat == null || resolvedLng == null) tried.push('sandag:skip_no_coords');
+  if (resolvedLat != null && resolvedLng != null) try {
     const baseUrl = 'https://geo.sandag.org/server/rest/services/Hosted/Parcels/FeatureServer/0/query?';
-    const query = (resolvedLat != null && resolvedLng != null)
-      ? 'where=1%3D1' + arcgisPointParams(resolvedLat, resolvedLng, 'SITUS_ADDRESS,OWN_NAME1,APN_8')
-      : 'where=' + encodeURIComponent("SITUS_ADDRESS LIKE '" + addrParts + "%'") + '&outFields=SITUS_ADDRESS,OWN_NAME1,APN_8&f=json&resultRecordCount=1';
+    const query = 'where=1%3D1' + arcgisPointParams(resolvedLat, resolvedLng, 'OWN_NAME1,APN_8');
     const resp = await fetch(baseUrl + query, {
       headers: { 'Accept': 'application/json', 'Referer': 'https://sdgis.sandag.org/' }
     });
@@ -193,12 +196,10 @@ exports.handler = async function(event) {
     console.error('SANDAG error:', e.message);
   }
 
-  // ── 5. SANDAG Parcels_South — spatial if lat/lng available ───────────────
-  try {
+  // ── 5. SANDAG Parcels_South — spatial only ───────────────────────────────
+  if (resolvedLat != null && resolvedLng != null) try {
     const baseUrl = 'https://geo.sandag.org/server/rest/services/Hosted/Parcels_South/FeatureServer/0/query?';
-    const query = (resolvedLat != null && resolvedLng != null)
-      ? 'where=1%3D1' + arcgisPointParams(resolvedLat, resolvedLng, 'SITUS_ADDRESS,OWN_NAME1,APN_8')
-      : 'where=' + encodeURIComponent("SITUS_ADDRESS LIKE '" + addrParts + "%'") + '&outFields=SITUS_ADDRESS,OWN_NAME1,APN_8&f=json&resultRecordCount=1';
+    const query = 'where=1%3D1' + arcgisPointParams(resolvedLat, resolvedLng, 'OWN_NAME1,APN_8');
     const resp = await fetch(baseUrl + query, {
       headers: { 'Accept': 'application/json', 'Referer': 'https://sdgis.sandag.org/' }
     });

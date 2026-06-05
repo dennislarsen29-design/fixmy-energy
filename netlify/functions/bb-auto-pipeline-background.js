@@ -470,11 +470,13 @@ Respond ONLY with compact JSON (no prose):
     }
 
     // Geocode first — spatial queries are far more reliable than text LIKE matching
+    // Normalize "CA, 92001" → "CA 92001" — Census geocoder rejects comma before zip
+    const censusAddr = address.replace(/, ([A-Z]{2}), (\d{5})/, ', $1 $2');
     let lat = null, lng = null;
     try {
       const geocodeResp = await fetchWithTimeout(
         'https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?address='
-          + encodeURIComponent(address) + '&benchmark=Public_AR_Current&format=json',
+          + encodeURIComponent(censusAddr) + '&benchmark=Public_AR_Current&format=json',
         { headers: { Accept: 'application/json' } }, 6000);
       if (geocodeResp.ok) {
         const gd = await geocodeResp.json();
@@ -483,11 +485,9 @@ Respond ONLY with compact JSON (no prose):
       }
     } catch(e) {}
 
-    // Primary: SANDAG Parcels — spatial if geocoded, text fallback
-    try {
-      const q = (lat != null)
-        ? 'where=1%3D1' + arcgisPoint(lat, lng, 'OWN_NAME1,APN_8')
-        : 'where=' + encodeURIComponent("SITUS_ADDRESS LIKE '" + addrParts + "%'") + '&outFields=OWN_NAME1,APN_8&f=json&resultRecordCount=1';
+    // Primary: SANDAG Parcels — spatial only (text fallback removed: SITUS_ADDRESS field doesn't exist)
+    if (lat != null) try {
+      const q = 'where=1%3D1' + arcgisPoint(lat, lng, 'OWN_NAME1,APN_8');
       const resp = await fetchWithTimeout(
         'https://geo.sandag.org/server/rest/services/Hosted/Parcels/FeatureServer/0/query?' + q,
         { headers: { Accept: 'application/json', Referer: 'https://sdgis.sandag.org/' } }, 5000);
@@ -500,11 +500,9 @@ Respond ONLY with compact JSON (no prose):
       }
     } catch(e) {}
 
-    // Fallback: SANDAG Parcels_South
-    try {
-      const q = (lat != null)
-        ? 'where=1%3D1' + arcgisPoint(lat, lng, 'OWN_NAME1,APN_8')
-        : 'where=' + encodeURIComponent("SITUS_ADDRESS LIKE '" + addrParts + "%'") + '&outFields=OWN_NAME1,APN_8&f=json&resultRecordCount=1';
+    // Fallback: SANDAG Parcels_South — spatial only
+    if (lat != null) try {
+      const q = 'where=1%3D1' + arcgisPoint(lat, lng, 'OWN_NAME1,APN_8');
       const resp = await fetchWithTimeout(
         'https://geo.sandag.org/server/rest/services/Hosted/Parcels_South/FeatureServer/0/query?' + q,
         { headers: { Accept: 'application/json', Referer: 'https://sdgis.sandag.org/' } }, 5000);
