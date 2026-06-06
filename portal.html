@@ -8877,21 +8877,26 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           h += '<div style="text-align:center;padding:32px 16px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:14px;margin-bottom:12px;">';
           h += '<div style="font-size:2rem;margin-bottom:12px;">📍</div>';
           h += '<div style="font-size:0.9rem;font-weight:700;margin-bottom:6px;">Find Nearest Leads</div>';
-          h += '<div style="font-size:0.75rem;color:#888;margin-bottom:18px;">Uses your GPS to route you to the closest orphaned account leads first. No more driving across town.</div>';
+          h += '<div style="font-size:0.75rem;color:#888;margin-bottom:18px;">Uses your GPS to route you to the closest orphaned account leads first.</div>';
           h += '<button onclick="canvassInit()" style="background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;padding:14px 32px;font-size:0.9rem;font-weight:700;cursor:pointer;">📍 Get My Location</button>';
+          h += '<div style="margin-top:14px;"><button onclick="canvassLoadNoGps()" style="background:none;border:none;color:#555;font-size:0.75rem;cursor:pointer;text-decoration:underline;">Browse without GPS →</button></div>';
           h += '</div>';
           var knockedToday = canvassLeads.filter(function(l){ return l.knock_status && l.knocked_at && (Date.now()-new Date(l.knocked_at).getTime() < 86400000); }).length;
           if (knockedToday) h += '<div style="font-size:0.72rem;color:#8DC63F;text-align:center;margin-top:8px;">✓ '+knockedToday+' doors knocked today</div>';
         }
 
         else if (canvassGpsStatus === 'loading') {
-          h += '<div style="text-align:center;padding:48px;color:#888;font-size:0.85rem;">Locating you and loading leads…</div>';
+          h += '<div style="text-align:center;padding:32px 16px;">';
+          h += '<div style="color:#888;font-size:0.85rem;margin-bottom:18px;">Locating you and loading leads…</div>';
+          h += '<button onclick="canvassLoadNoGps()" style="background:rgba(255,255,255,0.07);color:#aaa;border:1px solid rgba(255,255,255,0.15);border-radius:100px;padding:10px 24px;font-size:0.8rem;font-weight:700;cursor:pointer;">⏩ Skip GPS</button>';
+          h += '</div>';
         }
 
         else if (canvassGpsStatus === 'error') {
           h += '<div style="text-align:center;padding:32px 16px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.2);border-radius:14px;">';
-          h += '<div style="color:#ef4444;font-size:0.85rem;margin-bottom:14px;">⚠ Location access denied. Enable location in your browser settings.</div>';
-          h += '<button onclick="canvassInit()" style="background:rgba(255,255,255,0.08);color:#ccc;border:1px solid rgba(255,255,255,0.15);border-radius:100px;padding:10px 22px;font-size:0.8rem;font-weight:700;cursor:pointer;">Try Again</button>';
+          h += '<div style="color:#ef4444;font-size:0.85rem;margin-bottom:14px;">⚠ Location unavailable.</div>';
+          h += '<button onclick="canvassLoadNoGps()" style="background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;padding:12px 28px;font-size:0.85rem;font-weight:700;cursor:pointer;margin-bottom:10px;">Load Leads Without GPS</button>';
+          h += '<div><button onclick="canvassInit()" style="background:none;border:none;color:#555;font-size:0.72rem;cursor:pointer;text-decoration:underline;">↻ Try GPS again</button></div>';
           h += '</div>';
         }
 
@@ -9422,15 +9427,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             setTimeout(function(){ reject(new Error('GPS timeout')); }, 12000);
           })
         ]);
-        canvassUserLat = pos.coords.latitude;
-        canvassUserLng = pos.coords.longitude;
+        await _canvassLoadLeads(pos.coords.latitude, pos.coords.longitude);
       } catch(e) {
-        canvassGpsStatus = 'error';
-        renderSales();
-        return;
+        await _canvassLoadLeads(null, null); // GPS failed — load without distance sorting
       }
+    };
 
-      // Load orphaned leads without knock_status (or already loaded in allRecords)
+    window.canvassLoadNoGps = async function() {
+      await _canvassLoadLeads(null, null);
+    };
+
+    async function _canvassLoadLeads(userLat, userLng) {
+      canvassGpsStatus = 'loading';
+      canvassUserLat = userLat;
+      canvassUserLng = userLng;
+      renderSales();
+
       var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
       var queryResult = await Promise.race([
         c2.from('customers')
@@ -9464,22 +9476,26 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         })();
       }
 
-      // Sort by distance (leads without coords go to end)
-      rawLeads.forEach(function(l) {
-        if (l.lat && l.lng) l._distMi = canvassHaversine(canvassUserLat, canvassUserLng, l.lat, l.lng);
-        else l._distMi = null;
-      });
+      // Sort by distance if GPS available, else alphabetically by address
+      if (userLat && userLng) {
+        rawLeads.forEach(function(l) {
+          l._distMi = (l.lat && l.lng) ? canvassHaversine(userLat, userLng, l.lat, l.lng) : null;
+        });
+      }
       rawLeads.sort(function(a, b) {
         if (a.knock_status && !b.knock_status) return 1;
         if (!a.knock_status && b.knock_status) return -1;
-        var dA = a._distMi != null ? a._distMi : 9999;
-        var dB = b._distMi != null ? b._distMi : 9999;
-        return dA - dB;
+        if (userLat && userLng) {
+          var dA = a._distMi != null ? a._distMi : 9999;
+          var dB = b._distMi != null ? b._distMi : 9999;
+          return dA - dB;
+        }
+        return (a.address||'').localeCompare(b.address||'');
       });
       canvassLeads = rawLeads.filter(function(l){ return canvassSkipIds.indexOf(l.id) < 0; });
       canvassGpsStatus = 'ready';
       renderSales();
-    };
+    }
 
     window.canvassKnock = async function(id, knockStatus) {
       var lead = canvassLeads.find(function(l){ return l.id === id; });
