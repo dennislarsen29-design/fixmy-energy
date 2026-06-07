@@ -4222,6 +4222,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var unvisited = adminCanvassLeads.filter(function(l){ return !l.knock_status && l.address; });
     var batch = unvisited.slice(0, n || 5);
     if (!batch.length) return;
+    // Nearest-neighbor optimizer: reorder stops for efficient driving when coords available
+    if (adminCanvassUserLat && adminCanvassUserLng) {
+      var hav = function(a,b,c,d){var R=3958.8,dL=(c-a)*Math.PI/180,dG=(d-b)*Math.PI/180,x=Math.sin(dL/2)*Math.sin(dL/2)+Math.cos(a*Math.PI/180)*Math.cos(c*Math.PI/180)*Math.sin(dG/2)*Math.sin(dG/2);return R*2*Math.atan2(Math.sqrt(x),Math.sqrt(1-x));};
+      var rem=batch.slice(),ordered=[],cLat=adminCanvassUserLat,cLng=adminCanvassUserLng;
+      while(rem.length){var bi=-1,bd=Infinity;rem.forEach(function(l,i){if(l.lat&&l.lng){var d=hav(cLat,cLng,l.lat,l.lng);if(d<bd){bd=d;bi=i;}}});if(bi<0){ordered=ordered.concat(rem);break;}cLat=rem[bi].lat;cLng=rem[bi].lng;ordered.push(rem.splice(bi,1)[0]);}
+      batch = ordered;
+    }
     var addrs = batch.map(function(l){ return l.address; });
     var origin, destination, waypoints;
     if (adminCanvassUserLat && adminCanvassUserLng) {
@@ -9455,10 +9462,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       try {
         var pos = await Promise.race([
           new Promise(function(resolve, reject) {
-            navigator.geolocation.getCurrentPosition(resolve, reject, {enableHighAccuracy:false, timeout:10000, maximumAge:60000});
+            navigator.geolocation.getCurrentPosition(resolve, reject, {enableHighAccuracy:true, timeout:12000});
           }),
           new Promise(function(_, reject) {
-            setTimeout(function(){ reject(new Error('GPS timeout')); }, 12000);
+            setTimeout(function(){ reject(new Error('GPS timeout')); }, 14000);
           })
         ]);
         await _canvassLoadLeads(pos.coords.latitude, pos.coords.longitude);
@@ -9581,9 +9588,28 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var unvisited = canvassLeads.filter(function(l){ return !l.knock_status && l.address; });
       var batch = unvisited.slice(0, n || 5);
       if (!batch.length) return;
-      var stops = batch.map(function(l){ return encodeURIComponent(l.address); });
-      var origin = (canvassUserLat && canvassUserLng) ? canvassUserLat+','+canvassUserLng : stops.shift();
-      var url = 'https://www.google.com/maps/dir/' + origin + '/' + stops.join('/');
+      // Nearest-neighbor optimizer: reorder stops for efficient driving when coords available
+      if (canvassUserLat && canvassUserLng) {
+        var hav = function(a,b,c,d){var R=3958.8,dL=(c-a)*Math.PI/180,dG=(d-b)*Math.PI/180,x=Math.sin(dL/2)*Math.sin(dL/2)+Math.cos(a*Math.PI/180)*Math.cos(c*Math.PI/180)*Math.sin(dG/2)*Math.sin(dG/2);return R*2*Math.atan2(Math.sqrt(x),Math.sqrt(1-x));};
+        var rem=batch.slice(),ordered=[],cLat=canvassUserLat,cLng=canvassUserLng;
+        while(rem.length){var bi=-1,bd=Infinity;rem.forEach(function(l,i){if(l.lat&&l.lng){var d=hav(cLat,cLng,l.lat,l.lng);if(d<bd){bd=d;bi=i;}}});if(bi<0){ordered=ordered.concat(rem);break;}cLat=rem[bi].lat;cLng=rem[bi].lng;ordered.push(rem.splice(bi,1)[0]);}
+        batch = ordered;
+      }
+      var addrs = batch.map(function(l){ return l.address; });
+      var origin, destination, waypoints;
+      if (canvassUserLat && canvassUserLng) {
+        origin = canvassUserLat + ',' + canvassUserLng;
+        destination = encodeURIComponent(addrs[addrs.length - 1]);
+        waypoints = addrs.slice(0, addrs.length - 1).map(encodeURIComponent).join('|');
+      } else {
+        origin = encodeURIComponent(addrs[0]);
+        destination = encodeURIComponent(addrs[addrs.length - 1]);
+        waypoints = addrs.slice(1, addrs.length - 1).map(encodeURIComponent).join('|');
+      }
+      var url = 'https://www.google.com/maps/dir/?api=1&travelmode=driving'
+        + '&origin=' + origin
+        + '&destination=' + destination
+        + (waypoints ? '&waypoints=' + waypoints : '');
       window.open(url, '_blank');
     };
 
