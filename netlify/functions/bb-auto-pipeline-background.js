@@ -788,15 +788,19 @@ Respond ONLY with raw JSON, no markdown, no code fences:
   let tracerfyResult = 'skipped — TRACERFY_API_KEY not set';
   let contactsAdded = 0;
 
+  const TRACERFY_BATCH_CAP = 500; // credits per run — adjust after verifying hit rate
+
   if (tracerfyKey) {
+    // enrichment_source=is.null excludes leads already tried (no result) or already enriched
     const noContactRes = await supaFetch(
-      '/customers?lead_source=eq.orphaned_list&sold_type=is.null&phone=is.null&email=is.null&select=id,address,install_year&limit=10000'
+      '/customers?lead_source=eq.orphaned_list&sold_type=is.null&phone=is.null&email=is.null&enrichment_source=is.null&select=id,address,install_year&limit=10000'
     );
     const allNoContact = (Array.isArray(noContactRes.data) ? noContactRes.data : []).filter(r => r.address);
-    // Filter to complete addresses only, then sort newest install year first (highest value leads)
+    // Filter to complete addresses, sort newest install year first (highest value), cap to per-run budget
     const skipLeads = allNoContact
       .filter(l => addressQualityScore(l.address) >= 9)
-      .sort((a, b) => (b.install_year || 0) - (a.install_year || 0));
+      .sort((a, b) => (b.install_year || 0) - (a.install_year || 0))
+      .slice(0, TRACERFY_BATCH_CAP);
     stamp(`Phase 3: ${skipLeads.length}/${allNoContact.length} leads pass address quality filter`);
 
     if (skipLeads.length === 0) {
@@ -861,6 +865,19 @@ Respond ONLY with raw JSON, no markdown, no code fences:
         if (data.queue_id || data.id) {
           queueId = String(data.queue_id || data.id);
           stamp(`Phase 3: submitted ${skipLeads.length} leads — queue_id=${queueId}`);
+          // Mark all submitted leads as tried so they aren't resubmitted on future runs
+          // even if Tracerfy returns no result for them
+          for (let mi = 0; mi < skipLeads.length; mi += 50) {
+            if (overGlobal()) break;
+            const ids = skipLeads.slice(mi, mi + 50).map(l => l.id);
+            await fetchWithTimeout(
+              SUPA_REST + '/customers?id=in.(' + ids.map(encodeURIComponent).join(',') + ')',
+              { method: 'PATCH', headers: supaHeaders, body: JSON.stringify({ enrichment_source: 'tracerfy' }) },
+              10000
+            ).catch(() => {});
+            await sleep(50);
+          }
+          stamp(`Phase 3: marked ${skipLeads.length} leads as tracerfy-tried`);
         } else if (data.error || data.detail) {
           stamp(`Phase 3: Tracerfy error: ${data.error || data.detail}`);
           tracerfyResult = 'submit failed: ' + (data.error || data.detail);
