@@ -473,6 +473,122 @@ Respond ONLY with raw JSON, no markdown, no code fences:
   }
   stamp(`Phase 1 inserted: ${inserted} records`);
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // PHASE 1b — OC / RIVERSIDE PERMIT PULL (via PermitStack)
+  // Activated when expansion index ≥ 20 (OC) or ≥ 54 (Riverside).
+  // Queries PermitStack city-by-city so no geographic filter is needed —
+  // the city query is already precise. Shares seenLocal1b + existingAddrs for dedup.
+  // ══════════════════════════════════════════════════════════════════════════
+  let inserted1b = 0;
+  {
+    const psKey = process.env.PERMITSTACK_KEY;
+    const PS_BASE = 'https://api.permit-stack.com/v1';
+    const OC_PS_CITIES = expansionIndex >= 20 ? [
+      'Irvine','Anaheim','Santa Ana','Garden Grove','Orange','Fullerton',
+      'Laguna Niguel','Mission Viejo','Lake Forest','Dana Point',
+      'Laguna Beach','Laguna Hills','Aliso Viejo','San Clemente','Laguna Woods'
+    ] : [];
+    const RIV_PS_CITIES = expansionIndex >= 54 ? [
+      'Temecula','Murrieta','Riverside','Moreno Valley','Hemet','Perris'
+    ] : [];
+    const activePSCities = [...OC_PS_CITIES, ...RIV_PS_CITIES];
+
+    if (!psKey) {
+      stamp('Phase 1b: skipped — PERMITSTACK_KEY not set');
+    } else if (!activePSCities.length) {
+      stamp(`Phase 1b: skipped — expansion index ${expansionIndex} below OC threshold (need ≥20)`);
+    } else {
+      stamp(`=== Phase 1b: PermitStack — ${activePSCities.length} cities (OC:${OC_PS_CITIES.length} RIV:${RIV_PS_CITIES.length}) ===`);
+      const PHASE1B_DEADLINE = Date.now() + (4 * 60 * 1000);
+      const psHeaders = { 'X-API-Key': psKey, 'Accept': 'application/json' };
+      const seenLocal1b = new Set();
+
+      const extractPSAddress = (p, defaultCity) => {
+        const street = String(
+          p.address_street || p.street_address || p.address || p.site_address || ''
+        ).split(',')[0].trim();
+        const city  = String(p.city || defaultCity || '').trim();
+        const state = 'CA';
+        const zip   = String(p.zip || p.zip_code || p.postal_code || '').replace(/\D/g, '').slice(0, 5);
+        const full  = [street, city, state, zip].filter(Boolean).join(', ');
+        const rawDate = p.issue_date || p.issued_date || p.permit_date || p.filed_date || '';
+        const installYear = rawDate ? (new Date(rawDate).getFullYear() || null) : null;
+        const desc = p.work_description || p.description || p.scope_of_work || '';
+        return { street, city, state, zip, fullAddress: full, installYear, systemSizeKw: extractKw(desc) };
+      };
+
+      outer1b: for (const installer of sortedInstallers) {
+        if (Date.now() > PHASE1B_DEADLINE || overGlobal()) break;
+        for (const city of activePSCities) {
+          if (Date.now() > PHASE1B_DEADLINE || overGlobal()) break outer1b;
+          for (const qname of installer.names) {
+            if (Date.now() > PHASE1B_DEADLINE || overGlobal()) break outer1b;
+            let page = 1;
+            while (page <= 30) {
+              if (Date.now() > PHASE1B_DEADLINE || overGlobal()) break;
+              const url = `${PS_BASE}/permits/search?city=${encodeURIComponent(city)}&keyword=${encodeURIComponent(qname)}&per_page=100&page=${page}`;
+              let resp;
+              try {
+                resp = await fetchWithTimeout(url, { headers: psHeaders }, 10000);
+              } catch(e) {
+                stamp(`  1b ${city}/"${qname}" fetch err: ${e.message}`);
+                break;
+              }
+              if (!resp.ok) {
+                if (resp.status === 429) await sleep(2000);
+                break;
+              }
+              let body;
+              try { body = await resp.json(); } catch(e) { break; }
+              const batch = body.permits || body.results || body.data || [];
+              if (!Array.isArray(batch) || !batch.length) break;
+
+              const batchRecs = [];
+              for (const p of batch) {
+                const { street, city: pCity, state, zip, fullAddress, installYear, systemSizeKw } =
+                  extractPSAddress(p, city);
+                if (!street || !/^\d/.test(street)) continue;
+                const key = normAddr(fullAddress);
+                if (!key || seenLocal1b.has(key) || existingAddrs.has(key)) continue;
+                const candidate = {
+                  address: fullAddress,
+                  lead_category: 'fixmy',
+                  step: 1,
+                  lead_source: 'orphaned_list',
+                  black_box: true,
+                  original_installer: installer.name,
+                  install_year: installYear || null,
+                  system_size: systemSizeKw ? parseFloat(systemSizeKw) : null,
+                  notes: installer.name
+                    + (systemSizeKw ? ' · ' + systemSizeKw + 'kW' : '')
+                    + (installYear ? ' · Installed ' + installYear : '')
+                };
+                if (!qualifyPermit(candidate)) continue;
+                seenLocal1b.add(key);
+                candidate.lead_score = calcLeadScore(candidate);
+                batchRecs.push(candidate);
+              }
+
+              if (batchRecs.length) {
+                const ok = await supaInsertBatch(batchRecs);
+                if (ok) {
+                  inserted1b += batchRecs.length;
+                  batchRecs.forEach(r => existingAddrs.add(normAddr(r.address)));
+                }
+              }
+
+              if (batch.length < 100) break;
+              page++;
+              await sleep(80);
+            }
+          }
+          await sleep(50);
+        }
+      }
+      stamp(`Phase 1b inserted: ${inserted1b} records`);
+    }
+  }
+
   // ── Advance zip expansion index +5 after successful Phase 1 ──────────────
   if (expansionIndex < EXPANSION_QUEUE.length) {
     const newIndex = Math.min(expansionIndex + 5, EXPANSION_QUEUE.length);
@@ -873,6 +989,7 @@ Respond ONLY with raw JSON, no markdown, no code fences:
   const summary = {
     run_at: new Date().toISOString(),
     phase1_new_permits: inserted,
+    phase1b_new_permits: inserted1b,
     phase1_by_installer: pullSummary.filter(s => s.new > 0),
     phase2_owners_added: enriched,
     phase3_tracerfy: tracerfyResult,
@@ -884,6 +1001,7 @@ Respond ONLY with raw JSON, no markdown, no code fences:
     const runTs = new Date().toISOString();
     const runSummary = JSON.stringify({
       phase1_new_permits: summary.phase1_new_permits,
+      phase1b_new_permits: summary.phase1b_new_permits,
       phase1_by_installer: summary.phase1_by_installer,
       phase2_owners_added: summary.phase2_owners_added,
       phase3_tracerfy: summary.phase3_tracerfy,
