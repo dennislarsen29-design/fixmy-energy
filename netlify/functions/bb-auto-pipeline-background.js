@@ -82,6 +82,10 @@ exports.handler = async function(event) {
     'Prefer': 'return=minimal'
   };
 
+  let bodyParams = {};
+  try { bodyParams = JSON.parse(event.body || '{}'); } catch(e) {}
+  const enrichOnly = !!bodyParams.enrich_only;
+
   const log = [];
   function stamp(msg) {
     const ts = new Date().toISOString().slice(11, 19);
@@ -481,6 +485,9 @@ Respond ONLY with raw JSON, no markdown, no code fences:
   // ══════════════════════════════════════════════════════════════════════════
   let inserted1b = 0;
   {
+    if (enrichOnly) {
+      stamp('Phase 1b: skipped (enrich_only mode)');
+    } else {
     const psKey = process.env.PERMITSTACK_KEY;
     const PS_BASE = 'https://api.permit-stack.com/v1';
     const OC_PS_CITIES = expansionIndex >= 20 ? [
@@ -587,6 +594,7 @@ Respond ONLY with raw JSON, no markdown, no code fences:
       }
       stamp(`Phase 1b inserted: ${inserted1b} records`);
     }
+    } // end !enrichOnly
   }
 
   // ── Advance zip expansion index +5 after successful Phase 1 ──────────────
@@ -611,7 +619,7 @@ Respond ONLY with raw JSON, no markdown, no code fences:
   // ══════════════════════════════════════════════════════════════════════════
   stamp('=== Phase 2: Owner enrichment ===');
 
-  const PHASE2_DEADLINE = Date.now() + (6 * 60 * 1000);
+  const PHASE2_DEADLINE = Date.now() + ((enrichOnly ? 10 : 6) * 60 * 1000);
 
   const unenrichedRes = await supaFetch(
     '/customers?lead_source=eq.orphaned_list&title_owner=is.null&select=id,address&limit=2000'
@@ -788,7 +796,7 @@ Respond ONLY with raw JSON, no markdown, no code fences:
   let tracerfyResult = 'skipped — TRACERFY_API_KEY not set';
   let contactsAdded = 0;
 
-  const TRACERFY_BATCH_CAP = 500; // credits per run — adjust after verifying hit rate
+  const TRACERFY_BATCH_CAP = enrichOnly ? 2000 : 500;
 
   if (tracerfyKey) {
     // enrichment_source=is.null excludes leads already tried (no result) or already enriched
