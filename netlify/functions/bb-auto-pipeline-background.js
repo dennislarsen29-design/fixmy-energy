@@ -506,6 +506,24 @@ Respond ONLY with raw JSON, no markdown, no code fences:
 
   const regridKey = process.env.REGRID_KEY;
 
+  // Mirrors regrid-lookup.js logic: Regrid lat/lon → Regrid search → SANDAG → SD City GIS
+  function parseRegridFeature(feat) {
+    if (!feat) return null;
+    const f = (feat.properties && feat.properties.fields) || feat.fields || {};
+    const owner = f.owner || f.owner2 || f.mail_name || null;
+    if (!owner) return null;
+    const rawVal = String(f.parval || f.improvval || f.landval || '').replace(/[$,\s]/g, '');
+    return {
+      owner,
+      apn: f.parcelnumb || f.parcelnumb_formatted || f.apn || null,
+      assessed_value: rawVal ? (parseInt(rawVal, 10) || null) : null,
+      tax_delinquent: f.tax_delinquent != null ? (String(f.tax_delinquent).toUpperCase() === 'Y' || f.tax_delinquent === true) : null
+    };
+  }
+  function regridFeatures(d) {
+    return (d.parcels && d.parcels.features) || (d.results && d.results.features) || d.results || d.features || [];
+  }
+
   async function lookupOwner(address) {
     function arcgisPoint(qlat, qlng, outFields) {
       return '&geometry=' + encodeURIComponent(JSON.stringify({ x: qlng, y: qlat }))
@@ -513,87 +531,110 @@ Respond ONLY with raw JSON, no markdown, no code fences:
         + '&outFields=' + outFields + '&f=json&resultRecordCount=1';
     }
     function sandagOwner(a) {
-      return a.OWN_NAME1 || a.OWNER_NAME || a.OWNER || a.OWN_NAME || a.OWNERNME1 || a.OWN1 || null;
+      return a.OWN_NAME1 || a.OWNER_NAME || a.OWNER || a.OWN_NAME || a.OWNERNME1 || a.OWN1 || a.OWNER1 || a.PARCEL_OWNER || null;
     }
-    function sandagApn(a) { return a.APN_8 || a.APN || a.PARCEL_NBR || null; }
+    function sandagApn(a) { return a.APN_8 || a.APN || a.PARCEL_NBR || a.ASSESSOR_PARCEL_NUMBER || null; }
+    const regridHdrs = { Authorization: 'Bearer ' + regridKey, Accept: 'application/json' };
 
-    // Step 1: Census geocode — needed for SANDAG spatial queries; also provides lat/lng for record
+    // Step 1: Census geocode (required for spatial queries; provides lat/lng for record)
     const censusAddr = address.replace(/, ([A-Z]{2}), (\d{5})/, ', $1 $2');
     let lat = null, lng = null;
     try {
-      const geocodeResp = await fetchWithTimeout(
+      const r = await fetchWithTimeout(
         'https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?address='
           + encodeURIComponent(censusAddr) + '&benchmark=Public_AR_Current&format=json',
         { headers: { Accept: 'application/json' } }, 10000);
-      if (geocodeResp.ok) {
-        const gd = await geocodeResp.json();
+      if (r.ok) {
+        const gd = await r.json();
         const m = gd.result && gd.result.addressMatches;
         if (Array.isArray(m) && m.length) { lat = m[0].coordinates.y; lng = m[0].coordinates.x; }
       }
-    } catch(e) { stamp('Phase 2: geocode error for "' + address.slice(0, 40) + '": ' + e.message); }
+    } catch(e) { stamp('Phase 2: geocode err: ' + e.message); }
 
-    // Step 2 (PRIMARY): Regrid address search — paid API, reliable
-    if (regridKey) {
+    // Step 2a (PRIMARY): Regrid lat/lon — most precise, requires geocoded coords
+    if (regridKey && lat != null) {
       try {
-        const url = 'https://app.regrid.com/api/v1/search.json?query='
-          + encodeURIComponent(address) + '&limit=3';
-        const resp = await fetchWithTimeout(url,
-          { headers: { Authorization: 'Bearer ' + regridKey, Accept: 'application/json' } }, 8000);
-        if (resp.ok) {
-          const d = await resp.json();
-          const features = (d.parcels && d.parcels.features) || d.features || [];
-          if (Array.isArray(features) && features.length) {
-            const f = (features[0].properties && features[0].properties.fields) || features[0].fields || {};
-            const owner = f.owner || f.owner2 || null;
-            if (owner) {
-              const rawVal = String(f.parval || f.improvval || f.landval || '').replace(/[$,\s]/g, '');
-              const assessedValue = rawVal ? (parseInt(rawVal, 10) || null) : null;
-              const taxDelinquent = f.tax_delinquent != null
-                ? (String(f.tax_delinquent).toUpperCase() === 'Y' || f.tax_delinquent === true) : null;
-              const rLat = lat || (features[0].geometry && features[0].geometry.coordinates && features[0].geometry.coordinates[1]) || null;
-              const rLng = lng || (features[0].geometry && features[0].geometry.coordinates && features[0].geometry.coordinates[0]) || null;
-              return { owner, apn: f.parcelnumb || f.apn || null, assessed_value: assessedValue, tax_delinquent: taxDelinquent, lat: rLat, lng: rLng };
-            }
+        const r = await fetchWithTimeout(
+          'https://app.regrid.com/api/v1/search.json?lat=' + lat + '&lon=' + lng + '&radius=0',
+          { headers: regridHdrs }, 8000);
+        if (r.ok) {
+          const d = await r.json();
+          stamp('Phase 2: Regrid lat/lon raw keys: ' + Object.keys(d).join(','));
+          const parsed = parseRegridFeature((regridFeatures(d) || [])[0]);
+          if (parsed) {
+            const geoLat = lat || ((regridFeatures(d)[0] && regridFeatures(d)[0].geometry && regridFeatures(d)[0].geometry.coordinates) || [])[1] || null;
+            const geoLng = lng || ((regridFeatures(d)[0] && regridFeatures(d)[0].geometry && regridFeatures(d)[0].geometry.coordinates) || [])[0] || null;
+            return { ...parsed, lat: geoLat, lng: geoLng };
           }
-        } else {
-          stamp('Phase 2: Regrid HTTP ' + resp.status + ' for "' + address.slice(0, 40) + '"');
-        }
-      } catch(e) { stamp('Phase 2: Regrid error for "' + address.slice(0, 40) + '": ' + e.message); }
+        } else { stamp('Phase 2: Regrid lat/lon HTTP ' + r.status); }
+      } catch(e) { stamp('Phase 2: Regrid lat/lon err: ' + e.message); }
     }
 
-    // Step 3 (free fallback): SANDAG Parcels — spatial query, requires geocoded lat/lng
+    // Step 2b: Regrid address search fallback
+    if (regridKey) {
+      try {
+        const r = await fetchWithTimeout(
+          'https://app.regrid.com/api/v1/search.json?query=' + encodeURIComponent(address) + '&limit=3',
+          { headers: regridHdrs }, 8000);
+        if (r.ok) {
+          const d = await r.json();
+          const feats = regridFeatures(d);
+          const parsed = parseRegridFeature(Array.isArray(feats) ? feats[0] : null);
+          if (parsed) {
+            const geo = Array.isArray(feats) && feats[0] && feats[0].geometry && feats[0].geometry.coordinates;
+            return { ...parsed, lat: lat || (geo && geo[1]) || null, lng: lng || (geo && geo[0]) || null };
+          }
+        } else { stamp('Phase 2: Regrid search HTTP ' + r.status); }
+      } catch(e) { stamp('Phase 2: Regrid search err: ' + e.message); }
+    }
+
+    // Step 3: SANDAG Parcels (free, spatial)
     if (lat != null) try {
       const q = 'where=1%3D1' + arcgisPoint(lat, lng, '*');
-      const resp = await fetchWithTimeout(
+      const r = await fetchWithTimeout(
         'https://geo.sandag.org/server/rest/services/Hosted/Parcels/FeatureServer/0/query?' + q,
         { headers: { Accept: 'application/json', Referer: 'https://sdgis.sandag.org/' } }, 5000);
-      if (resp.ok) {
-        const d = await resp.json();
+      if (r.ok) {
+        const d = await r.json();
         if (!d.error && d.features && d.features.length) {
           const owner = sandagOwner(d.features[0].attributes);
           if (owner) return { owner, apn: sandagApn(d.features[0].attributes), lat, lng };
         }
       }
-    } catch(e) { stamp('Phase 2: SANDAG Parcels error: ' + e.message); }
+    } catch(e) { stamp('Phase 2: SANDAG err: ' + e.message); }
 
-    // Step 4 (free fallback 2): SANDAG Parcels_South — spatial query
+    // Step 4: SANDAG Parcels_South (free, spatial)
     if (lat != null) try {
       const q = 'where=1%3D1' + arcgisPoint(lat, lng, '*');
-      const resp = await fetchWithTimeout(
+      const r = await fetchWithTimeout(
         'https://geo.sandag.org/server/rest/services/Hosted/Parcels_South/FeatureServer/0/query?' + q,
         { headers: { Accept: 'application/json', Referer: 'https://sdgis.sandag.org/' } }, 5000);
-      if (resp.ok) {
-        const d = await resp.json();
+      if (r.ok) {
+        const d = await r.json();
         if (!d.error && d.features && d.features.length) {
           const owner = sandagOwner(d.features[0].attributes);
           if (owner) return { owner, apn: sandagApn(d.features[0].attributes), lat, lng };
         }
       }
-    } catch(e) { stamp('Phase 2: SANDAG Parcels_South error: ' + e.message); }
+    } catch(e) { stamp('Phase 2: SANDAG_South err: ' + e.message); }
 
-    // Even if no owner found, save lat/lng if geocoding succeeded
+    // Step 5: City of SD GeocoderMerged (free, spatial)
+    if (lat != null) try {
+      const q = 'where=1%3D1' + arcgisPoint(lat, lng, 'SITUS_STREET,OWN_NAME1,APN_8');
+      const r = await fetchWithTimeout(
+        'https://webmaps.sandiego.gov/arcgis/rest/services/GeocoderMerged/MapServer/1/query?' + q,
+        { headers: { Accept: 'application/json' } }, 5000);
+      if (r.ok) {
+        const d = await r.json();
+        if (!d.error && d.features && d.features.length) {
+          const owner = d.features[0].attributes.OWN_NAME1 || null;
+          if (owner) return { owner, apn: d.features[0].attributes.APN_8 || null, lat, lng };
+        }
+      }
+    } catch(e) { stamp('Phase 2: SD City GIS err: ' + e.message); }
+
+    // Geocode succeeded but no owner found — save coords anyway for distance sorting
     if (lat != null) return { owner: null, apn: null, lat, lng };
-
     return null;
   }
 
@@ -851,7 +892,8 @@ Respond ONLY with raw JSON, no markdown, no code fences:
       phase1_new_permits: summary.phase1_new_permits,
       phase1_by_installer: summary.phase1_by_installer,
       phase2_owners_added: summary.phase2_owners_added,
-      phase3_tracerfy: summary.phase3_tracerfy
+      phase3_tracerfy: summary.phase3_tracerfy,
+      log: (summary.log || []).slice(-80)
     });
     await Promise.all([
       fetch(SUPA_REST + '/pipeline_state', {
