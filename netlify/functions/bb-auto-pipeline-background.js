@@ -44,6 +44,30 @@ const TARGET_CITIES = new Set([
 ]);
 const OC_ZIPS = new Set(['92629','92651','92652','92653','92656','92672','92673','92677','92618']);
 
+// Ordered zip expansion queue: 5 new zips added per nightly run after SD County saturates.
+// SD County is already covered by the isTarget() regex. This queue grows coverage into
+// Orange County (south/coastal first — highest solar density) then SW Riverside County.
+const EXPANSION_QUEUE = [
+  // Orange County — south/coastal (Irvine, Mission Viejo, Laguna Niguel, Lake Forest, Dana Point)
+  '92620','92630','92637','92646','92647','92648','92649','92657','92660',
+  '92661','92662','92663','92675','92676','92683','92688','92691','92692',
+  '92694','92697',
+  // OC central / inland (Anaheim, Santa Ana, Garden Grove, Orange, Fullerton)
+  '92701','92703','92704','92705','92706','92707','92708','92780','92782',
+  '92801','92802','92804','92805','92806','92807','92808','92821','92831',
+  '92832','92833','92835','92840','92841','92843','92844','92845',
+  '92856','92861','92865','92866','92867','92868','92869','92870',
+  // SW Riverside County — Temecula/Murrieta basin (highest-growth solar area)
+  '92590','92591','92592','92595','92596',
+  // Riverside metro + Moreno Valley
+  '92501','92503','92504','92505','92506','92507','92508','92509',
+  '92551','92553','92555','92557',
+  // Hemet / San Jacinto / Perris
+  '92543','92544','92545','92570','92571',
+  // Coachella Valley / Palm Springs desert
+  '92234','92236','92240','92241','92260','92262','92264','92270'
+];
+
 exports.handler = async function(event) {
   const cors = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' };
   if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers: cors, body: '' };
@@ -57,39 +81,6 @@ exports.handler = async function(event) {
     'Authorization': 'Bearer ' + supaKey,
     'Prefer': 'return=minimal'
   };
-
-  // ── Run-limit gate ────────────────────────────────────────────────────────
-  // Reads bb_pipeline_runs_remaining from Supabase pipeline_state table.
-  // Decrements on each run; stops when it hits 0.
-  // To re-enable: UPDATE pipeline_state SET value='3' WHERE key='bb_pipeline_runs_remaining';
-  // Manual HTTP trigger bypasses this check (use for ad-hoc runs).
-  const isScheduled = !event.httpMethod; // Netlify cron events have no httpMethod
-  if (isScheduled) {
-    try {
-      const stateResp = await fetch(
-        SUPA_REST + "/pipeline_state?key=eq.bb_pipeline_runs_remaining&select=value",
-        { headers: { apikey: supaKey, Authorization: 'Bearer ' + supaKey, Accept: 'application/json' } }
-      );
-      const stateRows = stateResp.ok ? await stateResp.json() : [];
-      const remaining = Array.isArray(stateRows) && stateRows.length ? parseInt(stateRows[0].value, 10) : 0;
-      if (remaining <= 0) {
-        console.log('bb-auto-pipeline: auto-disabled (runs_remaining=0). Update pipeline_state to re-enable.');
-        return { statusCode: 200, headers: cors, body: JSON.stringify({ status: 'disabled', message: 'runs_remaining=0 — update pipeline_state to re-enable' }) };
-      }
-      // Decrement before running so a crash doesn't silently repeat
-      await fetch(
-        SUPA_REST + "/pipeline_state?key=eq.bb_pipeline_runs_remaining",
-        {
-          method: 'PATCH',
-          headers: { apikey: supaKey, Authorization: 'Bearer ' + supaKey, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
-          body: JSON.stringify({ value: String(remaining - 1), updated_at: new Date().toISOString() })
-        }
-      );
-      console.log(`bb-auto-pipeline: run ${remaining} of 3 starting (${remaining - 1} remaining after this)`);
-    } catch(e) {
-      console.log('bb-auto-pipeline: could not read run limit — proceeding anyway:', e.message);
-    }
-  }
 
   const log = [];
   function stamp(msg) {
@@ -113,6 +104,9 @@ exports.handler = async function(event) {
     return fetch(url, { ...(opts || {}), signal: ctrl.signal }).finally(() => clearTimeout(tid));
   }
 
+  // ── Expansion zip set — populated in Phase 0 from Supabase pipeline_state ──
+  let activeExpansionZips = new Set();
+
   // ── Helpers shared with permitstack-pull.js ────────────────────────────────
 
   function isTarget(street, city, state, zip) {
@@ -123,6 +117,7 @@ exports.handler = async function(event) {
     if (/^919\d{2}$/.test(z)) return true;
     if (/^92[012]\d{2}$/.test(z)) return true;
     if (OC_ZIPS.has(z.slice(0, 5))) return true;
+    if (activeExpansionZips.has(z.slice(0, 5))) return true;
     if (TARGET_CITIES.has(c)) return true;
     const combined = (street + ' ' + city + ' ' + state + ' ' + zip).toUpperCase();
     for (const t of TARGET_CITIES) { if (combined.includes(t)) return true; }
@@ -227,6 +222,115 @@ exports.handler = async function(event) {
       body: JSON.stringify(updates)
     }, 8000);
     return resp.ok;
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // PHASE 0 — AI INTELLIGENCE ANALYSIS + ZIP EXPANSION INIT
+  // Runs before Phase 1: reads expansion index, loads active zips, calls
+  // Claude Haiku to analyze the current lead DB and store strategic insights.
+  // ══════════════════════════════════════════════════════════════════════════
+  stamp('=== Phase 0: Intelligence + expansion init ===');
+  let expansionIndex = 0;
+  try {
+    const stateResp = await fetch(
+      SUPA_REST + '/pipeline_state?key=in.(expansion_index,phase0_insights)&select=key,value',
+      { headers: { apikey: supaKey, Authorization: 'Bearer ' + supaKey, Accept: 'application/json' } }
+    );
+    if (stateResp.ok) {
+      const rows = await stateResp.json();
+      const idxRow = rows.find(r => r.key === 'expansion_index');
+      expansionIndex = idxRow ? (parseInt(idxRow.value, 10) || 0) : 0;
+    }
+  } catch(e) { stamp('Phase 0: expansion_index fetch error — ' + e.message); }
+  activeExpansionZips = new Set(EXPANSION_QUEUE.slice(0, expansionIndex));
+  stamp(`Phase 0: expansion index=${expansionIndex}, active extra zips=${activeExpansionZips.size}`);
+  if (expansionIndex < EXPANSION_QUEUE.length) {
+    stamp(`Phase 0: next 5 zips tonight — ${EXPANSION_QUEUE.slice(expansionIndex, expansionIndex + 5).join(', ')}`);
+  }
+
+  // ── Phase 0 AI analysis ───────────────────────────────────────────────────
+  const anthropicKey = process.env.ANTHROPIC_KEY;
+  if (anthropicKey) {
+    try {
+      const countResp = await fetch(
+        SUPA_REST + '/customers?lead_source=eq.orphaned_list&sold_type=is.null&select=title_owner,original_installer',
+        { headers: { apikey: supaKey, Authorization: 'Bearer ' + supaKey, Accept: 'application/json',
+          'Range-Unit': 'items', Range: '0-9999' } }
+      );
+      let totalLeads = 0, enrichedLeads = 0;
+      const byInstaller = {};
+      if (countResp.ok) {
+        const sample = await countResp.json();
+        totalLeads = sample.length;
+        sample.forEach(r => {
+          if (r.title_owner) enrichedLeads++;
+          const inst = r.original_installer || 'unknown';
+          byInstaller[inst] = (byInstaller[inst] || 0) + 1;
+        });
+      }
+
+      // Contact stats — phone/email coverage for skip-trace prioritization
+      let leadsWithPhone = 0, leadsWithEmail = 0, leadsNoContact = 0;
+      try {
+        const contactResp = await fetch(
+          SUPA_REST + '/customers?lead_source=eq.orphaned_list&sold_type=is.null&select=phone,email',
+          { headers: { apikey: supaKey, Authorization: 'Bearer ' + supaKey, Accept: 'application/json',
+            'Range-Unit': 'items', Range: '0-9999' } }
+        );
+        if (contactResp.ok) {
+          const contactSample = await contactResp.json();
+          contactSample.forEach(r => {
+            const hasPhone = r.phone && !String(r.phone).endsWith('@pending.fixmy.energy');
+            const hasEmail = r.email && !String(r.email).endsWith('@pending.fixmy.energy');
+            if (hasPhone) leadsWithPhone++;
+            if (hasEmail) leadsWithEmail++;
+            if (!hasPhone && !hasEmail) leadsNoContact++;
+          });
+        }
+      } catch(e) { stamp('Phase 0: contact stats error — ' + e.message); }
+
+      const topInstallers = Object.entries(byInstaller)
+        .sort((a, b) => b[1] - a[1]).slice(0, 8)
+        .map(([name, count]) => `${name}: ${count}`).join(', ');
+      const enrichPct = totalLeads ? Math.round(enrichedLeads / totalLeads * 100) : 0;
+      const contactPct = totalLeads ? Math.round(leadsWithPhone / totalLeads * 100) : 0;
+      const emailPct = totalLeads ? Math.round(leadsWithEmail / totalLeads * 100) : 0;
+      const noContactPct = totalLeads ? Math.round(leadsNoContact / totalLeads * 100) : 0;
+      const prompt = `You are a solar lead generation analyst for FIXMy.Energy in San Diego.
+Current database snapshot: ${totalLeads} orphaned solar leads (${enrichPct}% enriched with owner name).
+Contact coverage: ${leadsWithPhone} have phone (${contactPct}%), ${leadsWithEmail} have email (${emailPct}%), ${leadsNoContact} have neither (${noContactPct}% unreachable — skip-trace candidates).
+Top installers: ${topInstallers || 'unknown'}.
+Active geographic coverage: San Diego County + ${activeExpansionZips.size} expansion zips (growing into Orange County then Riverside).
+
+Respond ONLY with raw JSON, no markdown, no code fences:
+{"summary":"one sentence status","topOpportunity":"which segment to focus on and why","missingVariants":["up to 3 alternate installer name spellings to try"],"marketingAngle":"fresh outreach angle based on data","zipFocus":"any zip patterns worth targeting more","importInsight":"one actionable suggestion to improve contact rates or import completeness"}`;
+
+      const aiResp = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 500,
+          messages: [{ role: 'user', content: prompt }] })
+      });
+      if (aiResp.ok) {
+        const aiData = await aiResp.json();
+        let analysis = (aiData.content && aiData.content[0] && aiData.content[0].text) || '{}';
+        // Strip markdown code fences if model wraps response despite instructions
+        analysis = analysis.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
+        await fetch(SUPA_REST + '/pipeline_state', {
+          method: 'POST',
+          headers: { ...supaHeaders, Prefer: 'resolution=merge-duplicates' },
+          body: JSON.stringify({ key: 'phase0_insights', value: analysis, updated_at: new Date().toISOString() })
+        });
+        const parsed = JSON.parse(analysis);
+        stamp('Phase 0 AI: ' + (parsed.summary || analysis.slice(0, 80)));
+      } else {
+        stamp('Phase 0 AI: HTTP ' + aiResp.status);
+      }
+    } catch(e) {
+      stamp('Phase 0 AI: skipped — ' + e.message);
+    }
+  } else {
+    stamp('Phase 0 AI: skipped — ANTHROPIC_KEY not set');
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -349,6 +453,22 @@ exports.handler = async function(event) {
   }
   stamp(`Phase 1 inserted: ${inserted} records`);
 
+  // ── Advance zip expansion index +5 after successful Phase 1 ──────────────
+  if (expansionIndex < EXPANSION_QUEUE.length) {
+    const newIndex = Math.min(expansionIndex + 5, EXPANSION_QUEUE.length);
+    try {
+      await fetch(SUPA_REST + '/pipeline_state', {
+        method: 'POST',
+        headers: { ...supaHeaders, Prefer: 'resolution=merge-duplicates' },
+        body: JSON.stringify({ key: 'expansion_index', value: String(newIndex), updated_at: new Date().toISOString() })
+      });
+      const nextZips = EXPANSION_QUEUE.slice(newIndex, newIndex + 5).join(', ');
+      stamp(`Zip expansion: index advanced to ${newIndex}${nextZips ? ' — next: ' + nextZips : ' (fully expanded)'}`);
+    } catch(e) { stamp('Zip expansion: failed to save index — ' + e.message); }
+  } else {
+    stamp('Zip expansion: fully expanded (' + EXPANSION_QUEUE.length + ' extra zips active)');
+  }
+
   // ══════════════════════════════════════════════════════════════════════════
   // PHASE 2 — OWNER ENRICHMENT (SANDAG / Regrid)
   // Fill title_owner for all leads missing it, up to 2000 per run
@@ -377,11 +497,13 @@ exports.handler = async function(event) {
     }
 
     // Geocode first — spatial queries are far more reliable than text LIKE matching
+    // Normalize "CITY, CA, 92001" → "CITY, CA 92001" — Census rejects comma before zip
+    const censusAddr = address.replace(/, ([A-Z]{2}), (\d{5})/, ', $1 $2');
     let lat = null, lng = null;
     try {
       const geocodeResp = await fetchWithTimeout(
         'https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?address='
-          + encodeURIComponent(address) + '&benchmark=Public_AR_Current&format=json',
+          + encodeURIComponent(censusAddr) + '&benchmark=Public_AR_Current&format=json',
         { headers: { Accept: 'application/json' } }, 6000);
       if (geocodeResp.ok) {
         const gd = await geocodeResp.json();
@@ -390,36 +512,38 @@ exports.handler = async function(event) {
       }
     } catch(e) {}
 
-    // Primary: SANDAG Parcels — spatial if geocoded, text fallback
-    try {
-      const q = (lat != null)
-        ? 'where=1%3D1' + arcgisPoint(lat, lng, 'OWN_NAME1,APN_8')
-        : 'where=' + encodeURIComponent("SITUS_ADDRESS LIKE '" + addrParts + "%'") + '&outFields=OWN_NAME1,APN_8&f=json&resultRecordCount=1';
+    // Helper: extract owner from SANDAG attributes using multiple field name candidates
+    function sandagOwner(a) {
+      return a.OWN_NAME1 || a.OWNER_NAME || a.OWNER || a.OWN_NAME || a.OWNERNME1 || a.OWN1 || null;
+    }
+    function sandagApn(a) { return a.APN_8 || a.APN || a.PARCEL_NBR || null; }
+
+    // Primary: SANDAG Parcels — spatial only, outFields=* avoids field-name errors
+    if (lat != null) try {
+      const q = 'where=1%3D1' + arcgisPoint(lat, lng, '*');
       const resp = await fetchWithTimeout(
         'https://geo.sandag.org/server/rest/services/Hosted/Parcels/FeatureServer/0/query?' + q,
         { headers: { Accept: 'application/json', Referer: 'https://sdgis.sandag.org/' } }, 5000);
       if (resp.ok) {
         const d = await resp.json();
-        if (d.features && d.features.length && d.features[0].attributes.OWN_NAME1) {
-          const a = d.features[0].attributes;
-          return { owner: a.OWN_NAME1, apn: a.APN_8 || null };
+        if (!d.error && d.features && d.features.length) {
+          const owner = sandagOwner(d.features[0].attributes);
+          if (owner) return { owner, apn: sandagApn(d.features[0].attributes), lat, lng };
         }
       }
     } catch(e) {}
 
-    // Fallback: SANDAG Parcels_South
-    try {
-      const q = (lat != null)
-        ? 'where=1%3D1' + arcgisPoint(lat, lng, 'OWN_NAME1,APN_8')
-        : 'where=' + encodeURIComponent("SITUS_ADDRESS LIKE '" + addrParts + "%'") + '&outFields=OWN_NAME1,APN_8&f=json&resultRecordCount=1';
+    // Fallback: SANDAG Parcels_South — spatial only
+    if (lat != null) try {
+      const q = 'where=1%3D1' + arcgisPoint(lat, lng, '*');
       const resp = await fetchWithTimeout(
         'https://geo.sandag.org/server/rest/services/Hosted/Parcels_South/FeatureServer/0/query?' + q,
         { headers: { Accept: 'application/json', Referer: 'https://sdgis.sandag.org/' } }, 5000);
       if (resp.ok) {
         const d = await resp.json();
-        if (d.features && d.features.length && d.features[0].attributes.OWN_NAME1) {
-          const a = d.features[0].attributes;
-          return { owner: a.OWN_NAME1, apn: a.APN_8 || null };
+        if (!d.error && d.features && d.features.length) {
+          const owner = sandagOwner(d.features[0].attributes);
+          if (owner) return { owner, apn: sandagApn(d.features[0].attributes), lat, lng };
         }
       }
     } catch(e) {}
@@ -442,7 +566,7 @@ exports.handler = async function(event) {
               const assessedValue = rawVal ? (parseInt(rawVal, 10) || null) : null;
               const taxDelinquent = f.tax_delinquent != null
                 ? (String(f.tax_delinquent).toUpperCase() === 'Y' || f.tax_delinquent === true) : null;
-              return { owner, apn: f.parcelnumb || f.apn || null, assessed_value: assessedValue, tax_delinquent: taxDelinquent };
+              return { owner, apn: f.parcelnumb || f.apn || null, assessed_value: assessedValue, tax_delinquent: taxDelinquent, lat, lng };
             }
           }
         }
@@ -469,6 +593,8 @@ exports.handler = async function(event) {
         const upd = { title_owner: r.owner, apn: r.apn };
         if (r.assessed_value) upd.assessed_value = r.assessed_value;
         if (r.tax_delinquent != null) upd.tax_delinquent = r.tax_delinquent;
+        if (r.lat != null) upd.lat = r.lat;
+        if (r.lng != null) upd.lng = r.lng;
         updates.push(supaUpdate(batch[j].id, upd));
       }
     }
@@ -695,6 +821,30 @@ exports.handler = async function(event) {
     phase3_tracerfy: tracerfyResult,
     log
   };
+
+  // ── Write last_run_at + last_run_summary so the portal can show when pipeline ran ──
+  try {
+    const runTs = new Date().toISOString();
+    const runSummary = JSON.stringify({
+      phase1_new_permits: summary.phase1_new_permits,
+      phase1_by_installer: summary.phase1_by_installer,
+      phase2_owners_added: summary.phase2_owners_added,
+      phase3_tracerfy: summary.phase3_tracerfy
+    });
+    await Promise.all([
+      fetch(SUPA_REST + '/pipeline_state', {
+        method: 'POST',
+        headers: { ...supaHeaders, Prefer: 'resolution=merge-duplicates' },
+        body: JSON.stringify({ key: 'last_run_at', value: runTs, updated_at: runTs })
+      }),
+      fetch(SUPA_REST + '/pipeline_state', {
+        method: 'POST',
+        headers: { ...supaHeaders, Prefer: 'resolution=merge-duplicates' },
+        body: JSON.stringify({ key: 'last_run_summary', value: runSummary, updated_at: runTs })
+      })
+    ]);
+    stamp('Pipeline: last_run_at saved');
+  } catch(e) { stamp('Pipeline: failed to save last_run_at — ' + e.message); }
 
   stamp('=== Pipeline complete ===');
   console.log('Summary:', JSON.stringify(summary, null, 2));

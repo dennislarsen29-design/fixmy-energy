@@ -22,6 +22,9 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
   <script>
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/service-worker.js').catch(function(){});
+      navigator.serviceWorker.addEventListener('controllerchange', function() {
+        window.location.reload();
+      });
     }
   </script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
@@ -122,7 +125,15 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
     .editor-section-title { font-size:0.65rem; font-weight:700; text-transform:uppercase; letter-spacing:0.1em; color:#555; margin:16px 0 10px; border-top:1px solid rgba(255,255,255,0.06); padding-top:14px; }
     .ed-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
     @media(max-width:520px){ .ed-grid { grid-template-columns:1fr; } }
-    @media(min-width:768px){ html { font-size:20px; } }
+    @media(min-width:1100px){ html { font-size:17px; } }
+    /* iPad layout */
+    .sales-card-grid { display:grid; grid-template-columns:1fr; gap:8px; }
+    @media(min-width:768px){
+      .sales-card-grid { grid-template-columns:repeat(2,1fr); }
+      .portal-tab { font-size:0.82rem; padding:9px 14px; }
+      #repChatModal { align-items:center !important; justify-content:center !important; }
+      #repChatModal > div { border-radius:20px !important; max-height:75vh; }
+    }
     .ed-full { margin-bottom:12px; }
     .ed-label { font-size:0.64rem; font-weight:600; text-transform:uppercase; letter-spacing:0.07em; color:#666; display:block; margin-bottom:5px; }
     .ed-input { width:100%; background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.1); border-radius:8px; padding:10px 12px; color:#F3EDE3; font-size:0.82rem; font-family:sans-serif; outline:none; box-sizing:border-box; }
@@ -3732,6 +3743,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '</div></div>';
     h += '<div id="bbEnrichBar" style="margin-bottom:12px;"></div>';
     if (CURRENT_ROLE === 'admin') h += '<div id="bbPullBar" style="margin-bottom:12px;"></div>';
+    if (CURRENT_ROLE === 'admin') h += '<div id="bbPhase0Panel" style="margin-bottom:12px;"></div>';
     if (CURRENT_ROLE === 'admin') h += '<div id="bbInsightsPanel" style="margin-bottom:12px;"></div>';
     h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;margin-bottom:12px;">&#128205; Routes</div>';
 
@@ -4078,6 +4090,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     setTimeout(adminCanvassLoadEnrichBar, 0);
     if (CURRENT_ROLE === 'admin') setTimeout(adminCanvassLoadPullBar, 0);
     if (CURRENT_ROLE === 'admin') setTimeout(adminCanvassLoadInsights, 0);
+    if (CURRENT_ROLE === 'admin') setTimeout(adminCanvassLoadPhase0Panel, 200);
 
     // Fixed QR panel — persists in top-right corner while on Black Box tab
     (function(){
@@ -4209,9 +4222,21 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var unvisited = adminCanvassLeads.filter(function(l){ return !l.knock_status && l.address; });
     var batch = unvisited.slice(0, n || 5);
     if (!batch.length) return;
-    var stops = batch.map(function(l){ return encodeURIComponent(l.address); });
-    var origin = (adminCanvassUserLat && adminCanvassUserLng) ? adminCanvassUserLat+','+adminCanvassUserLng : stops.shift();
-    var url = 'https://www.google.com/maps/dir/' + origin + '/' + stops.join('/');
+    var addrs = batch.map(function(l){ return l.address; });
+    var origin, destination, waypoints;
+    if (adminCanvassUserLat && adminCanvassUserLng) {
+      origin = adminCanvassUserLat + ',' + adminCanvassUserLng;
+      destination = encodeURIComponent(addrs[addrs.length - 1]);
+      waypoints = addrs.slice(0, addrs.length - 1).map(encodeURIComponent).join('|');
+    } else {
+      origin = encodeURIComponent(addrs[0]);
+      destination = encodeURIComponent(addrs[addrs.length - 1]);
+      waypoints = addrs.slice(1, addrs.length - 1).map(encodeURIComponent).join('|');
+    }
+    var url = 'https://www.google.com/maps/dir/?api=1&travelmode=driving'
+      + '&origin=' + origin
+      + '&destination=' + destination
+      + (waypoints ? '&waypoints=' + waypoints : '');
     window.open(url, '_blank');
   };
 
@@ -4245,12 +4270,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var upd = { title_owner: data.owner, apn: data.apn||null };
         if (data.assessed_value) upd.assessed_value = data.assessed_value;
         if (data.tax_delinquent != null) upd.tax_delinquent = data.tax_delinquent;
+        if (data.lat != null) upd.lat = data.lat;
+        if (data.lng != null) upd.lng = data.lng;
         c2.from('customers').update(upd).eq('id', id);
         var rec = adminCustomers.find(function(r){ return r.id === id; });
         if (rec) {
           rec.title_owner = data.owner; rec.apn = data.apn||null;
           if (data.assessed_value) rec.assessed_value = data.assessed_value;
           if (data.tax_delinquent != null) rec.tax_delinquent = data.tax_delinquent;
+          if (data.lat != null) { rec.lat = data.lat; lead.lat = data.lat; }
+          if (data.lng != null) { rec.lng = data.lng; lead.lng = data.lng; }
         }
         renderAdminCanvassView();
       } else {
@@ -4498,58 +4527,72 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (_bbEnrichRunning) return;
     _bbEnrichRunning = true;
     var bar = document.getElementById('bbEnrichBar');
-    if (bar) bar.innerHTML = '<div style="background:rgba(74,158,255,0.07);border:1px solid rgba(74,158,255,0.2);border-radius:10px;padding:10px 14px;" id="bbEnrichProgress"><div style="font-size:0.75rem;color:#4a9eff;font-weight:700;">Starting enrichment&hellip;</div></div>';
+    if (bar) bar.innerHTML = '<div style="background:rgba(74,158,255,0.07);border:1px solid rgba(74,158,255,0.2);border-radius:10px;padding:10px 14px;" id="bbEnrichProgress"><div style="font-size:0.75rem;color:#4a9eff;font-weight:700;">Counting leads to enrich&hellip;</div></div>';
 
     var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
-    var { data: leads } = await c2.from('customers')
-      .select('id,address,lat,lng')
-      .eq('lead_source','orphaned_list')
-      .is('sold_type',null)
-      .is('title_owner',null)
-      .not('address','is',null)
-      .order('created_at',{ascending:true})
-      .limit(1000);
+    var PAGE_SIZE = 500;
+    var pageOffset = 0, grandTotal = 0, found = 0, failed = 0, firstDebug = null;
 
-    leads = leads || [];
-    var total = leads.length, found = 0, failed = 0, firstDebug = null;
+    // Get total count for accurate progress bar
+    var { count } = await c2.from('customers')
+      .select('id', { count: 'exact', head: true })
+      .eq('lead_source','orphaned_list').is('sold_type',null).is('title_owner',null).not('address','is',null);
+    grandTotal = count || 0;
 
     function updateProgress() {
       var done = found + failed;
-      var pct = total ? Math.round(done/total*100) : 0;
+      var pct = grandTotal ? Math.round(done / grandTotal * 100) : 0;
       var prog = document.getElementById('bbEnrichProgress');
-      if (prog) prog.innerHTML = '<div style="font-size:0.75rem;color:#4a9eff;font-weight:700;margin-bottom:6px;">Enriching&hellip; '+done+' of '+total+' &mdash; '+found+' owners found</div>'
+      if (prog) prog.innerHTML = '<div style="font-size:0.75rem;color:#4a9eff;font-weight:700;margin-bottom:6px;">Enriching&hellip; '+done+' of '+grandTotal+' &mdash; '+found+' owners found</div>'
         + '<div style="background:rgba(255,255,255,0.08);border-radius:100px;height:6px;overflow:hidden;">'
         + '<div style="background:#4a9eff;height:6px;border-radius:100px;width:'+pct+'%;transition:width 0.3s;"></div></div>'
-        + '<div style="font-size:0.65rem;color:#555;margin-top:4px;">'+pct+'% &mdash; do not close this tab</div>'
+        + '<div style="font-size:0.65rem;color:#555;margin-top:4px;">'+pct+'% &mdash; keep tab active while enriching</div>'
         + (firstDebug ? '<div style="font-size:0.6rem;color:#555;margin-top:3px;word-break:break-all;">⚠ Last miss: '+firstDebug+'</div>' : '');
     }
 
-    for (var i = 0; i < leads.length; i++) {
-      var lead = leads[i];
-      try {
-        var body = { address: lead.address };
-        if (lead.lat) body.lat = lead.lat;
-        if (lead.lng) body.lng = lead.lng;
-        var resp = await fetch('/.netlify/functions/regrid-lookup', {
-          method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
-        });
-        var data = await resp.json();
-        if (data.owner) {
-          found++;
-          var upd = { title_owner: data.owner, apn: data.apn || null };
-          if (data.assessed_value) upd.assessed_value = data.assessed_value;
-          if (data.tax_delinquent != null) upd.tax_delinquent = data.tax_delinquent;
-          await c2.from('customers').update(upd).eq('id', lead.id);
-          var cached = adminCustomers.find(function(r){ return r.id === lead.id; });
-          if (cached) Object.assign(cached, upd);
-        } else {
-          failed++;
-          if (!firstDebug && data.debug) firstDebug = lead.address.split(',')[0] + ' → ' + data.debug;
-        }
-      } catch(e) { failed++; }
-      updateProgress();
-      // 350ms between requests to respect public GIS rate limits
-      await new Promise(function(r){ setTimeout(r, 350); });
+    // Paginate through ALL unenriched leads
+    while (true) {
+      if (!_bbEnrichRunning) break; // allow cancel
+      var { data: leads } = await c2.from('customers')
+        .select('id,address,lat,lng')
+        .eq('lead_source','orphaned_list').is('sold_type',null).is('title_owner',null)
+        .not('address','is',null).order('created_at',{ascending:true})
+        .range(pageOffset, pageOffset + PAGE_SIZE - 1);
+      leads = leads || [];
+      if (!leads.length) break;
+
+      for (var i = 0; i < leads.length; i++) {
+        if (!_bbEnrichRunning) break;
+        var lead = leads[i];
+        try {
+          var body = { address: lead.address };
+          if (lead.lat) body.lat = lead.lat;
+          if (lead.lng) body.lng = lead.lng;
+          var resp = await fetch('/.netlify/functions/regrid-lookup', {
+            method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
+          });
+          var data = await resp.json();
+          if (data.owner) {
+            found++;
+            var upd = { title_owner: data.owner, apn: data.apn || null };
+            if (data.assessed_value) upd.assessed_value = data.assessed_value;
+            if (data.tax_delinquent != null) upd.tax_delinquent = data.tax_delinquent;
+            if (data.lat != null) upd.lat = data.lat;
+            if (data.lng != null) upd.lng = data.lng;
+            await c2.from('customers').update(upd).eq('id', lead.id);
+            var cached = adminCustomers.find(function(r){ return r.id === lead.id; });
+            if (cached) Object.assign(cached, upd);
+          } else {
+            failed++;
+            if (!firstDebug && data.debug) firstDebug = lead.address.split(',')[0] + ' → ' + data.debug;
+          }
+        } catch(e) { failed++; }
+        updateProgress();
+        await new Promise(function(r){ setTimeout(r, 350); });
+      }
+
+      pageOffset += PAGE_SIZE;
+      if (leads.length < PAGE_SIZE) break; // last page
     }
 
     _bbEnrichRunning = false;
@@ -4879,26 +4922,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       + '<button onclick="adminCanvassRunFullPipeline()" style="width:auto;margin-top:0;background:rgba(74,158,255,0.15);color:#4a9eff;border:1px solid rgba(74,158,255,0.3);border-radius:100px;padding:8px 16px;font-size:0.75rem;font-weight:700;cursor:pointer;">&#128260; Run Full Pipeline</button>'
       + '<label style="font-size:0.68rem;color:#666;cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;gap:3px;"><input type="checkbox" id="bbPsSelectAll" checked onchange="window.bbPsToggleAll(this.checked)" style="accent-color:#8DC63F;width:11px;height:11px;">All</label>'
       + '</div>'
-      + '<div id="bbPipelineStatus" style="margin-top:8px;font-size:0.65rem;color:#555;"></div>'
+      + '<div style="margin-top:8px;font-size:0.65rem;color:#555;">&#9989; Nightly pipeline <strong style="color:#8DC63F;">active</strong> <span style="margin-left:4px;">Runs at 2am PDT daily · pulls new permits &rarr; enriches owners &rarr; skip-traces contacts</span></div>'
       + '</div>';
-    // Async: load pipeline run budget from Supabase
-    (async function() {
-      var statusEl = document.getElementById('bbPipelineStatus');
-      if (!statusEl) return;
-      var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
-      var { data } = await c2.from('pipeline_state').select('value').eq('key','bb_pipeline_runs_remaining').limit(1);
-      var remaining = data && data.length ? parseInt(data[0].value, 10) : 0;
-      if (remaining > 0) {
-        statusEl.innerHTML = '&#9203; Nightly pipeline active &mdash; <strong style="color:#8DC63F;">'+remaining+' night'+(remaining===1?'':'s')+' remaining</strong>'
-          + '<span style="color:#555;font-size:0.62rem;margin-left:6px;">Runs at 2am PDT · pulls new permits → enriches owners → skip-traces contacts</span>'
-          + ' &nbsp;<button onclick="bbResetPipelineRuns(3)" style="background:none;border:none;color:#555;font-size:0.65rem;cursor:pointer;text-decoration:underline;padding:0;">Reset to 3</button>'
-          + ' &nbsp;<button onclick="bbResetPipelineRuns(0)" style="background:none;border:none;color:#555;font-size:0.65rem;cursor:pointer;text-decoration:underline;padding:0;">Disable</button>';
-      } else {
-        statusEl.innerHTML = '&#9744; Nightly pipeline <strong style="color:#555;">off</strong>'
-          + '<span style="color:#555;font-size:0.62rem;margin-left:6px;">Re-enable to auto-pull new permits &amp; run enrichment overnight · 3 nights per activation · runs at 2am PDT</span>'
-          + ' &nbsp;<button onclick="bbResetPipelineRuns(3)" style="background:none;border:none;color:#4a9eff;font-size:0.65rem;cursor:pointer;text-decoration:underline;padding:0;">Re-enable (3 nights)</button>';
-      }
-    })();
   };
 
   window.adminCanvassPullAndImport = async function() {
@@ -4994,11 +5019,82 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
   };
 
-  window.bbResetPipelineRuns = async function(n) {
-    var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
-    await c2.from('pipeline_state').upsert({ key: 'bb_pipeline_runs_remaining', value: String(n), updated_at: new Date().toISOString() });
-    adminCanvassLoadPullBar(); // refresh to show new count
-  };
+
+  // ── Phase 0 AI Insights + Zip Expansion Status Panel ─────────────────────
+  async function adminCanvassLoadPhase0Panel() {
+    var el = document.getElementById('bbPhase0Panel');
+    if (!el) return;
+    try {
+      var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var { data: rows } = await c2.from('pipeline_state')
+        .select('key,value').in('key', ['phase0_insights','expansion_index','last_run_at','last_run_summary']);
+      rows = rows || [];
+      var insightsRow = rows.find(function(r){ return r.key === 'phase0_insights'; });
+      var expRow = rows.find(function(r){ return r.key === 'expansion_index'; });
+      var lastRunRow = rows.find(function(r){ return r.key === 'last_run_at'; });
+      var expIndex = expRow ? (parseInt(expRow.value, 10) || 0) : 0;
+      var totalExpZips = 72; // EXPANSION_QUEUE.length
+      var h = '';
+
+      // ── Last pipeline run timestamp ───────────────────────────────────────
+      if (lastRunRow && lastRunRow.value) {
+        var runDate = new Date(lastRunRow.value);
+        var diffMs = Date.now() - runDate.getTime();
+        var diffHrs = Math.floor(diffMs / 3600000);
+        var diffMins = Math.floor((diffMs % 3600000) / 60000);
+        var agoStr = diffHrs >= 24 ? Math.floor(diffHrs / 24) + 'd ago'
+          : diffHrs >= 1 ? diffHrs + 'h ' + diffMins + 'm ago'
+          : diffMins + 'm ago';
+        h += '<div style="font-size:0.65rem;color:#555;margin-bottom:6px;text-align:right;">Last pipeline run: <span style="color:#8DC63F;">' + agoStr + '</span></div>';
+      } else {
+        h += '<div style="font-size:0.65rem;color:#555;margin-bottom:6px;text-align:right;">Last pipeline run: <span style="color:#888;">Never run</span></div>';
+      }
+
+      // ── Zip expansion status chip ─────────────────────────────────────────
+      var sdOnly = expIndex === 0;
+      var expLabel = sdOnly
+        ? 'San Diego County only'
+        : 'San Diego County + ' + expIndex + ' extra zips (OC' + (expIndex > 20 ? ' + Riverside' : '') + ')';
+      h += '<div style="background:rgba(74,158,255,0.06);border:1px solid rgba(74,158,255,0.2);border-radius:10px;padding:10px 14px;margin-bottom:8px;">';
+      h += '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;">';
+      h += '<div style="font-size:0.7rem;font-weight:700;color:#4a9eff;">&#128205; Coverage: ' + expLabel + '</div>';
+      if (expIndex < totalExpZips) {
+        h += '<div style="font-size:0.63rem;color:#555;">+5 zips added tonight (' + (totalExpZips - expIndex) + ' remaining)</div>';
+      } else {
+        h += '<div style="font-size:0.63rem;color:#8DC63F;">Fully expanded &#10003;</div>';
+      }
+      h += '</div></div>';
+
+      // ── Phase 0 AI insights card ──────────────────────────────────────────
+      if (insightsRow && insightsRow.value && insightsRow.value !== '{}') {
+        var rawVal = insightsRow.value.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
+        var parsed = null;
+        try { parsed = JSON.parse(rawVal); } catch(e) {}
+        if (parsed && parsed.summary) {
+          h += '<div style="background:rgba(141,198,63,0.05);border:1px solid rgba(141,198,63,0.2);border-radius:10px;padding:10px 14px;">';
+          h += '<div style="font-size:0.7rem;font-weight:700;color:#8DC63F;margin-bottom:6px;">&#129302; Tonight\'s Pipeline Intelligence</div>';
+          h += '<div style="font-size:0.72rem;color:#ccc;margin-bottom:5px;">' + parsed.summary + '</div>';
+          if (parsed.topOpportunity) {
+            h += '<div style="font-size:0.68rem;color:#888;margin-bottom:3px;"><span style="color:#ffaa00;font-weight:700;">Top opportunity:</span> ' + parsed.topOpportunity + '</div>';
+          }
+          if (parsed.marketingAngle) {
+            h += '<div style="font-size:0.68rem;color:#888;margin-bottom:3px;"><span style="color:#4a9eff;font-weight:700;">Marketing angle:</span> ' + parsed.marketingAngle + '</div>';
+          }
+          if (parsed.importInsight) {
+            h += '<div style="font-size:0.68rem;color:#888;margin-bottom:3px;"><span style="color:#8DC63F;font-weight:700;">Import insight:</span> ' + parsed.importInsight + '</div>';
+          }
+          if (parsed.missingVariants && parsed.missingVariants.length) {
+            h += '<div style="font-size:0.68rem;color:#555;margin-top:4px;">Try also: ' + parsed.missingVariants.join(', ') + '</div>';
+          }
+          h += '</div>';
+        }
+      }
+
+      el.innerHTML = h || '';
+    } catch(e) {
+      // Phase 0 panel is non-critical — fail silently
+    }
+  }
 
   // ── Black Box Lead Insights Dashboard ─────────────────────────────────────
   async function adminCanvassLoadInsights() {
@@ -5035,29 +5131,39 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
     var total = leads.length;
 
+    // Aggregate once — used both in header chips and expanded view
+    var byYear = {}, byInstaller = {}, byZip = {};
+    leads.forEach(function(c) {
+      var yr = c.install_year ? String(c.install_year) : 'Unknown';
+      byYear[yr] = (byYear[yr] || 0) + 1;
+      var inst = c.original_installer || 'Unknown';
+      byInstaller[inst] = (byInstaller[inst] || 0) + 1;
+      var zm = (c.address || '').match(/\b(\d{5})\b/);
+      var zip = zm ? zm[1] : 'Unknown';
+      byZip[zip] = (byZip[zip] || 0) + 1;
+    });
+    var instKeys = Object.keys(byInstaller).sort(function(a,b){ return byInstaller[b]-byInstaller[a]; });
+
+    // Portfolio summary chips — top 5 installers always visible in header
+    var top5 = instKeys.slice(0, 5).map(function(inst) {
+      var short = inst.replace(/ Solar Power$/,'').replace(/ Solar$/,'').replace(/ Energy$/,'').replace(/ LLC$/,'').replace(/ Inc$/,'');
+      return '<span style="color:#ccc;">' + short + '</span>: <span style="color:#8DC63F;font-weight:700;">' + byInstaller[inst].toLocaleString() + '</span>';
+    }).join('&nbsp;&nbsp;&#183;&nbsp;&nbsp;');
+
     var h = '<div style="background:rgba(141,198,63,0.06);border:1px solid rgba(141,198,63,0.18);border-radius:10px;overflow:hidden;">';
-    h += '<div onclick="window._bbInsightsOpen='+(!isOpen)+';window._bbInsightsCache=null;adminCanvassLoadInsights();" style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;cursor:pointer;">';
-    h += '<div style="font-size:0.72rem;font-weight:700;color:#8DC63F;">&#128202; Lead Insights</div>';
-    h += '<div style="font-size:0.72rem;color:#888;">' + total.toLocaleString() + ' permits&nbsp;&nbsp;' + (isOpen ? '&#9650;' : '&#9660;') + '</div>';
+    h += '<div onclick="window._bbInsightsOpen='+(!isOpen)+';window._bbInsightsCache=null;adminCanvassLoadInsights();" style="cursor:pointer;">';
+    h += '<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;">';
+    h += '<div style="font-size:0.72rem;font-weight:700;color:#8DC63F;">&#128202; Lead Portfolio &mdash; ' + total.toLocaleString() + ' permits</div>';
+    h += '<div style="font-size:0.72rem;color:#888;">' + (isOpen ? '&#9650;' : '&#9660;') + '</div>';
+    h += '</div>';
+    h += '<div style="padding:0 12px 10px;font-size:0.63rem;word-break:break-word;">' + top5 + '</div>';
     h += '</div>';
 
     if (isOpen) {
       h += '<div style="padding:0 12px 14px;border-top:1px solid rgba(141,198,63,0.12);">';
 
-      var byYear = {}, byInstaller = {}, byZip = {};
-      leads.forEach(function(c) {
-        var yr = c.install_year ? String(c.install_year) : 'Unknown';
-        byYear[yr] = (byYear[yr] || 0) + 1;
-        var inst = c.original_installer || 'Unknown';
-        byInstaller[inst] = (byInstaller[inst] || 0) + 1;
-        var zm = (c.address || '').match(/\b(\d{5})\b/);
-        var zip = zm ? zm[1] : 'Unknown';
-        byZip[zip] = (byZip[zip] || 0) + 1;
-      });
-
       var yearKeys = Object.keys(byYear).filter(function(k){ return k !== 'Unknown'; }).sort(function(a,b){ return b-a; });
       if (byYear['Unknown']) yearKeys.push('Unknown');
-      var instKeys = Object.keys(byInstaller).sort(function(a,b){ return byInstaller[b]-byInstaller[a]; });
       var zipKeys  = Object.keys(byZip).sort(function(a,b){ return byZip[b]-byZip[a]; }).slice(0,15);
       var maxYr    = Math.max.apply(null, yearKeys.map(function(k){ return byYear[k]; }));
 
@@ -7918,21 +8024,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           // Validate inputs
           if(!cleanEmail || !cleanEmail.includes('@')) {
             showMagicLinkError('Invalid link — email address missing or malformed.',
-              'Try opening the link from your original email again, or contact Solar Review at (619) 722-9268.');
+              'Try opening the link from your original email again, or contact Solar Review at (619) 777-6527.');
             return;
           }
           if(!cleanUc || cleanUc.length < 10) {
             showMagicLinkError('Invalid link — access code missing or too short.',
-              'Try opening the link from your original email again, or contact Solar Review at (619) 722-9268.');
+              'Try opening the link from your original email again, or contact Solar Review at (619) 777-6527.');
             return;
           }
 
           mlStatus('Looking up your account...');
           var client;
           try { client = supabase.createClient(SUPA_URL, SUPA_KEY); }
-          catch(e) {
+          catch(e) { client = null; }
+          if (!client || typeof client.from !== 'function') {
             showMagicLinkError('Could not connect to Solar Review servers.',
-              'Check your internet connection and try again. If the issue continues, call us at (619) 722-9268.');
+              'Check your internet connection and try again. If the issue continues, call us at (619) 777-6527.');
             return;
           }
 
@@ -7967,7 +8074,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           if(!c) {
             showMagicLinkError(
               'We couldn\'t find an account for ' + cleanEmail + '.',
-              'This link may have been sent to a different email address. Check your inbox for a Solar Review message, or call us at (619) 722-9268.'
+              'This link may have been sent to a different email address. Check your inbox for a Solar Review message, or call us at (619) 777-6527.'
             );
             return;
           }
@@ -7980,7 +8087,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           if(!match) {
             showMagicLinkError(
               'Your access link has expired or is no longer valid.',
-              'This can happen if you\'ve requested a new link or your phone number changed. Call us at (619) 722-9268 or reply to your Solar Review email to get a fresh link.'
+              'This can happen if you\'ve requested a new link or your phone number changed. Call us at (619) 777-6527 or reply to your Solar Review email to get a fresh link.'
             );
             return;
           }
@@ -7993,7 +8100,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         } catch(e) {
           showMagicLinkError(
             'Something went wrong loading your portal.',
-            'Error: ' + (e.message||'Unknown error') + '. Please call us at (619) 722-9268 or try again in a moment.'
+            'Error: ' + (e.message||'Unknown error') + '. Please call us at (619) 777-6527 or try again in a moment.'
           );
         }
       }
@@ -8014,7 +8121,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             '<input type="password" id="codeInput" placeholder="Your 10-digit phone number" style="width:100%;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:13px 14px;color:#F3EDE3;font-size:0.9rem;margin-bottom:16px;outline:none;box-sizing:border-box;"/>' +
             '<button id="loginBtn" onclick="handleLogin()" style="width:100%;background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;padding:15px;font-size:0.9rem;font-weight:700;cursor:pointer;">Try Again</button>' +
             '<div class="err" id="errMsg" style="display:none;"></div>' +
-            '<div style="text-align:center;margin-top:16px;"><a href="tel:6197229268" style="color:#8DC63F;font-size:0.78rem;font-weight:600;">📞 Call Solar Review (619) 722-9268</a></div>' +
+            '<div style="text-align:center;margin-top:16px;"><a href="tel:6197776527" style="color:#8DC63F;font-size:0.78rem;font-weight:600;">📞 Call Solar Review (619) 777-6527</a></div>' +
           '</div>';
       }
 
@@ -8296,10 +8403,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
     var myLeads      = allRecords.filter(function(r){ return !r.sold_type; });
     var myJobs       = allRecords.filter(function(r){ return !!r.sold_type; });
-    var myFixmyLeads = myLeads.filter(function(r){ return r.lead_category !== 'new_solar'; });
+    var myFixmyLeads = myLeads.filter(function(r){ return r.lead_category === 'fixmy'; });
     var myNSLeads    = myLeads.filter(function(r){ return r.lead_category === 'new_solar'; });
-    var myFixmyJobs  = myJobs.filter(function(r){ return r.lead_category !== 'new_solar'; });
+    var myTTLeads    = myLeads.filter(function(r){ return r.lead_category === 'top_tier'; });
+    var myFixmyJobs  = myJobs.filter(function(r){ return r.lead_category === 'fixmy'; });
     var myNSJobs     = myJobs.filter(function(r){ return r.lead_category === 'new_solar'; });
+    var myTTJobs     = myJobs.filter(function(r){ return r.lead_category === 'top_tier'; });
     var salesLeadCat = sessionStorage.getItem('salesLeadCat_'+person.id) || 'fixmy';
     var salesJobCat  = sessionStorage.getItem('salesJobCat_'+person.id)  || 'fixmy';
 
@@ -8319,7 +8428,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }
     } catch(e) {}
 
-    var salesView = sessionStorage.getItem('salesView_'+person.id) || 'leads';
+    var salesView = sessionStorage.getItem('salesView_'+person.id) || 'canvass';
     var OPS_NAMES = {ops1:'Jon Klos',ops2:'John Espinoza',ops3:'Cosmic Solar',ops4:'Axia',dennis:'Dennis'};
 
     function fmtDt(iso) {
@@ -8439,6 +8548,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px;">';
         h += '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:8px;text-align:center;"><div style="font-size:1rem;font-weight:800;color:#8DC63F;">'+myFixmyLeads.length+'</div><div style="font-size:0.6rem;color:#888;">FixMy</div></div>';
         h += '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:8px;text-align:center;"><div style="font-size:1rem;font-weight:800;color:#4a9eff;">'+myNSLeads.length+'</div><div style="font-size:0.6rem;color:#888;">Solar</div></div>';
+        if (myTTLeads.length) h += '<div style="background:rgba(155,109,232,0.06);border:1px solid rgba(155,109,232,0.2);border-radius:8px;padding:8px;text-align:center;"><div style="font-size:1rem;font-weight:800;color:#9b6de8;">'+myTTLeads.length+'</div><div style="font-size:0.6rem;color:#888;">Top Tier</div></div>';
         h += '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:8px;text-align:center;"><div style="font-size:1rem;font-weight:800;color:#ccc;">'+myJobs.length+'</div><div style="font-size:0.6rem;color:#888;">Jobs</div></div>';
         h += '<div style="background:rgba(255,170,0,0.06);border:1px solid rgba(255,170,0,0.15);border-radius:8px;padding:8px;text-align:center;"><div style="font-size:1rem;font-weight:800;color:#ffaa00;">$'+Math.round(totalEstComm)+'</div><div style="font-size:0.6rem;color:#888;">Est. Comm.</div></div>';
         if (showFieldJobs) h += '<div style="grid-column:span 2;">'+sBox(fieldJobs.length,'Field Jobs','#4a9eff')+'</div>';
@@ -8486,91 +8596,128 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       h += tBtn('training','📚 Training');
       h += '</div>';
 
-      // Category sub-tab helper
-      function catSubTabs(catVar, fixmyList, nsList, storageKey) {
+      // Category sub-tab helper — setterFn is a window-level setter ('salesSetLeadCat' or 'salesSetJobCat')
+      function catSubTabs(catVar, fixmyList, nsList, ttList, setterFn) {
         var cst = 'padding:6px 14px;border:none;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;';
-        return '<div style="display:flex;gap:6px;margin-bottom:12px;">'+
-          '<button onclick="'+storageKey+'=\'fixmy\';renderSales()" style="'+cst+'background:'+(catVar==='fixmy'?'#8DC63F':'rgba(255,255,255,0.07)')+';color:'+(catVar==='fixmy'?'#1A1A1A':'#888')+';">&#9889; FixMy.Energy ('+fixmyList.length+')</button>'+
-          '<button onclick="'+storageKey+'=\'new_solar\';renderSales()" style="'+cst+'background:'+(catVar==='new_solar'?'#4a9eff':'rgba(255,255,255,0.07)')+';color:'+(catVar==='new_solar'?'#fff':'#888')+';">&#9728; New Solar ('+nsList.length+')</button>'+
-        '</div>';
+        var h2 = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">';
+        h2 += '<button onclick="'+setterFn+'(\'fixmy\')" style="'+cst+'background:'+(catVar==='fixmy'?'#8DC63F':'rgba(255,255,255,0.07)')+';color:'+(catVar==='fixmy'?'#1A1A1A':'#888')+';">&#9889; FixMy ('+fixmyList.length+')</button>';
+        h2 += '<button onclick="'+setterFn+'(\'new_solar\')" style="'+cst+'background:'+(catVar==='new_solar'?'#4a9eff':'rgba(255,255,255,0.07)')+';color:'+(catVar==='new_solar'?'#fff':'#888')+';">&#9728; New Solar ('+nsList.length+')</button>';
+        if (ttList.length) h2 += '<button onclick="'+setterFn+'(\'top_tier\')" style="'+cst+'background:'+(catVar==='top_tier'?'#9b6de8':'rgba(255,255,255,0.07)')+';color:'+(catVar==='top_tier'?'#fff':'#888')+';">&#11088; Top Tier ('+ttList.length+')</button>';
+        h2 += '</div>';
+        return h2;
       }
 
       // ── Leads view ──────────────────────────────────────────────────────────
       if (salesView === 'leads') {
-        h += catSubTabs(salesLeadCat, myFixmyLeads, myNSLeads, 'salesLeadCat');
-        var viewLeads = salesLeadCat === 'new_solar' ? myNSLeads : myFixmyLeads;
+        h += catSubTabs(salesLeadCat, myFixmyLeads, myNSLeads, myTTLeads, 'salesSetLeadCat');
+        var viewLeads = salesLeadCat === 'new_solar' ? myNSLeads : (salesLeadCat === 'top_tier' ? myTTLeads : myFixmyLeads);
+        var viewLeadCatLabel = salesLeadCat === 'new_solar' ? 'New Solar' : (salesLeadCat === 'top_tier' ? 'Top Tier' : 'FixMy.Energy');
         if (!viewLeads.length) {
-          h += '<div style="text-align:center;padding:32px;color:#555;">No '+(salesLeadCat==='new_solar'?'New Solar':'FixMy.Energy')+' leads yet. Tap + New Lead to add one.</div>';
+          h += '<div style="text-align:center;padding:32px;color:#555;">No '+viewLeadCatLabel+' leads yet. Tap + New Lead to add one.</div>';
         } else {
+          h += '<div class="sales-card-grid">';
           viewLeads.forEach(function(l) {
             var isNSL = l.lead_category === 'new_solar';
+            var isTTL = l.lead_category === 'top_tier';
             var temp = l.lead_temp || 'cold';
             var tClr = {cold:'#4a9eff',warm:'#ffaa00',hot:'#ef4444'};
-            var tBdr = {cold:'rgba(74,158,255,0.2)',warm:'rgba(255,170,0,0.2)',hot:'rgba(239,68,68,0.2)'};
-            function tempBtn(t,lbl2) {
+            function tempBtn(t, em) {
               var a = temp===t;
-              return '<button onclick="setLeadTemp(\''+l.id+'\',\''+t+'\')" style="padding:3px 9px;border-radius:100px;font-size:0.62rem;font-weight:700;cursor:pointer;border:1px solid '+tClr[t]+';'+(a?'background:'+tClr[t]+';color:#fff;':'background:transparent;color:'+tClr[t]+';')+'">'+lbl2+'</button>';
+              return '<button onclick="setLeadTemp(\''+l.id+'\',\''+t+'\')" style="padding:3px 8px;border-radius:100px;font-size:0.65rem;font-weight:700;cursor:pointer;border:1px solid '+tClr[t]+';'+(a?'background:'+tClr[t]+';color:#fff;':'background:transparent;color:'+tClr[t]+';')+'">'+em+'</button>';
             }
-            h += '<div style="background:rgba(255,255,255,0.04);border:1px solid '+tBdr[temp]+';border-radius:12px;padding:14px;margin-bottom:8px;">';
-            h += '<div style="display:flex;justify-content:space-between;align-items:flex-start;">';
-            h += '<div style="flex:1;">';
+
+            // Card border/bg by category
+            var cardBorder = isTTL ? 'rgba(155,109,232,0.35)' : {cold:'rgba(74,158,255,0.2)',warm:'rgba(255,170,0,0.2)',hot:'rgba(239,68,68,0.2)'}[temp];
+            var cardBg = isTTL ? 'rgba(155,109,232,0.04)' : 'rgba(255,255,255,0.04)';
+
+            // Status pill
+            var pillHtml;
             if (isNSL) {
               var nsRec = NS_STATUSES[l.solar_status]||{label:'New Lead',color:'#4a9eff'};
-              h += '<div style="font-size:0.92rem;font-weight:700;">'+(l.first_name||'')+' '+(l.last_name||'')+'<span style="font-size:0.62rem;margin-left:6px;padding:2px 7px;border-radius:20px;background:'+nsRec.color+'22;color:'+nsRec.color+';border:1px solid '+nsRec.color+'44;">'+nsRec.label+'</span></div>';
+              pillHtml = '<span style="font-size:0.62rem;margin-left:6px;padding:2px 7px;border-radius:20px;background:'+nsRec.color+'22;color:'+nsRec.color+';border:1px solid '+nsRec.color+'44;">'+nsRec.label+'</span>';
             } else {
               var cardStep = l.step||1;
-              var cardStepLabels = ['Eval Booked','Photos','Diagnostic','Analysis','Proposal Sent','Sold','Dead','Install','Monitoring'];
-              var cardStepColors = ['#666','#4a9eff','#ffaa00','#f97316','#9b6de8','#8DC63F','#ef4444','#8DC63F','#8DC63F'];
-              var csClr = cardStepColors[cardStep-1]||'#666';
-              h += '<div style="font-size:0.92rem;font-weight:700;">'+(l.first_name||'')+' '+(l.last_name||'')+'<span style="font-size:0.62rem;margin-left:6px;padding:2px 7px;border-radius:20px;background:'+csClr+'22;color:'+csClr+';border:1px solid '+csClr+'44;">'+(cardStepLabels[cardStep-1]||'Step '+cardStep)+'</span></div>';
+              var sLabels = ['Eval Booked','Photos','Diagnostic','Analysis','Proposal Sent','Sold','Dead','Install','Monitoring'];
+              var sColors = isTTL ? ['#9b6de8','#4a9eff','#ffaa00','#f97316','#9b6de8','#8DC63F','#ef4444','#8DC63F','#8DC63F']
+                                  : ['#666','#4a9eff','#ffaa00','#f97316','#9b6de8','#8DC63F','#ef4444','#8DC63F','#8DC63F'];
+              var csClr = sColors[cardStep-1]||'#666';
+              pillHtml = '<span style="font-size:0.62rem;margin-left:6px;padding:2px 7px;border-radius:20px;background:'+csClr+'22;color:'+csClr+';border:1px solid '+csClr+'44;">'+(sLabels[cardStep-1]||'Step '+cardStep)+'</span>';
             }
-            h += '<div style="font-size:0.75rem;color:#888;margin-top:2px;">'+(l.phone||'No phone')+'</div>'+
-              '<div style="font-size:0.72rem;color:#666;margin-top:1px;">'+(l.address||'No address')+'</div>'+
-              (l.monthly_bill?'<div style="font-size:0.7rem;color:#8DC63F;margin-top:2px;">$'+l.monthly_bill+'/mo'+(l.utility?' &middot; '+l.utility:'')+'</div>':'')+
-              (l.notes?'<div style="font-size:0.7rem;color:#888;margin-top:3px;font-style:italic;">&#128203; '+l.notes.slice(0,60)+(l.notes.length>60?'…':'')+'</div>':'');
+
+            var ttBadge     = isTTL ? ' <span style="font-size:0.6rem;padding:2px 6px;border-radius:20px;background:rgba(155,109,232,0.15);color:#9b6de8;border:1px solid rgba(155,109,232,0.3);">&#11088; TOP TIER</span>' : '';
+            var ttConfBadge = (isTTL && l.tt_confirmed) ? ' <span style="font-size:0.6rem;padding:2px 6px;border-radius:20px;background:rgba(141,198,63,0.12);color:#8DC63F;border:1px solid rgba(141,198,63,0.3);">&#10003; Confirmed</span>' : '';
+            var invBadge    = (l.invoice_status && l.invoice_status!=='none') ? '<span style="font-size:0.62rem;padding:2px 7px;border-radius:20px;background:rgba(255,170,0,0.12);color:#ffaa00;border:1px solid rgba(255,170,0,0.25);">INV: '+l.invoice_status+'</span>' : '';
+            var agBadge     = (l.agreement_status && l.agreement_status!=='none') ? '<span style="font-size:0.62rem;padding:2px 7px;border-radius:20px;background:rgba(74,158,255,0.12);color:#4a9eff;border:1px solid rgba(74,158,255,0.25);">AGR: '+l.agreement_status+'</span>' : '';
+
+            h += '<div style="background:'+cardBg+';border:1px solid '+cardBorder+';border-radius:12px;padding:14px;margin-bottom:8px;">';
+            h += '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">';
+
+            // Left: info block
+            h += '<div style="flex:1;min-width:0;">';
+            h += '<div style="font-size:0.92rem;font-weight:700;line-height:1.3;">'+(l.first_name||'')+' '+(l.last_name||'')+pillHtml+ttBadge+ttConfBadge+'</div>';
+            h += '<div style="font-size:0.75rem;color:#888;margin-top:3px;display:flex;align-items:center;gap:6px;">';
+            h += (l.phone||'No phone');
+            if (l.phone) h += '<a href="sms:'+l.phone.replace(/\D/g,'')+'" style="font-size:0.6rem;padding:2px 7px;background:rgba(141,198,63,0.1);color:#8DC63F;border-radius:100px;border:1px solid rgba(141,198,63,0.25);text-decoration:none;font-weight:700;">&#128172; SMS</a>';
             h += '</div>';
-            h += '<div style="display:flex;flex-direction:column;gap:5px;align-items:flex-end;">';
-            h += '<div style="display:flex;gap:3px;">'+tempBtn('cold','❄ Cold')+tempBtn('warm','☀ Warm')+tempBtn('hot','🔥 Hot')+'</div>';
+            h += '<div style="font-size:0.72rem;color:#666;margin-top:2px;display:flex;align-items:center;gap:5px;">';
+            h += '<span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+(l.address||'No address')+'</span>';
+            if (l.address) h += '<button onclick="navigator.clipboard.writeText(\''+l.address.replace(/\\/g,'\\\\').replace(/'/g,"\\'")+'\')" style="flex-shrink:0;font-size:0.58rem;padding:1px 5px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:100px;color:#555;cursor:pointer;" title="Copy address">&#8853;</button>';
+            h += '</div>';
+            if (l.monthly_bill) h += '<div style="font-size:0.7rem;color:#8DC63F;margin-top:2px;">$'+l.monthly_bill+'/mo'+(l.utility?' &middot; '+l.utility:'')+'</div>';
+            if (l.notes) h += '<div style="font-size:0.7rem;color:#888;margin-top:3px;font-style:italic;">&#128203; '+l.notes.slice(0,60)+(l.notes.length>60?'&hellip;':'')+'</div>';
+            if (invBadge||agBadge) h += '<div style="margin-top:5px;display:flex;gap:4px;flex-wrap:wrap;">'+invBadge+agBadge+'</div>';
+            h += '</div>';
+
+            // Right: actions
+            h += '<div style="display:flex;flex-direction:column;gap:5px;align-items:flex-end;flex-shrink:0;">';
+            if (!isNSL) h += '<div style="display:flex;gap:3px;">'+tempBtn('cold','&#10052;')+tempBtn('warm','&#9728;')+tempBtn('hot','&#128293;')+'</div>';
             h += '<div style="display:flex;gap:4px;">';
-            if (l.phone) h += '<a href="tel:'+l.phone.replace(/\D/g,'')+'" style="font-size:0.68rem;padding:4px 10px;background:rgba(141,198,63,0.12);color:#8DC63F;border-radius:100px;border:1px solid rgba(141,198,63,0.25);text-decoration:none;font-weight:700;">📞</a>';
-            if (l.email) { var mlLink='https://fixmy.energy/portal?email='+encodeURIComponent(l.email)+'&code='+(l.phone||'').replace(/\D/g,'').slice(-10); h += '<button onclick="sendMagicLink(\''+mlLink+'\',\''+l.email+'\')" style="font-size:0.68rem;padding:4px 10px;background:rgba(74,158,255,0.08);color:#4a9eff;border-radius:100px;border:1px solid rgba(74,158,255,0.25);cursor:pointer;font-weight:700;">🔗 Link</button>'; }
-            h += '<button onclick="salesEditLead(\''+l.id+'\')" style="font-size:0.68rem;padding:4px 10px;background:rgba(255,255,255,0.06);color:#aaa;border-radius:100px;border:1px solid rgba(255,255,255,0.12);cursor:pointer;font-weight:700;">✏ Edit</button>';
+            if (l.phone) h += '<a href="tel:'+l.phone.replace(/\D/g,'')+'" style="font-size:0.68rem;padding:4px 10px;background:rgba(141,198,63,0.12);color:#8DC63F;border-radius:100px;border:1px solid rgba(141,198,63,0.25);text-decoration:none;font-weight:700;">&#128222;</a>';
+            if (l.email) { var mlLink='https://fixmy.energy/portal?email='+encodeURIComponent(l.email)+'&code='+(l.phone||'').replace(/\D/g,'').slice(-10); h += '<button onclick="sendMagicLink(\''+mlLink+'\',\''+l.email+'\')" style="font-size:0.68rem;padding:4px 10px;background:rgba(74,158,255,0.08);color:#4a9eff;border-radius:100px;border:1px solid rgba(74,158,255,0.25);cursor:pointer;font-weight:700;">&#128279;</button>'; }
+            h += '<button onclick="salesEditLead(\''+l.id+'\')" style="font-size:0.68rem;padding:4px 10px;background:rgba(255,255,255,0.06);color:#aaa;border-radius:100px;border:1px solid rgba(255,255,255,0.12);cursor:pointer;font-weight:700;">&#9998;</button>';
             h += '</div></div></div>';
+
+            // Customer photo count
             var cpCount = custPhotoMap[String(l.id)]||0;
-            if (cpCount) h += '<div style="margin-top:6px;font-size:0.7rem;color:#4a9eff;">📷 '+cpCount+' customer photo'+(cpCount>1?'s':'')+' uploaded</div>';
+            if (cpCount) h += '<div style="margin-top:6px;font-size:0.7rem;color:#4a9eff;">&#128247; '+cpCount+' customer photo'+(cpCount>1?'s':'')+' uploaded</div>';
+
+            // Progress dots + status update dropdown
             if (isNSL) {
-              // NS progress bar (12 steps)
               var nsKeys = Object.keys(NS_STATUSES); var nsIdx = nsKeys.indexOf(l.solar_status||'ns_eval_booked');
               h += '<div style="display:flex;align-items:center;gap:2px;margin-top:10px;">';
               nsKeys.forEach(function(k,i){ var s=NS_STATUSES[k]; var filled=i<=nsIdx; h+='<div style="width:'+(filled?'7px':'4px')+';height:'+(filled?'7px':'4px')+';border-radius:50%;background:'+(filled?s.color:'rgba(255,255,255,0.12)')+';flex-shrink:0;"></div>'; if(i<nsKeys.length-1) h+='<div style="flex:1;height:2px;background:'+(i<nsIdx?NS_STATUSES[nsKeys[i+1]].color:'rgba(255,255,255,0.08)')+';"></div>'; });
               h += '</div>';
             } else {
-              var step = l.step||1;
+              var stepNum = l.step||1;
+              var dotClr = isTTL ? '#9b6de8' : '#8DC63F';
               h += '<div style="display:flex;align-items:center;gap:2px;margin-top:10px;">';
-              [1,2,3,4,5,6,7,8].forEach(function(n,i){ h+='<div style="width:'+(n<=step?'8px':'6px')+';height:'+(n<=step?'8px':'6px')+';border-radius:50%;background:'+(n<=step?'#8DC63F':'rgba(255,255,255,0.12)')+';flex-shrink:0;"></div>'; if(i<7) h+='<div style="flex:1;height:2px;background:'+(step>n?'#8DC63F':'rgba(255,255,255,0.08)')+';"></div>'; });
+              [1,2,3,4,5,6,7,8].forEach(function(n,i){ h+='<div style="width:'+(n<=stepNum?'8px':'6px')+';height:'+(n<=stepNum?'8px':'6px')+';border-radius:50%;background:'+(n<=stepNum?dotClr:'rgba(255,255,255,0.12)')+';flex-shrink:0;"></div>'; if(i<7) h+='<div style="flex:1;height:2px;background:'+(stepNum>n?dotClr:'rgba(255,255,255,0.08)')+';"></div>'; });
               h += '</div>';
-              var sLabels = ['Eval Booked','Photos','Diagnostic','Analysis','Proposal Sent','Sold','Dead','Install','Monitoring'];
-              var sOpts = sLabels.map(function(lbl,i){ return '<option value="'+(i+1)+'"'+(step===i+1?' selected':'')+'>'+lbl+'</option>'; }).join('');
-              h += '<div style="margin-top:10px;display:flex;align-items:center;gap:8px;">'+
-                '<span style="font-size:0.65rem;color:#666;white-space:nowrap;">Update Status:</span>'+
-                '<select onchange="setLeadStep(\''+l.id+'\',this.value)" style="flex:1;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:#ccc;font-size:0.75rem;padding:5px 8px;cursor:pointer;">'+sOpts+'</select>'+
-              '</div>';
+              var slOpts = ['Eval Booked','Photos','Diagnostic','Analysis','Proposal Sent','Sold','Dead','Install','Monitoring'].map(function(lbl,i){ return '<option value="'+(i+1)+'"'+(stepNum===i+1?' selected':'')+'>'+lbl+'</option>'; }).join('');
+              h += '<div style="margin-top:10px;display:flex;align-items:center;gap:8px;"><span style="font-size:0.65rem;color:#666;white-space:nowrap;">Update Status:</span><select onchange="setLeadStep(\''+l.id+'\',this.value)" style="flex:1;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:#ccc;font-size:0.75rem;padding:5px 8px;cursor:pointer;">'+slOpts+'</select></div>';
             }
             h += '</div>';
           });
+          h += '</div>'; // .sales-card-grid
         }
       }
 
       // ── Jobs view ───────────────────────────────────────────────────────────
       else if (salesView === 'jobs') {
-        h += catSubTabs(salesJobCat, myFixmyJobs, myNSJobs, 'salesJobCat');
-        var viewJobs = salesJobCat === 'new_solar' ? myNSJobs : myFixmyJobs;
+        h += catSubTabs(salesJobCat, myFixmyJobs, myNSJobs, myTTJobs, 'salesSetJobCat');
+        var viewJobs = salesJobCat === 'new_solar' ? myNSJobs : (salesJobCat === 'top_tier' ? myTTJobs : myFixmyJobs);
         if (!viewJobs.length) {
-          h += '<div style="text-align:center;padding:32px;color:#555;">No '+(salesJobCat==='new_solar'?'New Solar':'FixMy.Energy')+' jobs yet.</div>';
+          h += '<div style="text-align:center;padding:32px;color:#555;">No '+(salesJobCat==='new_solar'?'New Solar':salesJobCat==='top_tier'?'Top Tier':'FixMy.Energy')+' jobs yet.</div>';
         } else {
+          h += '<div class="sales-card-grid">';
           viewJobs.forEach(function(j) {
             var isNSJ = j.lead_category === 'new_solar';
-            h += '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:14px;margin-bottom:8px;">';
+            var isTTJ = j.lead_category === 'top_tier';
+            var jobBorder = isTTJ ? 'rgba(155,109,232,0.35)' : 'rgba(255,255,255,0.1)';
+            var jobBg = isTTJ ? 'rgba(155,109,232,0.04)' : 'rgba(255,255,255,0.04)';
+            var jTTBadge = isTTJ ? ' <span style="font-size:0.6rem;padding:2px 6px;border-radius:20px;background:rgba(155,109,232,0.15);color:#9b6de8;border:1px solid rgba(155,109,232,0.3);">&#11088; TOP TIER</span>' : '';
+            var jTTConfBadge = (isTTJ && j.tt_confirmed) ? ' <span style="font-size:0.6rem;padding:2px 6px;border-radius:20px;background:rgba(141,198,63,0.12);color:#8DC63F;border:1px solid rgba(141,198,63,0.3);">&#10003; Confirmed</span>' : '';
+            h += '<div style="background:'+jobBg+';border:1px solid '+jobBorder+';border-radius:12px;padding:14px;margin-bottom:8px;">';
             h += '<div style="display:flex;justify-content:space-between;align-items:flex-start;">';
             if (isNSJ) {
               var nsJRec = NS_STATUSES[j.solar_status]||{label:'New Solar',color:'#4a9eff'};
@@ -8595,7 +8742,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
               } else {
                 opsHtml = '<button onclick="sendToOps(\''+j.id+'\')" style="margin-top:8px;width:100%;padding:9px;background:rgba(249,115,22,0.1);border:1px solid rgba(249,115,22,0.3);border-radius:8px;color:#f97316;font-size:0.78rem;font-weight:700;cursor:pointer;">&#128228; Send to Ops</button>';
               }
-              h += '<div style="flex:1;"><div style="font-size:0.92rem;font-weight:700;">'+(j.first_name||'')+' '+(j.last_name||'')+'</div>'+
+              h += '<div style="flex:1;"><div style="font-size:0.92rem;font-weight:700;">'+(j.first_name||'')+' '+(j.last_name||'')+jTTBadge+jTTConfBadge+'</div>'+
                 '<div style="font-size:0.75rem;color:#888;margin-top:2px;">'+(j.address||'No address')+'</div>'+
                 (j.install_type?'<div style="font-size:0.7rem;color:#666;margin-top:1px;">'+j.install_type+'</div>':'')+
               '</div>';
@@ -8612,6 +8759,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
               h += opsHtml+'</div>';
             }
           });
+          h += '</div>'; // .sales-card-grid
         }
       }
 
@@ -8723,27 +8871,66 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
       // ── Canvass / Black Box view ─────────────────────────────────────────────
       else if (salesView === 'canvass') {
-        h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;margin-bottom:12px;">📦 Black Box &mdash; Door Knocking Route</div>';
+        h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;margin-bottom:12px;">&#128230; Black Box &mdash; Door Knocking Route</div>';
+
+        // ── Doorstep Intel (same panel as admin, counts against rep's leads) ──
+        (function(){
+          var instCount = {};
+          canvassLeads.forEach(function(l){ if (l.installer) instCount[l.installer] = (instCount[l.installer]||0)+1; });
+          var INSTALLER_INTEL = [
+            { key:'SunPower',        label:'SunPower — Ch.11 bankruptcy',        url:'https://fixmy.energy/sunpower' },
+            { key:'Sunnova',         label:'Sunnova — Ch.11 bankruptcy 2025',    url:'https://fixmy.energy/sunnova' },
+            { key:'Titan Solar',     label:'Titan Solar — Ch.7 liquidation',     url:'https://fixmy.energy/titan' },
+            { key:'Mosaic',          label:'Mosaic Solar — Ch.11 bankruptcy',    url:'https://fixmy.energy/mosaic' },
+            { key:'Sullivan Solar',  label:'Sullivan Solar — shut down 2021',    url:'https://fixmy.energy/check' },
+            { key:'Petersen Dean',   label:'Petersen Dean — Ch.11 bankruptcy',   url:'https://fixmy.energy/check' },
+            { key:'Freedom Forever', label:'Freedom Forever — Ch.11 Apr 2026',   url:'https://fixmy.energy/check' },
+          ];
+          INSTALLER_INTEL.sort(function(a,b){ return (instCount[b.key]||0)-(instCount[a.key]||0); });
+          var SDGE_INTEL = [
+            { label:'Why your SD bill keeps rising (KPBS 2026)', url:'https://www.kpbs.org/news/economy/2026/03/09/why-your-san-diego-electric-bill-is-so-high-right-now' },
+            { label:'SDG&E up 65% in 3 years (Solar.com)',       url:'https://www.solar.com/learn/sdge-rate-increases/' },
+            { label:'Jan 2026: +7.4% rate increase (Escondido Times)', url:'https://escondidotimes.com/sdge-rate-increase-2026-san-diego-bills-up-7-4/' },
+            { label:'CPUC official 20-yr SDG&E forecast (PDF)',  url:'https://www.cpuc.ca.gov/-/media/cpuc-website/divisions/office-of-governmental-affairs-division/reports/2025/2025-sb-695-report_093025.pdf' },
+          ];
+          h += '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:12px 13px;margin-bottom:16px;">';
+          h += '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#ef4444;margin-bottom:7px;">&#128200; SDG&E Rate Intel</div>';
+          SDGE_INTEL.forEach(function(lnk){
+            h += '<div style="margin-bottom:5px;"><a href="'+lnk.url+'" target="_blank" rel="noopener" style="font-size:0.67rem;color:#4a9eff;text-decoration:none;line-height:1.4;">&#8599; '+lnk.label+'</a></div>';
+          });
+          h += '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#ffaa00;margin-top:11px;margin-bottom:7px;">&#127968; Defunct Installer Intel</div>';
+          INSTALLER_INTEL.forEach(function(ins){
+            var cnt = instCount[ins.key]||0;
+            var badge = cnt > 0 ? '<span style="background:rgba(255,170,0,0.18);color:#ffaa00;border-radius:4px;padding:0 5px;font-size:0.6rem;font-weight:700;margin-right:5px;">'+cnt+'</span>' : '';
+            h += '<div style="margin-bottom:5px;">'+badge+'<a href="'+ins.url+'" target="_blank" rel="noopener" style="font-size:0.67rem;color:#aaa;text-decoration:none;line-height:1.4;">&#8599; '+ins.label+'</a></div>';
+          });
+          h += '</div>';
+        })();
 
         if (canvassGpsStatus === 'idle') {
           h += '<div style="text-align:center;padding:32px 16px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:14px;margin-bottom:12px;">';
           h += '<div style="font-size:2rem;margin-bottom:12px;">📍</div>';
           h += '<div style="font-size:0.9rem;font-weight:700;margin-bottom:6px;">Find Nearest Leads</div>';
-          h += '<div style="font-size:0.75rem;color:#888;margin-bottom:18px;">Uses your GPS to route you to the closest orphaned account leads first. No more driving across town.</div>';
+          h += '<div style="font-size:0.75rem;color:#888;margin-bottom:18px;">Uses your GPS to route you to the closest orphaned account leads first.</div>';
           h += '<button onclick="canvassInit()" style="background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;padding:14px 32px;font-size:0.9rem;font-weight:700;cursor:pointer;">📍 Get My Location</button>';
+          h += '<div style="margin-top:14px;"><button onclick="canvassLoadNoGps()" style="background:none;border:none;color:#555;font-size:0.75rem;cursor:pointer;text-decoration:underline;">Browse without GPS →</button></div>';
           h += '</div>';
           var knockedToday = canvassLeads.filter(function(l){ return l.knock_status && l.knocked_at && (Date.now()-new Date(l.knocked_at).getTime() < 86400000); }).length;
           if (knockedToday) h += '<div style="font-size:0.72rem;color:#8DC63F;text-align:center;margin-top:8px;">✓ '+knockedToday+' doors knocked today</div>';
         }
 
         else if (canvassGpsStatus === 'loading') {
-          h += '<div style="text-align:center;padding:48px;color:#888;font-size:0.85rem;">Locating you and loading leads…</div>';
+          h += '<div style="text-align:center;padding:32px 16px;padding-bottom:100px;">';
+          h += '<div style="color:#888;font-size:0.85rem;margin-bottom:18px;">Locating you and loading leads…</div>';
+          h += '<button onclick="canvassLoadNoGps()" style="background:rgba(255,255,255,0.07);color:#aaa;border:1px solid rgba(255,255,255,0.15);border-radius:100px;padding:10px 24px;font-size:0.8rem;font-weight:700;cursor:pointer;">⏩ Skip GPS</button>';
+          h += '</div>';
         }
 
         else if (canvassGpsStatus === 'error') {
-          h += '<div style="text-align:center;padding:32px 16px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.2);border-radius:14px;">';
-          h += '<div style="color:#ef4444;font-size:0.85rem;margin-bottom:14px;">⚠ Location access denied. Enable location in your browser settings.</div>';
-          h += '<button onclick="canvassInit()" style="background:rgba(255,255,255,0.08);color:#ccc;border:1px solid rgba(255,255,255,0.15);border-radius:100px;padding:10px 22px;font-size:0.8rem;font-weight:700;cursor:pointer;">Try Again</button>';
+          h += '<div style="text-align:center;padding:32px 16px 100px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.2);border-radius:14px;">';
+          h += '<div style="color:#ef4444;font-size:0.85rem;margin-bottom:14px;">⚠ Location unavailable.</div>';
+          h += '<button onclick="canvassLoadNoGps()" style="background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;padding:12px 28px;font-size:0.85rem;font-weight:700;cursor:pointer;margin-bottom:10px;">Load Leads Without GPS</button>';
+          h += '<div><button onclick="canvassInit()" style="background:none;border:none;color:#555;font-size:0.72rem;cursor:pointer;text-decoration:underline;">↻ Try GPS again</button></div>';
           h += '</div>';
         }
 
@@ -8904,6 +9091,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           var a = trainingTab === v;
           return '<button onclick="window.setTrainingTab(\''+v+'\')" style="padding:6px 14px;border:none;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;background:'+(a?'#8DC63F':'rgba(255,255,255,0.07)')+';color:'+(a?'#1A1A1A':'#888')+';">'+lbl+'</button>';
         }
+        h += '<div style="background:rgba(141,198,63,0.06);border:1px solid rgba(141,198,63,0.2);border-radius:12px;padding:12px 14px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;gap:12px;">';
+        h += '<div><div style="font-size:0.82rem;font-weight:700;color:#8DC63F;margin-bottom:2px;">&#9889; Solar Rep Assistant</div><div style="font-size:0.72rem;color:#888;">Ask anything — scripts, objections, pricing, SDCP, battery pitch</div></div>';
+        h += '<button onclick="window.openRepChat()" style="flex-shrink:0;padding:9px 16px;background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;font-size:0.75rem;font-weight:800;cursor:pointer;">&#128172; Open Chat</button>';
+        h += '</div>';
         h += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px;">';
         h += tTabBtn('tech','🔧 Using The Tech');
         h += tTabBtn('markets','🗺 Markets');
@@ -9086,9 +9277,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     };
     window.salesSetView = function(v) { salesView=v; sessionStorage.setItem('salesView_'+person.id,v); renderSales(); };
     window.dismissWelcome = function(id) { try { sessionStorage.removeItem('showWelcome_'+id); } catch(e){} renderSales(); };
-    // Sub-category setters — called from inline onclick in catSubTabs
-    Object.defineProperty(window, 'salesLeadCat', { get: function(){ return salesLeadCat; }, set: function(v){ salesLeadCat=v; try{sessionStorage.setItem('salesLeadCat_'+person.id,v);}catch(e){} }, configurable:true });
-    Object.defineProperty(window, 'salesJobCat',  { get: function(){ return salesJobCat;  }, set: function(v){ salesJobCat=v;  try{sessionStorage.setItem('salesJobCat_'+person.id,v); }catch(e){} }, configurable:true });
+    window.renderSales = renderSales;
+    window.salesSetLeadCat = function(v) { salesLeadCat=v; try{sessionStorage.setItem('salesLeadCat_'+person.id,v);}catch(e){} renderSales(); };
+    window.salesSetJobCat  = function(v) { salesJobCat=v;  try{sessionStorage.setItem('salesJobCat_'+person.id,v);}catch(e){}  renderSales(); };
     window.setLeadTemp = async function(id, temp) {
       var c2=supabase.createClient(SUPA_URL,SUPA_KEY);
       await c2.from('customers').update({lead_temp:temp}).eq('id',id);
@@ -9262,26 +9453,43 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       canvassGpsStatus = 'loading';
       renderSales();
       try {
-        var pos = await new Promise(function(resolve, reject) {
-          navigator.geolocation.getCurrentPosition(resolve, reject, {enableHighAccuracy:true, timeout:10000});
-        });
-        canvassUserLat = pos.coords.latitude;
-        canvassUserLng = pos.coords.longitude;
+        var pos = await Promise.race([
+          new Promise(function(resolve, reject) {
+            navigator.geolocation.getCurrentPosition(resolve, reject, {enableHighAccuracy:false, timeout:10000, maximumAge:60000});
+          }),
+          new Promise(function(_, reject) {
+            setTimeout(function(){ reject(new Error('GPS timeout')); }, 12000);
+          })
+        ]);
+        await _canvassLoadLeads(pos.coords.latitude, pos.coords.longitude);
       } catch(e) {
-        canvassGpsStatus = 'error';
-        renderSales();
-        return;
+        await _canvassLoadLeads(null, null); // GPS failed — load without distance sorting
       }
+    };
 
-      // Load orphaned leads without knock_status (or already loaded in allRecords)
+    window.canvassLoadNoGps = async function() {
+      await _canvassLoadLeads(null, null);
+    };
+
+    async function _canvassLoadLeads(userLat, userLng) {
+      canvassGpsStatus = 'loading';
+      canvassUserLat = userLat;
+      canvassUserLng = userLng;
+      renderSales();
+
       var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
-      var { data: rawLeads, error: lErr } = await c2
-        .from('customers')
-        .select('id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,original_installer,install_year')
-        .eq('lead_source','orphaned_list')
-        .is('sold_type', null)
-        .order('created_at', {ascending: false})
-        .limit(500);
+      var queryResult = await Promise.race([
+        c2.from('customers')
+          .select('id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,original_installer,install_year')
+          .eq('lead_source','orphaned_list')
+          .is('sold_type', null)
+          .order('created_at', {ascending: false})
+          .limit(500),
+        new Promise(function(resolve) {
+          setTimeout(function(){ resolve({data:[], error:new Error('timeout')}); }, 15000);
+        })
+      ]);
+      var rawLeads = queryResult.data, lErr = queryResult.error;
 
       if (lErr || !rawLeads) { canvassGpsStatus = 'error'; renderSales(); return; }
 
@@ -9302,22 +9510,26 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         })();
       }
 
-      // Sort by distance (leads without coords go to end)
-      rawLeads.forEach(function(l) {
-        if (l.lat && l.lng) l._distMi = canvassHaversine(canvassUserLat, canvassUserLng, l.lat, l.lng);
-        else l._distMi = null;
-      });
+      // Sort by distance if GPS available, else alphabetically by address
+      if (userLat && userLng) {
+        rawLeads.forEach(function(l) {
+          l._distMi = (l.lat && l.lng) ? canvassHaversine(userLat, userLng, l.lat, l.lng) : null;
+        });
+      }
       rawLeads.sort(function(a, b) {
         if (a.knock_status && !b.knock_status) return 1;
         if (!a.knock_status && b.knock_status) return -1;
-        var dA = a._distMi != null ? a._distMi : 9999;
-        var dB = b._distMi != null ? b._distMi : 9999;
-        return dA - dB;
+        if (userLat && userLng) {
+          var dA = a._distMi != null ? a._distMi : 9999;
+          var dB = b._distMi != null ? b._distMi : 9999;
+          return dA - dB;
+        }
+        return (a.address||'').localeCompare(b.address||'');
       });
       canvassLeads = rawLeads.filter(function(l){ return canvassSkipIds.indexOf(l.id) < 0; });
       canvassGpsStatus = 'ready';
       renderSales();
-    };
+    }
 
     window.canvassKnock = async function(id, knockStatus) {
       var lead = canvassLeads.find(function(l){ return l.id === id; });
@@ -9395,6 +9607,90 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     };
 
     renderSales();
+
+    // ── Rep AI Assistant — floating chat widget ────────────────────────────────
+    if (!document.getElementById('repChatBtn')) {
+      var chatBtn = document.createElement('button');
+      chatBtn.id = 'repChatBtn';
+      chatBtn.innerHTML = '&#128172; Ask';
+      chatBtn.setAttribute('style','position:fixed;bottom:76px;right:14px;z-index:310;background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;padding:10px 16px;font-size:0.8rem;font-weight:800;cursor:pointer;box-shadow:0 2px 14px rgba(0,0,0,0.4);');
+      chatBtn.onclick = function(){ window.openRepChat(); };
+      document.body.appendChild(chatBtn);
+
+      var chatModal = document.createElement('div');
+      chatModal.id = 'repChatModal';
+      chatModal.setAttribute('style','display:none;position:fixed;inset:0;z-index:320;background:rgba(0,0,0,0.55);align-items:flex-end;');
+      chatModal.innerHTML =
+        '<div style="background:#1c1c1c;border-radius:20px 20px 0 0;padding:0;max-height:82vh;display:flex;flex-direction:column;width:100%;max-width:600px;margin:0 auto;">'+
+          '<div style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid rgba(255,255,255,0.08);">'+
+            '<div style="font-size:0.9rem;font-weight:800;color:#8DC63F;">&#9889; Solar Rep Assistant</div>'+
+            '<button onclick="window.closeRepChat()" style="background:none;border:none;color:#666;font-size:1.1rem;cursor:pointer;padding:4px 8px;">&#10005;</button>'+
+          '</div>'+
+          '<div id="repChatHistory" style="flex:1;overflow-y:auto;padding:14px 16px;display:flex;flex-direction:column;gap:10px;"></div>'+
+          '<div style="padding:8px 10px 4px;display:flex;flex-wrap:wrap;gap:6px;border-top:1px solid rgba(255,255,255,0.06);">'+
+            '<button onclick="window.repChatQuick(\'Top Tier door script\')" style="font-size:0.65rem;padding:4px 10px;background:rgba(155,109,232,0.12);color:#9b6de8;border:1px solid rgba(155,109,232,0.3);border-radius:100px;cursor:pointer;font-weight:700;">&#11088; TT Script</button>'+
+            '<button onclick="window.repChatQuick(\'How do I handle a not interested objection?\')" style="font-size:0.65rem;padding:4px 10px;background:rgba(255,255,255,0.06);color:#aaa;border:1px solid rgba(255,255,255,0.12);border-radius:100px;cursor:pointer;font-weight:700;">Not Interested</button>'+
+            '<button onclick="window.repChatQuick(\'Explain SDCP eligibility and how it affects solar decisions\')" style="font-size:0.65rem;padding:4px 10px;background:rgba(255,255,255,0.06);color:#aaa;border:1px solid rgba(255,255,255,0.12);border-radius:100px;cursor:pointer;font-weight:700;">SDCP?</button>'+
+            '<button onclick="window.repChatQuick(\'Battery retrofit benefits — why add a battery to existing solar?\')" style="font-size:0.65rem;padding:4px 10px;background:rgba(255,255,255,0.06);color:#aaa;border:1px solid rgba(255,255,255,0.12);border-radius:100px;cursor:pointer;font-weight:700;">Battery pitch</button>'+
+          '</div>'+
+          '<div style="display:flex;gap:8px;padding:10px 14px 18px;">'+
+            '<input id="repChatInput" type="text" placeholder="Ask anything about scripts, objections, pricing…" style="flex:1;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:100px;color:#eee;font-size:0.82rem;padding:10px 16px;outline:none;" onkeydown="if(event.key===\'Enter\')window.sendRepChat()"/>'+
+            '<button onclick="window.sendRepChat()" style="background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;padding:10px 18px;font-size:0.8rem;font-weight:800;cursor:pointer;">Send</button>'+
+          '</div>'+
+        '</div>';
+      document.body.appendChild(chatModal);
+    }
+
+    window._repChatHistory = window._repChatHistory || [];
+
+    window.openRepChat = function() {
+      var m = document.getElementById('repChatModal');
+      if (m) { m.style.display = 'flex'; window._renderRepChat(); setTimeout(function(){ var inp=document.getElementById('repChatInput'); if(inp) inp.focus(); },150); }
+    };
+    window.closeRepChat = function() {
+      var m = document.getElementById('repChatModal'); if (m) m.style.display = 'none';
+    };
+    window._renderRepChat = function() {
+      var hist = document.getElementById('repChatHistory'); if (!hist) return;
+      if (!window._repChatHistory.length) {
+        hist.innerHTML = '<div style="text-align:center;color:#555;font-size:0.8rem;padding:20px 0;">Ask me anything — door scripts, objections, pricing, SDCP, battery pitch&hellip;</div>';
+        return;
+      }
+      hist.innerHTML = window._repChatHistory.map(function(m){
+        var isUser = m.role === 'user';
+        return '<div style="display:flex;justify-content:'+(isUser?'flex-end':'flex-start')+';">'+
+          '<div style="max-width:82%;padding:9px 13px;border-radius:'+(isUser?'16px 16px 4px 16px':'16px 16px 16px 4px')+';background:'+(isUser?'#8DC63F':'rgba(255,255,255,0.07)')+';color:'+(isUser?'#1A1A1A':'#ddd')+';font-size:0.82rem;line-height:1.45;white-space:pre-wrap;">'+m.content+'</div></div>';
+      }).join('');
+      hist.scrollTop = hist.scrollHeight;
+    };
+    window.repChatQuick = function(msg) {
+      var inp = document.getElementById('repChatInput'); if (inp) inp.value = msg;
+      window.sendRepChat();
+    };
+    window.sendRepChat = async function() {
+      var inp = document.getElementById('repChatInput'); if (!inp) return;
+      var msg = inp.value.trim(); if (!msg) return;
+      inp.value = '';
+      window._repChatHistory.push({ role: 'user', content: msg });
+      window._renderRepChat();
+      // typing indicator
+      var hist = document.getElementById('repChatHistory');
+      if (hist) { var typing = document.createElement('div'); typing.id='rcTyping'; typing.style='color:#555;font-size:0.75rem;padding:4px 0;'; typing.textContent='⚡ Thinking…'; hist.appendChild(typing); hist.scrollTop=hist.scrollHeight; }
+      try {
+        var resp = await fetch('/.netlify/functions/rep-assistant', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ message: msg, history: window._repChatHistory.slice(0,-1), repName: person.name||'Rep', repRole: config.setterMode?'setter':'tech' })
+        });
+        var data = await resp.json();
+        var reply = data.reply || data.error || 'Something went wrong — try again.';
+        window._repChatHistory.push({ role: 'assistant', content: reply });
+      } catch(e) {
+        window._repChatHistory.push({ role: 'assistant', content: 'Connection error — check your signal and try again.' });
+      }
+      var t = document.getElementById('rcTyping'); if (t) t.remove();
+      window._renderRepChat();
+    };
 
     // Auto-open lead capture form (Ronda/setter primary view — only if agreement signed)
     if (config.autoOpenForm && agreementSigned) {
