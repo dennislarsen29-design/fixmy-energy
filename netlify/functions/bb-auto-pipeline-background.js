@@ -495,7 +495,7 @@ Respond ONLY with raw JSON, no markdown, no code fences:
   // ══════════════════════════════════════════════════════════════════════════
   stamp('=== Phase 2: Owner enrichment ===');
 
-  const PHASE2_DEADLINE = Date.now() + (3 * 60 * 1000);
+  const PHASE2_DEADLINE = Date.now() + (6 * 60 * 1000);
 
   const unenrichedRes = await supaFetch(
     '/customers?lead_source=eq.orphaned_list&title_owner=is.null&select=id,address&limit=2000'
@@ -565,7 +565,7 @@ Respond ONLY with raw JSON, no markdown, no code fences:
             const geoLng = lng || ((regridFeatures(d)[0] && regridFeatures(d)[0].geometry && regridFeatures(d)[0].geometry.coordinates) || [])[0] || null;
             return { ...parsed, lat: geoLat, lng: geoLng };
           }
-        } else { stamp('Phase 2: Regrid lat/lon HTTP ' + r.status); }
+        } else { stamp('Phase 2: Regrid lat/lon HTTP ' + r.status); if (r.status === 429) await sleep(1500); }
       } catch(e) { stamp('Phase 2: Regrid lat/lon err: ' + e.message); }
     }
 
@@ -583,7 +583,7 @@ Respond ONLY with raw JSON, no markdown, no code fences:
             const geo = Array.isArray(feats) && feats[0] && feats[0].geometry && feats[0].geometry.coordinates;
             return { ...parsed, lat: lat || (geo && geo[1]) || null, lng: lng || (geo && geo[0]) || null };
           }
-        } else { stamp('Phase 2: Regrid search HTTP ' + r.status); }
+        } else { stamp('Phase 2: Regrid search HTTP ' + r.status); if (r.status === 429) await sleep(1500); }
       } catch(e) { stamp('Phase 2: Regrid search err: ' + e.message); }
     }
 
@@ -638,31 +638,26 @@ Respond ONLY with raw JSON, no markdown, no code fences:
   }
 
   let enriched = 0;
-  const CONCURRENCY = 5;
 
-  for (let i = 0; i < toEnrich.length; i += CONCURRENCY) {
+  for (let i = 0; i < toEnrich.length; i++) {
     if (Date.now() > PHASE2_DEADLINE || overGlobal()) {
       stamp(`Phase 2: time limit at ${i}/${toEnrich.length}`);
       break;
     }
-    const batch = toEnrich.slice(i, i + CONCURRENCY);
-    const results = await Promise.all(batch.map(lead => lookupOwner(lead.address).catch(() => null)));
-    const updates = [];
-    for (let j = 0; j < batch.length; j++) {
-      if (results[j]) {
-        const r = results[j];
-        const upd = {};
-        if (r.owner) { upd.title_owner = r.owner; upd.apn = r.apn; }
-        if (r.assessed_value) upd.assessed_value = r.assessed_value;
-        if (r.tax_delinquent != null) upd.tax_delinquent = r.tax_delinquent;
-        if (r.lat != null) upd.lat = r.lat;
-        if (r.lng != null) upd.lng = r.lng;
-        if (Object.keys(upd).length) updates.push(supaUpdate(batch[j].id, upd));
-        if (r.owner) enriched++;
-      }
+    const lead = toEnrich[i];
+    let result = null;
+    try { result = await lookupOwner(lead.address); } catch(e) {}
+    if (result) {
+      const upd = {};
+      if (result.owner) { upd.title_owner = result.owner; upd.apn = result.apn; }
+      if (result.assessed_value) upd.assessed_value = result.assessed_value;
+      if (result.tax_delinquent != null) upd.tax_delinquent = result.tax_delinquent;
+      if (result.lat != null) upd.lat = result.lat;
+      if (result.lng != null) upd.lng = result.lng;
+      if (Object.keys(upd).length) await supaUpdate(lead.id, upd);
+      if (result.owner) enriched++;
     }
-    await Promise.all(updates);
-    await sleep(150);
+    await sleep(300);
   }
 
   stamp(`Phase 2 done: ${enriched} owner names added`);
