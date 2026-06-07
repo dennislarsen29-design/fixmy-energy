@@ -252,16 +252,29 @@ exports.handler = async function(event) {
   const anthropicKey = process.env.ANTHROPIC_KEY;
   if (anthropicKey) {
     try {
-      const countResp = await fetch(
+      // Get accurate total count via Content-Range (avoids Supabase's 1,000-row default cap)
+      const totalCountResp = await fetch(
+        SUPA_REST + '/customers?lead_source=eq.orphaned_list&sold_type=is.null&select=id',
+        { headers: { apikey: supaKey, Authorization: 'Bearer ' + supaKey,
+          Prefer: 'count=exact', 'Range-Unit': 'items', Range: '0-0' } }
+      );
+      let totalLeads = 0;
+      if (totalCountResp.ok) {
+        const cr = totalCountResp.headers.get('Content-Range') || '';
+        const m = cr.match(/\/(\d+)$/);
+        if (m) totalLeads = parseInt(m[1], 10);
+      }
+
+      // Sample up to 1,000 rows for installer breakdown (representative for ratios)
+      const sampleResp = await fetch(
         SUPA_REST + '/customers?lead_source=eq.orphaned_list&sold_type=is.null&select=title_owner,original_installer',
         { headers: { apikey: supaKey, Authorization: 'Bearer ' + supaKey, Accept: 'application/json',
-          'Range-Unit': 'items', Range: '0-9999' } }
+          'Range-Unit': 'items', Range: '0-999' } }
       );
-      let totalLeads = 0, enrichedLeads = 0;
+      let enrichedLeads = 0;
       const byInstaller = {};
-      if (countResp.ok) {
-        const sample = await countResp.json();
-        totalLeads = sample.length;
+      if (sampleResp.ok) {
+        const sample = await sampleResp.json();
         sample.forEach(r => {
           if (r.title_owner) enrichedLeads++;
           const inst = r.original_installer || 'unknown';
@@ -269,30 +282,37 @@ exports.handler = async function(event) {
         });
       }
 
-      // Contact stats — phone/email coverage for skip-trace prioritization
+      // Contact stats — exact counts via server-side filtering
       let leadsWithPhone = 0, leadsWithEmail = 0, leadsNoContact = 0;
       try {
-        const contactResp = await fetch(
-          SUPA_REST + '/customers?lead_source=eq.orphaned_list&sold_type=is.null&select=phone,email',
-          { headers: { apikey: supaKey, Authorization: 'Bearer ' + supaKey, Accept: 'application/json',
-            'Range-Unit': 'items', Range: '0-9999' } }
+        const phoneCountResp = await fetch(
+          SUPA_REST + '/customers?lead_source=eq.orphaned_list&sold_type=is.null&phone=not.is.null&phone=not.like.*%40pending.fixmy.energy&select=id',
+          { headers: { apikey: supaKey, Authorization: 'Bearer ' + supaKey,
+            Prefer: 'count=exact', 'Range-Unit': 'items', Range: '0-0' } }
         );
-        if (contactResp.ok) {
-          const contactSample = await contactResp.json();
-          contactSample.forEach(r => {
-            const hasPhone = r.phone && !String(r.phone).endsWith('@pending.fixmy.energy');
-            const hasEmail = r.email && !String(r.email).endsWith('@pending.fixmy.energy');
-            if (hasPhone) leadsWithPhone++;
-            if (hasEmail) leadsWithEmail++;
-            if (!hasPhone && !hasEmail) leadsNoContact++;
-          });
+        if (phoneCountResp.ok) {
+          const cr = phoneCountResp.headers.get('Content-Range') || '';
+          const m = cr.match(/\/(\d+)$/);
+          if (m) leadsWithPhone = parseInt(m[1], 10);
         }
+        const emailCountResp = await fetch(
+          SUPA_REST + '/customers?lead_source=eq.orphaned_list&sold_type=is.null&email=not.is.null&email=not.like.*%40pending.fixmy.energy&select=id',
+          { headers: { apikey: supaKey, Authorization: 'Bearer ' + supaKey,
+            Prefer: 'count=exact', 'Range-Unit': 'items', Range: '0-0' } }
+        );
+        if (emailCountResp.ok) {
+          const cr = emailCountResp.headers.get('Content-Range') || '';
+          const m = cr.match(/\/(\d+)$/);
+          if (m) leadsWithEmail = parseInt(m[1], 10);
+        }
+        leadsNoContact = Math.max(0, totalLeads - leadsWithPhone);
       } catch(e) { stamp('Phase 0: contact stats error — ' + e.message); }
 
       const topInstallers = Object.entries(byInstaller)
         .sort((a, b) => b[1] - a[1]).slice(0, 8)
         .map(([name, count]) => `${name}: ${count}`).join(', ');
-      const enrichPct = totalLeads ? Math.round(enrichedLeads / totalLeads * 100) : 0;
+      const sampleSize = Object.values(byInstaller).reduce((a, b) => a + b, 0);
+      const enrichPct = sampleSize ? Math.round(enrichedLeads / sampleSize * 100) : 0;
       const contactPct = totalLeads ? Math.round(leadsWithPhone / totalLeads * 100) : 0;
       const emailPct = totalLeads ? Math.round(leadsWithEmail / totalLeads * 100) : 0;
       const noContactPct = totalLeads ? Math.round(leadsNoContact / totalLeads * 100) : 0;
