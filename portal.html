@@ -4222,9 +4222,21 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var unvisited = adminCanvassLeads.filter(function(l){ return !l.knock_status && l.address; });
     var batch = unvisited.slice(0, n || 5);
     if (!batch.length) return;
-    var stops = batch.map(function(l){ return encodeURIComponent(l.address); });
-    var origin = (adminCanvassUserLat && adminCanvassUserLng) ? adminCanvassUserLat+','+adminCanvassUserLng : stops.shift();
-    var url = 'https://www.google.com/maps/dir/' + origin + '/' + stops.join('/');
+    var addrs = batch.map(function(l){ return l.address; });
+    var origin, destination, waypoints;
+    if (adminCanvassUserLat && adminCanvassUserLng) {
+      origin = adminCanvassUserLat + ',' + adminCanvassUserLng;
+      destination = encodeURIComponent(addrs[addrs.length - 1]);
+      waypoints = addrs.slice(0, addrs.length - 1).map(encodeURIComponent).join('|');
+    } else {
+      origin = encodeURIComponent(addrs[0]);
+      destination = encodeURIComponent(addrs[addrs.length - 1]);
+      waypoints = addrs.slice(1, addrs.length - 1).map(encodeURIComponent).join('|');
+    }
+    var url = 'https://www.google.com/maps/dir/?api=1&travelmode=driving'
+      + '&origin=' + origin
+      + '&destination=' + destination
+      + (waypoints ? '&waypoints=' + waypoints : '');
     window.open(url, '_blank');
   };
 
@@ -5015,13 +5027,28 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     try {
       var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
       var { data: rows } = await c2.from('pipeline_state')
-        .select('key,value').in('key', ['phase0_insights','expansion_index']);
+        .select('key,value').in('key', ['phase0_insights','expansion_index','last_run_at','last_run_summary']);
       rows = rows || [];
       var insightsRow = rows.find(function(r){ return r.key === 'phase0_insights'; });
       var expRow = rows.find(function(r){ return r.key === 'expansion_index'; });
+      var lastRunRow = rows.find(function(r){ return r.key === 'last_run_at'; });
       var expIndex = expRow ? (parseInt(expRow.value, 10) || 0) : 0;
       var totalExpZips = 72; // EXPANSION_QUEUE.length
       var h = '';
+
+      // ── Last pipeline run timestamp ───────────────────────────────────────
+      if (lastRunRow && lastRunRow.value) {
+        var runDate = new Date(lastRunRow.value);
+        var diffMs = Date.now() - runDate.getTime();
+        var diffHrs = Math.floor(diffMs / 3600000);
+        var diffMins = Math.floor((diffMs % 3600000) / 60000);
+        var agoStr = diffHrs >= 24 ? Math.floor(diffHrs / 24) + 'd ago'
+          : diffHrs >= 1 ? diffHrs + 'h ' + diffMins + 'm ago'
+          : diffMins + 'm ago';
+        h += '<div style="font-size:0.65rem;color:#555;margin-bottom:6px;text-align:right;">Last pipeline run: <span style="color:#8DC63F;">' + agoStr + '</span></div>';
+      } else {
+        h += '<div style="font-size:0.65rem;color:#555;margin-bottom:6px;text-align:right;">Last pipeline run: <span style="color:#888;">Never run</span></div>';
+      }
 
       // ── Zip expansion status chip ─────────────────────────────────────────
       var sdOnly = expIndex === 0;
@@ -5040,8 +5067,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
       // ── Phase 0 AI insights card ──────────────────────────────────────────
       if (insightsRow && insightsRow.value && insightsRow.value !== '{}') {
+        var rawVal = insightsRow.value.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
         var parsed = null;
-        try { parsed = JSON.parse(insightsRow.value); } catch(e) {}
+        try { parsed = JSON.parse(rawVal); } catch(e) {}
         if (parsed && parsed.summary) {
           h += '<div style="background:rgba(141,198,63,0.05);border:1px solid rgba(141,198,63,0.2);border-radius:10px;padding:10px 14px;">';
           h += '<div style="font-size:0.7rem;font-weight:700;color:#8DC63F;margin-bottom:6px;">&#129302; Tonight\'s Pipeline Intelligence</div>';
@@ -5051,6 +5079,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           }
           if (parsed.marketingAngle) {
             h += '<div style="font-size:0.68rem;color:#888;margin-bottom:3px;"><span style="color:#4a9eff;font-weight:700;">Marketing angle:</span> ' + parsed.marketingAngle + '</div>';
+          }
+          if (parsed.importInsight) {
+            h += '<div style="font-size:0.68rem;color:#888;margin-bottom:3px;"><span style="color:#8DC63F;font-weight:700;">Import insight:</span> ' + parsed.importInsight + '</div>';
           }
           if (parsed.missingVariants && parsed.missingVariants.length) {
             h += '<div style="font-size:0.68rem;color:#555;margin-top:4px;">Try also: ' + parsed.missingVariants.join(', ') + '</div>';

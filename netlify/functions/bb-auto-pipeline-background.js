@@ -268,27 +268,54 @@ exports.handler = async function(event) {
           byInstaller[inst] = (byInstaller[inst] || 0) + 1;
         });
       }
+
+      // Contact stats — phone/email coverage for skip-trace prioritization
+      let leadsWithPhone = 0, leadsWithEmail = 0, leadsNoContact = 0;
+      try {
+        const contactResp = await fetch(
+          SUPA_REST + '/customers?lead_source=eq.orphaned_list&sold_type=is.null&select=phone,email',
+          { headers: { apikey: supaKey, Authorization: 'Bearer ' + supaKey, Accept: 'application/json',
+            'Range-Unit': 'items', Range: '0-9999' } }
+        );
+        if (contactResp.ok) {
+          const contactSample = await contactResp.json();
+          contactSample.forEach(r => {
+            const hasPhone = r.phone && !String(r.phone).endsWith('@pending.fixmy.energy');
+            const hasEmail = r.email && !String(r.email).endsWith('@pending.fixmy.energy');
+            if (hasPhone) leadsWithPhone++;
+            if (hasEmail) leadsWithEmail++;
+            if (!hasPhone && !hasEmail) leadsNoContact++;
+          });
+        }
+      } catch(e) { stamp('Phase 0: contact stats error — ' + e.message); }
+
       const topInstallers = Object.entries(byInstaller)
         .sort((a, b) => b[1] - a[1]).slice(0, 8)
         .map(([name, count]) => `${name}: ${count}`).join(', ');
       const enrichPct = totalLeads ? Math.round(enrichedLeads / totalLeads * 100) : 0;
+      const contactPct = totalLeads ? Math.round(leadsWithPhone / totalLeads * 100) : 0;
+      const emailPct = totalLeads ? Math.round(leadsWithEmail / totalLeads * 100) : 0;
+      const noContactPct = totalLeads ? Math.round(leadsNoContact / totalLeads * 100) : 0;
       const prompt = `You are a solar lead generation analyst for FIXMy.Energy in San Diego.
 Current database snapshot: ${totalLeads} orphaned solar leads (${enrichPct}% enriched with owner name).
+Contact coverage: ${leadsWithPhone} have phone (${contactPct}%), ${leadsWithEmail} have email (${emailPct}%), ${leadsNoContact} have neither (${noContactPct}% unreachable — skip-trace candidates).
 Top installers: ${topInstallers || 'unknown'}.
 Active geographic coverage: San Diego County + ${activeExpansionZips.size} expansion zips (growing into Orange County then Riverside).
 
-Respond ONLY with compact JSON (no prose):
-{"summary":"one sentence status","topOpportunity":"which segment to focus on and why","missingVariants":["up to 3 alternate installer name spellings to try"],"marketingAngle":"fresh outreach angle based on data","zipFocus":"any zip patterns worth targeting more"}`;
+Respond ONLY with raw JSON, no markdown, no code fences:
+{"summary":"one sentence status","topOpportunity":"which segment to focus on and why","missingVariants":["up to 3 alternate installer name spellings to try"],"marketingAngle":"fresh outreach angle based on data","zipFocus":"any zip patterns worth targeting more","importInsight":"one actionable suggestion to improve contact rates or import completeness"}`;
 
       const aiResp = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: { 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-        body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 400,
+        body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 500,
           messages: [{ role: 'user', content: prompt }] })
       });
       if (aiResp.ok) {
         const aiData = await aiResp.json();
-        const analysis = (aiData.content && aiData.content[0] && aiData.content[0].text) || '{}';
+        let analysis = (aiData.content && aiData.content[0] && aiData.content[0].text) || '{}';
+        // Strip markdown code fences if model wraps response despite instructions
+        analysis = analysis.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
         await fetch(SUPA_REST + '/pipeline_state', {
           method: 'POST',
           headers: { ...supaHeaders, Prefer: 'resolution=merge-duplicates' },
@@ -794,6 +821,30 @@ Respond ONLY with compact JSON (no prose):
     phase3_tracerfy: tracerfyResult,
     log
   };
+
+  // ── Write last_run_at + last_run_summary so the portal can show when pipeline ran ──
+  try {
+    const runTs = new Date().toISOString();
+    const runSummary = JSON.stringify({
+      phase1_new_permits: summary.phase1_new_permits,
+      phase1_by_installer: summary.phase1_by_installer,
+      phase2_owners_added: summary.phase2_owners_added,
+      phase3_tracerfy: summary.phase3_tracerfy
+    });
+    await Promise.all([
+      fetch(SUPA_REST + '/pipeline_state', {
+        method: 'POST',
+        headers: { ...supaHeaders, Prefer: 'resolution=merge-duplicates' },
+        body: JSON.stringify({ key: 'last_run_at', value: runTs, updated_at: runTs })
+      }),
+      fetch(SUPA_REST + '/pipeline_state', {
+        method: 'POST',
+        headers: { ...supaHeaders, Prefer: 'resolution=merge-duplicates' },
+        body: JSON.stringify({ key: 'last_run_summary', value: runSummary, updated_at: runTs })
+      })
+    ]);
+    stamp('Pipeline: last_run_at saved');
+  } catch(e) { stamp('Pipeline: failed to save last_run_at — ' + e.message); }
 
   stamp('=== Pipeline complete ===');
   console.log('Summary:', JSON.stringify(summary, null, 2));
