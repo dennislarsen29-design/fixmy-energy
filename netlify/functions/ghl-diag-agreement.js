@@ -7,8 +7,9 @@ exports.handler = async function(event) {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers: cors, body: '' };
   if (event.httpMethod !== 'POST') return { statusCode: 405, headers: cors, body: 'Method Not Allowed' };
 
-  const GHL_API_KEY    = process.env.GHL_API_KEY;
-  const GHL_LOCATION_ID = 'gXWwbOVymY0iRfj7c1It';
+  const GHL_API_KEY      = process.env.GHL_API_KEY;
+  const GHL_LOCATION_ID  = 'gXWwbOVymY0iRfj7c1It';
+  const GHL_FROM_NUMBER  = process.env.GHL_SMS_FROM_NUMBER || undefined;
 
   if (!GHL_API_KEY) {
     console.error('GHL_API_KEY env var not set');
@@ -60,7 +61,7 @@ exports.handler = async function(event) {
     });
 
     const upsertData = await upsertResp.json();
-    console.log('GHL upsert status:', upsertResp.status, JSON.stringify(upsertData).slice(0, 200));
+    console.log('GHL upsert status:', upsertResp.status, JSON.stringify(upsertData));
 
     if (!upsertResp.ok) {
       return {
@@ -95,14 +96,15 @@ exports.handler = async function(event) {
         conversationId = searchData.conversations[0].id;
         console.log('GHL existing conversation:', conversationId);
       } else {
-        const createResp = await fetch('https://services.leadconnectorhq.com/conversations/', {
+        // No trailing slash — POST to /conversations/ can 301-redirect and lose the body
+        const createResp = await fetch('https://services.leadconnectorhq.com/conversations', {
           method:  'POST',
           headers: ghlHeaders,
           body:    JSON.stringify({ locationId: GHL_LOCATION_ID, contactId })
         });
         const createData = await createResp.json();
         conversationId = (createData.conversation && createData.conversation.id) || createData.id;
-        console.log('GHL new conversation:', conversationId, 'status:', createResp.status);
+        console.log('GHL create conversation status:', createResp.status, JSON.stringify(createData));
       }
 
       if (conversationId) {
@@ -112,14 +114,16 @@ exports.handler = async function(event) {
           'Hi ' + firstName + '! Your Solar Review Diagnostic Agreement' + feeDisplay + ' is ready.\n\n' +
           'Tap here to review, sign, and pay:\n' + payload.signLink + '\n\n' +
           'Questions? Call (619) 777-6527. — Solar Review Corp';
+        const smsMsgBody = { type: 'SMS', conversationId, message: smsMessage };
+        if (GHL_FROM_NUMBER) smsMsgBody.fromNumber = GHL_FROM_NUMBER;
         const smsResp = await fetch('https://services.leadconnectorhq.com/conversations/messages', {
           method:  'POST',
           headers: ghlHeaders,
-          body:    JSON.stringify({ type: 'SMS', conversationId, message: smsMessage })
+          body:    JSON.stringify(smsMsgBody)
         });
         smsStatus = smsResp.status;
         const smsBody = await smsResp.text();
-        console.log('GHL SMS send status:', smsStatus, smsBody.slice(0, 200));
+        console.log('GHL SMS send status:', smsStatus, smsBody);
       } else {
         console.warn('GHL could not get/create conversation — SMS skipped');
       }

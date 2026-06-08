@@ -1,8 +1,9 @@
 // Called after Stripe payment succeeds — verifies payment, updates Supabase, fires GHL webhook.
 // ENV vars required: STRIPE_SECRET_KEY, SUPA_SERVICE_KEY, GHL_API_KEY
 
-const SUPA_URL = 'https://kbtobyoumvbcxfbugsid.supabase.co';
+const SUPA_URL        = 'https://kbtobyoumvbcxfbugsid.supabase.co';
 const GHL_LOCATION_ID = 'gXWwbOVymY0iRfj7c1It';
+const GHL_FROM_NUMBER = process.env.GHL_SMS_FROM_NUMBER || undefined;
 
 const cors = {
   'Content-Type': 'application/json',
@@ -138,12 +139,14 @@ exports.handler = async function(event) {
           if (searchData.conversations && searchData.conversations.length > 0) {
             conversationId = searchData.conversations[0].id;
           } else {
-            const createResp = await fetch('https://services.leadconnectorhq.com/conversations/', {
+            // No trailing slash — POST to /conversations/ can 301-redirect and lose the body
+            const createResp = await fetch('https://services.leadconnectorhq.com/conversations', {
               method: 'POST', headers: ghlHeaders,
               body: JSON.stringify({ locationId: GHL_LOCATION_ID, contactId })
             });
             const createData = await createResp.json();
             conversationId = (createData.conversation && createData.conversation.id) || createData.id;
+            console.log('sign-complete: create conversation status:', createResp.status, JSON.stringify(createData));
           }
           if (conversationId) {
             const firstName = c.first_name || 'there';
@@ -151,11 +154,14 @@ exports.handler = async function(event) {
               'Hi ' + firstName + '! Your Solar Review Diagnostic agreement is signed and payment confirmed. ' +
               "We'll reach out shortly to confirm your appointment. " +
               'Questions? Call (619) 777-6527. — Solar Review Corp';
-            await fetch('https://services.leadconnectorhq.com/conversations/messages', {
+            const smsMsgBody = { type: 'SMS', conversationId, message: smsConfirm };
+            if (GHL_FROM_NUMBER) smsMsgBody.fromNumber = GHL_FROM_NUMBER;
+            const smsResp = await fetch('https://services.leadconnectorhq.com/conversations/messages', {
               method: 'POST', headers: ghlHeaders,
-              body: JSON.stringify({ type: 'SMS', conversationId, message: smsConfirm })
+              body: JSON.stringify(smsMsgBody)
             });
-            console.log('sign-complete: confirmation SMS sent, conversation', conversationId);
+            const smsTxt = await smsResp.text();
+            console.log('sign-complete: confirmation SMS status:', smsResp.status, smsTxt);
           }
         } catch(e) { console.error('GHL SMS confirmation error:', e.message); }
 
