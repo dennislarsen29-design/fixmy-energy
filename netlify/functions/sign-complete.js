@@ -26,10 +26,17 @@ exports.handler = async function(event) {
     return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Invalid JSON' }) };
   }
 
-  const { token, paymentIntentId, signature, signedAt } = body;
+  const { token, paymentIntentId, signature, signedAt, repairAuthInitial, signingLocation } = body;
   if (!token || !paymentIntentId || !signature) {
     return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'token, paymentIntentId and signature required' }) };
   }
+
+  // Capture signing IP and user-agent server-side (for audit trail / legal enforceability)
+  const signingIp = (event.headers['x-forwarded-for'] || '').split(',')[0].trim()
+                 || event.headers['client-ip']
+                 || 'unknown';
+  const signingUserAgent = event.headers['user-agent'] || 'unknown';
+  const actualSignedAt = signedAt || new Date().toISOString();
 
   // Verify Stripe PaymentIntent succeeded
   const piResp = await fetch('https://api.stripe.com/v1/payment_intents/' + paymentIntentId, {
@@ -67,15 +74,18 @@ exports.handler = async function(event) {
     return { statusCode: 404, headers: cors, body: JSON.stringify({ error: 'Customer not found' }) };
   }
 
-  // Mark as paid + signed, convert to diagnostic job, clear sign token
+  // Mark as paid + signed, record audit trail, clear sign token
   const updates = {
     invoice_status: 'paid',
     agreement_status: 'signed',
     sold_type: c.sold_type || 'diagnostic',
     sign_token: null,
     sign_token_expires_at: null,
-    agreement_signed_at: signedAt || new Date().toISOString(),
+    agreement_signed_at: actualSignedAt,
     agreement_signature: signature,
+    repair_auth_initial: repairAuthInitial || null,
+    agreement_ip: signingIp,
+    agreement_user_agent: signingUserAgent,
   };
 
   await fetch(SUPA_URL + '/rest/v1/customers?id=eq.' + customerId, {
@@ -84,7 +94,7 @@ exports.handler = async function(event) {
     body: JSON.stringify(updates)
   });
 
-  console.log('sign-complete: paid+signed for', c.first_name, c.last_name, '(', customerId, ')');
+  console.log('sign-complete: paid+signed for', c.first_name, c.last_name, '(', customerId, ') from IP', signingIp);
 
   // Fire GHL webhook to notify agreement signed + invoice paid
   if (GHL_API_KEY) {
@@ -93,7 +103,6 @@ exports.handler = async function(event) {
       'Content-Type': 'application/json',
       'Version': '2021-07-28',
     };
-    // Upsert contact + add "signed-and-paid" tag to trigger GHL workflow
     try {
       const upsertResp = await fetch('https://services.leadconnectorhq.com/contacts/upsert', {
         method: 'POST',
@@ -109,7 +118,6 @@ exports.handler = async function(event) {
       const upsert = await upsertResp.json();
       const contactId = upsert?.contact?.id;
       if (contactId) {
-        // Remove then re-add tag so workflow fires even on repeat
         await fetch('https://services.leadconnectorhq.com/contacts/' + contactId + '/tags', {
           method: 'DELETE', headers: ghlHeaders,
           body: JSON.stringify({ tags: ['diag-signed-and-paid'] })
@@ -125,6 +133,14 @@ exports.handler = async function(event) {
   return {
     statusCode: 200,
     headers: cors,
-    body: JSON.stringify({ ok: true, customerId })
+    body: JSON.stringify({
+      ok: true,
+      customerId,
+      signedAt: actualSignedAt,
+      signingIp,
+      customerName: ((c.first_name || '') + ' ' + (c.last_name || '')).trim(),
+      email: c.email || '',
+      paymentIntentId,
+    })
   };
 };
