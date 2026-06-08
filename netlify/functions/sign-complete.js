@@ -126,6 +126,33 @@ exports.handler = async function(event) {
           method: 'POST', headers: ghlHeaders,
           body: JSON.stringify({ tags: ['diag-signed-and-paid'] })
         });
+
+        // SMS confirmation to customer
+        try {
+          const firstName = c.first_name || 'there';
+          const smsConfirm =
+            'Hi ' + firstName + '! ✅ Your Solar Review Diagnostic agreement is signed and payment confirmed. ' +
+            "We'll reach out shortly to confirm your appointment details. " +
+            'Questions? Call (619) 777-6527. — Solar Review Corp';
+          await fetch('https://services.leadconnectorhq.com/conversations/messages', {
+            method: 'POST',
+            headers: ghlHeaders,
+            body: JSON.stringify({ type: 'SMS', contactId: contactId, message: smsConfirm })
+          });
+          console.log('sign-complete: payment confirmation SMS sent to contact', contactId);
+        } catch(e) { console.error('GHL SMS confirmation error:', e.message); }
+
+        // Email confirmation — fires GHL workflow: Tag Added "send-payment-confirmation"
+        try {
+          await fetch('https://services.leadconnectorhq.com/contacts/' + contactId + '/tags', {
+            method: 'DELETE', headers: ghlHeaders,
+            body: JSON.stringify({ tags: ['send-payment-confirmation'] })
+          });
+          await fetch('https://services.leadconnectorhq.com/contacts/' + contactId + '/tags', {
+            method: 'POST', headers: ghlHeaders,
+            body: JSON.stringify({ tags: ['send-payment-confirmation'] })
+          });
+        } catch(e) { console.error('GHL email tag error:', e.message); }
       }
     } catch(e) { console.error('GHL post-payment tag error:', e.message); }
   }

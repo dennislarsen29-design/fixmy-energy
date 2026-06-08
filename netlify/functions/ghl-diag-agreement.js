@@ -1,6 +1,6 @@
-// Creates/updates the GHL contact directly via API, then adds a tag to trigger
-// the "send-diag-agreement" workflow — bypasses the broken Inbound Webhook
-// Mapping Reference that prevents trigger.body.* variables from resolving.
+// Creates/updates the GHL contact directly via API, then sends SMS to customer with sign link.
+// NOTE: The old "send-diag-agreement" tag flow (GHL agreement workflow) has been removed.
+// sign.html is the authoritative agreement; GHL agreement is retired.
 exports.handler = async function(event) {
   const cors = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' };
 
@@ -9,7 +9,6 @@ exports.handler = async function(event) {
 
   const GHL_API_KEY    = process.env.GHL_API_KEY;
   const GHL_LOCATION_ID = 'gXWwbOVymY0iRfj7c1It';
-  const TRIGGER_TAG     = 'send-diag-agreement';
 
   if (!GHL_API_KEY) {
     console.error('GHL_API_KEY env var not set');
@@ -45,7 +44,7 @@ exports.handler = async function(event) {
     const upsertBody = {
       locationId: GHL_LOCATION_ID,
       email:      payload.email      || undefined,
-      phone:      phone                || undefined,
+      phone:      phone              || undefined,
       firstName:  payload.firstName  || undefined,
       lastName:   payload.lastName   || undefined,
       address1:   payload.address1   || undefined,
@@ -81,36 +80,38 @@ exports.handler = async function(event) {
     return { statusCode: 502, headers: cors, body: JSON.stringify({ error: 'GHL upsert returned no contact id' }) };
   }
 
-  // Step 2: Remove tag first so "Tag Added" fires even on re-runs for the same contact
-  try {
-    await fetch('https://services.leadconnectorhq.com/contacts/' + contactId + '/tags', {
-      method:  'DELETE',
-      headers: ghlHeaders,
-      body:    JSON.stringify({ tags: [TRIGGER_TAG] })
-    });
-  } catch(e) {
-    console.warn('GHL tag removal (pre-clean) error (non-fatal):', e.message);
-  }
-
-  // Step 3: Add trigger tag — fires "Tag Added: send-diag-agreement" workflow in GHL
-  let tagStatus;
-  try {
-    const tagResp = await fetch('https://services.leadconnectorhq.com/contacts/' + contactId + '/tags', {
-      method:  'POST',
-      headers: ghlHeaders,
-      body:    JSON.stringify({ tags: [TRIGGER_TAG] })
-    });
-    tagStatus = tagResp.status;
-    const tagBody = await tagResp.text();
-    console.log('GHL tag add status:', tagStatus, tagBody);
-  } catch(e) {
-    console.error('GHL tag add error:', e.message);
-    return { statusCode: 502, headers: cors, body: JSON.stringify({ error: 'GHL tag add error', detail: e.message }) };
+  // Step 2: Send SMS with sign link (if provided)
+  let smsStatus = null;
+  if (payload.signLink) {
+    try {
+      const firstName  = payload.firstName || 'there';
+      const feeDisplay = payload.diagnostic_fee ? ' ($' + payload.diagnostic_fee + ')' : '';
+      const smsMessage =
+        'Hi ' + firstName + '! Your Solar Review Diagnostic Agreement' + feeDisplay + ' is ready.\n\n' +
+        'Tap here to review, sign, and pay:\n' + payload.signLink + '\n\n' +
+        'Questions? Call (619) 777-6527. — Solar Review Corp';
+      const smsResp = await fetch('https://services.leadconnectorhq.com/conversations/messages', {
+        method:  'POST',
+        headers: ghlHeaders,
+        body:    JSON.stringify({
+          type:      'SMS',
+          contactId: contactId,
+          message:   smsMessage
+        })
+      });
+      smsStatus = smsResp.status;
+      const smsBody = await smsResp.text();
+      console.log('GHL SMS send status:', smsStatus, smsBody.slice(0, 200));
+    } catch(e) {
+      console.warn('GHL SMS send error (non-fatal):', e.message);
+    }
+  } else {
+    console.log('No signLink in payload — SMS skipped');
   }
 
   return {
     statusCode: 200,
     headers: cors,
-    body: JSON.stringify({ success: true, contactId, tagStatus })
+    body: JSON.stringify({ success: true, contactId, smsStatus })
   };
 };

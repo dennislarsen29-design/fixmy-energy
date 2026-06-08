@@ -55,6 +55,8 @@ exports.handler = async function(event) {
   }
 
   const amountCents = Math.round((c.invoice_amount || 349) * 100);
+  const surchargeAmountCents = Math.round(amountCents * 0.039);
+  const totalAmountCents = amountCents + surchargeAmountCents;
 
   // Reuse existing PaymentIntent if one exists and is still usable
   let clientSecret = null;
@@ -64,7 +66,7 @@ exports.handler = async function(event) {
         headers: { 'Authorization': 'Basic ' + Buffer.from(STRIPE_SECRET_KEY + ':').toString('base64') }
       });
       const pi = await piResp.json();
-      if (pi.status === 'requires_payment_method' || pi.status === 'requires_confirmation') {
+      if ((pi.status === 'requires_payment_method' || pi.status === 'requires_confirmation') && pi.amount === totalAmountCents) {
         clientSecret = pi.client_secret;
       }
     } catch(e) { /* fall through to create new */ }
@@ -73,7 +75,7 @@ exports.handler = async function(event) {
   // Create a new PaymentIntent
   if (!clientSecret) {
     const params = new URLSearchParams({
-      amount: amountCents,
+      amount: totalAmountCents,
       currency: 'usd',
       'payment_method_types[]': 'card',
       description: 'FixMy.Energy Diagnostic Fee — ' + ((c.first_name||'') + ' ' + (c.last_name||'')).trim(),
@@ -117,6 +119,8 @@ exports.handler = async function(event) {
       publishableKey: process.env.STRIPE_PUBLISHABLE_KEY || '',
       customerName: ((c.first_name||'') + ' ' + (c.last_name||'')).trim(),
       amountCents,
+      surchargeAmountCents,
+      totalAmountCents,
       address: c.address || '',
       customerId: c.id,
     })
