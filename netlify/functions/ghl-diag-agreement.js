@@ -80,28 +80,49 @@ exports.handler = async function(event) {
     return { statusCode: 502, headers: cors, body: JSON.stringify({ error: 'GHL upsert returned no contact id' }) };
   }
 
-  // Step 2: Send SMS with sign link (if provided)
+  // Step 2: Get or create a GHL conversation, then send SMS with sign link
   let smsStatus = null;
   if (payload.signLink) {
     try {
-      const firstName  = payload.firstName || 'there';
-      const feeDisplay = payload.diagnostic_fee ? ' ($' + payload.diagnostic_fee + ')' : '';
-      const smsMessage =
-        'Hi ' + firstName + '! Your Solar Review Diagnostic Agreement' + feeDisplay + ' is ready.\n\n' +
-        'Tap here to review, sign, and pay:\n' + payload.signLink + '\n\n' +
-        'Questions? Call (619) 777-6527. — Solar Review Corp';
-      const smsResp = await fetch('https://services.leadconnectorhq.com/conversations/messages', {
-        method:  'POST',
-        headers: ghlHeaders,
-        body:    JSON.stringify({
-          type:      'SMS',
-          contactId: contactId,
-          message:   smsMessage
-        })
-      });
-      smsStatus = smsResp.status;
-      const smsBody = await smsResp.text();
-      console.log('GHL SMS send status:', smsStatus, smsBody.slice(0, 200));
+      // GHL requires conversationId — search for existing, create if none
+      let conversationId = null;
+      const searchResp = await fetch(
+        'https://services.leadconnectorhq.com/conversations/search?locationId=' + GHL_LOCATION_ID + '&contactId=' + contactId,
+        { headers: ghlHeaders }
+      );
+      const searchData = await searchResp.json();
+      if (searchData.conversations && searchData.conversations.length > 0) {
+        conversationId = searchData.conversations[0].id;
+        console.log('GHL existing conversation:', conversationId);
+      } else {
+        const createResp = await fetch('https://services.leadconnectorhq.com/conversations/', {
+          method:  'POST',
+          headers: ghlHeaders,
+          body:    JSON.stringify({ locationId: GHL_LOCATION_ID, contactId })
+        });
+        const createData = await createResp.json();
+        conversationId = (createData.conversation && createData.conversation.id) || createData.id;
+        console.log('GHL new conversation:', conversationId, 'status:', createResp.status);
+      }
+
+      if (conversationId) {
+        const firstName  = payload.firstName || 'there';
+        const feeDisplay = payload.diagnostic_fee ? ' ($' + payload.diagnostic_fee + ')' : '';
+        const smsMessage =
+          'Hi ' + firstName + '! Your Solar Review Diagnostic Agreement' + feeDisplay + ' is ready.\n\n' +
+          'Tap here to review, sign, and pay:\n' + payload.signLink + '\n\n' +
+          'Questions? Call (619) 777-6527. — Solar Review Corp';
+        const smsResp = await fetch('https://services.leadconnectorhq.com/conversations/messages', {
+          method:  'POST',
+          headers: ghlHeaders,
+          body:    JSON.stringify({ type: 'SMS', conversationId, message: smsMessage })
+        });
+        smsStatus = smsResp.status;
+        const smsBody = await smsResp.text();
+        console.log('GHL SMS send status:', smsStatus, smsBody.slice(0, 200));
+      } else {
+        console.warn('GHL could not get/create conversation — SMS skipped');
+      }
     } catch(e) {
       console.warn('GHL SMS send error (non-fatal):', e.message);
     }

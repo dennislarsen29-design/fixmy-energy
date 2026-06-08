@@ -127,19 +127,36 @@ exports.handler = async function(event) {
           body: JSON.stringify({ tags: ['diag-signed-and-paid'] })
         });
 
-        // SMS confirmation to customer
+        // SMS confirmation to customer — requires conversationId
         try {
-          const firstName = c.first_name || 'there';
-          const smsConfirm =
-            'Hi ' + firstName + '! ✅ Your Solar Review Diagnostic agreement is signed and payment confirmed. ' +
-            "We'll reach out shortly to confirm your appointment details. " +
-            'Questions? Call (619) 777-6527. — Solar Review Corp';
-          await fetch('https://services.leadconnectorhq.com/conversations/messages', {
-            method: 'POST',
-            headers: ghlHeaders,
-            body: JSON.stringify({ type: 'SMS', contactId: contactId, message: smsConfirm })
-          });
-          console.log('sign-complete: payment confirmation SMS sent to contact', contactId);
+          let conversationId = null;
+          const searchResp = await fetch(
+            'https://services.leadconnectorhq.com/conversations/search?locationId=' + GHL_LOCATION_ID + '&contactId=' + contactId,
+            { headers: ghlHeaders }
+          );
+          const searchData = await searchResp.json();
+          if (searchData.conversations && searchData.conversations.length > 0) {
+            conversationId = searchData.conversations[0].id;
+          } else {
+            const createResp = await fetch('https://services.leadconnectorhq.com/conversations/', {
+              method: 'POST', headers: ghlHeaders,
+              body: JSON.stringify({ locationId: GHL_LOCATION_ID, contactId })
+            });
+            const createData = await createResp.json();
+            conversationId = (createData.conversation && createData.conversation.id) || createData.id;
+          }
+          if (conversationId) {
+            const firstName = c.first_name || 'there';
+            const smsConfirm =
+              'Hi ' + firstName + '! Your Solar Review Diagnostic agreement is signed and payment confirmed. ' +
+              "We'll reach out shortly to confirm your appointment. " +
+              'Questions? Call (619) 777-6527. — Solar Review Corp';
+            await fetch('https://services.leadconnectorhq.com/conversations/messages', {
+              method: 'POST', headers: ghlHeaders,
+              body: JSON.stringify({ type: 'SMS', conversationId, message: smsConfirm })
+            });
+            console.log('sign-complete: confirmation SMS sent, conversation', conversationId);
+          }
         } catch(e) { console.error('GHL SMS confirmation error:', e.message); }
 
         // Email confirmation — fires GHL workflow: Tag Added "send-payment-confirmation"
