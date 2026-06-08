@@ -66,7 +66,15 @@ exports.handler = async function(event) {
         headers: { 'Authorization': 'Basic ' + Buffer.from(STRIPE_SECRET_KEY + ':').toString('base64') }
       });
       const pi = await piResp.json();
-      if ((pi.status === 'requires_payment_method' || pi.status === 'requires_confirmation') && pi.amount === totalAmountCents) {
+      if (pi.error) {
+        // Stale PI (wrong mode, wrong account, or expired) — clear it so a fresh one is created
+        console.log('Stale PaymentIntent cleared:', pi.error.message);
+        await fetch(SUPA_URL + '/rest/v1/customers?id=eq.' + c.id, {
+          method: 'PATCH',
+          headers: { 'apikey': SUPA_SERVICE_KEY, 'Authorization': 'Bearer ' + SUPA_SERVICE_KEY, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+          body: JSON.stringify({ stripe_payment_intent_id: null })
+        });
+      } else if ((pi.status === 'requires_payment_method' || pi.status === 'requires_confirmation') && pi.amount === totalAmountCents) {
         clientSecret = pi.client_secret;
       }
     } catch(e) { /* fall through to create new */ }
