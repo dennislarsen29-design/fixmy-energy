@@ -107,8 +107,8 @@ exports.handler = async function(event) {
         conversationId = searchData.conversations[0].id;
         console.log('GHL existing conversation:', conversationId);
       } else {
-        // Create new conversation — include type:'SMS' so GHL links it to LC Phone
-        const createResp = await fetch('https://services.leadconnectorhq.com/conversations', {
+        // Create new conversation — GHL requires trailing slash on this endpoint
+        const createResp = await fetch('https://services.leadconnectorhq.com/conversations/', {
           method:  'POST',
           headers: ghlConvHeaders,
           body:    JSON.stringify({ locationId: GHL_LOCATION_ID, contactId, type: 'SMS' })
