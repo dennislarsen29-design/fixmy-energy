@@ -363,6 +363,9 @@ Respond ONLY with raw JSON, no markdown, no code fences:
   // ══════════════════════════════════════════════════════════════════════════
   stamp('=== Phase 1: Permit pull ===');
 
+  const psKey = process.env.PERMITSTACK_KEY;
+  const PS_BASE = 'https://api.permit-stack.com/v1';
+
   // Load all existing addresses into a Set for O(1) dedup
   stamp('Loading existing addresses...');
   const existingAddrs = new Set();
@@ -449,33 +452,147 @@ Respond ONLY with raw JSON, no markdown, no code fences:
     return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
   });
 
-  for (const installer of sortedInstallers) {
-    if (overGlobal()) { stamp('Phase 1: global deadline — stopping installer loop'); break; }
-    const found = await pullInstaller(installer);
-    pullSummary.push({ name: installer.name, new: found.length });
-    if (found.length) stamp(`  ${installer.name}: ${found.length} new`);
-    allNewRecords = allNewRecords.concat(found);
-    await sleep(80);
-  }
-
-  stamp(`Phase 1 pull done: ${allNewRecords.length} new records to insert`);
-
-  // Insert in batches of 100
+  // Phase 1a — Socrata (legacy, saturated). Skip when PermitStack is available since 1c is a superset.
   let inserted = 0;
-  for (let i = 0; i < allNewRecords.length; i += 100) {
-    if (overGlobal()) break;
-    const batch = allNewRecords.slice(i, i + 100);
-    const ok = await supaInsertBatch(batch);
-    if (ok) {
-      inserted += batch.length;
-      // Add to existingAddrs so Phase 2/3 queries pick them up via Supabase
-      batch.forEach(r => existingAddrs.add(normAddr(r.address)));
-    } else {
-      stamp(`  Insert batch ${Math.floor(i / 100) + 1} failed`);
+  if (psKey) {
+    stamp('Phase 1a: skipped — PermitStack available (Phase 1c covers superset)');
+  } else if (!enrichOnly) {
+    for (const installer of sortedInstallers) {
+      if (overGlobal()) { stamp('Phase 1a: global deadline — stopping installer loop'); break; }
+      const found = await pullInstaller(installer);
+      pullSummary.push({ name: installer.name, new: found.length });
+      if (found.length) stamp(`  ${installer.name}: ${found.length} new`);
+      allNewRecords = allNewRecords.concat(found);
+      await sleep(80);
     }
-    await sleep(50);
+
+    stamp(`Phase 1a pull done: ${allNewRecords.length} new records to insert`);
+
+    for (let i = 0; i < allNewRecords.length; i += 100) {
+      if (overGlobal()) break;
+      const batch = allNewRecords.slice(i, i + 100);
+      const ok = await supaInsertBatch(batch);
+      if (ok) {
+        inserted += batch.length;
+        batch.forEach(r => existingAddrs.add(normAddr(r.address)));
+      } else {
+        stamp(`  Phase 1a insert batch ${Math.floor(i / 100) + 1} failed`);
+      }
+      await sleep(50);
+    }
+    stamp(`Phase 1a inserted: ${inserted} records`);
+  } else {
+    stamp('Phase 1a: skipped (enrich_only mode)');
   }
-  stamp(`Phase 1 inserted: ${inserted} records`);
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // PHASE 1c — PermitStack SD Cities
+  // City-by-city permit pull for 16 San Diego cities. Primary source for SD
+  // permits — aggregates DSD + all incorporated city permit portals that
+  // Socrata misses. Expected yield: 60k–100k total over multiple nightly runs.
+  // ══════════════════════════════════════════════════════════════════════════
+  let inserted1c = 0;
+  {
+    if (enrichOnly) {
+      stamp('Phase 1c: skipped (enrich_only mode)');
+    } else if (!psKey) {
+      stamp('Phase 1c: skipped — PERMITSTACK_KEY not set');
+    } else {
+      const SD_PS_CITIES = [
+        'San Diego','Chula Vista','El Cajon','La Mesa','Santee',
+        'Escondido','Poway','Oceanside','Carlsbad','Encinitas',
+        'National City','Vista','San Marcos','Lemon Grove','Spring Valley','Lakeside'
+      ];
+      stamp(`=== Phase 1c: PermitStack SD cities (${SD_PS_CITIES.length} cities) ===`);
+      const PHASE1C_DEADLINE = Date.now() + (5 * 60 * 1000);
+      const psHeaders = { 'X-API-Key': psKey, 'Accept': 'application/json' };
+      const seenLocal1c = new Set();
+
+      const extractPSAddress1c = (p, defaultCity) => {
+        const street = String(
+          p.address_street || p.street_address || p.address || p.site_address || ''
+        ).split(',')[0].trim();
+        const city  = String(p.city || defaultCity || '').trim();
+        const state = 'CA';
+        const zip   = String(p.zip || p.zip_code || p.postal_code || '').replace(/\D/g, '').slice(0, 5);
+        const full  = [street, city, state, zip].filter(Boolean).join(', ');
+        const rawDate = p.issue_date || p.issued_date || p.permit_date || p.filed_date || '';
+        const installYear = rawDate ? (new Date(rawDate).getFullYear() || null) : null;
+        const desc = p.work_description || p.description || p.scope_of_work || '';
+        return { street, city, state, zip, fullAddress: full, installYear, systemSizeKw: extractKw(desc) };
+      };
+
+      outer1c: for (const installer of sortedInstallers) {
+        if (Date.now() > PHASE1C_DEADLINE || overGlobal()) break;
+        for (const city of SD_PS_CITIES) {
+          if (Date.now() > PHASE1C_DEADLINE || overGlobal()) break outer1c;
+          for (const qname of installer.names) {
+            if (Date.now() > PHASE1C_DEADLINE || overGlobal()) break outer1c;
+            let page = 1;
+            while (page <= 30) {
+              if (Date.now() > PHASE1C_DEADLINE || overGlobal()) break;
+              const url = `${PS_BASE}/permits/search?city=${encodeURIComponent(city)}&keyword=${encodeURIComponent(qname)}&per_page=100&page=${page}`;
+              let resp;
+              try {
+                resp = await fetchWithTimeout(url, { headers: psHeaders }, 10000);
+              } catch(e) {
+                stamp(`  1c ${city}/"${qname}" fetch err: ${e.message}`);
+                break;
+              }
+              if (!resp.ok) {
+                if (resp.status === 429) await sleep(2000);
+                break;
+              }
+              let body;
+              try { body = await resp.json(); } catch(e) { break; }
+              const batch = body.permits || body.results || body.data || [];
+              if (!Array.isArray(batch) || !batch.length) break;
+
+              const batchRecs = [];
+              for (const p of batch) {
+                const { street, fullAddress, installYear, systemSizeKw } =
+                  extractPSAddress1c(p, city);
+                if (!street || !/^\d/.test(street)) continue;
+                const key = normAddr(fullAddress);
+                if (!key || seenLocal1c.has(key) || existingAddrs.has(key)) continue;
+                const candidate = {
+                  address: fullAddress,
+                  lead_category: 'fixmy',
+                  step: 1,
+                  lead_source: 'orphaned_list',
+                  black_box: true,
+                  original_installer: installer.name,
+                  install_year: installYear || null,
+                  system_size: systemSizeKw ? parseFloat(systemSizeKw) : null,
+                  notes: installer.name
+                    + (systemSizeKw ? ' · ' + systemSizeKw + 'kW' : '')
+                    + (installYear ? ' · Installed ' + installYear : '')
+                };
+                if (!qualifyPermit(candidate)) continue;
+                seenLocal1c.add(key);
+                candidate.lead_score = calcLeadScore(candidate);
+                batchRecs.push(candidate);
+              }
+
+              if (batchRecs.length) {
+                const ok = await supaInsertBatch(batchRecs);
+                if (ok) {
+                  inserted1c += batchRecs.length;
+                  batchRecs.forEach(r => existingAddrs.add(normAddr(r.address)));
+                }
+              }
+
+              if (batch.length < 100) break;
+              page++;
+              await sleep(80);
+            }
+          }
+          await sleep(50);
+        }
+      }
+      stamp(`Phase 1c inserted: ${inserted1c} records`);
+    }
+  }
 
   // ══════════════════════════════════════════════════════════════════════════
   // PHASE 1b — OC / RIVERSIDE PERMIT PULL (via PermitStack)
@@ -488,8 +605,6 @@ Respond ONLY with raw JSON, no markdown, no code fences:
     if (enrichOnly) {
       stamp('Phase 1b: skipped (enrich_only mode)');
     } else {
-    const psKey = process.env.PERMITSTACK_KEY;
-    const PS_BASE = 'https://api.permit-stack.com/v1';
     const OC_PS_CITIES = expansionIndex >= 20 ? [
       'Irvine','Anaheim','Santa Ana','Garden Grove','Orange','Fullerton',
       'Laguna Niguel','Mission Viejo','Lake Forest','Dana Point',
@@ -1030,6 +1145,7 @@ Respond ONLY with raw JSON, no markdown, no code fences:
   const summary = {
     run_at: new Date().toISOString(),
     phase1_new_permits: inserted,
+    phase1c_new_permits: inserted1c,
     phase1b_new_permits: inserted1b,
     phase1_by_installer: pullSummary.filter(s => s.new > 0),
     phase2_owners_added: enriched,
@@ -1042,6 +1158,7 @@ Respond ONLY with raw JSON, no markdown, no code fences:
     const runTs = new Date().toISOString();
     const runSummary = JSON.stringify({
       phase1_new_permits: summary.phase1_new_permits,
+      phase1c_new_permits: summary.phase1c_new_permits,
       phase1b_new_permits: summary.phase1b_new_permits,
       phase1_by_installer: summary.phase1_by_installer,
       phase2_owners_added: summary.phase2_owners_added,
