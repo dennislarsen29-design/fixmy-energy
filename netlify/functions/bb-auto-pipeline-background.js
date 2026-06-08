@@ -629,6 +629,10 @@ Respond ONLY with raw JSON, no markdown, no code fences:
   stamp(`Phase 2: ${toEnrich.length} leads need owner lookup`);
 
   const regridKey = process.env.REGRID_KEY;
+  // Rate-limit state for Regrid (shared across all lookupOwner calls in this run)
+  let regridPausedUntil = 0;   // epoch ms — skip Regrid until this time after a 429
+  let lastRegridAt = 0;        // epoch ms of last Regrid request
+  const REGRID_GAP_MS = 1500;  // ≥1.5s between requests → ≤40/min (well under Regrid's limit)
 
   // Mirrors regrid-lookup.js logic: Regrid lat/lon → Regrid search → SANDAG → SD City GIS
   function parseRegridFeature(feat) {
@@ -676,7 +680,10 @@ Respond ONLY with raw JSON, no markdown, no code fences:
     } catch(e) { stamp('Phase 2: geocode err: ' + e.message); }
 
     // Step 2a (PRIMARY): Regrid lat/lon — most precise, requires geocoded coords
-    if (regridKey && lat != null) {
+    if (regridKey && lat != null && Date.now() > regridPausedUntil) {
+      const rWait = (lastRegridAt + REGRID_GAP_MS) - Date.now();
+      if (rWait > 0) await sleep(rWait);
+      lastRegridAt = Date.now();
       try {
         const r = await fetchWithTimeout(
           'https://app.regrid.com/api/v1/search.json?lat=' + lat + '&lon=' + lng + '&radius=0',
@@ -689,12 +696,18 @@ Respond ONLY with raw JSON, no markdown, no code fences:
             const geoLng = lng || ((regridFeatures(d)[0] && regridFeatures(d)[0].geometry && regridFeatures(d)[0].geometry.coordinates) || [])[0] || null;
             return { ...parsed, lat: geoLat, lng: geoLng };
           }
-        } else { stamp('Phase 2: Regrid lat/lon HTTP ' + r.status); if (r.status === 429) await sleep(1500); }
+        } else {
+          stamp('Phase 2: Regrid lat/lon HTTP ' + r.status);
+          if (r.status === 429) { regridPausedUntil = Date.now() + 120000; stamp('Phase 2: Regrid rate-limited — pausing 2 min'); }
+        }
       } catch(e) { stamp('Phase 2: Regrid lat/lon err: ' + e.message); }
     }
 
     // Step 2b: Regrid address search fallback
-    if (regridKey) {
+    if (regridKey && Date.now() > regridPausedUntil) {
+      const rWait = (lastRegridAt + REGRID_GAP_MS) - Date.now();
+      if (rWait > 0) await sleep(rWait);
+      lastRegridAt = Date.now();
       try {
         const r = await fetchWithTimeout(
           'https://app.regrid.com/api/v1/search.json?query=' + encodeURIComponent(address) + '&limit=3',
@@ -707,7 +720,10 @@ Respond ONLY with raw JSON, no markdown, no code fences:
             const geo = Array.isArray(feats) && feats[0] && feats[0].geometry && feats[0].geometry.coordinates;
             return { ...parsed, lat: lat || (geo && geo[1]) || null, lng: lng || (geo && geo[0]) || null };
           }
-        } else { stamp('Phase 2: Regrid search HTTP ' + r.status); if (r.status === 429) await sleep(1500); }
+        } else {
+          stamp('Phase 2: Regrid search HTTP ' + r.status);
+          if (r.status === 429) { regridPausedUntil = Date.now() + 120000; stamp('Phase 2: Regrid rate-limited — pausing 2 min'); }
+        }
       } catch(e) { stamp('Phase 2: Regrid search err: ' + e.message); }
     }
 
