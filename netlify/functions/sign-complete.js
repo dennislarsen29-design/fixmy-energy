@@ -104,6 +104,18 @@ exports.handler = async function(event) {
       'Content-Type': 'application/json',
       'Version': '2021-07-28',
     };
+    // Conversations API requires Version 2021-04-15 and trailing slash on create
+    const ghlConvHeaders = Object.assign({}, ghlHeaders, { 'Version': '2021-04-15' });
+
+    // Normalize phone to E.164 so GHL contact has a dialable number
+    function toE164(raw) {
+      if (!raw) return undefined;
+      var digits = String(raw).replace(/\D/g, '');
+      if (digits.length === 10) return '+1' + digits;
+      if (digits.length === 11 && digits[0] === '1') return '+' + digits;
+      return '+' + digits;
+    }
+
     try {
       const upsertResp = await fetch('https://services.leadconnectorhq.com/contacts/upsert', {
         method: 'POST',
@@ -111,7 +123,7 @@ exports.handler = async function(event) {
         body: JSON.stringify({
           locationId: GHL_LOCATION_ID,
           email: c.email || undefined,
-          phone: c.phone || undefined,
+          phone: toE164(c.phone),
           firstName: c.first_name || undefined,
           lastName: c.last_name || undefined,
         })
@@ -128,25 +140,26 @@ exports.handler = async function(event) {
           body: JSON.stringify({ tags: ['diag-signed-and-paid'] })
         });
 
-        // SMS confirmation to customer — requires conversationId
+        // SMS confirmation to customer
         try {
           let conversationId = null;
           const searchResp = await fetch(
             'https://services.leadconnectorhq.com/conversations/search?locationId=' + GHL_LOCATION_ID + '&contactId=' + contactId,
-            { headers: ghlHeaders }
+            { headers: ghlConvHeaders }
           );
           const searchData = await searchResp.json();
           if (searchData.conversations && searchData.conversations.length > 0) {
             conversationId = searchData.conversations[0].id;
           } else {
-            // No trailing slash — POST to /conversations/ can 301-redirect and lose the body
-            const createResp = await fetch('https://services.leadconnectorhq.com/conversations', {
-              method: 'POST', headers: ghlHeaders,
-              body: JSON.stringify({ locationId: GHL_LOCATION_ID, contactId })
+            const createResp = await fetch('https://services.leadconnectorhq.com/conversations/', {
+              method: 'POST', headers: ghlConvHeaders,
+              body: JSON.stringify({ locationId: GHL_LOCATION_ID, contactId, type: 'SMS' })
             });
-            const createData = await createResp.json();
+            const createRaw = await createResp.text();
+            let createData;
+            try { createData = JSON.parse(createRaw); } catch(e) { createData = {}; }
             conversationId = (createData.conversation && createData.conversation.id) || createData.id;
-            console.log('sign-complete: create conversation status:', createResp.status, JSON.stringify(createData));
+            console.log('sign-complete: create conversation status:', createResp.status, createRaw.slice(0, 300));
           }
           if (conversationId) {
             const firstName = c.first_name || 'there';
@@ -157,7 +170,7 @@ exports.handler = async function(event) {
             const smsMsgBody = { type: 'SMS', conversationId, message: smsConfirm };
             if (GHL_FROM_NUMBER) smsMsgBody.fromNumber = GHL_FROM_NUMBER;
             const smsResp = await fetch('https://services.leadconnectorhq.com/conversations/messages', {
-              method: 'POST', headers: ghlHeaders,
+              method: 'POST', headers: ghlConvHeaders,
               body: JSON.stringify(smsMsgBody)
             });
             const smsTxt = await smsResp.text();
