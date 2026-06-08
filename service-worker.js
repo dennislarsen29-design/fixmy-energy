@@ -1,4 +1,4 @@
-var CACHE = 'fixmy-v3';
+var CACHE = 'fixmy-v4';
 
 // Pre-cache the shell on install
 self.addEventListener('install', function(e) {
@@ -20,7 +20,7 @@ self.addEventListener('activate', function(e) {
 
 // Fetch strategy:
 //   - Supabase + Netlify functions → network-only (never cache live data)
-//   - portal.html → network-first (always latest when online, cache fallback offline)
+//   - portal.html / root URL (with or without trailing slash) → network-first
 //   - Everything else → cache-first with network fallback
 self.addEventListener('fetch', function(e) {
   var url = e.request.url;
@@ -29,7 +29,14 @@ self.addEventListener('fetch', function(e) {
   if (e.request.method !== 'GET') return;
   if (url.includes('supabase.co') || url.includes('.netlify/functions') || url.includes('googleapis.com/maps/api')) return;
 
-  if (url.includes('portal.html') || url === self.location.origin + '/') {
+  var origin = self.location.origin;
+  var isAppShell = url.includes('portal.html')
+    || url === origin + '/'
+    || url === origin
+    || url.startsWith(origin + '/?')
+    || url.startsWith(origin + '/#');
+
+  if (isAppShell) {
     // Network-first for the app shell — users always get the latest when online
     e.respondWith(
       fetch(e.request).then(function(resp) {
