@@ -92,6 +92,7 @@ exports.handler = async function(event) {
         { headers: ghlHeaders }
       );
       const searchData = await searchResp.json();
+      console.log('GHL conversation search status:', searchResp.status, JSON.stringify(searchData));
       if (searchData.conversations && searchData.conversations.length > 0) {
         conversationId = searchData.conversations[0].id;
         console.log('GHL existing conversation:', conversationId);
@@ -102,7 +103,12 @@ exports.handler = async function(event) {
           headers: ghlHeaders,
           body:    JSON.stringify({ locationId: GHL_LOCATION_ID, contactId })
         });
-        const createData = await createResp.json();
+        const createRaw = await createResp.text();
+        let createData;
+        try { createData = JSON.parse(createRaw); } catch(e) {
+          console.error('GHL create conversation non-JSON response:', createResp.status, createRaw.slice(0, 300));
+          createData = {};
+        }
         conversationId = (createData.conversation && createData.conversation.id) || createData.id;
         console.log('GHL create conversation status:', createResp.status, JSON.stringify(createData));
       }
