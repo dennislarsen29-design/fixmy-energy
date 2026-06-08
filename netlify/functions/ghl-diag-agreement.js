@@ -82,35 +82,44 @@ exports.handler = async function(event) {
   }
 
   // Step 2: Get or create a GHL conversation, then send SMS with sign link
+  // Conversations API uses Version 2021-04-15 (different from contacts 2021-07-28)
+  const ghlConvHeaders = Object.assign({}, ghlHeaders, { 'Version': '2021-04-15' });
+
   let smsStatus = null;
+  let convDebug = {};   // returned in response so portal toast can show exact GHL error
   if (payload.signLink) {
     try {
-      // GHL requires conversationId — search for existing, create if none
       let conversationId = null;
+
+      // Search for existing conversation
       const searchResp = await fetch(
         'https://services.leadconnectorhq.com/conversations/search?locationId=' + GHL_LOCATION_ID + '&contactId=' + contactId,
-        { headers: ghlHeaders }
+        { headers: ghlConvHeaders }
       );
-      const searchData = await searchResp.json();
-      console.log('GHL conversation search status:', searchResp.status, JSON.stringify(searchData));
+      const searchRaw = await searchResp.text();
+      let searchData;
+      try { searchData = JSON.parse(searchRaw); } catch(e) { searchData = {}; }
+      convDebug.searchStatus = searchResp.status;
+      convDebug.searchData = searchRaw.slice(0, 400);
+      console.log('GHL conversation search:', searchResp.status, searchRaw.slice(0, 400));
+
       if (searchData.conversations && searchData.conversations.length > 0) {
         conversationId = searchData.conversations[0].id;
         console.log('GHL existing conversation:', conversationId);
       } else {
-        // No trailing slash — POST to /conversations/ can 301-redirect and lose the body
+        // Create new conversation — include type:'SMS' so GHL links it to LC Phone
         const createResp = await fetch('https://services.leadconnectorhq.com/conversations', {
           method:  'POST',
-          headers: ghlHeaders,
-          body:    JSON.stringify({ locationId: GHL_LOCATION_ID, contactId })
+          headers: ghlConvHeaders,
+          body:    JSON.stringify({ locationId: GHL_LOCATION_ID, contactId, type: 'SMS' })
         });
         const createRaw = await createResp.text();
         let createData;
-        try { createData = JSON.parse(createRaw); } catch(e) {
-          console.error('GHL create conversation non-JSON response:', createResp.status, createRaw.slice(0, 300));
-          createData = {};
-        }
+        try { createData = JSON.parse(createRaw); } catch(e) { createData = {}; }
         conversationId = (createData.conversation && createData.conversation.id) || createData.id;
-        console.log('GHL create conversation status:', createResp.status, JSON.stringify(createData));
+        convDebug.createStatus = createResp.status;
+        convDebug.createData = createRaw.slice(0, 400);
+        console.log('GHL create conversation:', createResp.status, createRaw.slice(0, 400));
       }
 
       if (conversationId) {
@@ -124,16 +133,18 @@ exports.handler = async function(event) {
         if (GHL_FROM_NUMBER) smsMsgBody.fromNumber = GHL_FROM_NUMBER;
         const smsResp = await fetch('https://services.leadconnectorhq.com/conversations/messages', {
           method:  'POST',
-          headers: ghlHeaders,
+          headers: ghlConvHeaders,
           body:    JSON.stringify(smsMsgBody)
         });
         smsStatus = smsResp.status;
         const smsBody = await smsResp.text();
-        console.log('GHL SMS send status:', smsStatus, smsBody);
+        convDebug.smsBody = smsBody.slice(0, 400);
+        console.log('GHL SMS send:', smsStatus, smsBody.slice(0, 400));
       } else {
         console.warn('GHL could not get/create conversation — SMS skipped');
       }
     } catch(e) {
+      convDebug.error = e.message;
       console.warn('GHL SMS send error (non-fatal):', e.message);
     }
   } else {
@@ -143,6 +154,6 @@ exports.handler = async function(event) {
   return {
     statusCode: 200,
     headers: cors,
-    body: JSON.stringify({ success: true, contactId, smsStatus })
+    body: JSON.stringify({ success: true, contactId, smsStatus, convDebug })
   };
 };
