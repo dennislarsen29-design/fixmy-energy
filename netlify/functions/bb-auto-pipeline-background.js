@@ -13,7 +13,7 @@ const SUPA_REST = SUPA_URL + '/rest/v1';
 
 const INSTALLERS = [
   { name: 'Sullivan Solar',        names: ['Sullivan Solar Power', 'Sullivan Solar Power of California', 'Sullivan Solar'] },
-  { name: 'SunPower',              names: ['Complete Solar Inc', 'BRS Field Ops', 'SunPower Corporation', 'SunPower'] },
+  { name: 'SunPower',              names: ['Complete Solar Inc', 'BRS Field Ops', 'SunPower Corporation', 'SunPower', 'Sun Power', 'Sunpower Corp'] },
   { name: 'Titan Solar',           names: ['Titan Solar Power', 'Titan Solar'] },
   { name: 'Sunnova',               names: ['Sunnova Energy International', 'Sunnova Energy', 'Sunnova'] },
   { name: 'Freedom Forever',       names: ['Freedom Forever LLC', 'Freedom Forever'] },
@@ -327,7 +327,8 @@ Top installers: ${topInstallers || 'unknown'}.
 Active geographic coverage: San Diego County + ${activeExpansionZips.size} expansion zips (growing into Orange County then Riverside).
 
 Respond ONLY with raw JSON, no markdown, no code fences:
-{"summary":"one sentence status","topOpportunity":"which segment to focus on and why","missingVariants":["up to 3 alternate installer name spellings to try"],"marketingAngle":"fresh outreach angle based on data","zipFocus":"any zip patterns worth targeting more","importInsight":"one actionable suggestion to improve contact rates or import completeness"}`;
+{"summary":"one sentence status","topOpportunity":"which segment to focus on and why","missingVariants":[{"installer":"exact installer name from list","variants":["alternate spelling 1","alternate spelling 2"]}],"marketingAngle":"fresh outreach angle based on data","zipFocus":"any zip patterns worth targeting more","importInsight":"one actionable suggestion to improve contact rates or import completeness"}
+Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom Forever, Petersen Dean, Sungevity, Lumio, ADT Solar, Pink Energy, Vision Solar, RGS Energy, Verengo, Kota Energy, American Solar Direct, OneRoof Energy.`;
 
       const aiResp = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
@@ -379,6 +380,27 @@ Respond ONLY with raw JSON, no markdown, no code fences:
     addrOffset += 1000;
   }
   stamp(`Loaded ${existingAddrs.size} existing addresses`);
+
+  // Apply AI-suggested missing name variants from previous Phase 0 run
+  try {
+    const insightsRes = await supaFetch('/pipeline_state?key=eq.phase0_insights&select=value&limit=1');
+    if (insightsRes.ok && Array.isArray(insightsRes.data) && insightsRes.data[0]) {
+      const insights = JSON.parse(insightsRes.data[0].value);
+      if (Array.isArray(insights.missingVariants)) {
+        for (const mv of insights.missingVariants) {
+          if (!mv || typeof mv !== 'object' || !mv.installer || !Array.isArray(mv.variants)) continue;
+          const target = INSTALLERS.find(i => i.name === mv.installer);
+          if (!target) continue;
+          for (const v of mv.variants) {
+            if (v && !target.names.includes(v)) {
+              target.names.push(v);
+              stamp(`Phase 1: AI variant applied — ${mv.installer}: "${v}"`);
+            }
+          }
+        }
+      }
+    }
+  } catch(e) { stamp('Phase 1: AI variant load skipped — ' + e.message); }
 
   // Pull one installer — both Socrata endpoints, all name variants
   async function pullInstaller(installer) {
