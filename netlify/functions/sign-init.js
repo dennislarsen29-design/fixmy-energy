@@ -20,6 +20,18 @@ exports.handler = async function(event) {
     return { statusCode: 500, headers: cors, body: JSON.stringify({ error: 'Server misconfigured' }) };
   }
 
+  // Detect test/live mode mismatch early — would cause "No such payment_intent" at pay time otherwise
+  const pubKey = process.env.STRIPE_PUBLISHABLE_KEY || '';
+  if (pubKey) {
+    const secretMode = STRIPE_SECRET_KEY.startsWith('sk_live_') ? 'live' : 'test';
+    const pubMode    = pubKey.startsWith('pk_live_') ? 'live' : 'test';
+    if (secretMode !== pubMode) {
+      return { statusCode: 500, headers: cors, body: JSON.stringify({
+        error: 'Stripe key mode mismatch: secret=' + secretMode + ' but publishable=' + pubMode + '. Fix STRIPE_PUBLISHABLE_KEY in Netlify env vars.'
+      }) };
+    }
+  }
+
   let token;
   try { token = JSON.parse(event.body).token; } catch(e) {
     return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Invalid JSON' }) };

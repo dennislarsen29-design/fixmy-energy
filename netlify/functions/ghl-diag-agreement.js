@@ -103,7 +103,11 @@ exports.handler = async function(event) {
       convDebug.searchData = searchRaw.slice(0, 400);
       console.log('GHL conversation search:', searchResp.status, searchRaw.slice(0, 400));
 
-      if (searchData.conversations && searchData.conversations.length > 0) {
+      if (searchResp.status >= 400) {
+        convDebug.error = 'conversations/search returned ' + searchResp.status + ' — enable Conversations scope on GHL private integration';
+        console.warn('GHL conversations search failed:', searchResp.status, searchRaw.slice(0, 200));
+        // skip create attempt — it will fail with the same auth error
+      } else if (searchData.conversations && searchData.conversations.length > 0) {
         conversationId = searchData.conversations[0].id;
         console.log('GHL existing conversation:', conversationId);
       } else {

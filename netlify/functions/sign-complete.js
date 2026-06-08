@@ -147,8 +147,14 @@ exports.handler = async function(event) {
             'https://services.leadconnectorhq.com/conversations/search?locationId=' + GHL_LOCATION_ID + '&contactId=' + contactId,
             { headers: ghlConvHeaders }
           );
-          const searchData = await searchResp.json();
-          if (searchData.conversations && searchData.conversations.length > 0) {
+          const searchRaw2 = await searchResp.text();
+          let searchData;
+          try { searchData = JSON.parse(searchRaw2); } catch(e) { searchData = {}; }
+          console.log('sign-complete: conversation search status:', searchResp.status, searchRaw2.slice(0, 200));
+          if (searchResp.status >= 400) {
+            console.warn('sign-complete: conversations search failed', searchResp.status, '— missing conversations scope on GHL private integration?');
+            // skip SMS — non-fatal
+          } else if (searchData.conversations && searchData.conversations.length > 0) {
             conversationId = searchData.conversations[0].id;
           } else {
             const createResp = await fetch('https://services.leadconnectorhq.com/conversations/', {
