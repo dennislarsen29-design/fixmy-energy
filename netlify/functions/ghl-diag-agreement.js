@@ -83,29 +83,40 @@ exports.handler = async function(event) {
     return { statusCode: 502, headers: cors, body: JSON.stringify({ error: 'GHL upsert returned no contact id' }) };
   }
 
-  // Step 2: Add tag to trigger existing "Send-Diag-Agreement" GHL workflow → sends SMS via LC Phone
-  // Workflow should: send SMS with {{contact.sign_link_url}} → remove tag so re-sends re-trigger.
-  let tagStatus = null;
-  let tagBody = '';
+  // Step 2: Send SMS directly via contactId — GHL routes to the right conversation internally
+  const ghlConvHeaders = Object.assign({}, ghlHeaders, { 'Version': '2021-04-15' });
+
+  let smsStatus = null;
+  let convDebug = {};
   if (payload.signLink) {
     try {
-      const tagResp = await fetch('https://services.leadconnectorhq.com/contacts/' + contactId + '/tags', {
-        method:  'POST',
-        headers: ghlHeaders,
-        body:    JSON.stringify({ tags: ['send-diag-agreement'] })
+      const firstName  = payload.firstName || 'there';
+      const feeDisplay = payload.diagnostic_fee ? ' ($' + payload.diagnostic_fee + ')' : '';
+      const smsMessage =
+        'Hi ' + firstName + '! Your Solar Review Diagnostic Agreement' + feeDisplay + ' is ready.\n\n' +
+        'Tap here to review, sign, and pay:\n' + payload.signLink + '\n\n' +
+        'Questions? Call (619) 777-6527. — Solar Review Corp';
+
+      const smsMsgBody = { type: 'SMS', contactId, message: smsMessage };
+      if (GHL_FROM_NUMBER) smsMsgBody.fromNumber = GHL_FROM_NUMBER;
+      if (phone) smsMsgBody.toNumber = phone;
+
+      const smsResp = await fetch('https://services.leadconnectorhq.com/conversations/messages', {
+        method: 'POST', headers: ghlConvHeaders, body: JSON.stringify(smsMsgBody)
       });
-      tagStatus = tagResp.status;
-      tagBody   = (await tagResp.text()).slice(0, 200);
-      console.log('GHL tag add:', tagStatus, tagBody);
+      smsStatus = smsResp.status;
+      const smsBody = await smsResp.text();
+      convDebug.smsBody = smsBody.slice(0, 400);
+      console.log('GHL SMS send:', smsStatus, smsBody.slice(0, 400));
     } catch(e) {
-      console.warn('GHL tag error (non-fatal):', e.message);
-      tagBody = e.message;
+      convDebug.error = e.message;
+      console.warn('GHL SMS error (non-fatal):', e.message);
     }
   }
 
   return {
     statusCode: 200,
     headers: cors,
-    body: JSON.stringify({ success: true, contactId, tagStatus, tagBody })
+    body: JSON.stringify({ success: true, contactId, smsStatus, convDebug })
   };
 };
