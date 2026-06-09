@@ -23,7 +23,7 @@ exports.handler = async function(event) {
   // calendarId can be passed in the request body to support multiple calendars (TT, Diagnostic, etc.)
   const calendarId = body.calendarId || process.env.GHL_DIAG_CALENDAR_ID || process.env.GHL_CALENDAR_ID;
 
-  const { firstName, lastName, email, phone, address, appointmentDate, appointmentTime, appointmentEndTime, trigger, diagnosticDate } = body;
+  const { firstName, lastName, email, phone, address, appointmentDate, appointmentTime, appointmentEndTime, trigger, diagnosticDate, updateAppointmentId } = body;
 
   // ── 1. Upsert GHL contact ────────────────────────────────────────────────
   let contactId;
@@ -48,34 +48,40 @@ exports.handler = async function(event) {
     return { statusCode: 502, body: JSON.stringify({ error: 'Contact upsert failed', detail: err.message }) };
   }
 
-  // ── 2. Book appointment (only if date/time provided) ─────────────────────
-  let appointmentId = null;
+  // ── 2. Book or update appointment (only if date/time provided) ──────────
+  let appointmentId = updateAppointmentId || null;
   if (appointmentDate && appointmentTime) {
     try {
-      // Combine date + time into ISO8601 — assume PT (UTC-7 PDT)
       const startISO = new Date(`${appointmentDate}T${appointmentTime}:00-07:00`).toISOString();
       const endISO   = appointmentEndTime
         ? new Date(`${appointmentDate}T${appointmentEndTime}:00-07:00`).toISOString()
-        : new Date(new Date(startISO).getTime() + 60 * 60 * 1000).toISOString(); // default 1hr
+        : new Date(new Date(startISO).getTime() + 60 * 60 * 1000).toISOString();
 
-      const apptRes = await fetch(`${GHL_BASE}/calendars/events/appointments`, {
-        method: 'POST',
-        headers: HEADERS,
-        body: JSON.stringify({
-          calendarId,
-          locationId,
-          contactId,
-          startTime: startISO,
-          endTime:   endISO,
-          title: `Top Tier — ${firstName || ''} ${lastName || ''}`.trim(),
-          meetingLocationType: 'default',
-          address: address || undefined,
-        }),
-      });
-      const apptData = await apptRes.json();
-      appointmentId = apptData?.id || apptData?.event?.id;
+      if (updateAppointmentId) {
+        // Update existing appointment via PUT
+        const putRes = await fetch(`${GHL_BASE}/calendars/events/appointments/${updateAppointmentId}`, {
+          method: 'PUT',
+          headers: HEADERS,
+          body: JSON.stringify({ calendarId, locationId, startTime: startISO, endTime: endISO }),
+        });
+        const putData = await putRes.json();
+        appointmentId = putData?.id || updateAppointmentId;
+      } else {
+        const apptRes = await fetch(`${GHL_BASE}/calendars/events/appointments`, {
+          method: 'POST',
+          headers: HEADERS,
+          body: JSON.stringify({
+            calendarId, locationId, contactId,
+            startTime: startISO, endTime: endISO,
+            title: `Top Tier — ${firstName || ''} ${lastName || ''}`.trim(),
+            meetingLocationType: 'default',
+            address: address || undefined,
+          }),
+        });
+        const apptData = await apptRes.json();
+        appointmentId = apptData?.id || apptData?.event?.id;
+      }
     } catch (err) {
-      // Non-fatal — contact was created, appointment failed
       console.error('Appointment booking failed:', err.message);
     }
   }
