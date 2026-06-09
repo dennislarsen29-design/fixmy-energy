@@ -951,7 +951,9 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
 
   // ══════════════════════════════════════════════════════════════════════════
   // PHASE 3 — TRACERFY SKIP-TRACE
-  // Submit all no-contact leads, poll up to 4 min, write results back
+  // Submit all no-contact leads, poll up to 4 min, write results back.
+  // If results aren't ready in time, queue_id is saved to pipeline_state and
+  // picked up automatically on the next run.
   // ══════════════════════════════════════════════════════════════════════════
   stamp('=== Phase 3: Tracerfy skip-trace ===');
 
@@ -959,215 +961,262 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
   let tracerfyResult = 'skipped — TRACERFY_API_KEY not set';
   let contactsAdded = 0;
 
+  // Shared helper: parse a Tracerfy results CSV and write updates to DB.
+  // Returns count of leads updated.
+  async function applyTracerfyCSV(csvText, queueId) {
+    function parseLine(line) {
+      const result = []; let inQ = false, cur = '';
+      for (let ci = 0; ci < line.length; ci++) {
+        const ch = line[ci];
+        if (ch === '"') {
+          if (inQ && line[ci + 1] === '"') { cur += '"'; ci++; }
+          else inQ = !inQ;
+        } else if (ch === ',' && !inQ) { result.push(cur); cur = ''; }
+        else cur += ch;
+      }
+      result.push(cur);
+      return result;
+    }
+    const lines = csvText.trim().split('\n');
+    if (lines.length < 2) { stamp(`Phase 3: empty results CSV for queue_id=${queueId}`); return 0; }
+    const hdrs = parseLine(lines[0]).map(h =>
+      h.trim().toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '')
+    );
+    const updateQueue = [];
+    for (let li = 1; li < lines.length; li++) {
+      if (!lines[li].trim()) continue;
+      const vals = parseLine(lines[li]);
+      const row = {};
+      hdrs.forEach((h, idx) => { row[h] = (vals[idx] || '').trim(); });
+      const leadId = row['lead_id'] || null;
+      if (!leadId) continue;
+      const phone = row['primary_phone'] || row['mobile_1'] || row['landline_1'] || null;
+      const email = row['email_1'] || null;
+      const firstName = row['first_name'] || row['owner_1_first_name'] || '';
+      const lastName  = row['last_name']  || row['owner_1_last_name']  || '';
+      const ownerName = [firstName, lastName].filter(Boolean).join(' ') || null;
+      const dncRaw = row['do_not_call'] || row['dnc'] || row['primary_phone_dnc'] || '';
+      const dnc = ['true', 'yes', '1', 'y'].includes((dncRaw || '').toLowerCase().trim());
+      if (phone || email || ownerName) updateQueue.push({ leadId, phone, email, ownerName, dnc });
+    }
+    stamp(`Phase 3: applying ${updateQueue.length} results from queue_id=${queueId}...`);
+    let applied = 0;
+    for (let ui = 0; ui < updateQueue.length; ui += 10) {
+      if (overGlobal()) break;
+      const chunk = updateQueue.slice(ui, ui + 10);
+      const writes = chunk.map(u => {
+        const upd = { enrichment_source: 'tracerfy' };
+        if (u.phone) upd.phone = u.phone;
+        if (u.email) upd.email = u.email;
+        if (u.ownerName) upd.title_owner = u.ownerName;
+        if (u.dnc) upd.dnc = u.dnc;
+        return supaUpdate(u.leadId, upd);
+      });
+      const oks = await Promise.all(writes.map(p => p.catch(() => false)));
+      applied += oks.filter(Boolean).length;
+      await sleep(50);
+    }
+    stamp(`Phase 3: ${applied} leads updated from queue_id=${queueId}`);
+    return applied;
+  }
+
+  // Shared helper: look up a queue by ID across pages of the Tracerfy queue list.
+  async function fetchTracerfyQueue(queueId, authHdr) {
+    for (let page = 1; page <= 5; page++) {
+      try {
+        const r = await fetchWithTimeout(
+          `https://tracerfy.com/v1/api/queues/?page=${page}`,
+          { headers: authHdr }, 10000
+        );
+        if (!r.ok) break;
+        const list = await r.json();
+        if (Array.isArray(list)) {
+          const found = list.find(q => String(q.id) === String(queueId));
+          if (found) return found;
+          if (list.length < 100) break;
+        }
+      } catch(e) { break; }
+    }
+    return null;
+  }
+
   const TRACERFY_BATCH_CAP = enrichOnly ? 2000 : 500;
 
   if (tracerfyKey) {
-    // enrichment_source=is.null excludes leads already tried (no result) or already enriched
-    const noContactRes = await supaFetch(
-      '/customers?lead_source=eq.orphaned_list&sold_type=is.null&phone=is.null&email=is.null&enrichment_source=is.null&select=id,address,install_year&limit=10000'
-    );
-    const allNoContact = (Array.isArray(noContactRes.data) ? noContactRes.data : []).filter(r => r.address);
-    // Filter to complete addresses, sort newest install year first (highest value), cap to per-run budget
-    const skipLeads = allNoContact
-      .filter(l => addressQualityScore(l.address) >= 9)
-      .sort((a, b) => (b.install_year || 0) - (a.install_year || 0))
-      .slice(0, TRACERFY_BATCH_CAP);
-    stamp(`Phase 3: ${skipLeads.length}/${allNoContact.length} leads pass address quality filter`);
+    const authHdr = { Authorization: 'Bearer ' + tracerfyKey, Accept: 'application/json' };
 
-    if (skipLeads.length === 0) {
-      tracerfyResult = 'no leads needed skip-trace';
-    } else {
-      // Build CSV
-      function parseAddr(s) {
-        const m = s.match(/^(.+),\s*([^,]+),\s*([A-Za-z]{2})\s+(\d{5})/);
-        if (m) return { street: m[1].trim(), city: m[2].trim(), state: m[3], zip: m[4] };
-        const parts = s.split(',');
-        return { street: (parts[0] || s).trim(), city: (parts[1] || 'San Diego').trim(), state: 'CA', zip: '' };
+    // ── Check for pending queue_id saved from a previous run ────────────────
+    let pendingQueueId = null;
+    try {
+      const pqRes = await supaFetch('/pipeline_state?key=eq.tracerfy_pending_queue&select=value,updated_at&limit=1');
+      if (pqRes.ok && Array.isArray(pqRes.data) && pqRes.data[0]) {
+        const row = pqRes.data[0];
+        const ageHrs = (Date.now() - new Date(row.updated_at).getTime()) / 3600000;
+        if (ageHrs < 48) {
+          pendingQueueId = row.value;
+          stamp(`Phase 3: found pending queue_id=${pendingQueueId} from ${ageHrs.toFixed(1)}h ago — checking...`);
+        } else {
+          stamp(`Phase 3: pending queue_id=${row.value} is ${ageHrs.toFixed(0)}h old — discarding`);
+          await fetch(SUPA_REST + '/pipeline_state?key=eq.tracerfy_pending_queue',
+            { method: 'DELETE', headers: supaHeaders }).catch(() => {});
+        }
       }
-      function csvEsc(v) {
-        const s = String(v == null ? '' : v);
-        return (s.includes(',') || s.includes('"') || s.includes('\n'))
-          ? '"' + s.replace(/"/g, '""') + '"' : s;
-      }
-      const rows = ['lead_id,street_address,city,state,zip'];
-      for (const lead of skipLeads) {
-        const a = parseAddr(lead.address);
-        rows.push([csvEsc(lead.id), csvEsc(a.street), csvEsc(a.city), a.state, a.zip].join(','));
-      }
-      const csvContent = rows.join('\r\n');
+    } catch(e) { stamp('Phase 3: pending queue lookup error: ' + e.message); }
 
-      // Build multipart/form-data (same as tracerfy-submit.js)
-      const boundary = '----Pipeline' + Date.now().toString(36);
-      const CRLF = '\r\n';
-      function textPart(name, value) {
-        return '--' + boundary + CRLF
-          + 'Content-Disposition: form-data; name="' + name + '"' + CRLF + CRLF
-          + value + CRLF;
-      }
-      const multipartBody =
-        '--' + boundary + CRLF
-        + 'Content-Disposition: form-data; name="csv_file"; filename="leads.csv"' + CRLF
-        + 'Content-Type: text/csv' + CRLF + CRLF
-        + csvContent + CRLF
-        + textPart('address_column', 'street_address')
-        + textPart('city_column', 'city')
-        + textPart('state_column', 'state')
-        + textPart('zip_column', 'zip')
-        + textPart('trace_type', 'advanced')
-        + '--' + boundary + '--' + CRLF;
-
-      // Submit
-      let queueId = null;
+    if (pendingQueueId) {
       try {
-        const resp = await fetchWithTimeout('https://tracerfy.com/v1/api/trace/', {
-          method: 'POST',
-          headers: {
-            Authorization: 'Bearer ' + tracerfyKey,
-            'Content-Type': 'multipart/form-data; boundary=' + boundary
-          },
-          body: multipartBody
-        }, 30000);
-        const text = await resp.text();
-        let data;
-        try { data = JSON.parse(text); } catch(e) {
-          stamp(`Phase 3: Tracerfy non-JSON: ${text.slice(0, 200)}`);
-          data = {};
-        }
-        if (data.queue_id || data.id) {
-          queueId = String(data.queue_id || data.id);
-          stamp(`Phase 3: submitted ${skipLeads.length} leads — queue_id=${queueId}`);
-          // Mark all submitted leads as tried so they aren't resubmitted on future runs
-          // even if Tracerfy returns no result for them
-          for (let mi = 0; mi < skipLeads.length; mi += 50) {
-            if (overGlobal()) break;
-            const ids = skipLeads.slice(mi, mi + 50).map(l => l.id);
-            await fetchWithTimeout(
-              SUPA_REST + '/customers?id=in.(' + ids.map(encodeURIComponent).join(',') + ')',
-              { method: 'PATCH', headers: supaHeaders, body: JSON.stringify({ enrichment_source: 'tracerfy' }) },
-              10000
-            ).catch(() => {});
-            await sleep(50);
-          }
-          stamp(`Phase 3: marked ${skipLeads.length} leads as tracerfy-tried`);
-        } else if (data.error || data.detail) {
-          stamp(`Phase 3: Tracerfy error: ${data.error || data.detail}`);
-          tracerfyResult = 'submit failed: ' + (data.error || data.detail);
-        }
-      } catch(e) {
-        stamp(`Phase 3: submit exception: ${e.message}`);
-        tracerfyResult = 'submit exception: ' + e.message;
-      }
-
-      // Poll for results (up to 4 minutes, every 30s)
-      if (queueId) {
-        const POLL_DEADLINE = Date.now() + (4 * 60 * 1000);
-        let applied = 0;
-        let attempt = 0;
-        tracerfyResult = `submitted ${skipLeads.length} leads — queue_id=${queueId} — still processing`;
-
-        while (Date.now() < POLL_DEADLINE && !overGlobal()) {
-          await sleep(attempt === 0 ? 25000 : 30000);
-          attempt++;
-          stamp(`Phase 3: poll #${attempt}...`);
-
-          try {
-            const authHdr = { Authorization: 'Bearer ' + tracerfyKey, Accept: 'application/json' };
-            let queueData = null;
-            for (let page = 1; page <= 2 && !queueData; page++) {
-              const r = await fetchWithTimeout(
-                `https://tracerfy.com/v1/api/queues/?page=${page}`,
-                { headers: authHdr }, 10000
-              );
-              if (!r.ok) break;
-              const list = await r.json();
-              if (Array.isArray(list)) {
-                queueData = list.find(q => String(q.id) === queueId) || null;
-                if (list.length < 100) break;
-              }
-            }
-
-            if (!queueData) { stamp('Phase 3: queue not yet visible'); continue; }
-            if (queueData.pending || !queueData.download_url) { stamp('Phase 3: still processing'); continue; }
-
-            // Results ready — download CSV
-            const csvResp = await fetchWithTimeout(queueData.download_url, {}, 20000);
-            if (!csvResp.ok) { stamp(`Phase 3: CSV download HTTP ${csvResp.status}`); break; }
+        const queueData = await fetchTracerfyQueue(pendingQueueId, authHdr);
+        if (!queueData) {
+          stamp(`Phase 3: pending queue_id=${pendingQueueId} not found in queue list`);
+        } else if (queueData.pending || !queueData.download_url) {
+          stamp(`Phase 3: pending queue_id=${pendingQueueId} still processing — will retry next run`);
+          tracerfyResult = `pending queue_id=${pendingQueueId} still processing`;
+        } else {
+          const csvResp = await fetchWithTimeout(queueData.download_url, {}, 20000);
+          if (csvResp.ok) {
             const csvText = await csvResp.text();
+            const applied = await applyTracerfyCSV(csvText, pendingQueueId);
+            contactsAdded = applied;
+            tracerfyResult = `${applied} contacts applied from pending queue_id=${pendingQueueId} (credits=${queueData.credits_deducted || '?'})`;
+            // Clear the pending key now that results are applied
+            await fetch(SUPA_REST + '/pipeline_state?key=eq.tracerfy_pending_queue',
+              { method: 'DELETE', headers: supaHeaders }).catch(() => {});
+            pendingQueueId = null;
+          } else {
+            stamp(`Phase 3: CSV download HTTP ${csvResp.status} for pending queue`);
+          }
+        }
+      } catch(e) { stamp('Phase 3: pending queue apply error: ' + e.message); }
+    }
 
-            // Parse results CSV (same logic as tracerfy-results.js)
-            const lines = csvText.trim().split('\n');
-            if (lines.length < 2) { stamp('Phase 3: empty results'); break; }
+    // ── Submit new batch only when no pending queue is outstanding ───────────
+    if (!pendingQueueId) {
+      const noContactRes = await supaFetch(
+        '/customers?lead_source=eq.orphaned_list&sold_type=is.null&phone=is.null&email=is.null&enrichment_source=is.null&select=id,address,install_year&limit=10000'
+      );
+      const allNoContact = (Array.isArray(noContactRes.data) ? noContactRes.data : []).filter(r => r.address);
+      const skipLeads = allNoContact
+        .filter(l => addressQualityScore(l.address) >= 9)
+        .sort((a, b) => (b.install_year || 0) - (a.install_year || 0))
+        .slice(0, TRACERFY_BATCH_CAP);
+      stamp(`Phase 3: ${skipLeads.length}/${allNoContact.length} leads pass address quality filter`);
 
-            function parseCsvLine(line) {
-              const result = []; let inQ = false, cur = '';
-              for (let ci = 0; ci < line.length; ci++) {
-                const ch = line[ci];
-                if (ch === '"') {
-                  if (inQ && line[ci + 1] === '"') { cur += '"'; ci++; }
-                  else inQ = !inQ;
-                } else if (ch === ',' && !inQ) { result.push(cur); cur = ''; }
-                else cur += ch;
-              }
-              result.push(cur);
-              return result;
-            }
+      if (skipLeads.length === 0) {
+        if (contactsAdded === 0) tracerfyResult = 'no leads needed skip-trace';
+      } else {
+        // Build CSV
+        function parseAddr(s) {
+          const m = s.match(/^(.+),\s*([^,]+),\s*([A-Za-z]{2})\s+(\d{5})/);
+          if (m) return { street: m[1].trim(), city: m[2].trim(), state: m[3], zip: m[4] };
+          const parts = s.split(',');
+          return { street: (parts[0] || s).trim(), city: (parts[1] || 'San Diego').trim(), state: 'CA', zip: '' };
+        }
+        function csvEsc(v) {
+          const s = String(v == null ? '' : v);
+          return (s.includes(',') || s.includes('"') || s.includes('\n'))
+            ? '"' + s.replace(/"/g, '""') + '"' : s;
+        }
+        const rows = ['lead_id,street_address,city,state,zip'];
+        for (const lead of skipLeads) {
+          const a = parseAddr(lead.address);
+          rows.push([csvEsc(lead.id), csvEsc(a.street), csvEsc(a.city), a.state, a.zip].join(','));
+        }
+        const csvContent = rows.join('\r\n');
 
-            const headers = parseCsvLine(lines[0]).map(h =>
-              h.trim().toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '')
-            );
+        const boundary = '----Pipeline' + Date.now().toString(36);
+        const CRLF = '\r\n';
+        function textPart(name, value) {
+          return '--' + boundary + CRLF
+            + 'Content-Disposition: form-data; name="' + name + '"' + CRLF + CRLF
+            + value + CRLF;
+        }
+        const multipartBody =
+          '--' + boundary + CRLF
+          + 'Content-Disposition: form-data; name="csv_file"; filename="leads.csv"' + CRLF
+          + 'Content-Type: text/csv' + CRLF + CRLF
+          + csvContent + CRLF
+          + textPart('address_column', 'street_address')
+          + textPart('city_column', 'city')
+          + textPart('state_column', 'state')
+          + textPart('zip_column', 'zip')
+          + textPart('trace_type', 'advanced')
+          + '--' + boundary + '--' + CRLF;
 
-            const updateQueue = [];
-            for (let li = 1; li < lines.length; li++) {
-              if (!lines[li].trim()) continue;
-              const vals = parseCsvLine(lines[li]);
-              const row = {};
-              headers.forEach((h, idx) => { row[h] = (vals[idx] || '').trim(); });
-
-              const leadId = row['lead_id'] || null;
-              if (!leadId) continue;
-              const phone = row['primary_phone'] || row['mobile_1'] || row['landline_1'] || null;
-              const email = row['email_1'] || null;
-              const firstName = row['first_name'] || row['owner_1_first_name'] || '';
-              const lastName  = row['last_name']  || row['owner_1_last_name']  || '';
-              const ownerName = [firstName, lastName].filter(Boolean).join(' ') || null;
-              const dncRaw = row['do_not_call'] || row['dnc'] || row['primary_phone_dnc'] || '';
-              const dnc = ['true', 'yes', '1', 'y'].includes((dncRaw || '').toLowerCase().trim());
-              if (phone || email || ownerName) {
-                updateQueue.push({ leadId, phone, email, ownerName, dnc });
-              }
-            }
-
-            stamp(`Phase 3: applying ${updateQueue.length} results...`);
-            // Write updates 10 at a time
-            for (let ui = 0; ui < updateQueue.length; ui += 10) {
+        let queueId = null;
+        try {
+          const resp = await fetchWithTimeout('https://tracerfy.com/v1/api/trace/', {
+            method: 'POST',
+            headers: {
+              Authorization: 'Bearer ' + tracerfyKey,
+              'Content-Type': 'multipart/form-data; boundary=' + boundary
+            },
+            body: multipartBody
+          }, 30000);
+          const text = await resp.text();
+          let data;
+          try { data = JSON.parse(text); } catch(e) {
+            stamp(`Phase 3: Tracerfy non-JSON: ${text.slice(0, 200)}`);
+            data = {};
+          }
+          if (data.queue_id || data.id) {
+            queueId = String(data.queue_id || data.id);
+            stamp(`Phase 3: submitted ${skipLeads.length} leads — queue_id=${queueId}`);
+            // Mark submitted leads as tried to prevent re-submission on future runs
+            for (let mi = 0; mi < skipLeads.length; mi += 50) {
               if (overGlobal()) break;
-              const chunk = updateQueue.slice(ui, ui + 10);
-              const writes = chunk.map(u => {
-                const updates = { enrichment_source: 'tracerfy' };
-                if (u.phone) updates.phone = u.phone;
-                if (u.email) updates.email = u.email;
-                if (u.ownerName) updates.title_owner = u.ownerName;
-                if (u.dnc) updates.dnc = u.dnc;
-                return supaUpdate(u.leadId, updates);
-              });
-              const oks = await Promise.all(writes.map(p => p.catch(() => false)));
-              applied += oks.filter(Boolean).length;
+              const ids = skipLeads.slice(mi, mi + 50).map(l => l.id);
+              await fetchWithTimeout(
+                SUPA_REST + '/customers?id=in.(' + ids.map(encodeURIComponent).join(',') + ')',
+                { method: 'PATCH', headers: supaHeaders, body: JSON.stringify({ enrichment_source: 'tracerfy' }) },
+                10000
+              ).catch(() => {});
               await sleep(50);
             }
-
-            stamp(`Phase 3 done: ${applied} leads updated with contact info`);
-            tracerfyResult = `${applied} contacts applied from ${skipLeads.length}-lead batch (queue_id=${queueId}, credits=${queueData.credits_deducted || '?'})`;
-            contactsAdded = applied;
-            break;
-
-          } catch(e) {
-            stamp(`Phase 3: poll error: ${e.message}`);
+            stamp(`Phase 3: marked ${skipLeads.length} leads as tracerfy-tried`);
+          } else if (data.error || data.detail) {
+            stamp(`Phase 3: Tracerfy error: ${data.error || data.detail}`);
+            tracerfyResult = 'submit failed: ' + (data.error || data.detail);
           }
+        } catch(e) {
+          stamp(`Phase 3: submit exception: ${e.message}`);
+          tracerfyResult = 'submit exception: ' + e.message;
         }
 
-        if (contactsAdded === 0) {
-          tracerfyResult = `submitted ${skipLeads.length} leads (queue_id=${queueId}) — results still processing. Use Check Results in portal.`;
-          stamp(`Phase 3: results still pending — queue_id=${queueId}`);
+        // Poll for results (up to 4 minutes, every 30s)
+        if (queueId) {
+          const POLL_DEADLINE = Date.now() + (4 * 60 * 1000);
+          let applied = 0;
+          let attempt = 0;
+          tracerfyResult = `submitted ${skipLeads.length} leads — queue_id=${queueId} — polling...`;
+
+          while (Date.now() < POLL_DEADLINE && !overGlobal()) {
+            await sleep(attempt === 0 ? 25000 : 30000);
+            attempt++;
+            stamp(`Phase 3: poll #${attempt}...`);
+            try {
+              const queueData = await fetchTracerfyQueue(queueId, authHdr);
+              if (!queueData) { stamp('Phase 3: queue not yet visible'); continue; }
+              if (queueData.pending || !queueData.download_url) { stamp('Phase 3: still processing'); continue; }
+
+              const csvResp = await fetchWithTimeout(queueData.download_url, {}, 20000);
+              if (!csvResp.ok) { stamp(`Phase 3: CSV download HTTP ${csvResp.status}`); break; }
+              applied = await applyTracerfyCSV(await csvResp.text(), queueId);
+              tracerfyResult = `${applied} contacts applied from ${skipLeads.length}-lead batch (queue_id=${queueId}, credits=${queueData.credits_deducted || '?'})`;
+              contactsAdded = applied;
+              break;
+            } catch(e) { stamp(`Phase 3: poll error: ${e.message}`); }
+          }
+
+          if (contactsAdded === 0) {
+            // Save queue_id so the next run can pick up results automatically
+            stamp(`Phase 3: results still pending — saving queue_id=${queueId} for next run`);
+            await fetch(SUPA_REST + '/pipeline_state', {
+              method: 'POST',
+              headers: { ...supaHeaders, Prefer: 'resolution=merge-duplicates' },
+              body: JSON.stringify({ key: 'tracerfy_pending_queue', value: queueId, updated_at: new Date().toISOString() })
+            }).catch(() => {});
+            tracerfyResult = `submitted ${skipLeads.length} leads (queue_id=${queueId}) — will auto-apply on next run`;
+          }
         }
       }
     }
