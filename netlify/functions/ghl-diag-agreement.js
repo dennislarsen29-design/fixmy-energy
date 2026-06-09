@@ -106,26 +106,25 @@ exports.handler = async function(event) {
       if (searchResp.status >= 400) {
         convDebug.error = 'conversations/search returned ' + searchResp.status + ' — enable Conversations scope on GHL private integration';
         console.warn('GHL conversations search failed:', searchResp.status, searchRaw.slice(0, 200));
-        // skip create attempt — it will fail with the same auth error
-      } else if (searchData.conversations && searchData.conversations.length > 0) {
-        var smsConv = searchData.conversations.find(function(cv) { return cv.type === 'SMS' || cv.channel === 'SMS'; });
-        conversationId = smsConv ? smsConv.id : null;
-        console.log('GHL SMS conversation:', conversationId, '(total convs:', searchData.conversations.length, ')');
-      }
-      if (!conversationId && searchResp.status < 400) {
-        // Create new SMS conversation — GHL requires trailing slash on this endpoint
-        const createResp = await fetch('https://services.leadconnectorhq.com/conversations/', {
-          method:  'POST',
-          headers: ghlConvHeaders,
-          body:    JSON.stringify({ locationId: GHL_LOCATION_ID, contactId, type: 'SMS' })
-        });
-        const createRaw = await createResp.text();
-        let createData;
-        try { createData = JSON.parse(createRaw); } catch(e) { createData = {}; }
-        conversationId = (createData.conversation && createData.conversation.id) || createData.id;
-        convDebug.createStatus = createResp.status;
-        convDebug.createData = createRaw.slice(0, 400);
-        console.log('GHL create conversation:', createResp.status, createRaw.slice(0, 400));
+        // skip — create would also fail
+      } else {
+        // Use first existing conversation (any type); create only if none exist
+        conversationId = (searchData.conversations && searchData.conversations[0] && searchData.conversations[0].id) || null;
+        console.log('GHL conversation from search:', conversationId, '(total convs:', (searchData.conversations||[]).length, ')');
+        if (!conversationId) {
+          const createResp = await fetch('https://services.leadconnectorhq.com/conversations/', {
+            method:  'POST',
+            headers: ghlConvHeaders,
+            body:    JSON.stringify({ locationId: GHL_LOCATION_ID, contactId, type: 'SMS' })
+          });
+          const createRaw = await createResp.text();
+          let createData;
+          try { createData = JSON.parse(createRaw); } catch(e) { createData = {}; }
+          conversationId = (createData.conversation && createData.conversation.id) || createData.id;
+          convDebug.createStatus = createResp.status;
+          convDebug.createData = createRaw.slice(0, 400);
+          console.log('GHL create conversation:', createResp.status, createRaw.slice(0, 400));
+        }
       }
 
       if (conversationId) {

@@ -152,23 +152,21 @@ exports.handler = async function(event) {
           try { searchData = JSON.parse(searchRaw2); } catch(e) { searchData = {}; }
           console.log('sign-complete: conversation search status:', searchResp.status, searchRaw2.slice(0, 200));
           if (searchResp.status >= 400) {
-            console.warn('sign-complete: conversations search failed', searchResp.status, '— missing conversations scope on GHL private integration?');
+            console.warn('sign-complete: conversations search failed', searchResp.status);
             // skip SMS — non-fatal
-          } else if (searchData.conversations && searchData.conversations.length > 0) {
-            var smsConv = searchData.conversations.find(function(cv) { return cv.type === 'SMS' || cv.channel === 'SMS'; });
-            conversationId = smsConv ? smsConv.id : null;
-            console.log('sign-complete: SMS conversation:', conversationId, '(total:', searchData.conversations.length, ')');
-          }
-          if (!conversationId && searchResp.status < 400) {
-            const createResp = await fetch('https://services.leadconnectorhq.com/conversations/', {
-              method: 'POST', headers: ghlConvHeaders,
-              body: JSON.stringify({ locationId: GHL_LOCATION_ID, contactId, type: 'SMS' })
-            });
-            const createRaw = await createResp.text();
-            let createData;
-            try { createData = JSON.parse(createRaw); } catch(e) { createData = {}; }
-            conversationId = (createData.conversation && createData.conversation.id) || createData.id;
-            console.log('sign-complete: create conversation status:', createResp.status, createRaw.slice(0, 300));
+          } else {
+            conversationId = (searchData.conversations && searchData.conversations[0] && searchData.conversations[0].id) || null;
+            if (!conversationId) {
+              const createResp = await fetch('https://services.leadconnectorhq.com/conversations/', {
+                method: 'POST', headers: ghlConvHeaders,
+                body: JSON.stringify({ locationId: GHL_LOCATION_ID, contactId, type: 'SMS' })
+              });
+              const createRaw = await createResp.text();
+              let createData;
+              try { createData = JSON.parse(createRaw); } catch(e) { createData = {}; }
+              conversationId = (createData.conversation && createData.conversation.id) || createData.id;
+              console.log('sign-complete: create conversation status:', createResp.status, createRaw.slice(0, 300));
+            }
           }
           if (conversationId) {
             const firstName = c.first_name || 'there';
