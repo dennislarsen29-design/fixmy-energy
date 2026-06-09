@@ -42,16 +42,18 @@ exports.handler = async function(event) {
   // Step 1: Upsert contact
   let contactId;
   try {
+    const customFields = [];
+    if (payload.diagnostic_fee) customFields.push({ key: 'diagnostic_fee', field_value: String(payload.diagnostic_fee) });
+    if (payload.signLink)       customFields.push({ key: 'sign_link_url',   field_value: payload.signLink });
+
     const upsertBody = {
-      locationId: GHL_LOCATION_ID,
-      email:      payload.email      || undefined,
-      phone:      phone              || undefined,
-      firstName:  payload.firstName  || undefined,
-      lastName:   payload.lastName   || undefined,
-      address1:   payload.address1   || undefined,
-      customFields: payload.diagnostic_fee ? [
-        { key: 'diagnostic_fee', field_value: String(payload.diagnostic_fee) }
-      ] : undefined
+      locationId:   GHL_LOCATION_ID,
+      email:        payload.email      || undefined,
+      phone:        phone              || undefined,
+      firstName:    payload.firstName  || undefined,
+      lastName:     payload.lastName   || undefined,
+      address1:     payload.address1   || undefined,
+      customFields: customFields.length ? customFields : undefined
     };
 
     const upsertResp = await fetch('https://services.leadconnectorhq.com/contacts/upsert', {
@@ -81,75 +83,31 @@ exports.handler = async function(event) {
     return { statusCode: 502, headers: cors, body: JSON.stringify({ error: 'GHL upsert returned no contact id' }) };
   }
 
-  // Step 2: Find or create GHL conversation, then send SMS
-  // Conversations API uses Version 2021-04-15
-  const ghlConvHeaders = Object.assign({}, ghlHeaders, { 'Version': '2021-04-15' });
-
-  let smsStatus = null;
-  let convDebug = {};
+  // Step 2: Add tag to trigger GHL workflow → workflow sends SMS via LC Phone
+  // This avoids the unreliable conversations API entirely.
+  // Required GHL workflow: trigger = tag "send-sign-link-sms" → send SMS using
+  //   {{contact.sign_link_url}} → then remove tag so re-sends re-trigger it.
+  let tagStatus = null;
+  let tagBody = '';
   if (payload.signLink) {
     try {
-      // Search for existing conversation for this contact
-      const searchResp = await fetch(
-        'https://services.leadconnectorhq.com/conversations/search?locationId=' + GHL_LOCATION_ID + '&contactId=' + contactId,
-        { headers: ghlConvHeaders }
-      );
-      const searchRaw = await searchResp.text();
-      let searchData; try { searchData = JSON.parse(searchRaw); } catch(e) { searchData = {}; }
-      convDebug.searchStatus = searchResp.status;
-      convDebug.searchSnippet = searchRaw.slice(0, 200);
-      console.log('GHL conv search:', searchResp.status, searchRaw.slice(0, 300));
-
-      let conversationId = (searchResp.ok && searchData.conversations && searchData.conversations[0] && searchData.conversations[0].id) || null;
-
-      if (!conversationId) {
-        // No existing conversation — create one
-        const createResp = await fetch('https://services.leadconnectorhq.com/conversations/', {
-          method: 'POST', headers: ghlConvHeaders,
-          body: JSON.stringify({ locationId: GHL_LOCATION_ID, contactId })
-        });
-        const createRaw = await createResp.text();
-        let createData; try { createData = JSON.parse(createRaw); } catch(e) { createData = {}; }
-        conversationId = (createData.conversation && createData.conversation.id) || createData.id || createData.conversationId;
-        convDebug.createStatus = createResp.status;
-        convDebug.createSnippet = createRaw.slice(0, 200);
-        console.log('GHL conv create:', createResp.status, createRaw.slice(0, 300));
-      }
-
-      if (conversationId) {
-        const firstName  = payload.firstName || 'there';
-        const feeDisplay = payload.diagnostic_fee ? ' ($' + payload.diagnostic_fee + ')' : '';
-        const smsMessage =
-          'Hi ' + firstName + '! Your Solar Review Diagnostic Agreement' + feeDisplay + ' is ready.\n\n' +
-          'Tap here to review, sign, and pay:\n' + payload.signLink + '\n\n' +
-          'Questions? Call (619) 777-6527. — Solar Review Corp';
-
-        const smsMsgBody = { type: 'SMS', conversationId, message: smsMessage };
-        if (GHL_FROM_NUMBER) smsMsgBody.fromNumber = GHL_FROM_NUMBER;
-        if (phone) smsMsgBody.toNumber = phone;
-
-        const smsResp = await fetch('https://services.leadconnectorhq.com/conversations/messages', {
-          method: 'POST', headers: ghlConvHeaders, body: JSON.stringify(smsMsgBody)
-        });
-        smsStatus = smsResp.status;
-        const smsBody = await smsResp.text();
-        convDebug.smsBody = smsBody.slice(0, 300);
-        console.log('GHL SMS send:', smsStatus, smsBody.slice(0, 300));
-      } else {
-        convDebug.error = 'no conversationId from search or create';
-        console.warn('GHL: could not get or create a conversation — SMS skipped');
-      }
+      const tagResp = await fetch('https://services.leadconnectorhq.com/contacts/' + contactId + '/tags', {
+        method:  'POST',
+        headers: ghlHeaders,
+        body:    JSON.stringify({ tags: ['send-sign-link-sms'] })
+      });
+      tagStatus = tagResp.status;
+      tagBody   = (await tagResp.text()).slice(0, 200);
+      console.log('GHL tag add:', tagStatus, tagBody);
     } catch(e) {
-      convDebug.error = e.message;
-      console.warn('GHL SMS error (non-fatal):', e.message);
+      console.warn('GHL tag error (non-fatal):', e.message);
+      tagBody = e.message;
     }
-  } else {
-    console.log('No signLink in payload — SMS skipped');
   }
 
   return {
     statusCode: 200,
     headers: cors,
-    body: JSON.stringify({ success: true, contactId, smsStatus, convDebug })
+    body: JSON.stringify({ success: true, contactId, tagStatus, tagBody })
   };
 };
