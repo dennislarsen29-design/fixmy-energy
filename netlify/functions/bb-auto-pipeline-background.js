@@ -918,29 +918,36 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
   }
 
   let enriched = 0;
+  let geoSaved = 0;
+  const GEO_BATCH = 20; // parallel geocode requests per batch
 
-  for (let i = 0; i < toEnrich.length; i++) {
+  for (let i = 0; i < toEnrich.length; i += GEO_BATCH) {
     if (Date.now() > PHASE2_DEADLINE || overGlobal()) {
       stamp(`Phase 2: time limit at ${i}/${toEnrich.length}`);
       break;
     }
-    const lead = toEnrich[i];
-    let result = null;
-    try { result = await lookupOwner(lead.address); } catch(e) {}
-    if (result) {
+    const batch = toEnrich.slice(i, i + GEO_BATCH);
+    const results = await Promise.all(batch.map(async lead => {
+      try { return { lead, result: await lookupOwner(lead.address) }; }
+      catch(e) { return { lead, result: null }; }
+    }));
+    for (const { lead, result } of results) {
+      if (!result) continue;
       const upd = {};
       if (result.owner) { upd.title_owner = result.owner; upd.apn = result.apn; }
       if (result.assessed_value) upd.assessed_value = result.assessed_value;
       if (result.tax_delinquent != null) upd.tax_delinquent = result.tax_delinquent;
       if (result.lat != null) upd.lat = result.lat;
       if (result.lng != null) upd.lng = result.lng;
-      if (Object.keys(upd).length) await supaUpdate(lead.id, upd);
-      if (result.owner) enriched++;
+      if (Object.keys(upd).length) {
+        await supaUpdate(lead.id, upd);
+        if (result.owner) enriched++;
+        if (result.lat != null) geoSaved++;
+      }
     }
-    await sleep(300);
   }
 
-  stamp(`Phase 2 done: ${enriched} owner names added`);
+  stamp(`Phase 2 done: ${enriched} owner names added, ${geoSaved} coordinates saved`);
 
   // ══════════════════════════════════════════════════════════════════════════
   // PHASE 3 — TRACERFY SKIP-TRACE
