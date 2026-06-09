@@ -83,10 +83,8 @@ exports.handler = async function(event) {
     return { statusCode: 502, headers: cors, body: JSON.stringify({ error: 'GHL upsert returned no contact id' }) };
   }
 
-  // Step 2: Add tag to trigger GHL workflow → workflow sends SMS via LC Phone
-  // This avoids the unreliable conversations API entirely.
-  // Required GHL workflow: trigger = tag "send-sign-link-sms" → send SMS using
-  //   {{contact.sign_link_url}} → then remove tag so re-sends re-trigger it.
+  // Step 2: Add tag to trigger existing "Send-Diag-Agreement" GHL workflow → sends SMS via LC Phone
+  // Workflow should: send SMS with {{contact.sign_link_url}} → remove tag so re-sends re-trigger.
   let tagStatus = null;
   let tagBody = '';
   if (payload.signLink) {
@@ -94,7 +92,7 @@ exports.handler = async function(event) {
       const tagResp = await fetch('https://services.leadconnectorhq.com/contacts/' + contactId + '/tags', {
         method:  'POST',
         headers: ghlHeaders,
-        body:    JSON.stringify({ tags: ['send-sign-link-sms'] })
+        body:    JSON.stringify({ tags: ['send-diag-agreement'] })
       });
       tagStatus = tagResp.status;
       tagBody   = (await tagResp.text()).slice(0, 200);
