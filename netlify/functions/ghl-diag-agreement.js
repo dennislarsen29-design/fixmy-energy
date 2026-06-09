@@ -134,17 +134,39 @@ exports.handler = async function(event) {
           'Hi ' + firstName + '! Your Solar Review Diagnostic Agreement' + feeDisplay + ' is ready.\n\n' +
           'Tap here to review, sign, and pay:\n' + payload.signLink + '\n\n' +
           'Questions? Call (619) 777-6527. — Solar Review Corp';
-        const smsMsgBody = { type: 'SMS', conversationId, message: smsMessage };
-        if (GHL_FROM_NUMBER) smsMsgBody.fromNumber = GHL_FROM_NUMBER;
-        const smsResp = await fetch('https://services.leadconnectorhq.com/conversations/messages', {
-          method:  'POST',
-          headers: ghlConvHeaders,
-          body:    JSON.stringify(smsMsgBody)
-        });
-        smsStatus = smsResp.status;
-        const smsBody = await smsResp.text();
-        convDebug.smsBody = smsBody.slice(0, 400);
-        console.log('GHL SMS send:', smsStatus, smsBody.slice(0, 400));
+
+        async function trySendSms(convId) {
+          const smsMsgBody = { type: 'SMS', conversationId: convId, message: smsMessage };
+          if (GHL_FROM_NUMBER) smsMsgBody.fromNumber = GHL_FROM_NUMBER;
+          const r = await fetch('https://services.leadconnectorhq.com/conversations/messages', {
+            method: 'POST', headers: ghlConvHeaders, body: JSON.stringify(smsMsgBody)
+          });
+          return { status: r.status, body: await r.text() };
+        }
+
+        let smsTry = await trySendSms(conversationId);
+        convDebug.smsBody = smsTry.body.slice(0, 400);
+        console.log('GHL SMS send (attempt 1):', smsTry.status, smsTry.body.slice(0, 400));
+
+        // If 404, existing conv is wrong type — create a fresh SMS conversation and retry
+        if (smsTry.status === 404) {
+          const createResp = await fetch('https://services.leadconnectorhq.com/conversations/', {
+            method: 'POST', headers: ghlConvHeaders,
+            body: JSON.stringify({ locationId: GHL_LOCATION_ID, contactId, type: 'SMS' })
+          });
+          const createRaw = await createResp.text();
+          let createData; try { createData = JSON.parse(createRaw); } catch(e) { createData = {}; }
+          const newConvId = (createData.conversation && createData.conversation.id) || createData.id;
+          convDebug.createStatus = createResp.status;
+          convDebug.createData = createRaw.slice(0, 400);
+          console.log('GHL create SMS conv (retry):', createResp.status, createRaw.slice(0, 400));
+          if (newConvId) {
+            smsTry = await trySendSms(newConvId);
+            convDebug.smsBody = smsTry.body.slice(0, 400);
+            console.log('GHL SMS send (attempt 2):', smsTry.status, smsTry.body.slice(0, 400));
+          }
+        }
+        smsStatus = smsTry.status;
       } else {
         console.warn('GHL could not get/create conversation — SMS skipped');
       }
