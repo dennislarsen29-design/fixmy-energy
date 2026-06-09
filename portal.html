@@ -2126,6 +2126,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       { id:'pink',      label:'Pink Energy',           names:['Pink Energy'] },
       { id:'vision',    label:'Vision Solar',          names:['Vision Solar'] },
       { id:'lumio',     label:'Lumio',                 names:['Lumio Inc','1st Light Energy'] },
+      { id:'sunworks',  label:'Sunworks',              names:['Sunworks Inc','Sunworks United Inc'] },
+      { id:'sunpro',    label:'SunPro Solar',          names:['SunPro Solar Inc','SunPro Solar LLC'] },
     ];
     window.PS_INSTALLERS = PS_INSTALLERS;
     var _psBoxOn  = 'width:13px;height:13px;border:1.5px solid rgba(141,198,63,0.7);border-radius:2px;background:rgba(141,198,63,0.18);display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;font-size:9px;color:#8DC63F;line-height:1;';
@@ -2160,6 +2162,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '<div style="display:flex;gap:10px;align-items:center;">'+
             '<button onclick="pullFromPermitStack()" class="lead-btn lime" style="padding:9px 22px;font-size:0.82rem;">&#9889; Pull Permits</button>'+
             '<label style="font-size:0.7rem;color:#666;cursor:pointer;"><input type="checkbox" id="psSelectAll" checked onchange="psToggleAll(this.checked)" style="accent-color:#8DC63F;margin-right:4px;">All</label>'+
+          '</div>'+
+          '<div style="display:flex;gap:8px;align-items:center;margin-top:10px;">'+
+            '<input id="psCustomName" type="text" placeholder="Custom contractor name…" style="flex:1;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#ccc;padding:7px 10px;font-size:0.78rem;" />'+
+            '<button onclick="pullCustomPermitName()" style="background:rgba(141,198,63,0.12);color:#8DC63F;border:1px solid rgba(141,198,63,0.3);border-radius:8px;padding:7px 14px;font-size:0.78rem;font-weight:700;cursor:pointer;white-space:nowrap;">Pull Custom</button>'+
           '</div>'+
           '<div id="psDebug"></div>'+
         '</div>'+
@@ -2555,6 +2561,42 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (s.indexOf(',')!==-1||s.indexOf('"')!==-1||s.indexOf('\n')!==-1) return '"'+s.replace(/"/g,'""')+'"';
       return s;
     }
+
+    window.pullCustomPermitName = async function() {
+      var nameInput = document.getElementById('psCustomName');
+      var name = (nameInput && nameInput.value || '').trim();
+      if (!name) { alert('Enter a contractor name first.'); return; }
+      var prog = document.getElementById('psProgress');
+      var debugEl = document.getElementById('psDebug');
+      if (prog) prog.textContent = 'Pulling "'+name+'"…';
+      if (debugEl) debugEl.innerHTML = '';
+      try {
+        var resp = await fetch('/.netlify/functions/permitstack-pull', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ installer: name, names: [name] })
+        });
+        var data = await resp.json();
+        if (data.log && data.log.length && debugEl) {
+          debugEl.innerHTML = '<pre style="font-size:0.65rem;color:#888;background:rgba(0,0,0,0.3);padding:10px;border-radius:8px;overflow-x:auto;margin-top:10px;max-height:160px;overflow-y:auto;">'+data.log.join('\n')+'</pre>';
+        }
+        if (!data.records || !data.records.length) {
+          if (prog) prog.textContent = 'No SD County permits found for "'+name+'".';
+          return;
+        }
+        if (prog) prog.textContent = data.records.length+' permits found — adding to CSV…';
+        var csv = 'first_name,last_name,address,installer,install_year,system_size_kw,notes\n';
+        data.records.forEach(function(r) {
+          csv += ',,'+_psCsv(r.address)+','+_psCsv(name)+','+(r.install_year||'')+','+(r.system_size_kw||'')+','+_psCsv(r.notes||'')+'\n';
+        });
+        var ta = document.getElementById('importCsvInput');
+        if (ta) { ta.value = (ta.value ? ta.value+'\n' : '') + csv.trim(); }
+        parseImportCsv();
+        if (nameInput) nameInput.value = '';
+        if (prog) prog.textContent = data.records.length+' permits pulled for "'+name+'".';
+      } catch(e) {
+        if (prog) prog.textContent = 'Error: '+e.message;
+      }
+    };
 
     // ── Accela Scraper (GitHub Actions) ─────────────────────────────────────────
     var _accelaPollTimer = null;
@@ -4504,6 +4546,21 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (!bar) return;
     var queueInfo = null;
     try { var qi = localStorage.getItem('bb_skip_trace_queue'); if (qi) queueInfo = JSON.parse(qi); } catch(e) {}
+    // Also check pipeline_state for nightly-pipeline-submitted Tracerfy queue
+    if (!queueInfo) {
+      try {
+        var { data: psRows } = await c2.from('pipeline_state').select('value,updated_at').eq('key','tracerfy_pending_queue').limit(1);
+        if (psRows && psRows[0]) {
+          var rawVal = psRows[0].value;
+          var updatedAt = psRows[0].updated_at;
+          var ageMs = updatedAt ? (Date.now() - new Date(updatedAt).getTime()) : Infinity;
+          if (ageMs < 172800000) { // < 48h
+            // value is a plain queue_id string (e.g. "98758")
+            queueInfo = { queue_id: String(rawVal), fromPipeline: true };
+          }
+        }
+      } catch(e) {}
+    }
 
     if (noContact === 0 && noOwner === 0) {
       bar.innerHTML = '<div style="background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.2);border-radius:10px;padding:10px 14px;font-size:0.75rem;color:#8DC63F;font-weight:700;">&#10003; All '+total+' leads fully enriched — owner + contact on file</div>';
@@ -4514,10 +4571,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         + '<button onclick="adminCanvassEnrichAll()" style="width:auto;margin-top:0;background:rgba(255,170,0,0.12);color:#ffaa00;border:1px solid rgba(255,170,0,0.35);border-radius:100px;padding:8px 18px;font-size:0.78rem;font-weight:800;cursor:pointer;white-space:nowrap;">&#128269; Run Owner Lookup</button>'
         + '</div>';
     } else {
+      var resetFn = queueInfo && queueInfo.fromPipeline
+        ? 'supabase.createClient(SUPA_URL,SUPA_KEY).from(\'pipeline_state\').delete().eq(\'key\',\'tracerfy_pending_queue\').then(function(){adminCanvassLoadEnrichBar();})'
+        : 'localStorage.removeItem(\'bb_skip_trace_queue\');adminCanvassLoadEnrichBar()';
+      var pendingLabel = queueInfo && queueInfo.fromPipeline ? '&#9681; Check Pipeline Results' : '&#9681; Check Results';
       var actionBtn = queueInfo && queueInfo.queue_id
         ? '<div style="display:flex;align-items:center;gap:8px;">'
-          + '<button onclick="adminCanvassPollSkipTrace(\''+queueInfo.queue_id+'\','+noContact+')" style="width:auto;margin-top:0;background:#4a9eff;color:#fff;border:none;border-radius:100px;padding:8px 18px;font-size:0.78rem;font-weight:800;cursor:pointer;white-space:nowrap;">&#9681; Check Results</button>'
-          + '<button onclick="localStorage.removeItem(\'bb_skip_trace_queue\');adminCanvassLoadEnrichBar()" style="width:auto;margin-top:0;background:none;border:none;color:#555;font-size:0.72rem;cursor:pointer;text-decoration:underline;padding:0;">&#10005; Reset</button>'
+          + '<button onclick="adminCanvassPollSkipTrace(\''+queueInfo.queue_id+'\','+noContact+')" style="width:auto;margin-top:0;background:#4a9eff;color:#fff;border:none;border-radius:100px;padding:8px 18px;font-size:0.78rem;font-weight:800;cursor:pointer;white-space:nowrap;">'+pendingLabel+'</button>'
+          + '<button onclick="'+resetFn+'" style="width:auto;margin-top:0;background:none;border:none;color:#555;font-size:0.72rem;cursor:pointer;text-decoration:underline;padding:0;">&#10005; Reset</button>'
           + '</div>'
         : '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
           + '<button onclick="adminCanvassEnrichAll()" style="width:auto;margin-top:0;background:#8DC63F;color:#000;border:none;border-radius:100px;padding:8px 16px;font-size:0.75rem;font-weight:800;cursor:pointer;white-space:nowrap;">&#128269; Free: Owners</button>'

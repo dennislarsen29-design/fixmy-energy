@@ -27,7 +27,9 @@ const INSTALLERS = [
   { name: 'Verengo Solar',         names: ['Verengo Inc', 'Verengo Solar', 'Verengo'] },
   { name: 'American Solar Direct', names: ['American Solar Direct Inc', 'American Solar Direct'] },
   { name: 'Kota Energy',           names: ['Kota Energy Group LLC', 'Kota Energy Group', 'Kota Energy'] },
-  { name: 'OneRoof Energy',        names: ['OneRoof Energy Inc', 'OneRoof Energy'] }
+  { name: 'OneRoof Energy',        names: ['OneRoof Energy Inc', 'OneRoof Energy'] },
+  { name: 'Sunworks',              names: ['Sunworks Inc', 'Sunworks United Inc'] },
+  { name: 'SunPro Solar',          names: ['SunPro Solar Inc', 'SunPro Solar LLC'] }
 ];
 
 const BASE_SD_CITY = 'https://data.sandiego.gov/resource/nt65-c7a7.json';
@@ -617,6 +619,83 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
   }
 
   // ══════════════════════════════════════════════════════════════════════════
+  // PHASE 1d — SD COUNTY OPEN DATA (Socrata / unincorporated areas)
+  // Runs regardless of PermitStack availability — covers unincorporated SD County
+  // (Alpine, Spring Valley, Lakeside, Ramona, Valley Center, Rancho Santa Fe, etc.)
+  // which PermitStack city-name queries miss entirely.
+  // ══════════════════════════════════════════════════════════════════════════
+  let inserted1d = 0;
+  if (enrichOnly) {
+    stamp('Phase 1d: skipped (enrich_only mode)');
+  } else {
+    stamp('=== Phase 1d: SD County open data (unincorporated areas) ===');
+    const PHASE1D_DEADLINE = Date.now() + (3 * 60 * 1000);
+    const seenLocal1d = new Set();
+
+    outer1d: for (const installer of sortedInstallers) {
+      for (const qname of installer.names) {
+        if (Date.now() > PHASE1D_DEADLINE || overGlobal()) break outer1d;
+        let offset = 0;
+        while (offset < 3000) {
+          if (Date.now() > PHASE1D_DEADLINE || overGlobal()) break;
+          const url = `${BASE_SD_CTY}?$q=${encodeURIComponent(qname)}&$limit=1000&$offset=${offset}`;
+          let resp;
+          try {
+            resp = await fetchWithTimeout(url, { headers: { Accept: 'application/json' } }, 8000);
+          } catch(e) {
+            stamp(`  1d "${qname}" fetch err: ${e.message}`);
+            break;
+          }
+          if (!resp.ok || resp.status === 404) {
+            if (resp.status === 404) { stamp('Phase 1d: SD County endpoint 404 — skipping'); break outer1d; }
+            break;
+          }
+          let batch;
+          try { batch = await resp.json(); } catch(e) { break; }
+          if (!Array.isArray(batch) || !batch.length) break;
+
+          const batchRecs = [];
+          for (const p of batch) {
+            const { street, city, state, zip, fullAddress, installYear, systemSizeKw } =
+              extractSocrataAddress(p, '');
+            if (!street || !isTarget(street, city, state, zip)) continue;
+            const key = normAddr(fullAddress);
+            if (!key || seenLocal1d.has(key) || existingAddrs.has(key)) continue;
+            const candidate = {
+              address: fullAddress,
+              lead_category: 'fixmy',
+              step: 1,
+              lead_source: 'orphaned_list',
+              black_box: true,
+              original_installer: installer.name,
+              install_year: installYear || null,
+              system_size: systemSizeKw ? parseFloat(systemSizeKw) : null,
+              notes: installer.name
+                + (systemSizeKw ? ' · ' + systemSizeKw + 'kW' : '')
+                + (installYear ? ' · Installed ' + installYear : '')
+            };
+            if (!qualifyPermit(candidate)) continue;
+            seenLocal1d.add(key);
+            candidate.lead_score = calcLeadScore(candidate);
+            batchRecs.push(candidate);
+          }
+          if (batchRecs.length) {
+            const ok = await supaInsertBatch(batchRecs);
+            if (ok) {
+              inserted1d += batchRecs.length;
+              batchRecs.forEach(r => existingAddrs.add(normAddr(r.address)));
+            }
+          }
+          if (batch.length < 1000) break;
+          offset += 1000;
+          await sleep(50);
+        }
+      }
+    }
+    stamp(`Phase 1d inserted: ${inserted1d} records`);
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
   // PHASE 1b — OC / RIVERSIDE PERMIT PULL (via PermitStack)
   // Activated when expansion index ≥ 20 (OC) or ≥ 54 (Riverside).
   // Queries PermitStack city-by-city so no geographic filter is needed —
@@ -758,9 +837,9 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
 
   const PHASE2_DEADLINE = Date.now() + ((enrichOnly ? 10 : 6) * 60 * 1000);
 
-  // Fetch leads needing enrichment: no owner AND no coordinates (already-geocoded leads are done)
+  // Fetch leads needing owner lookup — include already-geocoded leads so SANDAG can be retried
   const unenrichedRes = await supaFetch(
-    '/customers?lead_source=eq.orphaned_list&title_owner=is.null&lat=is.null&select=id,address&limit=2000'
+    '/customers?lead_source=eq.orphaned_list&title_owner=is.null&select=id,address,lat,lng&limit=2000'
   );
   const toEnrich = (Array.isArray(unenrichedRes.data) ? unenrichedRes.data : [])
     .filter(r => r.address && addressQualityScore(r.address) >= 4);
@@ -790,7 +869,7 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
     return (d.parcels && d.parcels.features) || (d.results && d.results.features) || d.results || d.features || [];
   }
 
-  async function lookupOwner(address) {
+  async function lookupOwner(address, existingLat, existingLng) {
     function arcgisPoint(qlat, qlng, outFields) {
       return '&geometry=' + encodeURIComponent(JSON.stringify({ x: qlng, y: qlat }))
         + '&geometryType=esriGeometryPoint&spatialRel=esriSpatialRelIntersects&inSR=4326'
@@ -802,20 +881,23 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
     function sandagApn(a) { return a.APN_8 || a.APN || a.PARCEL_NBR || a.ASSESSOR_PARCEL_NUMBER || null; }
     const regridHdrs = { Authorization: 'Bearer ' + regridKey, Accept: 'application/json' };
 
-    // Step 1: Census geocode (required for spatial queries; provides lat/lng for record)
+    // Step 1: Census geocode — skip if caller already has coords from a prior run
     const censusAddr = address.replace(/, ([A-Z]{2}), (\d{5})/, ', $1 $2');
-    let lat = null, lng = null;
-    try {
-      const r = await fetchWithTimeout(
-        'https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?address='
-          + encodeURIComponent(censusAddr) + '&benchmark=Public_AR_Current&format=json',
-        { headers: { Accept: 'application/json' } }, 10000);
-      if (r.ok) {
-        const gd = await r.json();
-        const m = gd.result && gd.result.addressMatches;
-        if (Array.isArray(m) && m.length) { lat = m[0].coordinates.y; lng = m[0].coordinates.x; }
-      }
-    } catch(e) { stamp('Phase 2: geocode err: ' + e.message); }
+    let lat = (existingLat != null) ? existingLat : null;
+    let lng = (existingLng != null) ? existingLng : null;
+    if (lat == null) {
+      try {
+        const r = await fetchWithTimeout(
+          'https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?address='
+            + encodeURIComponent(censusAddr) + '&benchmark=Public_AR_Current&format=json',
+          { headers: { Accept: 'application/json' } }, 10000);
+        if (r.ok) {
+          const gd = await r.json();
+          const m = gd.result && gd.result.addressMatches;
+          if (Array.isArray(m) && m.length) { lat = m[0].coordinates.y; lng = m[0].coordinates.x; }
+        }
+      } catch(e) { stamp('Phase 2: geocode err: ' + e.message); }
+    }
 
     // Step 2a (PRIMARY): Regrid lat/lon lookup — skipped when key returns 403
     if (regridKey && lat != null && Date.now() > regridPausedUntil) {
@@ -919,7 +1001,7 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
 
   let enriched = 0;
   let geoSaved = 0;
-  const GEO_BATCH = 20; // parallel geocode requests per batch
+  const GEO_BATCH = 20;
 
   for (let i = 0; i < toEnrich.length; i += GEO_BATCH) {
     if (Date.now() > PHASE2_DEADLINE || overGlobal()) {
@@ -928,7 +1010,7 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
     }
     const batch = toEnrich.slice(i, i + GEO_BATCH);
     const results = await Promise.all(batch.map(async lead => {
-      try { return { lead, result: await lookupOwner(lead.address) }; }
+      try { return { lead, result: await lookupOwner(lead.address, lead.lat, lead.lng) }; }
       catch(e) { return { lead, result: null }; }
     }));
     for (const { lead, result } of results) {
@@ -1227,6 +1309,7 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
     run_at: new Date().toISOString(),
     phase1_new_permits: inserted,
     phase1c_new_permits: inserted1c,
+    phase1d_new_permits: inserted1d,
     phase1b_new_permits: inserted1b,
     phase1_by_installer: pullSummary.filter(s => s.new > 0),
     phase2_owners_added: enriched,
@@ -1240,6 +1323,7 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
     const runSummary = JSON.stringify({
       phase1_new_permits: summary.phase1_new_permits,
       phase1c_new_permits: summary.phase1c_new_permits,
+      phase1d_new_permits: summary.phase1d_new_permits,
       phase1b_new_permits: summary.phase1b_new_permits,
       phase1_by_installer: summary.phase1_by_installer,
       phase2_owners_added: summary.phase2_owners_added,
