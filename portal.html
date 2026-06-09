@@ -392,6 +392,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   var currentUser = null;
   var adminView = 'dashboard';
   var adminCustomers = [];
+  var adminBlackBoxCustomers = [];
   var adminRecentAgreements = [];
   var adminFilter = 'all';
   var adminSearch = '';
@@ -543,7 +544,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var _timeout = new Promise(function(_, rej){ setTimeout(function(){ rej(new Error('timeout')); }, 12000); });
     var resp;
     try {
-      resp = await Promise.race([client.from('customers').select('*').order('updated_at',{ascending:false}), _timeout]);
+      resp = await Promise.race([client.from('customers').select('*').or('black_box.is.null,black_box.eq.false').order('updated_at',{ascending:false}), _timeout]);
     } catch(e) {
       _dbEl.innerHTML = '<p style="color:#ef4444;">Could not reach database'+(e.message==='timeout'?' (connection timed out)':'')+'. <button onclick="loadAdminDashboard()" style="width:auto;padding:8px 16px;font-size:0.75rem;background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;cursor:pointer;">Retry</button></p>';
       return;
@@ -553,8 +554,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     try { var agResp = await client.from('rep_agreements').select('*').order('signed_at',{ascending:false}); adminRecentAgreements = agResp.data || []; } catch(e) { adminRecentAgreements = []; }
     try { var tmResp = await client.from('team_members').select('*').order('created_at',{ascending:true}); adminTeamMembers = tmResp.data || []; } catch(e) { adminTeamMembers = []; }
     try { var mktResp = await client.from('marketing_expenses').select('*').order('expense_date',{ascending:false}); adminMarketingExpenses = mktResp.data || []; } catch(e) { adminMarketingExpenses = []; }
+    loadAdminBbStats(); // fire-and-forget — populates adminBlackBoxCustomers for BB tab stats
     try { renderAdminCanvassView(); }
     catch(e) { _dbEl.innerHTML = '<p style="color:#ef4444;">Render error: '+e.message+'. <button onclick="loadAdminDashboard()" style="width:auto;padding:8px 16px;font-size:0.75rem;background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;cursor:pointer;">Retry</button></p>'; console.error('[renderAdminCanvassView]', e); }
+  }
+
+  async function loadAdminBbStats() {
+    try {
+      var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var { count: bbTotal } = await c2.from('customers').select('id',{count:'exact',head:true}).eq('black_box',true);
+      var { data: bbMini } = await c2.from('customers').select('installer,lead_source').eq('black_box',true);
+      adminBlackBoxCustomers = bbMini || [];
+      window._adminBbTotal = bbTotal || 0;
+      if (adminView === 'canvass') renderAdminCanvassView();
+    } catch(e) { console.warn('BB stats load error:', e.message); }
   }
 
   function renderAdminView(view) {
@@ -3774,9 +3787,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     ]);
 
     // ── Quarantine stats + list ─────────────────────────────────────────────
-    var bbLeads = adminCustomers.filter(function(x){ return !!x.black_box; });
-    var totalImported = adminCustomers.filter(function(x){ return x.lead_source === 'orphaned_list'; }).length;
-    var totalActivated = adminCustomers.filter(function(x){ return x.lead_source === 'orphaned_list' && !x.black_box; }).length;
+    var bbLeads = adminBlackBoxCustomers;
+    var totalImported = window._adminBbTotal != null ? window._adminBbTotal : adminBlackBoxCustomers.length;
+    var totalActivated = adminCustomers.filter(function(x){ return x.lead_source === 'orphaned_list'; }).length;
     var convPct = totalImported > 0 ? Math.round(totalActivated / totalImported * 100) : 0;
     h += '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px;">';
     h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;">&#128230; Black Box &mdash; Quarantined Leads</div>';
@@ -3797,7 +3810,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     (function(){
       // Count which defunct installers appear in the local lead set (for smart sorting)
       var instCount = {};
-      adminCustomers.forEach(function(l){ if (l.black_box && l.installer) instCount[l.installer] = (instCount[l.installer]||0)+1; });
+      adminBlackBoxCustomers.forEach(function(l){ if (l.installer) instCount[l.installer] = (instCount[l.installer]||0)+1; });
 
       // Defunct installer intel — links to our own branded installer pages (already built)
       var INSTALLER_INTEL = [
