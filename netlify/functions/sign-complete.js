@@ -176,6 +176,7 @@ exports.handler = async function(event) {
               'Questions? Call (619) 777-6527. — Solar Review Corp';
             const smsMsgBody = { type: 'SMS', conversationId, message: smsConfirm };
             if (GHL_FROM_NUMBER) smsMsgBody.fromNumber = GHL_FROM_NUMBER;
+            if (c.phone) smsMsgBody.toNumber = toE164(c.phone);
             const smsResp = await fetch('https://services.leadconnectorhq.com/conversations/messages', {
               method: 'POST', headers: ghlConvHeaders,
               body: JSON.stringify(smsMsgBody)

@@ -138,6 +138,7 @@ exports.handler = async function(event) {
         async function trySendSms(convId) {
           const smsMsgBody = { type: 'SMS', conversationId: convId, message: smsMessage };
           if (GHL_FROM_NUMBER) smsMsgBody.fromNumber = GHL_FROM_NUMBER;
+          if (phone) smsMsgBody.toNumber = phone;
           const r = await fetch('https://services.leadconnectorhq.com/conversations/messages', {
             method: 'POST', headers: ghlConvHeaders, body: JSON.stringify(smsMsgBody)
           });
@@ -156,7 +157,7 @@ exports.handler = async function(event) {
           });
           const createRaw = await createResp.text();
           let createData; try { createData = JSON.parse(createRaw); } catch(e) { createData = {}; }
-          const newConvId = (createData.conversation && createData.conversation.id) || createData.id;
+          const newConvId = (createData.conversation && createData.conversation.id) || createData.id || createData.conversationId;
           convDebug.createStatus = createResp.status;
           convDebug.createData = createRaw.slice(0, 400);
           console.log('GHL create SMS conv (retry):', createResp.status, createRaw.slice(0, 400));
