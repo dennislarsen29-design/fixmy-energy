@@ -4152,22 +4152,23 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       .eq('lead_source','orphaned_list')
       .eq('black_box', true)
       .is('sold_type', null)
+      .order('lead_score', {ascending: false, nullsFirst: false})
       .order('created_at', {ascending: false})
       .limit(500);
     if (lErr || !rawLeads) { adminCanvassGpsStatus = 'error'; renderAdminCanvassView(); return; }
-    var needsGeo = rawLeads.filter(function(l){ return !l.lat && l.address; }).slice(0, 30);
+    // Geocode top leads missing coordinates in PARALLEL before sorting (so proximity sort works)
+    var needsGeo = rawLeads.filter(function(l){ return !l.lat && l.address; }).slice(0, 20);
     if (needsGeo.length) {
-      (async function() {
-        for (var i = 0; i < needsGeo.length; i++) {
-          try {
-            var geo = await geocodeAddress(needsGeo[i].address);
-            if (geo) {
-              needsGeo[i].lat = geo.lat; needsGeo[i].lng = geo.lng;
-              supabase.createClient(SUPA_URL, SUPA_KEY).from('customers').update({lat:geo.lat, lng:geo.lng}).eq('id',needsGeo[i].id);
-            }
-          } catch(e){}
-        }
-      })();
+      await Promise.all(needsGeo.map(async function(l) {
+        try {
+          var geo = await geocodeAddress(l.address);
+          if (geo) { l.lat = geo.lat; l.lng = geo.lng; }
+        } catch(e){}
+      }));
+      // Save coordinates to DB in background
+      needsGeo.filter(function(l){ return l.lat; }).forEach(function(l) {
+        supabase.createClient(SUPA_URL, SUPA_KEY).from('customers').update({lat:l.lat, lng:l.lng}).eq('id',l.id);
+      });
     }
     rawLeads.forEach(function(l) {
       l._distMi = (l.lat && l.lng) ? adminCanvassHaversine(adminCanvassUserLat, adminCanvassUserLng, l.lat, l.lng) : null;
@@ -9581,6 +9582,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           .select('id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,original_installer,install_year')
           .eq('lead_source','orphaned_list')
           .is('sold_type', null)
+          .order('lead_score', {ascending: false, nullsFirst: false})
           .order('created_at', {ascending: false})
           .limit(500),
         new Promise(function(resolve) {
@@ -9591,21 +9593,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
       if (lErr || !rawLeads) { canvassGpsStatus = 'error'; renderSales(); return; }
 
-      // Geocode up to 30 leads that are missing lat/lng (fire-and-save, non-blocking)
-      var needsGeo = rawLeads.filter(function(l){ return !l.lat && l.address; }).slice(0, 30);
+      // Geocode top leads missing coordinates in PARALLEL before sorting (so proximity sort works)
+      var needsGeo = rawLeads.filter(function(l){ return !l.lat && l.address; }).slice(0, 20);
       if (needsGeo.length) {
-        (async function() {
-          for (var i = 0; i < needsGeo.length; i++) {
-            try {
-              var geo = await geocodeAddress(needsGeo[i].address);
-              if (geo) {
-                needsGeo[i].lat = geo.lat;
-                needsGeo[i].lng = geo.lng;
-                supabase.createClient(SUPA_URL, SUPA_KEY).from('customers').update({lat:geo.lat, lng:geo.lng}).eq('id',needsGeo[i].id);
-              }
-            } catch(e){}
-          }
-        })();
+        await Promise.all(needsGeo.map(async function(l) {
+          try {
+            var geo = await geocodeAddress(l.address);
+            if (geo) { l.lat = geo.lat; l.lng = geo.lng; }
+          } catch(e){}
+        }));
+        // Save coordinates to DB in background
+        needsGeo.filter(function(l){ return l.lat; }).forEach(function(l) {
+          supabase.createClient(SUPA_URL, SUPA_KEY).from('customers').update({lat:l.lat, lng:l.lng}).eq('id',l.id);
+        });
       }
 
       // Sort by distance if GPS available, else alphabetically by address
