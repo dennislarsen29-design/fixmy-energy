@@ -117,9 +117,13 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
     .lead-btn.ghost { background:rgba(255,255,255,0.07); color:#F3EDE3; border:1px solid rgba(255,255,255,0.1); }
     .lead-progress { display:flex; align-items:center; }
     .prog-dot { width:8px; height:8px; border-radius:50%; background:rgba(255,255,255,0.1); }
-    .prog-dot.filled { background:#8DC63F; }
+    .prog-dot.filled { background:var(--pipeline-accent,#8DC63F); }
     .prog-line { flex:1; height:2px; background:rgba(255,255,255,0.08); }
-    .prog-line.filled { background:#8DC63F; }
+    .prog-line.filled { background:var(--pipeline-accent,#8DC63F); }
+    .pipe-fixmy   { --pipeline-accent:#8DC63F; --pipeline-bg:rgba(141,198,63,0.06); }
+    .pipe-toptier { --pipeline-accent:#9b6de8; --pipeline-bg:rgba(155,109,232,0.06); }
+    .pipe-solar   { --pipeline-accent:#4a9eff; --pipeline-bg:rgba(74,158,255,0.06); }
+    .pipe-fixmy .lead-card,.pipe-toptier .lead-card,.pipe-solar .lead-card { border-left:3px solid var(--pipeline-accent,rgba(255,255,255,0.07)); }
     .editor-panel { background:rgba(141,198,63,0.04); border:1px solid rgba(141,198,63,0.2); border-radius:14px; padding:22px; margin-bottom:16px; }
     .editor-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:18px; }
     .editor-section-title { font-size:0.65rem; font-weight:700; text-transform:uppercase; letter-spacing:0.1em; color:#555; margin:16px 0 10px; border-top:1px solid rgba(255,255,255,0.06); padding-top:14px; }
@@ -688,7 +692,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     else { c.forEach(function(cust) { listHtml += buildLeadCard(cust); }); }
     document.getElementById('dashBody').innerHTML = portalNav+agNotifHtml+
       '<div class="admin-header-row"><h2 style="font-size:1.1rem;font-weight:700;">Leads</h2><span style="font-size:0.72rem;color:#555;">'+allLeads.length+' total</span></div>'+
-      catTabs+statsHtml+actionsBar+searchBar+'<div id="editorSlot"></div><div id="leadList">'+listHtml+'</div>';
+      catTabs+statsHtml+actionsBar+searchBar+'<div id="editorSlot"></div><div id="leadList" class="pipe-'+(adminLeadCat==='new_solar'?'solar':adminLeadCat==='top_tier'?'toptier':'fixmy')+'">'+listHtml+'</div>';
   }
 
   function setFilter(f) { adminFilter = f; renderAdminView(adminView); }
@@ -3008,6 +3012,18 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       closeLeadEditor();
       renderAdminView(adminView);
     } catch(e) { alert('Delete failed: '+e.message); }
+  }
+
+  async function archiveLead(id) {
+    if (!confirm('Archive this lead? It will be hidden from your pipeline but can be recovered by admin.')) return;
+    try {
+      var sc = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var {error} = await sc.from('customers').update({ archived: true }).eq('id', id);
+      if (error) throw error;
+      adminCustomers = adminCustomers.filter(function(x){ return x.id !== id; });
+      if (typeof closeLeadEditor === 'function') closeLeadEditor();
+      renderAdminView(adminView);
+    } catch(e) { alert('Archive failed: '+e.message); }
   }
 
   function openJob(id) {
@@ -5852,9 +5868,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<button class="lead-btn ghost" data-phone="'+(c.phone||'')+'" onclick="callLead(this.dataset.phone)">&#128222;</button>'+
         (c.phone ? '<a class="lead-btn ghost" href="sms:'+(c.phone||'').replace(/\D/g,'')+'" style="text-decoration:none;" title="Text customer">&#128172;</a>' : '')+
         (c.address ? '<button class="lead-btn ghost" data-addr="'+(c.address||'').replace(/"/g,'&quot;')+'" onclick="navigator.clipboard.writeText(this.dataset.addr).then((function(b){var o=b.innerHTML;b.innerHTML=\'&#10003;\';setTimeout(function(){b.innerHTML=o;},1500);}).bind(this))" title="Copy address">&#128205;</button>' : '')+
+        (c.address ? '<a class="lead-btn ghost" href="https://maps.apple.com/?q='+encodeURIComponent(c.address||'')+'" target="_blank" style="text-decoration:none;" title="Open in Maps">&#128506;</a>' : '')+
         (c.lead_category!=='new_solar'&&(c.step||1)<7 ? '<button class="lead-btn ghost" data-id="'+c.id+'" onclick="adminQuickAdvanceStep(this.dataset.id)" title="Advance step">&#8594;</button>' : '')+
         (isTT && !c.tt_confirmed ? '<button class="lead-btn ghost" data-id="'+c.id+'" onclick="confirmTTLead(this.dataset.id)" style="color:#9b6de8;border-color:rgba(155,109,232,0.35);">&#10003; Confirm</button>' :
           (isTT ? '<button class="lead-btn ghost" data-id="'+c.id+'" onclick="sendTTReminder(this.dataset.id)" style="color:#4a9eff;border-color:rgba(74,158,255,0.35);" title="Send reminder SMS + Email">&#128241; Reminder</button>' : ''))+
+        '<button class="lead-btn ghost" data-id="'+c.id+'" onclick="archiveLead(this.dataset.id)" style="color:#ffaa00;border-color:rgba(255,170,0,0.25);" title="Archive lead">&#128451;</button>'+
         (CURRENT_ROLE === 'admin' ? '<button class="lead-btn ghost" data-id="'+c.id+'" onclick="deleteLead(this.dataset.id)" style="color:#ef4444;border-color:rgba(239,68,68,0.25);" title="Delete lead">&#128465;</button>' : '')+
       '</div></div>'+
       progressHtml+
@@ -6396,6 +6414,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     } catch(e) { alert('Save failed: '+e.message); }
   }
 
+  var _editorSaveTimer = null;
+
   function openLeadEditor(id) {
     var c = adminCustomers.find(function(x){ return x.id===id; });
     if (!c) return;
@@ -6426,7 +6446,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '</div>'
       : '<span style="font-size:0.75rem;color:#666;">No title data yet — click <strong style="color:#4a9eff;">Run Lookup</strong> to check parcel owner.</span>';
     var _notesLogHtml = _renderNotesLog(_parseNotes(c.notes || ''));
-    slot.innerHTML = '<div class="editor-panel" id="editorPanel">'+
+    slot.innerHTML = '<div style="position:sticky;top:0;z-index:10;background:#0d0d0d;border-bottom:1px solid #2a2a2a;margin-bottom:12px;"><button onclick="closeLeadEditor()" style="display:block;width:100%;padding:12px;background:transparent;border:none;color:#aaa;cursor:pointer;font-size:0.85rem;font-weight:700;letter-spacing:0.5px;">&#10005;&nbsp;&nbsp;Close</button></div>'+
+    '<div class="editor-panel" id="editorPanel">'+
       '<div class="editor-header"><div style="font-weight:700;color:'+(isNSEdit?'#4a9eff':isTTEdit?'#9b6de8':'#8DC63F')+';">Editing: '+(c.first_name||'')+' '+(c.last_name||'')+
         '<span style="font-size:0.7rem;margin-left:8px;padding:2px 8px;border-radius:20px;background:'+(isNSEdit?'rgba(74,158,255,0.15)':isTTEdit?'rgba(155,109,232,0.15)':'rgba(141,198,63,0.15)')+';color:'+(isNSEdit?'#4a9eff':isTTEdit?'#9b6de8':'#8DC63F')+';font-weight:600;">'+(isNSEdit?'New Solar':isTTEdit?'Top Tier':'FixMy.Energy')+'</span></div>'+
       '<button onclick="closeLeadEditor()" style="background:none;border:none;color:#666;cursor:pointer;font-size:1.1rem;">&#10005;</button></div>'+
@@ -6592,12 +6613,23 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<div id="editorPhotoGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(100px,1fr));gap:8px;margin-top:4px;"></div>'+
       '</div>'+
       '<div class="editor-footer">'+
-        '<button class="lead-btn lime" style="padding:12px 28px;" onclick="saveLeadEditor()">Save Changes</button>'+
-        '<button class="lead-btn ghost" style="padding:12px 20px;" onclick="closeLeadEditor()">Cancel</button>'+
+        '<button class="lead-btn lime" style="padding:12px 28px;" onclick="saveLeadEditor()">Save &amp; Close</button>'+
         '<span id="edSaved" style="display:none;font-size:0.72rem;color:#8DC63F;margin-left:10px;">&#10003; Saved</span>'+
         (CURRENT_ROLE === 'admin' ? '<button class="lead-btn ghost" style="padding:12px 18px;margin-left:auto;color:#ef4444;border-color:rgba(239,68,68,0.25);" onclick="deleteLead(\''+c.id+'\')">&#128465; Delete Lead</button>' : '')+
       '</div></div>';
     slot.scrollIntoView({behavior:'smooth',block:'start'});
+    clearTimeout(_editorSaveTimer);
+    var edPanel = document.getElementById('editorPanel');
+    if (edPanel) {
+      var _triggerAutoSave = function() {
+        var savedEl = document.getElementById('edSaved');
+        if (savedEl) { savedEl.textContent = '…'; savedEl.style.color='#888'; savedEl.style.display='inline'; }
+        clearTimeout(_editorSaveTimer);
+        _editorSaveTimer = setTimeout(function(){ saveLeadEditor({auto:true}); }, 1500);
+      };
+      edPanel.addEventListener('input', _triggerAutoSave);
+      edPanel.addEventListener('change', function(e){ if (e.target.tagName==='SELECT') _triggerAutoSave(); });
+    }
     loadEditorPhotos(c.id);
   }
 
@@ -6684,7 +6716,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     };
   }
 
-  async function saveLeadEditor() {
+  async function saveLeadEditor(opts) {
+    opts = opts || {}; var isAutoSave = opts.auto || false;
     var id = document.getElementById('edId').value;
     var leadCatVal = (document.getElementById('edLeadCat')||{}).value || 'fixmy';
     var isNSSave = leadCatVal === 'new_solar';
@@ -6765,12 +6798,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (!updates.assigned_ops) updates.assigned_ops = null;
     }
     // Intercept step-3 transition: always show diagnostic fee modal when moving to Diagnostic Booked
-    if (!isNSSave && stepVal === 3 && (cRec.step||1) < 3) {
+    if (!isNSSave && !isAutoSave && stepVal === 3 && (cRec.step||1) < 3) {
       openDiagFeeModal(id, updates);
       return;
     }
     // Intercept step-5 transition: open proposal builder when moving to Proposal Sent
-    if (!isNSSave && stepVal === 5 && (cRec.step||1) < 5) {
+    if (!isNSSave && !isAutoSave && stepVal === 5 && (cRec.step||1) < 5) {
       (async function(){
         try {
           var c5 = supabase.createClient(SUPA_URL, SUPA_KEY);
@@ -6789,6 +6822,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (error) throw error;
       var idx=adminCustomers.findIndex(function(x){return x.id===id;});
       if (idx>-1) adminCustomers[idx]=Object.assign(adminCustomers[idx],updates);
+      // Update GHL appointment if diagnostic date changed and we have an existing appointment ID
+      if (!isAutoSave && isFixMySave && cRec.ghl_appointment_id && diagDate && diagDate !== cRec.diagnostic_date && GHL_DIAG_CALENDAR_ID) {
+        var _resDt = diagDate ? diagDate.slice(0,10) : null;
+        var _resTm = diagDate ? diagDate.slice(11,16) : null;
+        if (_resDt && _resTm) {
+          fetch('/.netlify/functions/ghl-calendar', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ calendarId: GHL_DIAG_CALENDAR_ID, firstName: updates.first_name||cRec.first_name||'', lastName: updates.last_name||cRec.last_name||'', email: updates.email||cRec.email||'', phone: updates.phone||cRec.phone||'', address: updates.address||cRec.address||'', appointmentDate: _resDt, appointmentTime: _resTm, updateAppointmentId: cRec.ghl_appointment_id })
+          }).catch(function(e){ console.warn('GHL reschedule update:', e); });
+        }
+      }
       // Fire GHL trigger for Top Tier step changes
       if (leadCatVal === 'top_tier' && stepVal !== (cRec.step||1)) {
         var ttTrigger = null;
@@ -6823,13 +6867,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           })
         }).catch(function(e){ console.warn('Nurture trigger:', e); });
       }
-      var savedEl=document.getElementById('edSaved'); if(savedEl) savedEl.style.display='inline';
-      if (diagConverting) {
-        setTimeout(function(){ var el=document.getElementById('edSaved'); if(el) el.style.display='none'; openDiagSchedulingModal(id, Object.assign({}, cRec, updates)); }, 1200);
+      var savedEl=document.getElementById('edSaved');
+      if (isAutoSave) {
+        if (savedEl) { savedEl.textContent='✓ Saved'; savedEl.style.color='#8DC63F'; savedEl.style.display='inline'; }
+        setTimeout(function(){ var el=document.getElementById('edSaved'); if(el) el.style.display='none'; }, 2000);
       } else {
-        setTimeout(function(){ var el=document.getElementById('edSaved'); if(el) el.style.display='none'; closeLeadEditor(); renderAdminView(adminView); }, 1500);
+        if (savedEl) savedEl.style.display='inline';
+        if (diagConverting) {
+          setTimeout(function(){ var el=document.getElementById('edSaved'); if(el) el.style.display='none'; openDiagSchedulingModal(id, Object.assign({}, cRec, updates)); }, 1200);
+        } else {
+          setTimeout(function(){ var el=document.getElementById('edSaved'); if(el) el.style.display='none'; closeLeadEditor(); renderAdminView(adminView); }, 1500);
+        }
       }
-    } catch(e) { alert('Save failed: '+e.message); }
+    } catch(e) { if (!isAutoSave) alert('Save failed: '+e.message); else console.warn('Auto-save failed:', e.message); }
   }
 
   function openDiagSchedulingModal(id, rec) {
@@ -6907,16 +6957,24 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }
       // Book appointment in GHL Diagnostic Calendar (enables Appointment Status trigger + smart reminders)
       if (GHL_DIAG_CALENDAR_ID) {
-        fetch('/.netlify/functions/ghl-calendar', {
-          method: 'POST', headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({
-            calendarId: GHL_DIAG_CALENDAR_ID,
-            firstName: rec.first_name||'', lastName: rec.last_name||'',
-            email: rec.email||'', phone: rec.phone||'', address: rec.address||'',
-            appointmentDate: dateVal, appointmentTime: startTimeVal,
-            appointmentEndTime: endTimeVal
-          })
-        }).catch(function(e){ console.warn('GHL diag calendar booking:', e); });
+        try {
+          var ghlCalResp = await fetch('/.netlify/functions/ghl-calendar', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({
+              calendarId: GHL_DIAG_CALENDAR_ID,
+              firstName: rec.first_name||'', lastName: rec.last_name||'',
+              email: rec.email||'', phone: rec.phone||'', address: rec.address||'',
+              appointmentDate: dateVal, appointmentTime: startTimeVal,
+              appointmentEndTime: endTimeVal
+            })
+          });
+          var ghlCalData = await ghlCalResp.json();
+          if (ghlCalData && ghlCalData.appointmentId) {
+            await client.from('customers').update({ ghl_appointment_id: ghlCalData.appointmentId }).eq('id', id);
+            var _apptIdx = adminCustomers.findIndex(function(x){ return x.id === id; });
+            if (_apptIdx > -1) adminCustomers[_apptIdx].ghl_appointment_id = ghlCalData.appointmentId;
+          }
+        } catch(e) { console.warn('GHL diag calendar booking:', e); }
       }
       // Admin notification: always fire with GHL_TT_WEBHOOK as fallback (notify Dennis via GHL)
       var adminWebhook = window.GHL_ADMIN_WEBHOOK || GHL_TT_WEBHOOK || null;
@@ -8556,7 +8614,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     catch(e) { document.getElementById('dashBody').innerHTML = '<p style="color:#ef4444;">Database error.</p>'; return; }
 
     // Fetch this person's accounts by rep_id
-    var r1 = await client.from('customers').select('*').eq('rep_id', person.id).order('created_at', {ascending:false});
+    var r1 = await client.from('customers').select('*').eq('rep_id', person.id).or('archived.is.null,archived.eq.false').order('created_at', {ascending:false});
     var allRecords = r1.data || [];
     allRecords.sort(function(a,b){ return new Date(b.created_at)-new Date(a.created_at); });
     adminCustomers = allRecords; // allow openProposalBuilder/sendProposal to resolve records by id
@@ -8833,8 +8891,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             if (!isNSL) h += '<div style="display:flex;gap:3px;">'+tempBtn('cold','&#10052;')+tempBtn('warm','&#9728;')+tempBtn('hot','&#128293;')+'</div>';
             h += '<div style="display:flex;gap:4px;">';
             if (l.phone) h += '<a href="tel:'+l.phone.replace(/\D/g,'')+'" style="font-size:0.68rem;padding:4px 10px;background:rgba(141,198,63,0.12);color:#8DC63F;border-radius:100px;border:1px solid rgba(141,198,63,0.25);text-decoration:none;font-weight:700;">&#128222;</a>';
+            if (l.address) h += '<a href="https://maps.apple.com/?q='+encodeURIComponent(l.address)+'" target="_blank" style="font-size:0.68rem;padding:4px 10px;background:rgba(255,255,255,0.06);color:#aaa;border-radius:100px;border:1px solid rgba(255,255,255,0.12);text-decoration:none;font-weight:700;" title="Open in Maps">&#128506;</a>';
             if (l.email) { var mlLink='https://fixmy.energy/portal?email='+encodeURIComponent(l.email)+'&code='+(l.phone||'').replace(/\D/g,'').slice(-10); h += '<button onclick="sendMagicLink(\''+mlLink+'\',\''+l.email+'\')" style="font-size:0.68rem;padding:4px 10px;background:rgba(74,158,255,0.08);color:#4a9eff;border-radius:100px;border:1px solid rgba(74,158,255,0.25);cursor:pointer;font-weight:700;">&#128279;</button>'; }
             h += '<button onclick="salesEditLead(\''+l.id+'\')" style="font-size:0.68rem;padding:4px 10px;background:rgba(255,255,255,0.06);color:#aaa;border-radius:100px;border:1px solid rgba(255,255,255,0.12);cursor:pointer;font-weight:700;">&#9998;</button>';
+            h += '<button onclick="archiveLead(\''+l.id+'\')" style="font-size:0.68rem;padding:4px 10px;background:rgba(255,170,0,0.08);color:#ffaa00;border-radius:100px;border:1px solid rgba(255,170,0,0.25);cursor:pointer;font-weight:700;" title="Archive lead">&#128451;</button>';
             h += '</div></div></div>';
 
             // Customer photo count
@@ -9653,14 +9713,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
       var queryResult = await Promise.race([
         c2.from('customers')
-          .select('id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,original_installer,install_year')
+          .select('id,first_name,last_name,address,notes,title_owner,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,install_year')
           .eq('lead_source','orphaned_list')
           .is('sold_type', null)
+          .or('archived.is.null,archived.eq.false')
           .order('lat', {ascending: false, nullsFirst: false})
           .order('lead_score', {ascending: false, nullsFirst: false})
           .limit(500),
         new Promise(function(resolve) {
-          setTimeout(function(){ resolve({data:[], error:new Error('timeout')}); }, 15000);
+          setTimeout(function(){ resolve({data:[], error:new Error('timeout')}); }, 25000);
         })
       ]);
       var rawLeads = queryResult.data, lErr = queryResult.error;
