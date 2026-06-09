@@ -758,12 +758,13 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
 
   const PHASE2_DEADLINE = Date.now() + ((enrichOnly ? 10 : 6) * 60 * 1000);
 
+  // Fetch leads needing enrichment: no owner AND no coordinates (already-geocoded leads are done)
   const unenrichedRes = await supaFetch(
-    '/customers?lead_source=eq.orphaned_list&title_owner=is.null&select=id,address&limit=2000'
+    '/customers?lead_source=eq.orphaned_list&title_owner=is.null&lat=is.null&select=id,address&limit=2000'
   );
   const toEnrich = (Array.isArray(unenrichedRes.data) ? unenrichedRes.data : [])
     .filter(r => r.address && addressQualityScore(r.address) >= 4);
-  stamp(`Phase 2: ${toEnrich.length} leads need owner lookup`);
+  stamp(`Phase 2: ${toEnrich.length} leads need geocoding/owner lookup`);
 
   const regridKey = process.env.REGRID_KEY;
   // Rate-limit state for Regrid (shared across all lookupOwner calls in this run)
@@ -816,7 +817,7 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
       }
     } catch(e) { stamp('Phase 2: geocode err: ' + e.message); }
 
-    // Step 2a (PRIMARY): Regrid lat/lon — most precise, requires geocoded coords
+    // Step 2a (PRIMARY): Regrid lat/lon lookup — skipped when key returns 403
     if (regridKey && lat != null && Date.now() > regridPausedUntil) {
       const rWait = (lastRegridAt + REGRID_GAP_MS) - Date.now();
       if (rWait > 0) await sleep(rWait);
@@ -836,6 +837,7 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
         } else {
           stamp('Phase 2: Regrid lat/lon HTTP ' + r.status);
           if (r.status === 429) { regridPausedUntil = Date.now() + 120000; stamp('Phase 2: Regrid rate-limited — pausing 2 min'); }
+          if (r.status === 403) { regridPausedUntil = Date.now() + 999999999; stamp('Phase 2: Regrid 403 — disabling for this run'); }
         }
       } catch(e) { stamp('Phase 2: Regrid lat/lon err: ' + e.message); }
     }
@@ -860,6 +862,7 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
         } else {
           stamp('Phase 2: Regrid search HTTP ' + r.status);
           if (r.status === 429) { regridPausedUntil = Date.now() + 120000; stamp('Phase 2: Regrid rate-limited — pausing 2 min'); }
+          if (r.status === 403) { regridPausedUntil = Date.now() + 999999999; stamp('Phase 2: Regrid 403 — disabling for this run'); }
         }
       } catch(e) { stamp('Phase 2: Regrid search err: ' + e.message); }
     }
