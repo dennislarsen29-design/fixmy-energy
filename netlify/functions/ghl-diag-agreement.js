@@ -108,10 +108,12 @@ exports.handler = async function(event) {
         console.warn('GHL conversations search failed:', searchResp.status, searchRaw.slice(0, 200));
         // skip create attempt — it will fail with the same auth error
       } else if (searchData.conversations && searchData.conversations.length > 0) {
-        conversationId = searchData.conversations[0].id;
-        console.log('GHL existing conversation:', conversationId);
-      } else {
-        // Create new conversation — GHL requires trailing slash on this endpoint
+        var smsConv = searchData.conversations.find(function(cv) { return cv.type === 'SMS' || cv.channel === 'SMS'; });
+        conversationId = smsConv ? smsConv.id : null;
+        console.log('GHL SMS conversation:', conversationId, '(total convs:', searchData.conversations.length, ')');
+      }
+      if (!conversationId && searchResp.status < 400) {
+        // Create new SMS conversation — GHL requires trailing slash on this endpoint
         const createResp = await fetch('https://services.leadconnectorhq.com/conversations/', {
           method:  'POST',
           headers: ghlConvHeaders,
