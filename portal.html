@@ -2225,7 +2225,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<div style="margin-bottom:10px;">'+
           '<label style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em;color:#888;display:block;margin-bottom:6px;">Or paste CSV manually</label>'+
           '<textarea id="importCsvInput" style="width:100%;height:180px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:10px;color:#ccc;font-size:0.75rem;padding:12px;font-family:monospace;resize:vertical;" placeholder="first_name,last_name,address,installer,install_year,system_size_kw,notes&#10;John,Smith,1234 Oak Ave San Diego CA 92103,SunPower,2019,6.4,Panel issue&#10;Maria,Jones,567 Elm St La Mesa CA 91942,Sullivan Solar,2018,,"></textarea>'+
-          '<div style="font-size:0.65rem;color:#555;margin-top:5px;">Accepts: PermitStack export · SD Open Data CSV · Accela scraper output · <strong style="color:#666;">CEC GoSolar/CSI bulk export</strong> (auto-detected). CEC data: <a href="https://www.cpuc.ca.gov/industries-and-topics/electrical-energy/demand-side-management/california-solar-initiative/csi-data" target="_blank" style="color:#4a9eff;text-decoration:none;">cpuc.ca.gov → CSI Data</a></div>'+
+          '<div style="font-size:0.65rem;color:#555;margin-top:5px;">Accepts: PermitStack export · SD Open Data CSV · Accela scraper output · <strong style="color:#666;">CEC GoSolar/CSI bulk export</strong> · <strong style="color:#8DC63F;">Skip-trace CSV</strong> (all auto-detected). Skip-trace: paste raw export with <code style="background:rgba(255,255,255,0.06);padding:1px 5px;border-radius:3px;">first_name,last_name,address,city,state,zip,primary_phone,email_1</code> columns — imports directly as Black Box leads, no Regrid enrichment needed.</div>'+
         '</div>'+
         '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px;">'+
           '<button onclick="parseImportCsv()" class="lead-btn" style="padding:9px 22px;font-size:0.82rem;background:rgba(74,158,255,0.12);border:1px solid rgba(74,158,255,0.3);color:#4a9eff;">&#128269; Parse CSV</button>'+
@@ -2252,6 +2252,38 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var lines = raw.split('\n').map(function(l){ return l.trim(); }).filter(Boolean);
       if (lines.length < 2) { document.getElementById('importParseStatus').textContent = 'Need at least a header row and one data row.'; return; }
       var headers = lines[0].split(',').map(function(h){ return h.trim().toLowerCase().replace(/\s+/g,'_').replace(/[^a-z0-9_]/g,''); });
+      window.importIsSkipTrace = false;
+
+      // ── Skip-Trace CSV detection (primary_phone / mobile_1 / email_1 columns) ─
+      var isSkipTrace = headers.some(function(h){ return /^primary_phone$|^mobile_1$|^email_1$/.test(h); });
+      if (isSkipTrace) {
+        var stRows = [];
+        for (var si=1; si<lines.length; si++) {
+          var sv = splitCsvLine(lines[si]);
+          if (!sv.length) continue;
+          var so = {};
+          headers.forEach(function(h,j){ so[h] = (sv[j]||'').trim(); });
+          var stFirst = so['first_name'] || '';
+          var stLast  = so['last_name']  || '';
+          var addrParts = [so['address']||so['property_address'], so['city'], so['state']||'CA', so['zip']||so['zip_code']||so['mailing_zip']].filter(Boolean);
+          var stAddr = addrParts.join(', ');
+          // prefer mobile; fall back to primary_phone; then landline
+          var stPhone = so['mobile_1'] || so['mobile_2'] || so['mobile_3'] || so['primary_phone'] || so['landline_1'] || '';
+          var stEmail = so['email_1'] || so['email_2'] || so['email_3'] || '';
+          // skip empty rows (no name AND no phone)
+          if (!stFirst && !stPhone) continue;
+          stRows.push({ first_name: stFirst, last_name: stLast, address: stAddr, phone: stPhone, email: stEmail });
+        }
+        window.importRows = stRows;
+        window.importIsSkipTrace = true;
+        window.importEnriched = stRows.map(function(r){
+          var owner = [r.first_name, r.last_name].filter(Boolean).join(' ') || null;
+          return { owner: owner, apn: null };
+        });
+        document.getElementById('importParseStatus').textContent = stRows.length + ' skip-trace records parsed.';
+        renderImportPreview(true);
+        return;
+      }
 
       // ── CEC GoSolar / CSI bulk export detection & normalization ───────────────
       // CEC CSV headers include "host_customer_sector", "system_size_kw_dc", etc.
@@ -2328,22 +2360,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var rows = window.importRows;
       if (!rows.length) { document.getElementById('importPreviewArea').innerHTML = ''; return; }
       var allDone = enriched && window.importEnriched.every(function(e){ return e!==null; });
+      var isSkipTrace = window.importIsSkipTrace;
       var h = '<div style="overflow-x:auto;">';
       h += '<table style="width:100%;border-collapse:collapse;font-size:0.72rem;margin-bottom:14px;">';
       h += '<thead><tr style="border-bottom:1px solid rgba(255,255,255,0.1);">';
-      ['','#','Name from CSV','Address','Parcel Owner','APN','Installer','Year','Notes','Status'].forEach(function(col){
+      var cols = isSkipTrace
+        ? ['','#','Name','Address','Phone','Email','Status']
+        : ['','#','Name from CSV','Address','Parcel Owner','APN','Installer','Year','Notes','Status'];
+      cols.forEach(function(col){
         h += '<th style="text-align:left;padding:6px 8px;color:#555;font-weight:700;white-space:nowrap;">'+col+'</th>';
       });
       h += '</tr></thead><tbody>';
       rows.forEach(function(r, i) {
         var en = window.importEnriched[i];
-        var ownerCell = en===null ? '<span style="color:#555;">—</span>'
-          : en.owner ? '<span style="color:#8DC63F;font-weight:700;">'+en.owner+'</span>'
-          : '<span style="color:#ef4444;">Not found</span>';
-        var apnCell = (en&&en.apn) ? '<span style="color:#aaa;">'+en.apn+'</span>' : '<span style="color:#555;">—</span>';
         var statusCell = en===null ? '<span style="color:#555;">Pending</span>'
           : en._loading ? '<span style="color:#ffaa00;">Looking up…</span>'
-          : en.owner ? '<span style="color:#8DC63F;">&#10003; Found</span>'
+          : en.owner ? '<span style="color:#8DC63F;">&#10003; Ready</span>'
           : en._err ? '<span style="color:#ef4444;" title="'+en._err+'">Error</span>'
           : '<span style="color:#888;">No match</span>';
         var name = ((r.first_name||'')+' '+(r.last_name||'')).trim() || '—';
@@ -2354,12 +2386,21 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '<td style="padding:5px 8px;">'+chk+'</td>';
         h += '<td style="padding:5px 8px;color:#555;">'+(i+1)+'</td>';
         h += '<td style="padding:5px 8px;color:#ccc;">'+name+'</td>';
-        h += '<td style="padding:5px 8px;color:#888;max-width:200px;word-break:break-all;">'+r.address+'</td>';
-        h += '<td style="padding:5px 8px;">'+ownerCell+'</td>';
-        h += '<td style="padding:5px 8px;">'+apnCell+'</td>';
-        h += '<td style="padding:5px 8px;color:#888;">'+(r.installer||'—')+'</td>';
-        h += '<td style="padding:5px 8px;color:#888;">'+(r.install_year||'—')+'</td>';
-        h += '<td style="padding:5px 8px;color:#666;max-width:160px;">'+((r.notes||'').slice(0,60)||'—')+'</td>';
+        h += '<td style="padding:5px 8px;color:#888;max-width:180px;word-break:break-all;">'+(r.address||'—')+'</td>';
+        if (isSkipTrace) {
+          h += '<td style="padding:5px 8px;color:#aaa;">'+(r.phone||'—')+'</td>';
+          h += '<td style="padding:5px 8px;color:#666;max-width:160px;">'+(r.email||'—')+'</td>';
+        } else {
+          var ownerCell = en===null ? '<span style="color:#555;">—</span>'
+            : en.owner ? '<span style="color:#8DC63F;font-weight:700;">'+en.owner+'</span>'
+            : '<span style="color:#ef4444;">Not found</span>';
+          var apnCell = (en&&en.apn) ? '<span style="color:#aaa;">'+en.apn+'</span>' : '<span style="color:#555;">—</span>';
+          h += '<td style="padding:5px 8px;">'+ownerCell+'</td>';
+          h += '<td style="padding:5px 8px;">'+apnCell+'</td>';
+          h += '<td style="padding:5px 8px;color:#888;">'+(r.installer||'—')+'</td>';
+          h += '<td style="padding:5px 8px;color:#888;">'+(r.install_year||'—')+'</td>';
+          h += '<td style="padding:5px 8px;color:#666;max-width:160px;">'+((r.notes||'').slice(0,60)||'—')+'</td>';
+        }
         h += '<td style="padding:5px 8px;">'+statusCell+'</td>';
         h += '</tr>';
       });
@@ -2369,8 +2410,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       } else if (allDone) {
         var foundCount = window.importEnriched.filter(function(e){ return e&&e.owner; }).length;
         h += '<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:4px;">';
-        h += '<span style="font-size:0.78rem;color:#8DC63F;font-weight:700;">'+foundCount+' of '+rows.length+' owners found</span>';
-        h += '<button onclick="importSelectedLeads()" class="lead-btn lime" style="padding:9px 22px;font-size:0.82rem;">&#10003; Import Selected as New Solar Leads</button>';
+        var importLabel = isSkipTrace
+          ? foundCount+' of '+rows.length+' records ready'
+          : foundCount+' of '+rows.length+' owners found';
+        h += '<span style="font-size:0.78rem;color:#8DC63F;font-weight:700;">'+importLabel+'</span>';
+        var btnLabel = isSkipTrace ? '&#10003; Import Selected as Black Box Leads' : '&#10003; Import Selected as New Solar Leads';
+        h += '<button onclick="importSelectedLeads()" class="lead-btn lime" style="padding:9px 22px;font-size:0.82rem;">'+btnLabel+'</button>';
         h += '<span id="importSaveStatus" style="font-size:0.72rem;color:#888;"></span>';
         h += '</div>';
       }
@@ -2427,6 +2472,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           first_name:          firstName,
           last_name:           lastName,
           address:             r.address,
+          phone:               r.phone || null,
+          email:               r.email || null,
           lead_category:       'fixmy',
           step:                1,
           lead_source:         'orphaned_list',
