@@ -217,6 +217,7 @@ Sign & Pay: `sign_token, sign_token_expires_at, stripe_payment_intent_id`
 - **Google Ads video creative (HIGH PRIORITY):** Current video ads are low quality. Need better video assets. (Not a dev task — Dennis action item.)
 
 ### Medium Priority / On Hold
+- **GHL AppointmentCreate webhook → portal:** When a customer books through the `/book` calendar (ID `ZGOdyYdMUh07V1Ujav9R`), GHL needs to fire a webhook back so `diagnostic_date` populates in the portal. In GHL: Automations → "FixMy Energy Solar Appointment Confirmation" → add a Webhook action posting to `https://fixmy.energy/.netlify/functions/ghl-inbound`. `ghl-inbound.js` already parses `selectedSlot`/`startTime` from the payload. GHL config only — no code change needed.
 - Add `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `SUPA_SERVICE_KEY` to Netlify env vars (sign+pay won't work until these are set)
 - Add Netlify PAT to `.claude/settings.local.json` to enable Netlify MCP
 - **Google Maps API key restriction:** Previously caused a tech issue when restricted — leave unrestricted for now. Revisit carefully if security becomes a concern.
