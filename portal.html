@@ -666,7 +666,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var savedIds = [];
       try { savedIds = JSON.parse(localStorage.getItem('bbSavedLeads') || '[]'); } catch(e) {}
 
-      var { data: freshLeads } = await c2.from('customers').select('id,first_name,last_name,phone,created_at').eq('black_box', true).gte('created_at', cutoff).order('created_at', {ascending: false}).limit(10);
+      var { data: freshLeads } = await c2.from('customers').select('id,first_name,last_name,address,phone,knock_status,knocked_at').in('knock_status',['callback','interested']).gte('knocked_at', cutoff).order('knocked_at', {ascending: false}).limit(10);
       var hotLeads = freshLeads || [];
 
       // Merge saved leads (deduped) if any
@@ -674,7 +674,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var freshIds = hotLeads.map(function(l){ return l.id; });
         var missingIds = savedIds.filter(function(id){ return !freshIds.includes(id); });
         if (missingIds.length) {
-          var { data: savedLeads } = await c2.from('customers').select('id,first_name,last_name,phone,created_at').in('id', missingIds);
+          var { data: savedLeads } = await c2.from('customers').select('id,first_name,last_name,address,phone,knock_status,knocked_at').in('id', missingIds);
           if (savedLeads && savedLeads.length) hotLeads = hotLeads.concat(savedLeads);
         }
       }
@@ -683,17 +683,26 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
       // Store minimal lead data in a global so onclick handlers can reference it cleanly
       window._bbHotLeads = hotLeads.map(function(l) {
-        return { id: l.id, first_name: l.first_name||'', last_name: l.last_name||'', phone: l.phone||'' };
+        return { id: l.id, first_name: l.first_name||'', last_name: l.last_name||'', address: l.address||'', phone: l.phone||'', knock_status: l.knock_status||'' };
       });
 
       var rows = hotLeads.map(function(l) {
-        var name = ((l.first_name||'') + ' ' + (l.last_name||'')).trim() || 'Unknown';
-        var ph   = l.phone ? ' · ' + l.phone : '';
+        var label = l.address || ((l.first_name||'')+' '+(l.last_name||'')).trim() || 'Unknown';
         var isPinned = savedIds.includes(l.id);
-        var ago  = Math.round((Date.now() - new Date(l.created_at).getTime()) / 60000);
-        var agoStr = ago < 60 ? ago + 'm ago' : Math.round(ago/60) + 'h ago';
-        var pin = isPinned ? ' <span style="color:#8DC63F;font-size:0.7rem;">&#128204; saved</span>' : '';
-        return '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #2a2a2a;font-size:0.8rem;"><span style="color:#e5e7eb;">'+name+ph+pin+'</span><span style="color:#6b7280;">'+agoStr+'</span></div>';
+        var ago = Math.round((Date.now() - new Date(l.knocked_at).getTime()) / 60000);
+        var agoStr = ago < 60 ? ago+'m ago' : Math.round(ago/60)+'h ago';
+        var badge = l.knock_status === 'interested'
+          ? '<span style="color:#f59e0b;font-size:0.7rem;">&#11088; Interested</span>'
+          : '<span style="color:#60a5fa;font-size:0.7rem;">&#128222; Callback</span>';
+        var pin = isPinned ? ' <span style="color:#8DC63F;font-size:0.7rem;">&#128204;</span>' : '';
+        var ph = l.phone ? '<span style="color:#6b7280;font-size:0.7rem;"> &middot; '+l.phone+'</span>' : '';
+        return '<div style="padding:7px 0;border-bottom:1px solid #2a2a2a;">'
+          + '<div style="display:flex;justify-content:space-between;align-items:center;font-size:0.8rem;">'
+          + '<span style="color:#e5e7eb;">'+label+pin+'</span>'
+          + '<span style="color:#6b7280;">'+agoStr+'</span>'
+          + '</div>'
+          + '<div style="margin-top:2px;">'+badge+ph+'</div>'
+          + '</div>';
       }).join('');
 
       var overlay = document.createElement('div');
@@ -701,7 +710,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;';
       overlay.innerHTML = '<div style="background:#1a1a1a;border:1px solid #8DC63F;border-radius:12px;padding:24px;max-width:420px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,0.8);">'
         + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">'
-        + '<h3 style="color:#8DC63F;margin:0;font-size:1rem;">&#128230; ' + hotLeads.length + ' Hot Lead' + (hotLeads.length > 1 ? 's' : '') + ' (Last 48h)</h3>'
+        + '<h3 style="color:#8DC63F;margin:0;font-size:1rem;">&#128293; ' + hotLeads.length + ' Hot Lead' + (hotLeads.length > 1 ? 's' : '') + ' (Last 48h)</h3>'
         + '<button onclick="document.getElementById(\'bbHotPopup\').remove();sessionStorage.setItem(\'bbPopupDismissed\',\'1\');" style="background:none;border:none;color:#6b7280;font-size:1.2rem;cursor:pointer;padding:0 4px;">&times;</button>'
         + '</div>'
         + '<div style="max-height:220px;overflow-y:auto;margin-bottom:16px;">' + rows + '</div>'
@@ -867,10 +876,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var pinnedLeads = JSON.parse(sessionStorage.getItem('bbPinnedRouteLeads') || '[]');
       if (pinnedLeads.length) {
         var pinnedRows = pinnedLeads.map(function(l) {
-          var name = ((l.first_name||'') + ' ' + (l.last_name||'')).trim() || 'Unknown';
-          var ph   = l.phone ? l.phone : '';
+          var label = l.address || ((l.first_name||'')+' '+(l.last_name||'')).trim() || 'Unknown';
+          var statusEmoji = l.knock_status === 'interested' ? '⭐ ' : l.knock_status === 'callback' ? '📞 ' : '';
+          var ph = l.phone ? ' <span style="color:#9ca3af;font-size:0.75rem;">· '+l.phone+'</span>' : '';
           return '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:rgba(167,139,250,0.06);border-radius:8px;margin-bottom:4px;">'
-            + '<span style="font-size:0.82rem;color:#e5e7eb;">'+name+(ph?' <span style="color:#9ca3af;font-size:0.75rem;">· '+ph+'</span>':'')+'</span>'
+            + '<span style="font-size:0.82rem;color:#e5e7eb;">'+statusEmoji+label+ph+'</span>'
             + '<button onclick="openLeadEditor(\''+l.id+'\')" style="font-size:0.72rem;padding:4px 10px;background:rgba(167,139,250,0.15);color:#a78bfa;border:1px solid rgba(167,139,250,0.3);border-radius:6px;cursor:pointer;white-space:nowrap;">&#9998; Edit</button>'
             + '</div>';
         }).join('');
@@ -4064,7 +4074,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (CURRENT_ROLE === 'admin') h += '<div id="bbPullBar" style="margin-bottom:12px;"></div>';
     if (CURRENT_ROLE === 'admin') h += '<div id="bbPhase0Panel" style="margin-bottom:12px;"></div>';
     if (CURRENT_ROLE === 'admin') h += '<div id="bbInsightsPanel" style="margin-bottom:12px;"></div>';
-    if (CURRENT_ROLE !== 'admin') {
     h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;margin-bottom:12px;">&#128205; Routes</div>';
 
     // ── Inline QR share card ─────────────────────────────────────────────────
@@ -4259,7 +4268,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
       h += '</div>'; // end flex row
     }
-    } // end CURRENT_ROLE !== 'admin' guard
 
     h += '<hr style="border:none;border-top:1px solid #2a2a2a;margin:16px 0;">';
 
