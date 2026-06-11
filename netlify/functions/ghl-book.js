@@ -3,7 +3,7 @@
 // Body: { firstName, lastName, phone, email, address, startISO, endISO }
 
 const GHL_BASE    = 'https://services.leadconnectorhq.com';
-const CALENDAR_ID = process.env.GHL_DIAG_CALENDAR_ID || 'ZGOdyYdMUh07V1Ujav9R';
+const CALENDAR_ID = process.env.GHL_BOOK_CALENDAR_ID || 'UjlvHxE8AlyhG5frBkqr';
 const SUPA_URL    = process.env.SUPABASE_URL || 'https://kbtobyoumvbcxfbugsid.supabase.co';
 const SUPA_KEY    = process.env.SUPABASE_ANON_KEY || process.env.SUPA_KEY ||
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtidG9ieW91bXZiY3hmYnVnc2lkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ1NjY5MDcsImV4cCI6MjA5MDE0MjkwN30.nLE0TlMu43E4dNRxxjoc6P1OQMjfwXgonbA2MrCCrhk';

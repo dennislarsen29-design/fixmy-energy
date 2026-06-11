@@ -2,7 +2,7 @@
 // GET /.netlify/functions/ghl-slots
 // 60-second server-side cache to avoid rate-limiting GHL.
 
-const CALENDAR_ID = process.env.GHL_DIAG_CALENDAR_ID || 'ZGOdyYdMUh07V1Ujav9R';
+const CALENDAR_ID = process.env.GHL_BOOK_CALENDAR_ID || 'UjlvHxE8AlyhG5frBkqr';
 const GHL_BASE    = 'https://services.leadconnectorhq.com';
 
 let _cache    = null;
