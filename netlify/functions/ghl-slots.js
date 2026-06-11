@@ -26,11 +26,11 @@ exports.handler = async function(event) {
   if (!apiKey)
     return { statusCode: 500, headers: cors, body: JSON.stringify({ error: 'Missing GHL_API_KEY' }) };
 
-  // Query next 7 days
+  // Query next 7 days — GHL expects Unix timestamps in milliseconds
   const now       = new Date();
-  const startDate = now.toISOString().split('T')[0];
-  const endDate   = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-  const url = `${GHL_BASE}/calendars/${CALENDAR_ID}/free-slots?startDate=${startDate}&endDate=${endDate}&timezone=America/Los_Angeles`;
+  const startDate = now.getTime();
+  const endDate   = now.getTime() + 7 * 24 * 60 * 60 * 1000;
+  const url = `${GHL_BASE}/calendars/${CALENDAR_ID}/free-slots?startDate=${startDate}&endDate=${endDate}&timezone=America%2FLos_Angeles`;
 
   let raw;
   try {
