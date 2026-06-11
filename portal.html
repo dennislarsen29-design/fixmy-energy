@@ -565,6 +565,71 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     loadAdminBbStats(); // fire-and-forget — populates adminBlackBoxCustomers for BB tab stats
     try { renderAdminCanvassView(); }
     catch(e) { _dbEl.innerHTML = '<p style="color:#ef4444;">Render error: '+e.message+'. <button onclick="loadAdminDashboard()" style="width:auto;padding:8px 16px;font-size:0.75rem;background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;cursor:pointer;">Retry</button></p>'; console.error('[renderAdminCanvassView]', e); }
+    showBlackBoxPopup();
+  }
+
+  async function showBlackBoxPopup() {
+    if (sessionStorage.getItem('bbPopupDismissed')) return;
+    try {
+      var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+
+      // Include leads from the last 48hrs + any pinned from previous session
+      var savedIds = [];
+      try { savedIds = JSON.parse(localStorage.getItem('bbSavedLeads') || '[]'); } catch(e) {}
+
+      var { data: freshLeads } = await c2.from('customers').select('id,first_name,last_name,phone,created_at').eq('black_box', true).gte('created_at', cutoff).order('created_at', {ascending: false}).limit(10);
+      var hotLeads = freshLeads || [];
+
+      // Merge saved leads (deduped) if any
+      if (savedIds.length) {
+        var freshIds = hotLeads.map(function(l){ return l.id; });
+        var missingIds = savedIds.filter(function(id){ return !freshIds.includes(id); });
+        if (missingIds.length) {
+          var { data: savedLeads } = await c2.from('customers').select('id,first_name,last_name,phone,created_at').in('id', missingIds);
+          if (savedLeads && savedLeads.length) hotLeads = hotLeads.concat(savedLeads);
+        }
+      }
+
+      if (!hotLeads.length) return;
+
+      // Store minimal lead data in a global so onclick handlers can reference it cleanly
+      window._bbHotLeads = hotLeads.map(function(l) {
+        return { id: l.id, first_name: l.first_name||'', last_name: l.last_name||'', phone: l.phone||'' };
+      });
+
+      var rows = hotLeads.map(function(l) {
+        var name = ((l.first_name||'') + ' ' + (l.last_name||'')).trim() || 'Unknown';
+        var ph   = l.phone ? ' · ' + l.phone : '';
+        var isPinned = savedIds.includes(l.id);
+        var ago  = Math.round((Date.now() - new Date(l.created_at).getTime()) / 60000);
+        var agoStr = ago < 60 ? ago + 'm ago' : Math.round(ago/60) + 'h ago';
+        var pin = isPinned ? ' <span style="color:#8DC63F;font-size:0.7rem;">&#128204; saved</span>' : '';
+        return '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #2a2a2a;font-size:0.8rem;"><span style="color:#e5e7eb;">'+name+ph+pin+'</span><span style="color:#6b7280;">'+agoStr+'</span></div>';
+      }).join('');
+
+      var overlay = document.createElement('div');
+      overlay.id = 'bbHotPopup';
+      overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;';
+      overlay.innerHTML = '<div style="background:#1a1a1a;border:1px solid #8DC63F;border-radius:12px;padding:24px;max-width:420px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,0.8);">'
+        + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">'
+        + '<h3 style="color:#8DC63F;margin:0;font-size:1rem;">&#128230; ' + hotLeads.length + ' Hot Lead' + (hotLeads.length > 1 ? 's' : '') + ' (Last 48h)</h3>'
+        + '<button onclick="document.getElementById(\'bbHotPopup\').remove();sessionStorage.setItem(\'bbPopupDismissed\',\'1\');" style="background:none;border:none;color:#6b7280;font-size:1.2rem;cursor:pointer;padding:0 4px;">&times;</button>'
+        + '</div>'
+        + '<div style="max-height:220px;overflow-y:auto;margin-bottom:16px;">' + rows + '</div>'
+        + '<div style="display:flex;flex-direction:column;gap:8px;">'
+        + '<div style="display:flex;gap:8px;">'
+        + '<button onclick="document.getElementById(\'bbHotPopup\').remove();sessionStorage.setItem(\'bbPopupDismissed\',\'1\');renderAdminCanvassView();" style="flex:1;padding:10px;background:#8DC63F;color:#1A1A1A;border:none;border-radius:8px;font-weight:700;cursor:pointer;font-size:0.85rem;">View Black Box</button>'
+        + '<button onclick="document.getElementById(\'bbHotPopup\').remove();sessionStorage.setItem(\'bbPopupDismissed\',\'1\');" style="padding:10px 16px;background:#2a2a2a;color:#9ca3af;border:none;border-radius:8px;cursor:pointer;font-size:0.85rem;">Dismiss</button>'
+        + '</div>'
+        + '<div style="display:flex;gap:8px;">'
+        + '<button onclick="(function(){try{localStorage.setItem(\'bbSavedLeads\',JSON.stringify((window._bbHotLeads||[]).map(function(l){return l.id;})));}catch(e){}document.getElementById(\'bbHotPopup\').remove();sessionStorage.setItem(\'bbPopupDismissed\',\'1\');})()" style="flex:1;padding:9px;background:#1f2937;color:#8DC63F;border:1px solid #374151;border-radius:8px;cursor:pointer;font-size:0.8rem;">&#128204; Save for Next Login</button>'
+        + '<button onclick="(function(){try{sessionStorage.setItem(\'bbPinnedRouteLeads\',JSON.stringify(window._bbHotLeads||[]));}catch(e){}document.getElementById(\'bbHotPopup\').remove();sessionStorage.setItem(\'bbPopupDismissed\',\'1\');renderAdminView(\'dashboard\');})()" style="flex:1;padding:9px;background:#1f2937;color:#a78bfa;border:1px solid #374151;border-radius:8px;cursor:pointer;font-size:0.8rem;">&#128203; Push to Routes</button>'
+        + '</div>'
+        + '</div>'
+        + '</div>';
+      document.body.appendChild(overlay);
+    } catch(e) { console.warn('BB popup error:', e.message); }
   }
 
   async function loadAdminBbStats() {
@@ -688,9 +753,33 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var listHtml = '';
     if (!c.length) { listHtml = '<div style="padding:32px;text-align:center;color:#555;">No leads in this category.</div>'; }
     else { c.forEach(function(cust) { listHtml += buildLeadCard(cust); }); }
+
+    // Pinned hot leads banner (from "Push to Routes" button in BB popup)
+    var pinnedHtml = '';
+    try {
+      var pinnedLeads = JSON.parse(sessionStorage.getItem('bbPinnedRouteLeads') || '[]');
+      if (pinnedLeads.length) {
+        var pinnedRows = pinnedLeads.map(function(l) {
+          var name = ((l.first_name||'') + ' ' + (l.last_name||'')).trim() || 'Unknown';
+          var ph   = l.phone ? l.phone : '';
+          return '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:rgba(167,139,250,0.06);border-radius:8px;margin-bottom:4px;">'
+            + '<span style="font-size:0.82rem;color:#e5e7eb;">'+name+(ph?' <span style="color:#9ca3af;font-size:0.75rem;">· '+ph+'</span>':'')+'</span>'
+            + '<button onclick="openLeadEditor(\''+l.id+'\')" style="font-size:0.72rem;padding:4px 10px;background:rgba(167,139,250,0.15);color:#a78bfa;border:1px solid rgba(167,139,250,0.3);border-radius:6px;cursor:pointer;white-space:nowrap;">&#9998; Edit</button>'
+            + '</div>';
+        }).join('');
+        pinnedHtml = '<div style="background:rgba(167,139,250,0.06);border:1px solid rgba(167,139,250,0.25);border-radius:10px;padding:12px 14px;margin-bottom:14px;">'
+          + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">'
+          + '<span style="font-size:0.75rem;font-weight:700;color:#a78bfa;text-transform:uppercase;letter-spacing:0.05em;">&#128203; Pinned Hot Leads</span>'
+          + '<button onclick="sessionStorage.removeItem(\'bbPinnedRouteLeads\');renderAdminView(adminView);" style="font-size:0.7rem;padding:3px 10px;background:rgba(255,255,255,0.06);color:#6b7280;border:1px solid rgba(255,255,255,0.1);border-radius:6px;cursor:pointer;">Clear</button>'
+          + '</div>'
+          + pinnedRows
+          + '</div>';
+      }
+    } catch(e) {}
+
     document.getElementById('dashBody').innerHTML = portalNav+agNotifHtml+
       '<div class="admin-header-row"><h2 style="font-size:1.1rem;font-weight:700;">Leads</h2><span style="font-size:0.72rem;color:#555;">'+allLeads.length+' total</span></div>'+
-      catTabs+statsHtml+actionsBar+searchBar+'<div id="editorSlot"></div><div id="leadList" class="pipe-'+(adminLeadCat==='new_solar'?'solar':adminLeadCat==='top_tier'?'toptier':'fixmy')+'">'+listHtml+'</div>';
+      catTabs+statsHtml+actionsBar+searchBar+'<div id="editorSlot"></div>'+pinnedHtml+'<div id="leadList" class="pipe-'+(adminLeadCat==='new_solar'?'solar':adminLeadCat==='top_tier'?'toptier':'fixmy')+'">'+listHtml+'</div>';
   }
 
   function setFilter(f) { adminFilter = f; renderAdminView(adminView); }
