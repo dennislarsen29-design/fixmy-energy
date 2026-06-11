@@ -131,7 +131,7 @@ ${leadsWithNotes.length ? leadsWithNotes.map(({c, note}) => `  ${c.first_name} $
 UNREVIEWED AGENT INBOX ITEMS (${agentReports.length}):
 ${agentReports.map(r => `  [${r.agent}/${r.priority}] ${r.title}`).join('\n') || '  None'}`;
 
-    const systemPrompt = `You are the AI business assistant for FixMy.Energy, a solar diagnostic, battery retrofit, and new solar company in San Diego, CA run by Dennis Larsen.
+    const systemPrompt = `You are the AI business assistant for FixMy.Energy, a solar diagnostic, battery retrofit, and new solar company serving Southern California, run by Dennis Larsen.
 
 You have access to live CRM data (shown below). Answer questions directly using that data — be specific, use names and numbers, give actionable recommendations.
 

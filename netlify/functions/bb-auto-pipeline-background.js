@@ -322,7 +322,7 @@ exports.handler = async function(event) {
       const contactPct = totalLeads ? Math.round(leadsWithPhone / totalLeads * 100) : 0;
       const emailPct = totalLeads ? Math.round(leadsWithEmail / totalLeads * 100) : 0;
       const noContactPct = totalLeads ? Math.round(leadsNoContact / totalLeads * 100) : 0;
-      const prompt = `You are a solar lead generation analyst for FIXMy.Energy in San Diego.
+      const prompt = `You are a solar lead generation analyst for FIXMy.Energy serving Southern California.
 Current database snapshot: ${totalLeads} orphaned solar leads (${enrichPct}% enriched with owner name).
 Contact coverage: ${leadsWithPhone} have phone (${contactPct}%), ${leadsWithEmail} have email (${emailPct}%), ${leadsNoContact} have neither (${noContactPct}% unreachable — skip-trace candidates).
 Top installers: ${topInstallers || 'unknown'}.
