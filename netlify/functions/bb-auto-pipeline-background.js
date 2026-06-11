@@ -361,6 +361,46 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
   }
 
   // ══════════════════════════════════════════════════════════════════════════
+  // PHASE 0b — GEOCODE MISSING LAT/LNG (Nominatim / OpenStreetMap)
+  // Geocodes up to 300 orphaned leads per run that are missing lat/lng.
+  // Free — no API key needed. Nominatim ToS requires 1 req/sec + User-Agent.
+  // At 300/night, ~10K remaining leads geocoded in ~33 nightly runs.
+  // ══════════════════════════════════════════════════════════════════════════
+  stamp('=== Phase 0b: Geocode missing lat/lng ===');
+  let geocodedCount = 0;
+  if (!enrichOnly) {
+    try {
+      const geoRes = await fetch(
+        SUPA_REST + '/customers?lead_source=eq.orphaned_list&lat=is.null&address=not.is.null&select=id,address&limit=300',
+        { headers: supaHeaders }
+      );
+      const geoBatch = geoRes.ok ? await geoRes.json() : [];
+      stamp(`Phase 0b: ${geoBatch.length} leads to geocode`);
+      const GEOCODE_DEADLINE = Date.now() + (5.5 * 60 * 1000); // 5.5 min budget
+      for (const lead of geoBatch) {
+        if (Date.now() > GEOCODE_DEADLINE || overGlobal()) break;
+        try {
+          const gUrl = 'https://nominatim.openstreetmap.org/search?q=' + encodeURIComponent(lead.address) + '&format=json&limit=1';
+          const gResp = await fetch(gUrl, { headers: { 'User-Agent': 'fixmy.energy/1.0 (dennis@fixmy.energy)' } });
+          const hits = gResp.ok ? await gResp.json() : [];
+          if (hits && hits[0] && hits[0].lat) {
+            await fetch(SUPA_REST + '/customers?id=eq.' + lead.id, {
+              method: 'PATCH',
+              headers: { ...supaHeaders, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ lat: parseFloat(hits[0].lat), lng: parseFloat(hits[0].lon) })
+            });
+            geocodedCount++;
+          }
+        } catch(e) { /* skip individual failures */ }
+        await sleep(1100); // Nominatim rate limit: 1 req/sec
+      }
+      stamp(`Phase 0b: geocoded ${geocodedCount} leads`);
+    } catch(e) { stamp('Phase 0b error: ' + e.message); }
+  } else {
+    stamp('Phase 0b: skipped (enrich_only mode)');
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
   // PHASE 1 — PERMIT PULL
   // Pull all 16 installers, insert records not already in Supabase
   // ══════════════════════════════════════════════════════════════════════════
@@ -1307,6 +1347,7 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
   // ── Final summary ─────────────────────────────────────────────────────────
   const summary = {
     run_at: new Date().toISOString(),
+    phase0b_geocoded: geocodedCount,
     phase1_new_permits: inserted,
     phase1c_new_permits: inserted1c,
     phase1d_new_permits: inserted1d,
@@ -1321,6 +1362,7 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
   try {
     const runTs = new Date().toISOString();
     const runSummary = JSON.stringify({
+      phase0b_geocoded: summary.phase0b_geocoded,
       phase1_new_permits: summary.phase1_new_permits,
       phase1c_new_permits: summary.phase1c_new_permits,
       phase1d_new_permits: summary.phase1d_new_permits,

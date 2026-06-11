@@ -31,6 +31,7 @@ exports.handler = async function(event) {
   const startDate = now.getTime();
   const endDate   = now.getTime() + 7 * 24 * 60 * 60 * 1000;
   const url = `${GHL_BASE}/calendars/${CALENDAR_ID}/free-slots?startDate=${startDate}&endDate=${endDate}&timezone=America%2FLos_Angeles`;
+  console.log('GHL slots: calendarId=', CALENDAR_ID, 'startDate=', startDate, 'endDate=', endDate);
 
   let raw;
   try {
