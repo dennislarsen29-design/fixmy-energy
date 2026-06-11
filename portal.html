@@ -4082,6 +4082,18 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // ── Routes ───────────────────────────────────────────────────────────────
     h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;margin-bottom:12px;">&#128205; Routes</div>';
 
+    // Geocode status banner
+    if (window._geocodeRunning) {
+      h += '<div id="geocodeBanner" style="display:flex;align-items:center;justify-content:space-between;background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.25);border-radius:10px;padding:10px 14px;margin-bottom:12px;font-size:0.78rem;">';
+      h += '<span style="color:#8DC63F;">&#9654; Geocoding: <strong>' + (window._geocodeDone||0) + '</strong> done, <strong>' + (window._geocodeRemaining||'?') + '</strong> remaining</span>';
+      h += '<button onclick="window._geocodeStop=true;" style="background:none;border:1px solid rgba(239,68,68,0.4);color:#ef4444;border-radius:6px;padding:3px 10px;font-size:0.72rem;cursor:pointer;">Stop</button>';
+      h += '</div>';
+    } else {
+      h += '<div style="text-align:right;margin-bottom:10px;">';
+      h += '<button onclick="adminBatchGeocode()" style="background:none;border:1px solid rgba(255,255,255,0.12);color:#666;border-radius:100px;padding:5px 14px;font-size:0.72rem;cursor:pointer;">&#9632; Geocode Missing Leads</button>';
+      h += '</div>';
+    }
+
     if (adminCanvassGpsStatus === 'idle') {
       h += '<div style="text-align:center;padding:32px 16px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:14px;margin-bottom:12px;">';
       h += '<div style="font-size:2rem;margin-bottom:12px;">&#128205;</div>';
@@ -4437,7 +4449,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     renderAdminCanvassView();
     try {
       var pos = await new Promise(function(resolve, reject) {
-        navigator.geolocation.getCurrentPosition(resolve, reject, {enableHighAccuracy:true, timeout:10000});
+        navigator.geolocation.getCurrentPosition(resolve, reject, {enableHighAccuracy:true, timeout:15000});
       });
       adminCanvassUserLat = pos.coords.latitude;
       adminCanvassUserLng = pos.coords.longitude;
@@ -4446,44 +4458,74 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       renderAdminCanvassView();
       return;
     }
+    var D = 0.10; // ~7-mile bounding box — only pre-geocoded leads, instant query
     var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
     var { data: rawLeads, error: lErr } = await c2
       .from('customers')
       .select('id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,original_installer,install_year')
       .eq('lead_source','orphaned_list')
-      .eq('black_box', true)
       .is('sold_type', null)
-      .order('lat', {ascending: false, nullsFirst: false})
-      .order('lead_score', {ascending: false, nullsFirst: false})
-      .limit(500);
+      .or('archived.is.null,archived.eq.false')
+      .not('lat','is',null)
+      .gte('lat', adminCanvassUserLat - D).lte('lat', adminCanvassUserLat + D)
+      .gte('lng', adminCanvassUserLng - D).lte('lng', adminCanvassUserLng + D)
+      .limit(100);
     if (lErr || !rawLeads) { adminCanvassGpsStatus = 'error'; renderAdminCanvassView(); return; }
-    // Geocode leads missing coordinates in PARALLEL before sorting (so proximity sort works)
-    var needsGeo = rawLeads.filter(function(l){ return !l.lat && l.address; }).slice(0, 50);
-    if (needsGeo.length) {
-      await Promise.all(needsGeo.map(async function(l) {
-        try {
-          var geo = await Promise.race([
-            geocodeAddress(l.address),
-            new Promise(function(r){ setTimeout(function(){ r(null); }, 3000); })
-          ]);
-          if (geo) { l.lat = geo.lat; l.lng = geo.lng; }
-        } catch(e){}
-      }));
-      // Save coordinates to DB in background
-      needsGeo.filter(function(l){ return l.lat; }).forEach(function(l) {
-        supabase.createClient(SUPA_URL, SUPA_KEY).from('customers').update({lat:l.lat, lng:l.lng}).eq('id',l.id);
-      });
-    }
     rawLeads.forEach(function(l) {
-      l._distMi = (l.lat && l.lng) ? adminCanvassHaversine(adminCanvassUserLat, adminCanvassUserLng, l.lat, l.lng) : null;
+      var isHot = l.knock_status === 'callback' || l.knock_status === 'interested';
+      l._distMi = adminCanvassHaversine(adminCanvassUserLat, adminCanvassUserLng, l.lat, l.lng);
+      l._hot = isHot;
     });
     rawLeads.sort(function(a,b) {
+      if (a._hot && !b._hot) return -1;
+      if (!a._hot && b._hot) return 1;
       if (a.knock_status && !b.knock_status) return 1;
       if (!a.knock_status && b.knock_status) return -1;
-      return (a._distMi!=null?a._distMi:9999) - (b._distMi!=null?b._distMi:9999);
+      return a._distMi - b._distMi;
     });
     adminCanvassLeads = rawLeads.filter(function(l){ return adminCanvassSkipIds.indexOf(l.id) < 0; });
     adminCanvassGpsStatus = 'ready';
+    renderAdminCanvassView();
+  };
+
+  window.adminBatchGeocode = async function() {
+    if (window._geocodeRunning) return;
+    window._geocodeRunning = true;
+    window._geocodeStop = false;
+    window._geocodeDone = 0;
+    window._geocodeRemaining = '?';
+    renderAdminCanvassView();
+    var BATCH = 30;
+    var delay = function(ms){ return new Promise(function(r){ setTimeout(r, ms); }); };
+    while (!window._geocodeStop) {
+      var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var { data: batch, error } = await c.from('customers')
+        .select('id,address').eq('lead_source','orphaned_list')
+        .is('lat',null).not('address','is',null).limit(BATCH);
+      if (error || !batch || !batch.length) break;
+      window._geocodeRemaining = '...';
+      await Promise.all(batch.map(async function(lead) {
+        try {
+          var geo = await Promise.race([
+            geocodeAddress(lead.address),
+            new Promise(function(r){ setTimeout(function(){ r(null); }, 4000); })
+          ]);
+          if (geo) {
+            await supabase.createClient(SUPA_URL, SUPA_KEY).from('customers')
+              .update({lat: geo.lat, lng: geo.lng}).eq('id', lead.id);
+            window._geocodeDone = (window._geocodeDone||0) + 1;
+          }
+        } catch(e){}
+      }));
+      var { count } = await supabase.createClient(SUPA_URL, SUPA_KEY)
+        .from('customers').select('id',{count:'exact',head:true})
+        .eq('lead_source','orphaned_list').is('lat',null);
+      window._geocodeRemaining = count || 0;
+      renderAdminCanvassView();
+      if (!window._geocodeRemaining) break;
+      await delay(300);
+    }
+    window._geocodeRunning = false;
     renderAdminCanvassView();
   };
 
@@ -9510,10 +9552,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             // Next 3 coming up
             if (unvisited.length > 1) {
               h += '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#444;margin-bottom:6px;">Coming up</div>';
-              unvisited.slice(1, 4).forEach(function(nl, ni) {
+              unvisited.slice(1, 5).forEach(function(nl, ni) {
                 var nd = nl._distMi != null ? nl._distMi.toFixed(1)+' mi' : '';
-                h += '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:8px;margin-bottom:4px;">';
-                h += '<div style="font-size:0.75rem;color:#888;">'+(ni+2)+'. '+(nl.address||'—')+'</div>';
+                var hotBadge = nl._hot ? '<span style="color:#f59e0b;font-size:0.65rem;margin-left:4px;">&#9733; Hot</span>' : '';
+                h += '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:rgba(255,255,255,0.03);border:1px solid '+(nl._hot?'rgba(245,158,11,0.3)':'rgba(255,255,255,0.07)')+';border-radius:8px;margin-bottom:4px;">';
+                h += '<div style="font-size:0.75rem;color:#888;">'+(ni+2)+'. '+(nl.address||'—')+hotBadge+'</div>';
                 if (nd) h += '<div style="font-size:0.68rem;color:#555;">'+nd+'</div>';
                 h += '</div>';
               });
@@ -9959,91 +10002,51 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       await _canvassLoadLeads(null, null);
     };
 
-    var _canvassLoadProgress = '';
     async function _canvassLoadLeads(userLat, userLng) {
       canvassGpsStatus = 'loading';
       canvassUserLat = userLat;
       canvassUserLng = userLng;
-      _canvassLoadProgress = '';
       renderSales();
 
       var SEL = 'id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,original_installer,install_year';
-      var LIMIT = 300;
-
-      // Build query — filter by GPS bounding box when available (avoids loading all 18K rows)
       var c0 = supabase.createClient(SUPA_URL, SUPA_KEY);
       var q = c0.from('customers').select(SEL)
         .eq('lead_source','orphaned_list').is('sold_type',null)
-        .or('archived.is.null,archived.eq.false');
+        .or('archived.is.null,archived.eq.false')
+        .not('lat','is',null);  // pre-geocoded only — keeps query fast
+
       if (userLat && userLng) {
-        // ~10-mile bounding box (0.15 deg ≈ 10 mi)
-        var D = 0.15;
+        var D = 0.10; // ~7-mile bounding box
         q = q.gte('lat', userLat - D).lte('lat', userLat + D)
              .gte('lng', userLng - D).lte('lng', userLng + D);
       } else {
         q = q.order('lead_score', {ascending: false, nullsFirst: false});
       }
-      q = q.limit(LIMIT);
+      q = q.limit(80);
 
-      var first = await Promise.race([
+      var result = await Promise.race([
         q,
-        new Promise(function(r){ setTimeout(function(){ r({data:null,error:new Error('timeout')}); }, 20000); })
+        new Promise(function(r){ setTimeout(function(){ r({data:null}); }, 20000); })
       ]);
-      if (!first.data) { canvassGpsStatus = 'error'; renderSales(); return; }
+      if (!result.data) { canvassGpsStatus = 'error'; renderSales(); return; }
 
-      var allLeads = first.data.slice();
-      _canvassLoadProgress = allLeads.length + ' leads loaded';
-      renderSales();
-
-      if (!allLeads.length) {
-        canvassGpsStatus = 'ready';
-        canvassLeads = [];
-        renderSales();
-        return;
-      }
-
-      // Phase 3: GPS proximity sort — compute distances for leads with coords
+      var leads = result.data.slice();
       if (userLat && userLng) {
-        allLeads.forEach(function(l) {
-          l._distMi = (l.lat && l.lng) ? canvassHaversine(userLat, userLng, l.lat, l.lng) : 9999;
+        leads.forEach(function(l) {
+          var isHot = l.knock_status === 'callback' || l.knock_status === 'interested';
+          l._distMi = canvassHaversine(userLat, userLng, l.lat, l.lng);
+          l._hot = isHot;
         });
-        allLeads.sort(function(a, b) {
+        leads.sort(function(a, b) {
+          if (a._hot && !b._hot) return -1;
+          if (!a._hot && b._hot) return 1;
           if (a.knock_status && !b.knock_status) return 1;
           if (!a.knock_status && b.knock_status) return -1;
           return a._distMi - b._distMi;
         });
-        // Geocode top-20 leads missing coordinates (3s timeout each so we don't hang)
-        var needsGeo = allLeads.filter(function(l){ return l._distMi === 9999 && l.address; }).slice(0, 20);
-        if (needsGeo.length) {
-          await Promise.all(needsGeo.map(async function(l) {
-            try {
-              var geo = await Promise.race([
-                geocodeAddress(l.address),
-                new Promise(function(r){ setTimeout(function(){ r(null); }, 3000); })
-              ]);
-              if (geo) { l.lat = geo.lat; l.lng = geo.lng; l._distMi = canvassHaversine(userLat, userLng, l.lat, l.lng); }
-            } catch(e){}
-          }));
-          // Re-sort after geocoding
-          allLeads.sort(function(a, b) {
-            if (a.knock_status && !b.knock_status) return 1;
-            if (!a.knock_status && b.knock_status) return -1;
-            return a._distMi - b._distMi;
-          });
-          // Save coords to DB in background
-          needsGeo.filter(function(l){ return l.lat && l._distMi !== 9999; }).forEach(function(l) {
-            supabase.createClient(SUPA_URL, SUPA_KEY).from('customers').update({lat:l.lat, lng:l.lng}).eq('id',l.id);
-          });
-        }
-      } else {
-        allLeads.sort(function(a, b) {
-          if (a.knock_status && !b.knock_status) return 1;
-          if (!a.knock_status && b.knock_status) return -1;
-          return (a.address||'').localeCompare(b.address||'');
-        });
       }
 
-      canvassLeads = allLeads.filter(function(l){ return canvassSkipIds.indexOf(l.id) < 0; });
+      canvassLeads = leads.filter(function(l){ return canvassSkipIds.indexOf(l.id) < 0; });
       canvassGpsStatus = 'ready';
       renderSales();
     }
