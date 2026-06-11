@@ -138,6 +138,10 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
       .portal-tab { font-size:0.82rem; padding:9px 14px; }
       #repChatModal { align-items:center !important; justify-content:center !important; }
       #repChatModal > div { border-radius:20px !important; max-height:75vh; }
+      #leadList { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; align-items:start; }
+      .lead-card { margin-bottom:0; }
+      .lead-card-actions { flex-direction:row !important; flex-wrap:wrap; gap:5px; }
+      .admin-stats { grid-template-columns:repeat(4,1fr) !important; }
     }
     .ed-full { margin-bottom:12px; }
     .ed-label { font-size:0.64rem; font-weight:600; text-transform:uppercase; letter-spacing:0.07em; color:#666; display:block; margin-bottom:5px; }
@@ -649,6 +653,71 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     loadAdminBbStats(); // fire-and-forget — populates adminBlackBoxCustomers for BB tab stats
     try { renderAdminCanvassView(); }
     catch(e) { _dbEl.innerHTML = '<p style="color:#ef4444;">Render error: '+e.message+'. <button onclick="loadAdminDashboard()" style="width:auto;padding:8px 16px;font-size:0.75rem;background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;cursor:pointer;">Retry</button></p>'; console.error('[renderAdminCanvassView]', e); }
+    showBlackBoxPopup();
+  }
+
+  async function showBlackBoxPopup() {
+    if (sessionStorage.getItem('bbPopupDismissed')) return;
+    try {
+      var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+
+      // Include leads from the last 48hrs + any pinned from previous session
+      var savedIds = [];
+      try { savedIds = JSON.parse(localStorage.getItem('bbSavedLeads') || '[]'); } catch(e) {}
+
+      var { data: freshLeads } = await c2.from('customers').select('id,first_name,last_name,phone,created_at').eq('black_box', true).gte('created_at', cutoff).order('created_at', {ascending: false}).limit(10);
+      var hotLeads = freshLeads || [];
+
+      // Merge saved leads (deduped) if any
+      if (savedIds.length) {
+        var freshIds = hotLeads.map(function(l){ return l.id; });
+        var missingIds = savedIds.filter(function(id){ return !freshIds.includes(id); });
+        if (missingIds.length) {
+          var { data: savedLeads } = await c2.from('customers').select('id,first_name,last_name,phone,created_at').in('id', missingIds);
+          if (savedLeads && savedLeads.length) hotLeads = hotLeads.concat(savedLeads);
+        }
+      }
+
+      if (!hotLeads.length) return;
+
+      // Store minimal lead data in a global so onclick handlers can reference it cleanly
+      window._bbHotLeads = hotLeads.map(function(l) {
+        return { id: l.id, first_name: l.first_name||'', last_name: l.last_name||'', phone: l.phone||'' };
+      });
+
+      var rows = hotLeads.map(function(l) {
+        var name = ((l.first_name||'') + ' ' + (l.last_name||'')).trim() || 'Unknown';
+        var ph   = l.phone ? ' · ' + l.phone : '';
+        var isPinned = savedIds.includes(l.id);
+        var ago  = Math.round((Date.now() - new Date(l.created_at).getTime()) / 60000);
+        var agoStr = ago < 60 ? ago + 'm ago' : Math.round(ago/60) + 'h ago';
+        var pin = isPinned ? ' <span style="color:#8DC63F;font-size:0.7rem;">&#128204; saved</span>' : '';
+        return '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #2a2a2a;font-size:0.8rem;"><span style="color:#e5e7eb;">'+name+ph+pin+'</span><span style="color:#6b7280;">'+agoStr+'</span></div>';
+      }).join('');
+
+      var overlay = document.createElement('div');
+      overlay.id = 'bbHotPopup';
+      overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;';
+      overlay.innerHTML = '<div style="background:#1a1a1a;border:1px solid #8DC63F;border-radius:12px;padding:24px;max-width:420px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,0.8);">'
+        + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">'
+        + '<h3 style="color:#8DC63F;margin:0;font-size:1rem;">&#128230; ' + hotLeads.length + ' Hot Lead' + (hotLeads.length > 1 ? 's' : '') + ' (Last 48h)</h3>'
+        + '<button onclick="document.getElementById(\'bbHotPopup\').remove();sessionStorage.setItem(\'bbPopupDismissed\',\'1\');" style="background:none;border:none;color:#6b7280;font-size:1.2rem;cursor:pointer;padding:0 4px;">&times;</button>'
+        + '</div>'
+        + '<div style="max-height:220px;overflow-y:auto;margin-bottom:16px;">' + rows + '</div>'
+        + '<div style="display:flex;flex-direction:column;gap:8px;">'
+        + '<div style="display:flex;gap:8px;">'
+        + '<button onclick="document.getElementById(\'bbHotPopup\').remove();sessionStorage.setItem(\'bbPopupDismissed\',\'1\');renderAdminCanvassView();" style="flex:1;padding:10px;background:#8DC63F;color:#1A1A1A;border:none;border-radius:8px;font-weight:700;cursor:pointer;font-size:0.85rem;">View Black Box</button>'
+        + '<button onclick="document.getElementById(\'bbHotPopup\').remove();sessionStorage.setItem(\'bbPopupDismissed\',\'1\');" style="padding:10px 16px;background:#2a2a2a;color:#9ca3af;border:none;border-radius:8px;cursor:pointer;font-size:0.85rem;">Dismiss</button>'
+        + '</div>'
+        + '<div style="display:flex;gap:8px;">'
+        + '<button onclick="(function(){try{localStorage.setItem(\'bbSavedLeads\',JSON.stringify((window._bbHotLeads||[]).map(function(l){return l.id;})));}catch(e){}document.getElementById(\'bbHotPopup\').remove();sessionStorage.setItem(\'bbPopupDismissed\',\'1\');})()" style="flex:1;padding:9px;background:#1f2937;color:#8DC63F;border:1px solid #374151;border-radius:8px;cursor:pointer;font-size:0.8rem;">&#128204; Save for Next Login</button>'
+        + '<button onclick="(function(){try{sessionStorage.setItem(\'bbPinnedRouteLeads\',JSON.stringify(window._bbHotLeads||[]));}catch(e){}document.getElementById(\'bbHotPopup\').remove();sessionStorage.setItem(\'bbPopupDismissed\',\'1\');renderAdminView(\'dashboard\');})()" style="flex:1;padding:9px;background:#1f2937;color:#a78bfa;border:1px solid #374151;border-radius:8px;cursor:pointer;font-size:0.8rem;">&#128203; Push to Routes</button>'
+        + '</div>'
+        + '</div>'
+        + '</div>';
+      document.body.appendChild(overlay);
+    } catch(e) { console.warn('BB popup error:', e.message); }
   }
 
   async function loadAdminBbStats() {
@@ -787,14 +856,37 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '<button class="admin-action-btn ghost" onclick="renderImportView()">&#8679; Import</button>'+
           '<button class="admin-action-btn ghost" onclick="loadAdminDashboard()" title="Re-pull all leads from database">&#8635; Refresh</button>'+
         '</div>'+
-    '</div>';
-    var actionsBar = '<div class="admin-actions-bar"><button class="admin-action-btn" onclick="openNewLead()">+ New Lead</button><button class="admin-action-btn ghost" onclick="exportCSV()">&#8681; Export CSV</button><button class="admin-action-btn ghost" onclick="openReassignModal()">&#128257; Reassign</button><button class="admin-action-btn ghost" onclick="renderImportView()">&#8679; Import</button><button class="admin-action-btn ghost" onclick="loadAdminDashboard()" title="Re-pull all leads from database">&#8635; Refresh</button></div>';
+    '</div>';    var actionsBar = '<div class="admin-actions-bar"><button class="admin-action-btn" onclick="openNewLead()">+ New Lead</button><button class="admin-action-btn ghost" onclick="exportCSV()">&#8681; Export CSV</button><button class="admin-action-btn ghost" onclick="openReassignModal()">&#128257; Reassign</button><button class="admin-action-btn ghost" onclick="renderImportView()">&#8679; Import</button><button class="admin-action-btn ghost" onclick="loadAdminDashboard()" title="Re-pull all leads from database">&#8635; Refresh</button></div>';
     var listHtml = '';
     if (!c.length) { listHtml = '<div style="padding:32px;text-align:center;color:#555;">No leads in this category.</div>'; }
     else { c.forEach(function(cust) { listHtml += buildLeadCard(cust); }); }
+
+    // Pinned hot leads banner (from "Push to Routes" button in BB popup)
+    var pinnedHtml = '';
+    try {
+      var pinnedLeads = JSON.parse(sessionStorage.getItem('bbPinnedRouteLeads') || '[]');
+      if (pinnedLeads.length) {
+        var pinnedRows = pinnedLeads.map(function(l) {
+          var name = ((l.first_name||'') + ' ' + (l.last_name||'')).trim() || 'Unknown';
+          var ph   = l.phone ? l.phone : '';
+          return '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:rgba(167,139,250,0.06);border-radius:8px;margin-bottom:4px;">'
+            + '<span style="font-size:0.82rem;color:#e5e7eb;">'+name+(ph?' <span style="color:#9ca3af;font-size:0.75rem;">· '+ph+'</span>':'')+'</span>'
+            + '<button onclick="openLeadEditor(\''+l.id+'\')" style="font-size:0.72rem;padding:4px 10px;background:rgba(167,139,250,0.15);color:#a78bfa;border:1px solid rgba(167,139,250,0.3);border-radius:6px;cursor:pointer;white-space:nowrap;">&#9998; Edit</button>'
+            + '</div>';
+        }).join('');
+        pinnedHtml = '<div style="background:rgba(167,139,250,0.06);border:1px solid rgba(167,139,250,0.25);border-radius:10px;padding:12px 14px;margin-bottom:14px;">'
+          + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">'
+          + '<span style="font-size:0.75rem;font-weight:700;color:#a78bfa;text-transform:uppercase;letter-spacing:0.05em;">&#128203; Pinned Hot Leads</span>'
+          + '<button onclick="sessionStorage.removeItem(\'bbPinnedRouteLeads\');renderAdminView(adminView);" style="font-size:0.7rem;padding:3px 10px;background:rgba(255,255,255,0.06);color:#6b7280;border:1px solid rgba(255,255,255,0.1);border-radius:6px;cursor:pointer;">Clear</button>'
+          + '</div>'
+          + pinnedRows
+          + '</div>';
+      }
+    } catch(e) {}
+
     document.getElementById('dashBody').innerHTML = portalNav+agNotifHtml+
       '<div class="admin-header-row"><h2 style="font-size:1.1rem;font-weight:700;">Leads</h2><span style="font-size:0.72rem;color:#555;">'+allLeads.length+' total</span></div>'+
-      catTabs+statsHtml+searchBar+'<div id="editorSlot"></div><div id="leadList" class="pipe-'+(adminLeadCat==='new_solar'?'solar':adminLeadCat==='top_tier'?'toptier':'fixmy')+'">'+listHtml+'</div>';
+      catTabs+statsHtml+searchBar+'<div id="editorSlot"></div>'+pinnedHtml+'<div id="leadList" class="pipe-'+(adminLeadCat==="new_solar"?'solar':adminLeadCat==="top_tier"?'toptier':'fixmy')+'">'+ listHtml+'</div>';
   }
 
   function setFilter(f) { adminFilter = f; renderAdminView(adminView); }
@@ -3958,7 +4050,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '91948','91962','91963','91977','91978','91980'
     ]);
 
-    // ── Quarantine stats + list ─────────────────────────────────────────────
+    // Define these early — bbLeads used by GPS pagination below
     var bbLeads = adminBlackBoxCustomers;
     var totalImported = window._adminBbTotal != null ? window._adminBbTotal : adminBlackBoxCustomers.length;
     var totalActivated = adminCustomers.filter(function(x){ return x.lead_source === 'orphaned_list'; }).length;
@@ -3975,55 +4067,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (CURRENT_ROLE !== 'admin') {
     h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;margin-bottom:12px;">&#128205; Routes</div>';
 
-    // ── Doorstep Intel ─────────────────────────────────────────────────────────
-    // QR target hoisted here so the fixed panel can use it after innerHTML is set
+    // ── Inline QR share card ─────────────────────────────────────────────────
     var _bbQrPersonId = (CURRENT_ROLE !== 'admin' && currentUser && currentUser.id) ? currentUser.id : null;
     var _bbQrTarget   = _bbQrPersonId ? ('https://fixmy.energy/meet?r=' + encodeURIComponent(_bbQrPersonId)) : 'https://fixmy.energy/check';
+    var _bbQrImgUrl   = 'https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=' + encodeURIComponent(_bbQrTarget);
+    h += '<div style="display:flex;align-items:center;gap:14px;background:rgba(255,255,255,0.03);border:1px solid rgba(141,198,63,0.25);border-radius:14px;padding:12px 14px;margin-bottom:14px;">';
+    h += '<img src="'+_bbQrImgUrl+'" style="width:72px;height:72px;border-radius:8px;background:#fff;padding:3px;flex-shrink:0;" />';
+    h += '<div>';
+    h += '<div style="font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#8DC63F;margin-bottom:5px;">&#128241; Share Your Link</div>';
+    h += '<div style="font-size:0.67rem;color:#888;margin-bottom:8px;line-height:1.4;">Scan &#8594; contact form &amp; booking</div>';
+    h += '<button id="bbQrCopyBtn" onclick="navigator.clipboard.writeText(\''+_bbQrTarget+'\').then(function(){var b=document.getElementById(\'bbQrCopyBtn\');if(b){b.textContent=\'Copied!\';setTimeout(function(){b.textContent=\'Copy Link\';},1600);}})" style="padding:5px 14px;background:rgba(141,198,63,0.12);border:1px solid rgba(141,198,63,0.3);color:#8DC63F;border-radius:100px;font-size:0.62rem;font-weight:700;cursor:pointer;">&#128203; Copy Link</button>';
+    h += '</div></div>';
 
-    (function(){
-      // Count which defunct installers appear in the local lead set (for smart sorting)
-      var instCount = {};
-      adminBlackBoxCustomers.forEach(function(l){ if (l.installer) instCount[l.installer] = (instCount[l.installer]||0)+1; });
-
-      // Defunct installer intel — links to our own branded installer pages (already built)
-      var INSTALLER_INTEL = [
-        { key:'SunPower',        label:'SunPower — Ch.11 bankruptcy',        url:'https://fixmy.energy/sunpower' },
-        { key:'Sunnova',         label:'Sunnova — Ch.11 bankruptcy 2025',    url:'https://fixmy.energy/sunnova' },
-        { key:'Titan Solar',     label:'Titan Solar — Ch.7 liquidation',     url:'https://fixmy.energy/titan' },
-        { key:'Mosaic',          label:'Mosaic Solar — Ch.11 bankruptcy',    url:'https://fixmy.energy/mosaic' },
-        { key:'Sullivan Solar',  label:'Sullivan Solar — shut down 2021',    url:'https://fixmy.energy/check' },
-        { key:'Petersen Dean',   label:'Petersen Dean — Ch.11 bankruptcy',   url:'https://fixmy.energy/check' },
-        { key:'Freedom Forever', label:'Freedom Forever — Ch.11 Apr 2026',   url:'https://fixmy.energy/check' },
-      ];
-      // Sort: leads with known installer first, then alphabetical
-      INSTALLER_INTEL.sort(function(a,b){ return (instCount[b.key]||0)-(instCount[a.key]||0); });
-
-      // SDG&E rate intel links (confirmed sources from CPUC/BLS/news research)
-      var SDGE_INTEL = [
-        { label:'Why your SD bill keeps rising (KPBS 2026)', url:'https://www.kpbs.org/news/economy/2026/03/09/why-your-san-diego-electric-bill-is-so-high-right-now' },
-        { label:'SDG&E up 65% in 3 years (Solar.com)',       url:'https://www.solar.com/learn/sdge-rate-increases/' },
-        { label:'Jan 2026: +7.4% rate increase (Escondido Times)', url:'https://escondidotimes.com/sdge-rate-increase-2026-san-diego-bills-up-7-4/' },
-        { label:'CPUC official 20-yr SDG&E forecast (PDF)',  url:'https://www.cpuc.ca.gov/-/media/cpuc-website/divisions/office-of-governmental-affairs-division/reports/2025/2025-sb-695-report_093025.pdf' },
-      ];
-
-      h += '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:12px 13px;margin-bottom:16px;">';
-
-      // SDG&E rate section
-      h += '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#ef4444;margin-bottom:7px;">&#128200; SDG&E Rate Intel</div>';
-      SDGE_INTEL.forEach(function(lnk){
-        h += '<div style="margin-bottom:5px;"><a href="'+lnk.url+'" target="_blank" rel="noopener" style="font-size:0.67rem;color:#4a9eff;text-decoration:none;line-height:1.4;">&#8599; '+lnk.label+'</a></div>';
-      });
-
-      // Defunct installer section
-      h += '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#ffaa00;margin-top:11px;margin-bottom:7px;">&#127968; Defunct Installer Intel</div>';
-      INSTALLER_INTEL.forEach(function(ins){
-        var cnt = instCount[ins.key]||0;
-        var badge = cnt > 0 ? '<span style="background:rgba(255,170,0,0.18);color:#ffaa00;border-radius:4px;padding:0 5px;font-size:0.6rem;font-weight:700;margin-right:5px;">'+cnt+'</span>' : '';
-        h += '<div style="margin-bottom:5px;">'+badge+'<a href="'+ins.url+'" target="_blank" rel="noopener" style="font-size:0.67rem;color:#aaa;text-decoration:none;line-height:1.4;">&#8599; '+ins.label+'</a></div>';
-      });
-
-      h += '</div>'; // end intel panel
-    })();
+    // ── Routes ───────────────────────────────────────────────────────────────
+    h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;margin-bottom:12px;">&#128205; Routes</div>';
 
     if (adminCanvassGpsStatus === 'idle') {
       h += '<div style="text-align:center;padding:32px 16px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:14px;margin-bottom:12px;">';
@@ -4313,6 +4370,51 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         }
       }
     }
+
+    // ── Quarantine stats (below Routes) ──────────────────────────────────────
+    h += '<div style="margin-top:20px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px;">';
+    h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;">&#128230; Black Box &mdash; Quarantined Leads</div>';
+    h += '<span style="font-size:0.72rem;color:#888;"><strong id="bbStatImported" style="color:#eee;">'+totalImported+'</strong> imported &middot; <strong style="color:#8DC63F;">'+totalActivated+'</strong> activated (<strong style="color:#8DC63F;">'+convPct+'%</strong>)</span>';
+    h += '</div>';
+    h += '<div id="bbEnrichBar" style="margin-bottom:12px;"></div>';
+    if (CURRENT_ROLE === 'admin') h += '<div id="bbPullBar" style="margin-bottom:12px;"></div>';
+    if (CURRENT_ROLE === 'admin') h += '<div id="bbPhase0Panel" style="margin-bottom:12px;"></div>';
+    if (CURRENT_ROLE === 'admin') h += '<div id="bbInsightsPanel" style="margin-bottom:12px;"></div>';
+
+    // ── Intel Links (collapsed footer) ───────────────────────────────────────
+    (function(){
+      var instCount = {};
+      adminBlackBoxCustomers.forEach(function(l){ if (l.installer) instCount[l.installer] = (instCount[l.installer]||0)+1; });
+      var INSTALLER_INTEL = [
+        { key:'SunPower',        label:'SunPower — Ch.11 bankruptcy',        url:'https://fixmy.energy/sunpower' },
+        { key:'Sunnova',         label:'Sunnova — Ch.11 bankruptcy 2025',    url:'https://fixmy.energy/sunnova' },
+        { key:'Titan Solar',     label:'Titan Solar — Ch.7 liquidation',     url:'https://fixmy.energy/titan' },
+        { key:'Mosaic',          label:'Mosaic Solar — Ch.11 bankruptcy',    url:'https://fixmy.energy/mosaic' },
+        { key:'Sullivan Solar',  label:'Sullivan Solar — shut down 2021',    url:'https://fixmy.energy/check' },
+        { key:'Petersen Dean',   label:'Petersen Dean — Ch.11 bankruptcy',   url:'https://fixmy.energy/check' },
+        { key:'Freedom Forever', label:'Freedom Forever — Ch.11 Apr 2026',   url:'https://fixmy.energy/check' },
+      ];
+      INSTALLER_INTEL.sort(function(a,b){ return (instCount[b.key]||0)-(instCount[a.key]||0); });
+      var SDGE_INTEL = [
+        { label:'Why your SD bill keeps rising (KPBS 2026)', url:'https://www.kpbs.org/news/economy/2026/03/09/why-your-san-diego-electric-bill-is-so-high-right-now' },
+        { label:'SDG&E up 65% in 3 years (Solar.com)',       url:'https://www.solar.com/learn/sdge-rate-increases/' },
+        { label:'Jan 2026: +7.4% rate increase (Escondido Times)', url:'https://escondidotimes.com/sdge-rate-increase-2026-san-diego-bills-up-7-4/' },
+        { label:'CPUC official 20-yr SDG&E forecast (PDF)',  url:'https://www.cpuc.ca.gov/-/media/cpuc-website/divisions/office-of-governmental-affairs-division/reports/2025/2025-sb-695-report_093025.pdf' },
+      ];
+      var intelHtml = '';
+      intelHtml += '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#ef4444;margin-bottom:7px;">&#128200; SDG&amp;E Rate Intel</div>';
+      SDGE_INTEL.forEach(function(lnk){ intelHtml += '<div style="margin-bottom:5px;"><a href="'+lnk.url+'" target="_blank" rel="noopener" style="font-size:0.67rem;color:#4a9eff;text-decoration:none;line-height:1.4;">&#8599; '+lnk.label+'</a></div>'; });
+      intelHtml += '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#ffaa00;margin-top:11px;margin-bottom:7px;">&#127968; Defunct Installer Intel</div>';
+      INSTALLER_INTEL.forEach(function(ins){
+        var cnt = instCount[ins.key]||0;
+        var badge = cnt > 0 ? '<span style="background:rgba(255,170,0,0.18);color:#ffaa00;border-radius:4px;padding:0 5px;font-size:0.6rem;font-weight:700;margin-right:5px;">'+cnt+'</span>' : '';
+        intelHtml += '<div style="margin-bottom:5px;">'+badge+'<a href="'+ins.url+'" target="_blank" rel="noopener" style="font-size:0.67rem;color:#aaa;text-decoration:none;line-height:1.4;">&#8599; '+ins.label+'</a></div>';
+      });
+      h += '<details style="margin-top:16px;border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 12px;">';
+      h += '<summary style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#666;cursor:pointer;list-style:none;">&#128218; Intel Links &#9660;</summary>';
+      h += '<div style="margin-top:10px;">'+intelHtml+'</div>';
+      h += '</details>';
+    })();
 
     h += '</div>';
     document.getElementById('dashBody').innerHTML = h;
@@ -5923,9 +6025,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return '<div class="admin-stat-card '+active+'" data-filter="'+filter+'" onclick="setFilter(this.dataset.filter)"><div class="admin-stat-val" style="color:'+color+'">'+val+'</div><div class="admin-stat-label">'+label+'</div></div>';
   }
   function filterBtn(val, label) {
-    var isActive = adminFilter===val;
-    var style = 'width:100%;display:block;padding:13px 18px;border-radius:10px;font-size:0.88rem;font-weight:700;cursor:pointer;text-align:left;margin-bottom:6px;transition:all 0.15s;border:'+(isActive?'none':'1px solid rgba(255,255,255,0.08)')+';background:'+(isActive?'rgba(141,198,63,0.18)':'rgba(255,255,255,0.04)')+';color:'+(isActive?'#8DC63F':'#888')+';';
-    return '<button style="'+style+'" data-filter="'+val+'" onclick="setFilter(this.dataset.filter)">'+label+'</button>';
+    var isActive = adminFilter === val;
+    return '<button style="padding:6px 14px;border-radius:100px;font-size:0.75rem;font-weight:700;cursor:pointer;border:'+(isActive?'none':'1px solid rgba(255,255,255,0.1)')+';background:'+(isActive?'rgba(141,198,63,0.2)':'rgba(255,255,255,0.05)')+';color:'+(isActive?'#8DC63F':'#666')+';white-space:nowrap;" data-filter="'+val+'" onclick="setFilter(this.dataset.filter)">'+label+'</button>';
   }
 
   function buildLeadCard(c) {
@@ -6954,6 +7055,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       })();
       return;
     }
+    if (isFixMySave && stepVal === 7 && (cRec.step||1) !== 7) updates.archived = true;
+    if (isTTSave && (document.getElementById('edTTDisposition')||{}).value === 'dead') updates.archived = true;
     try {
       var client=supabase.createClient(SUPA_URL,SUPA_KEY);
       var { error }=await client.from('customers').update(updates).eq('id',id);
@@ -8785,7 +8888,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }
     } catch(e) {}
 
-    var salesView = sessionStorage.getItem('salesView_'+person.id) || 'canvass';
+    var salesView = sessionStorage.getItem('salesView_'+person.id) || 'leads';
     var OPS_NAMES = {ops1:'Jon Klos',ops2:'John Espinoza',ops3:'Cosmic Solar',ops4:'Axia',dennis:'Dennis'};
 
     function fmtDt(iso) {
@@ -8946,10 +9049,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       h += '<div style="display:flex;gap:6px;margin-bottom:16px;">';
       h += tBtn('leads','📋 Leads ('+myLeads.length+')');
       h += tBtn('jobs','💼 Jobs ('+myJobs.length+')');
+      h += tBtn('canvass','📦 Black Box');
       if (showFieldJobs) h += tBtn('field','🔧 Field ('+fieldJobs.length+')');
       h += tBtn('schedule','📅 Appts'+(myApptCount?'  ('+myApptCount+')':''));
       if (config.setterMode) h += tBtn('map','🗺 Map');
-      h += tBtn('canvass','📦 Black Box');
       h += tBtn('training','📚 Training');
       h += '</div>';
 
@@ -9232,8 +9335,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       else if (salesView === 'canvass') {
         h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;margin-bottom:12px;">&#128230; Black Box &mdash; Door Knocking Route</div>';
 
-        // ── Doorstep Intel (same panel as admin, counts against rep's leads) ──
-        (function(){
+        // Intel rendered below GPS section — placeholder for inline variable capture
+        var _canvassIntelHtml = (function(){
           var instCount = {};
           canvassLeads.forEach(function(l){ if (l.installer) instCount[l.installer] = (instCount[l.installer]||0)+1; });
           var INSTALLER_INTEL = [
@@ -9252,18 +9355,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             { label:'Jan 2026: +7.4% rate increase (Escondido Times)', url:'https://escondidotimes.com/sdge-rate-increase-2026-san-diego-bills-up-7-4/' },
             { label:'CPUC official 20-yr SDG&E forecast (PDF)',  url:'https://www.cpuc.ca.gov/-/media/cpuc-website/divisions/office-of-governmental-affairs-division/reports/2025/2025-sb-695-report_093025.pdf' },
           ];
-          h += '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:12px 13px;margin-bottom:16px;">';
-          h += '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#ef4444;margin-bottom:7px;">&#128200; SDG&E Rate Intel</div>';
-          SDGE_INTEL.forEach(function(lnk){
-            h += '<div style="margin-bottom:5px;"><a href="'+lnk.url+'" target="_blank" rel="noopener" style="font-size:0.67rem;color:#4a9eff;text-decoration:none;line-height:1.4;">&#8599; '+lnk.label+'</a></div>';
-          });
-          h += '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#ffaa00;margin-top:11px;margin-bottom:7px;">&#127968; Defunct Installer Intel</div>';
+          var out = '';
+          out += '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#ef4444;margin-bottom:7px;">&#128200; SDG&amp;E Rate Intel</div>';
+          SDGE_INTEL.forEach(function(lnk){ out += '<div style="margin-bottom:5px;"><a href="'+lnk.url+'" target="_blank" rel="noopener" style="font-size:0.67rem;color:#4a9eff;text-decoration:none;line-height:1.4;">&#8599; '+lnk.label+'</a></div>'; });
+          out += '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#ffaa00;margin-top:11px;margin-bottom:7px;">&#127968; Defunct Installer Intel</div>';
           INSTALLER_INTEL.forEach(function(ins){
             var cnt = instCount[ins.key]||0;
             var badge = cnt > 0 ? '<span style="background:rgba(255,170,0,0.18);color:#ffaa00;border-radius:4px;padding:0 5px;font-size:0.6rem;font-weight:700;margin-right:5px;">'+cnt+'</span>' : '';
-            h += '<div style="margin-bottom:5px;">'+badge+'<a href="'+ins.url+'" target="_blank" rel="noopener" style="font-size:0.67rem;color:#aaa;text-decoration:none;line-height:1.4;">&#8599; '+ins.label+'</a></div>';
+            out += '<div style="margin-bottom:5px;">'+badge+'<a href="'+ins.url+'" target="_blank" rel="noopener" style="font-size:0.67rem;color:#aaa;text-decoration:none;line-height:1.4;">&#8599; '+ins.label+'</a></div>';
           });
-          h += '</div>';
+          return out;
         })();
 
         if (canvassGpsStatus === 'idle') {
@@ -9453,6 +9554,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           h += '</div>'; // end right panel
 
           h += '</div>'; // end flex row
+        }
+
+        // Intel Links — collapsed footer (below GPS section)
+        if (_canvassIntelHtml) {
+          h += '<details style="margin-top:16px;border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 12px;">';
+          h += '<summary style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#666;cursor:pointer;list-style:none;">&#128218; Intel Links &#9660;</summary>';
+          h += '<div style="margin-top:10px;">'+_canvassIntelHtml+'</div>';
+          h += '</details>';
         }
       }
 
