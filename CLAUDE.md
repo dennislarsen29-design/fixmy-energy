@@ -1,37 +1,98 @@
 # FixMy.Energy Portal — Project Context
 
 ## What This Is
-A single-file admin + field portal for a solar diagnostic / battery retrofit / new solar business.
-All logic, HTML, CSS, and JS lives in **`portal.html`**. There is no build step — Netlify deploys the repo as-is.
+A solar diagnostic / battery retrofit / new solar business portal — admin, ops, and field views.
+All portal logic lives in **`portal.html`**. No build step — Netlify deploys the repo as-is.
 
 ## Live Site
-Deployed on Netlify from the `main` branch. Active feature branch: `claude/fixmy-energy-setup-R9lDn`.
+Deployed on Netlify from the `main` branch.
 
 ## Key Files
 - `portal.html` — the entire portal (admin, ops, setter, tech, customer views)
-- `index.html` — public-facing landing page
+- `index.html` — public-facing landing page (Southern California focus, ~814 KB)
 - `sign.html` — customer-facing Sign & Pay page (Stripe Elements + agreement signature)
-- `netlify/functions/claude-vision.js` — proxies Anthropic API calls (photo AI categorization)
-- `netlify/functions/regrid-lookup.js` — proxies Regrid parcel lookup (keeps API key server-side)
-- `netlify/functions/ghl-calendar.js` — books GHL calendar appointments + upserts contacts
-- `netlify/functions/ghl-diag-agreement.js` — upserts GHL contact + adds `send-diag-agreement` tag
-- `netlify/functions/ghl-inbound.js` — receives inbound GHL webhook payloads
-- `netlify/functions/ghl-status-update.js` — receives GHL status webhooks, updates Supabase
-- `netlify/functions/sign-init.js` — validates sign_token, creates Stripe PaymentIntent server-side
-- `netlify/functions/sign-complete.js` — verifies payment success, marks invoice paid + agreement signed
-- `.claude/settings.local.json` — gitignored; holds Netlify PAT env var + Supabase MCP permissions
+- `book.html` — Google Ads booking funnel (cream/light theme, progressive lead capture)
+- `check-preview.html` — installer-specific landing pages for orphaned account marketing
+- `careers.html` — job application page
+- `onboarding.html` — rep onboarding flow
+- `meet.html` — video meeting embed page
+- `thank-you.html` — post-booking confirmation
+- `manifest.json` — PWA manifest
+- `service-worker.js` — offline caching service worker
+- `_redirects` — Netlify URL rewrites (SPA routes + installer-specific pages)
+- `_headers` — Netlify security headers
+- `netlify.toml` — function directory, scheduled functions, per-function timeouts
+
+## Netlify Functions — Complete Reference
+
+### Sign & Pay
+- `sign-init.js` — validates `sign_token`, creates Stripe PaymentIntent server-side (amount locked)
+- `sign-complete.js` — verifies PaymentIntent, updates Supabase, fires GHL webhook + SMS/email
+
+### GHL (GoHighLevel) Integrations
+- `ghl-diag-agreement.js` — upserts GHL contact, adds `send-diag-agreement` tag
+- `ghl-inbound.js` — receives inbound GHL webhook payloads (appointment created, status changed)
+- `ghl-status-update.js` — receives GHL status webhooks, updates Supabase
+- `ghl-calendar.js` — books GHL calendar appointments + upserts contacts
+- `ghl-slots.js` — fetches free calendar slots (requires **millisecond** timestamps, not date strings)
+- `ghl-book.js` — booking form submission webhook
+- `ghl-log-communication.js` — logs SMS/calls to GHL contact timeline
+- `ghl-ops-payment.js` — ops payment workflow hooks
+
+### Data Enrichment
+- `regrid-lookup.js` — geocodes address + looks up property owner (Regrid → SANDAG → SD City GIS fallback)
+- `tracerfy-submit.js` — submits leads to Tracerfy skip-trace API
+- `tracerfy-results.js` — polls Tracerfy for skip-trace results
+- `tracefy-auto-import.js` — auto-imports completed Tracerfy results into Supabase
+
+### Permit Scraping & Lead Generation
+- `permitstack-pull.js` — PermitStack API permit pull (26s timeout configured in netlify.toml)
+- `trigger-accela-scraper.js` — triggers `scripts/accela-scraper.js` (local Playwright)
+- `check-scraper-run.js` — polls scraper job status
+- `notify-photo-upload.js` — notifies assigned rep when customer uploads photos
+
+### AI Agents
+- `claude-vision.js` — photo AI categorization via Claude Vision API
+- `chat-agent.js` — in-portal conversational CRM assistant (pipeline, stalled leads, rep performance)
+- `rep-assistant.js` — field rep sales scripts + objection rebuttals (orphaned account pitches)
+- `rep-onboard.js` — new rep onboarding flow
+- `aurora-design.js` — Aurora Design AI interface wrapper
+- `generate-proposal-insight.js` — AI-powered proposal recommendation generator
+- `run-agent-background.js` — generic background agent runner
+
+### Scheduled Agents (background functions, run on cron via netlify.toml)
+- `marketing-agent.js` — **Mondays 7am PT** — Google Ads optimization, direct mail recommendations, CPUC letters, pipeline stats; writes to `agent_reports` table
+- `bizdev-agent.js` — **Tuesdays 7am PT** — conversion funnel analysis, stalled leads, rep scoring, data quality audit; writes to `agent_reports`
+- `bb-auto-pipeline-background.js` — **Daily 2am PDT** — automated orphaned lead pipeline (see Black Box section)
+- `socials-agent.js` — social media strategy generation
+- `crm-dev-agent.js` — CRM data quality audit agent
+
+### Misc / Utilities
+- `lib/push.js` — `sendAgentNotification(agent, count)` helper used by scheduled agents
+- `careers-apply.js` — job application form handler
+- `push-subscribe.js` — Web Push subscription handler
+- `qr-lead.js` — QR code lead capture
+- `call-inbound.js` — inbound phone call webhook (Smith.AI; being migrated to Quoya/GHL)
+- `meet-init.js` — video meeting setup
+- `vapid-setup.js` — Web Push VAPID key endpoint
 
 ## Supabase
 - Project URL: `https://kbtobyoumvbcxfbugsid.supabase.co`
-- Main table: `customers` — holds all leads and jobs for both FixMy and New Solar
-- Other tables: `team_members`, `rep_agreements`, `marketing_expenses`
+- Main table: `customers` — all leads and jobs for both FixMy and New Solar
+- Other tables: `team_members`, `rep_agreements`, `marketing_expenses`, `portal_credentials`, `agent_reports`, `pipeline_state`
 - MCP is configured — use it to run SQL directly instead of asking user to copy/paste
 - Anon key is in portal.html as `SUPA_KEY` (safe — protected by RLS)
 - Service role key is `SUPA_SERVICE_KEY` Netlify env var (server-side only, never in client code)
 
+### New Tables (added since initial build)
+- `agent_reports` — action items from scheduled AI agents: `(agent, title, body, priority, created_at, reviewed, action_url)`
+- `pipeline_state` — KV store for scraper/agent state: `(key, value, updated_at)` — keys include `expansion_index`, `last_run_at`, `last_run_summary`, `phase0_insights`, `tracerfy_pending_queue`
+- `portal_credentials` — rep access codes (email + code + role mapping)
+
 ## Portal Architecture
 - `supabase.createClient(SUPA_URL, SUPA_KEY)` — client pattern used everywhere
 - `adminCustomers` — global in-memory array of all customer/lead records
+- `adminBlackBoxCustomers` — cached orphaned lead list for Black Box popup
 - `lead_category` field: `'fixmy'` | `'new_solar'` — drives which pipeline renders
 - `sold_type` field: `null` = lead, `'diagnostic'` | `'battery_retrofit'` | `'monitoring'` | `'new_solar'` = job
 - `isNSEdit` / `isNSSave` flags gate New Solar-specific fields in editor/save
@@ -72,21 +133,37 @@ var OPS_PARTNERS = [
 ];
 ```
 
+## Netlify Configuration (netlify.toml)
+- Functions directory: `netlify/functions`
+- **Scheduled crons:**
+  - `marketing-agent` — `0 14 * * 1` (Mon 7am PT / 14:00 UTC)
+  - `bizdev-agent` — `0 14 * * 2` (Tue 7am PT / 14:00 UTC)
+  - `bb-auto-pipeline-background` — `0 9 * * *` (Daily 2am PDT / 9am UTC)
+- **Function timeouts:**
+  - `permitstack-pull`: 26 seconds
+- **URL rewrites (_redirects):**
+  - SPA routes (`/services`, `/battery`, `/faq`, etc.) → `index.html`
+  - Installer pages (`/sunpower`, `/titan`, `/sunnova`, `/mosaic`, etc.) → `check-preview.html?installer=X`
+  - `/book` → `book.html` (Google Ads booking funnel)
+
 ## Netlify Environment Variables (set in Netlify UI)
-- `ANTHROPIC_KEY` — Claude API key for photo AI
+- `ANTHROPIC_KEY` — Claude API key for photo AI + scheduled agents
 - `REGRID_KEY` — Regrid parcel lookup JWT
 - `GHL_API_KEY` — GoHighLevel private integration key
 - `GHL_LOCATION_ID` — GHL sub-account location ID: `gXWwbOVymY0iRfj7c1It`
-- `GHL_CALENDAR_ID` — GHL top-tier calendar ID (if used)
+- `GHL_CALENDAR_ID` — GHL top-tier calendar ID
 - `GHL_DIAG_CALENDAR_ID` — GHL diagnostic calendar ID: `ZGOdyYdMUh07V1Ujav9R`
 - `GHL_TT_WEBHOOK` — GHL webhook URL for Top Tier workflow triggers
-- `STRIPE_SECRET_KEY` — Stripe secret key (server-side only, for sign-init.js / sign-complete.js) ✅
+- `STRIPE_SECRET_KEY` — Stripe secret key (server-side only) ✅
 - `STRIPE_PUBLISHABLE_KEY` — Stripe publishable key (returned to client by sign-init.js) ✅
-- `SUPA_SERVICE_KEY` — Supabase service role key (bypasses RLS, used in sign-init/complete) ✅
+- `SUPA_SERVICE_KEY` — Supabase service role key (bypasses RLS) ✅
+- `TRACERFY_API_KEY` — Tracerfy skip-trace API key
+- `PERMITSTACK_API_KEY` — PermitStack permit data API key
+- `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` — Web Push notification keys
 - `SECRETS_SCAN_SMART_DETECTION_OMIT_VALUES` — set to Google Maps key to bypass scanner
 
 ## Google Maps API Key
-Stored in portal.html as `GKEY` (client-side key, restrict to domain in Google Cloud Console → Credentials → HTTP referrers).
+Stored in portal.html as `GKEY` (client-side). Leave unrestricted — restricting previously broke tech portal.
 
 ## GHL Integration
 - Location ID: `gXWwbOVymY0iRfj7c1It`
@@ -94,6 +171,7 @@ Stored in portal.html as `GKEY` (client-side key, restrict to domain in Google C
 - Agreement flow: portal calls `ghl-diag-agreement.js` → upserts contact → adds `send-diag-agreement` tag → GHL workflow fires
 - Status sync: GHL calls `ghl-status-update.js` with triggers: `invoice_paid`, `invoice_created`, `agreement_signed`, `agreement_sent`
 - Scheduling: portal calls `ghl-calendar.js` to book real GHL calendar appointment (so reminders auto-recalculate on reschedule)
+- Slots API: `ghl-slots.js` — **IMPORTANT: pass timestamps in milliseconds**, not date strings (fixed 400 error)
 - Webhook tester: built into Team tab — tap trigger buttons to seed GHL mapping reference payloads
 
 ## Diagnostic Fee Flow (IMPORTANT — do not re-ask)
@@ -116,22 +194,20 @@ Stored in portal.html as `GKEY` (client-side key, restrict to domain in Google C
 This is the combined customer agreement + payment page. **DO NOT rebuild — it is already built.**
 
 ### How it works:
-1. Admin/Tech confirms diagnostic fee in portal → `sign_token` generated + stored in `customers.sign_token`
+1. Admin/Tech confirms diagnostic fee → `sign_token` generated + stored in `customers.sign_token`
 2. Portal shows shareable link popup with Copy + "Text It" buttons
 3. Customer opens `fixmy.energy/sign?t=TOKEN` on their phone
-4. `sign-init.js` validates token, creates Stripe PaymentIntent server-side (amount locked — client cannot tamper)
+4. `sign-init.js` validates token, creates Stripe PaymentIntent server-side (amount locked — client cannot tamper; includes 3.9% Stripe fee)
 5. `sign.html` shows: agreement text → typed signature field → Stripe Card Element → "Sign & Pay $X" button
-6. Stripe processes card — card data never touches our servers (PCI compliant, handled by Stripe Elements)
-7. On success: `sign-complete.js` verifies PaymentIntent, updates Supabase (`invoice_status=paid`, `agreement_status=signed`, clears token), fires GHL `diag-signed-and-paid` tag
+6. Stripe processes card — card data never touches our servers (PCI compliant)
+7. On success: `sign-complete.js` verifies PaymentIntent, records IP/user-agent/signature audit trail, updates Supabase (`invoice_status=paid`, `agreement_status=signed`, clears token), fires GHL `diag-signed-and-paid` tag + SMS confirmation
 8. Auto-conversion: portal detects `invoice_status=paid` + `agreement_status=signed` → converts lead to `sold_type=diagnostic` job → opens scheduling modal
 
-### Supabase columns added for Sign & Pay:
+### Supabase columns for Sign & Pay:
 - `sign_token TEXT` — UUID token (nulled out after use)
 - `sign_token_expires_at TIMESTAMPTZ` — 72hr from generation
 - `stripe_payment_intent_id TEXT` — reused on page reload to avoid duplicate charges
-
-### Netlify env vars required (not yet added to Netlify UI):
-- `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `SUPA_SERVICE_KEY`
+- `agreement_signature TEXT`, `agreement_signed_at TIMESTAMPTZ`, `agreement_ip TEXT`, `agreement_user_agent TEXT`, `repair_auth_initial TEXT` — audit trail
 
 ## Payments & Invoicing (IMPORTANT — do not re-ask)
 - Stripe is used through GHL Payments integration for existing flows
@@ -159,25 +235,102 @@ Red/amber banners at top of editor when:
 - `edResendAgreement(id)` re-fires `ghl-diag-agreement.js`
 - `edResendInvoice(id)` copies `invoice_url` to clipboard
 
+## Black Box System (Orphaned Lead Canvassing)
+The Black Box is the automated orphaned-account lead pipeline. Admin popup shows geocoded leads for door-to-door canvassing with GPS routing.
+
+### Automated pipeline (`bb-auto-pipeline-background.js`, runs daily 2am PDT):
+- **Phase 0 (AI intelligence):** Claude Haiku analyzes existing orphaned leads, generates insights, adds installer name variants — stored in `pipeline_state.phase0_insights`
+- **Phase 1a:** Socrata API (legacy SD open data — skip if PermitStack active)
+- **Phase 1b:** PermitStack OC/Riverside (activated at `expansion_index` ≥20 OC, ≥54 Riverside)
+- **Phase 1c:** PermitStack SD cities (16 cities, ~5 min budget per run)
+- **Phase 1d:** Socrata SD County unincorporated areas
+- **Phase 2:** Owner enrichment — SANDAG + Regrid + Census geocoding fallback chain; stores `lat`/`lng` + `title_owner`
+- **Phase 3:** Tracerfy skip-trace — submits leads, polls up to 4 min; stores phone/email from results
+- De-duplication via `normAddr()` (lowercase + normalize spaces)
+- Lead scoring: `lead_score` 0–100 based on system age + installer risk tier
+- Geographic expansion queue: SD County zips → OC south/coastal → OC central → Riverside (Temecula basin); 5 new zips per run; current position in `pipeline_state.expansion_index`
+
+### Admin portal Black Box popup:
+- `showBlackBoxPopup()` — fetches geocoded orphaned leads (`black_box=true`, `lat IS NOT NULL`)
+- Admin batch geocoder: geocodes un-geocoded leads via Regrid
+- Renders lead cards with address, installer, score, GPS route button
+- GPS routing opens Google Maps directions on mobile
+
+### Key customers columns for Black Box:
+- `black_box BOOLEAN` — flags lead as orphaned/canvassing target
+- `lat FLOAT`, `lng FLOAT` — geocoded coordinates
+- `lead_score INTEGER` — 0-100 composite score
+- `original_installer TEXT` — defunct installer name from permit
+- `install_year INTEGER` — system installation year
+- `enrichment_source TEXT` — which data source populated the record
+
+## Scheduled AI Agents
+All agents write action items to the `agent_reports` table and send push notifications via `lib/push.js`.
+
+### marketing-agent.js (Mondays 7am PT)
+- Analyzes 30-day pipeline stats + 90-day zip-level performance
+- Writes Google Ads optimization recommendations (RSA headlines, descriptions, keywords, geo-targeting)
+- Generates CPUC/SDG&E public records request letters
+- Recommends direct mail campaigns + referral payouts
+- Priorities: `urgent` | `high` | `normal`
+
+### bizdev-agent.js (Tuesdays 7am PT)
+- Conversion funnel analysis (FixMy vs New Solar pipelines)
+- Stalled leads re-engagement (14+ days old, non-dead stages)
+- Rep performance scoring (leads → jobs by setter/rep)
+- Referral health audit (incentives owed)
+- Data completeness audit (missing phone/email/address/invoice/ops)
+- Pipeline anomalies + 12-week volume trends
+
+### Agent Reports (portal Team tab)
+- Admin reviews action items in the Team tab
+- Each report has `priority`, `title`, `body`, `action_url`, `reviewed` flag
+- `reviewed=true` archives the item
+
+## Skip-Trace (Tracerfy) Integration
+- `tracerfy-submit.js` — batch-submits leads missing contact info
+- `tracerfy-results.js` — polls API for completed results
+- `tracefy-auto-import.js` — automatically imports results back into Supabase
+- Pending queue stored in `pipeline_state` table (`tracerfy_pending_queue`)
+- Only submits leads with address + `title_owner` but no phone/email
+
+## Book.html — Google Ads Booking Funnel
+Separate from the main site, optimized for mobile Google Ads traffic.
+- Cream/light theme matching Solar Review branding
+- "15 Point Solar Inspection" offer + 5.0 Google Reviews chip
+- Progressive lead capture: captures partial data (name, address) before asking for phone
+- Fetches available slots from GHL calendar via `ghl-slots.js`
+- On slot selection: fires `ghl-book.js` to book appointment + upsert GHL contact
+- All "Book an Evaluation" CTAs on index.html route to `/book`
+
+## Commission Calculation
+`calcRepCommission(rec)` in portal.html uses `project_costs` (actual costs saved per job) instead of a hardcoded $250 base. Finance tab displays per-rep commission breakdown.
+
 ## Netlify MCP Setup
 - Official Netlify MCP: `@netlify/mcp` (npx)
 - Configured in `.claude/settings.json` (mcpServers.netlify, no token in file)
 - `NETLIFY_PERSONAL_ACCESS_TOKEN` stored in `.claude/settings.local.json` under `env` key (gitignored)
 - User needs to replace `PASTE_YOUR_PAT_HERE` with actual PAT from Netlify → User settings → Applications → Personal access tokens
-- Once PAT is set and session restarted, Claude can set Netlify env vars directly without user going to UI
+
+## PWA (Progressive Web App)
+- `manifest.json` — app name, icons, theme color, display mode
+- `service-worker.js` — caches key assets for offline access
+- Push notifications: `push-subscribe.js` + `vapid-setup.js` + `lib/push.js`
+- Agents use `sendAgentNotification()` to alert admin on mobile when reports are ready
 
 ## customers Table — Key Columns
 Standard: `id, first_name, last_name, email, phone, address, notes, created_at`
 Pipeline: `step, solar_status, lead_category, sold_type`
 Scheduling: `diagnostic_date, install_date, arrival_end, arrival_window, install_type`
-Financial: `invoice_status, invoice_number, invoice_amount, invoice_url, invoice_items`
+Financial: `invoice_status, invoice_number, invoice_amount, invoice_url, invoice_items, project_costs`
 Deposit: `deposit_status, deposit_amount, ops_milestone1_status, ops_milestone1_amount`
 Assignment: `assigned_ops, ops_payout_status, rep_id, setter_name`
 Lead info: `lead_source, referred_by, referral_incentive_paid, lead_temp, dnc`
-Title: `title_owner, apn, title_confirmed`
-Solar: `system_size, utility, monthly_bill, nem_status`
-Agreement: `agreement_status, agreement_url, agreement_signed_at, agreement_signature`
+Title: `title_owner, apn, title_confirmed, assessed_value, tax_delinquent`
+Solar: `system_size, utility, monthly_bill, nem_status, original_installer, install_year`
+Agreement: `agreement_status, agreement_url, agreement_signed_at, agreement_signature, agreement_ip, agreement_user_agent, repair_auth_initial`
 Sign & Pay: `sign_token, sign_token_expires_at, stripe_payment_intent_id`
+Geo/Enrichment: `lat, lng, lead_score, black_box, enrichment_source`
 
 ## Referral Incentive Feature
 - When `lead_source = 'referral'`, setter enters referring customer name in `referred_by`
@@ -202,6 +355,7 @@ Sign & Pay: `sign_token, sign_token_expires_at, stripe_payment_intent_id`
 ## Aurora Solar Integration
 - New Solar leads at job-phase statuses show an Aurora card with Launch + copy-name + copy-address buttons
 - `AURORA_ELIGIBLE` statuses: ns_welcome_scheduled through ns_pto
+- `aurora-design.js` function wraps Aurora Design AI for proposal generation
 
 ## Marketing Tab
 - `marketing_expenses` table tracks direct mail spend
@@ -211,88 +365,70 @@ Sign & Pay: `sign_token, sign_token_expires_at, stripe_payment_intent_id`
 ## Known Pending Items
 
 ### High Priority
-- **CPUC NEM data — online PRR submission (HIGH PRIORITY):** Letter sent via email; CPUC responded directing submission through their online Public Records Request portal at cpuc.ca.gov. Have not submitted online PRR yet. Same content as the draft letter below — need to find and fill out the online form. DO NOT submit until the online form is located and the format/attachment requirements are understood.
-- **Google Ads mobile CTA page (HIGH PRIORITY):** The current ads landing page CTA is hard to use on mobile. Need a dedicated, simple page with a single actionable CTA (book appointment) optimized for mobile traffic from Google Ads. Unique URL so it can be linked directly from ads. Should be separate from the main site but easy to navigate to company webpage.
-- **Lead capture / funnel tracking broken (HIGH PRIORITY):** Google Sheets lead capture integration is broken — sending traffic to "booked appointment" confirmation instead of capturing partial lead data (visitors who didn't complete booking). Need to fix so partial captures are tracked separately for retargeting. Also: social retargeting (Facebook/Instagram pixel) not yet built despite having ad traffic — low-hanging fruit for warm audience retargeting.
-- **Google Ads video creative (HIGH PRIORITY):** Current video ads are low quality. Need better video assets. (Not a dev task — Dennis action item.)
+- **CPUC NEM data — online PRR submission (HIGH PRIORITY):** CPUC responded directing submission through their online PRR portal at cpuc.ca.gov. Have not submitted yet. Same content as draft letter below. DO NOT submit until online form and attachment requirements are confirmed.
+- **Lead capture / funnel tracking broken (HIGH PRIORITY):** Google Sheets lead capture broken — sends to booking confirmation instead of capturing partial leads. Need partial captures tracked separately for retargeting. Facebook/Instagram pixel not yet built — low-hanging retargeting fruit.
+- **Google Ads video creative (HIGH PRIORITY):** Current video ads are low quality. (Dennis action item — not a dev task.)
 
 ### Medium Priority / On Hold
-- **GHL AppointmentCreate webhook → portal:** When a customer books through the `/book` calendar (ID `ZGOdyYdMUh07V1Ujav9R`), GHL needs to fire a webhook back so `diagnostic_date` populates in the portal. In GHL: Automations → "FixMy Energy Solar Appointment Confirmation" → add a Webhook action posting to `https://fixmy.energy/.netlify/functions/ghl-inbound`. `ghl-inbound.js` already parses `selectedSlot`/`startTime` from the payload. GHL config only — no code change needed.
-- Add `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `SUPA_SERVICE_KEY` to Netlify env vars (sign+pay won't work until these are set)
-- Add Netlify PAT to `.claude/settings.local.json` to enable Netlify MCP
-- **Google Maps API key restriction:** Previously caused a tech issue when restricted — leave unrestricted for now. Revisit carefully if security becomes a concern.
+- **GHL AppointmentCreate webhook → portal:** When customer books via `/book` calendar, GHL should fire back to `ghl-inbound.js` so `diagnostic_date` populates. In GHL: Automations → "FixMy Energy Solar Appointment Confirmation" → add Webhook action to `https://fixmy.energy/.netlify/functions/ghl-inbound`. GHL config only — no code change needed.
+- **Google Maps API key restriction:** Leave unrestricted for now (restriction previously broke tech portal).
 - Battery Retrofit Agreement flow (needs agreement template content from Dennis)
 - Top Tier pipeline (planned — see plan file)
 - Antoinette M2/M3 milestone invoicing (planned — see plan file)
-- **GHL field mapping (optional cleanup):** Change First Name from `{{trigger.full_name}}` → `{{trigger.firstName}}`, add Last Name → `{{trigger.lastName}}` — works either way with current payload
-- **fixmy.energy/check:** Live at `/check` (redirects to FAQ section on main site); installer-specific pages live at `/sunpower`, `/titan`, `/sunnova`, `/mosaic`, etc.
-- **CPUC/SDG&E NEM data request:** Draft letter in CLAUDE.md. Email sent; CPUC directed to online PRR portal. Online submission pending (see High Priority above).
-- **CEC GoSolar / CSI bulk CSV:** Download residential solar permit data from cpuc.ca.gov → Industries → Electrical Energy → Demand Side Management → California Solar Initiative → CSI Data → "Current Incentive Claim Data". Paste into Import tab → auto-detected and parsed.
-- **Accela scraper (local Playwright script):** `scripts/accela-scraper.js` targets SD DSD, Chula Vista, Oceanside Accela portals. Run locally: `node scripts/accela-scraper.js`. Output CSV imports via Import tab. See scripts/README for usage.
-- **Cloak Browser (anti-detect):** Noted as a future tool for platforms with aggressive fingerprint-based bot detection. Revisit if Playwright hits detection walls on commercial platforms.
+- **GHL field mapping (optional cleanup):** Change First Name from `{{trigger.full_name}}` → `{{trigger.firstName}}`, add Last Name → `{{trigger.lastName}}`
+- **fixmy.energy/check:** Live at `/check` (redirects to FAQ); installer pages at `/sunpower`, `/titan`, `/sunnova`, `/mosaic`, etc.
+- **CEC GoSolar / CSI bulk CSV:** Download from cpuc.ca.gov → Industries → Electrical Energy → Demand Side Management → California Solar Initiative → CSI Data. Paste into Import tab.
+- **Accela scraper (local Playwright):** `scripts/accela-scraper.js` — SD DSD, Chula Vista, Oceanside. Run: `node scripts/accela-scraper.js`. See scripts/README.
 - **SD County permit data pull + scoring model walkthrough:** Not yet delivered
 - **Minuteman Press direct mail strategy doc:** Not yet delivered
-- **Golf course solar panel protection:** New service scope — see Future Services section below
-- **GTM conversion tracking audit:** GTM-TSJVG2GT is installed. Verify GA4 + Google Ads conversion events fire on booking completion. Use Tag Assistant Chrome extension to confirm. (Likely related to the broken lead capture flow above.)
-- **Switch from Smith.AI to Quoya (GHL built-in AI agent):** Smith.AI webhooks no longer needed — `call-inbound.js` function can be repurposed or removed. Quoya migration is halfway completed in GHL. Finish configuring Quoya workflow to handle inbound calls and missed-call SMS follow-up.
-- **Customer photo upload SMS notification:** ✅ Built — `notify-photo-upload.js` fires after every customer upload. **Decision: Use GHL LC Phone instead of Twilio** (see SMS tooling decision below). Needs GHL workflow built to replace the Twilio path. Rep phones in `team_members`: Dennis Larsen (tech4) and Cristina Huang (tech5) are set.
+- **Golf course solar panel protection:** See Future Services section
+- **GTM conversion tracking audit:** GTM-TSJVG2GT installed. Verify GA4 + Google Ads conversion events fire on booking completion using Tag Assistant. (Likely related to broken lead capture.)
+- **Switch from Smith.AI to Quoya:** `call-inbound.js` can be repurposed. GHL Quoya migration half-done. Finish Quoya workflow for inbound calls + missed-call SMS.
+- **Customer photo upload SMS:** `notify-photo-upload.js` built. Decision: use GHL LC Phone over Twilio. Needs GHL workflow built to replace Twilio path. Rep phones in `team_members`: Dennis Larsen (tech4), Cristina Huang (tech5).
+- **agent_reports UI:** Admin Team tab shows reports but UX needs polish — bulk mark-as-reviewed, filter by priority.
 
 ### Deferred (budget/timing)
-- **BBB accreditation:** Valuable but deferred — limited budget, build other lead revenues + partner credibility first. Revisit when revenue stabilizes. Apply at bbb.org/apply (~$400-600/yr, 3-week process).
-- **GHL SMS/calendar workflows:** Skipping GHL workflow automation for now, keep items on To Do.
+- **BBB accreditation:** Deferred — build revenue first. Apply at bbb.org/apply (~$400-600/yr).
+- **GHL SMS/calendar workflows:** Skipping automation for now.
+
+### Completed ✅
+- **book.html mobile CTA page** — built, live at `/book`, all CTAs routing there
+- **Southern California rebrand** — "San Diego" → "Southern California" across all public pages and AI agents
+- **Black Box geocoding + canvassing UI** — built in portal (admin popup with GPS routing)
+- **GHL slots API fix** — millisecond timestamps fix for 400 error
+- **Commission calc fix** — now uses actual `project_costs` field
 
 ## SMS Tooling Decision — GHL LC Phone over Twilio
-**Recommendation: Use GHL's built-in LC Phone (Lead Connector) for all SMS — do not set up Twilio.**
+**Use GHL's built-in LC Phone — do not set up Twilio.**
 
-Rationale for slim-budget operation:
-- GHL subscription already paid — LC Phone costs per message (~$0.008/segment) but no additional monthly fee or account setup
-- Twilio adds a second vendor: account, billing, API keys, monitoring — unnecessary overhead
-- GHL SMS integrates natively with GHL workflows, so photo-upload notifications and other alerts can be GHL workflow triggers (no Netlify function code needed)
-- Exception: only use Twilio if you need programmatic SMS outside GHL's control flow (e.g., real-time alerts from a Netlify function that can't reach GHL) — not the case here
+- GHL subscription already paid; LC Phone ~$0.008/segment, no extra monthly fee
+- Twilio adds unnecessary vendor overhead
+- Exception: only use Twilio for programmatic SMS from Netlify functions that can't reach GHL
 
-**Action needed:** Build a GHL webhook-triggered workflow that fires when a customer uploads a photo (via the portal's `notify-photo-upload.js`) → sends SMS to assigned rep via LC Phone. Remove the Twilio path from the Netlify function once the GHL workflow is live.
+**Action needed:** Build GHL workflow that fires when `notify-photo-upload.js` fires → sends SMS to assigned rep via LC Phone. Remove Twilio path from function once GHL workflow is live.
 
 ## Future Services
 
 ### Golf Course Solar Panel Protection
 **Status: Concept — not yet scoped or offered.**
 
-Solar panels installed near golf courses are at elevated risk of impact damage from errant golf balls. This is a niche but recurring need in San Diego County (Torrey Pines, Rancho Bernardo, Carmel Mountain, Eastlake, etc.).
-
-**Scope of work (to be developed):**
-- Site assessment: identify exposure angle, distance from fairways/driving ranges, typical ball trajectory
-- Protection options to evaluate:
-  - Polycarbonate ballistic shield panels mounted above array on standoff frame
-  - Heavy-gauge wire mesh / expanded metal screens (angled to deflect, not catch)
-  - Sacrificial tempered glass overlay on high-exposure panels
-  - Array repositioning / tilt adjustment during re-roof or retrofit (prevents future exposure)
-- Framing: likely custom aluminum unistrut or steel angle — no off-the-shelf product exists for this
-- Documentation: before/after photos, warranty language for protection gear vs. panel warranty
-
-**Ops partner:**
-- Cosmic Solar's fit is uncertain — primarily a panel swap / install crew, not custom fabrication
-- Need to identify a partner with light metal fabrication + roofing experience
-- Possible leads: local awning/shade structure contractors, solar racking fabricators, or a roofing/metal shop willing to sub on jobs
-- **Action needed:** Ask Cosmic if they're comfortable with custom screen/shield installs; if not, source an alternate ops partner before offering this service
-
-**Lead identification:**
-- Filter `address` field in portal for proximity to known golf courses (manual today; could automate with geocoding + golf course polygon overlay)
-- Add `golf_course_exposure` boolean to customers table when this service launches
+Protection options: polycarbonate shields, heavy-gauge wire mesh, sacrificial glass overlay, array repositioning.
+Ops partner: ask Cosmic Solar first; if not comfortable, source fabrication-capable partner.
+Lead ID: filter `address` near known SD golf courses. Add `golf_course_exposure` boolean to customers table at launch.
 
 ## Orphaned Account Marketing Strategy
 Five-channel approach targeting homeowners whose solar installer went out of business:
-1. **Permit data** — pull SD County building permits by defunct contractor names, apply scoring model (system age, size, NEM status)
-2. **CPUC NEM data** — public records request (letter below) to get address + installer + system size
-3. **Batch CSV import** — Admin → Import tab: paste permit CSV, Regrid enriches with owner name + APN, import as `new_solar / ns_eval_booked / direct_mail`
-4. **fixmy.energy/check** — dedicated landing page for orphaned accounts (draft at `/check-preview.html`)
-5. **Direct mail** — Minuteman Press postcards to enriched address list
+1. **Permit data** — pull by defunct contractor names via PermitStack/Accela, apply lead scoring
+2. **CPUC NEM data** — public records request (draft letter below)
+3. **Batch CSV import** — Admin → Import tab → Regrid enriches with owner + APN → import as `fixmy / direct_mail`
+4. **fixmy.energy/check** — orphaned account landing page (`check-preview.html`)
+5. **Direct mail** — Minuteman Press postcards to enriched list
 
-Target installers: SunPower (Ch. 11 Aug 2024), Titan Solar (Ch. 7 Jun 2024), Sunnova (Ch. 11 Jun 2025), Mosaic Solar Loans (Ch. 11 Jun 2025), Sullivan Solar (shut down Oct/Nov 2021 — NOT 2019), Petersen Dean (Ch. 11 Jun 2020), Sungevity (Ch. 11 Mar 2017), Freedom Forever (Ch. 11 Apr 15, 2026)
+Target installers: SunPower (Ch. 11 Aug 2024), Titan Solar (Ch. 7 Jun 2024), Sunnova (Ch. 11 Jun 2025), Mosaic Solar Loans (Ch. 11 Jun 2025), Sullivan Solar (shut down Oct/Nov 2021), Petersen Dean (Ch. 11 Jun 2020), Sungevity (Ch. 11 Mar 2017), Freedom Forever (Ch. 11 Apr 15, 2026)
 
 ## Defunct Solar Installer Database (Marketing Agent Reference)
 
 ### Priority 1 — Truly Orphaned (no active service entity)
-These companies have NO successor managing service calls. Targeting them is the highest-priority opportunity.
 
 | Company | Event | Date | CA Customers | Permit Name Variations |
 |---|---|---|---|---|
@@ -320,24 +456,21 @@ These companies have NO successor managing service calls. Targeting them is the 
 |---|---|---|
 | Vivint Solar | Acquired by Sunrun 2021 | Sunrun |
 | SolarCity | Acquired by Tesla 2016 | Tesla Energy |
-| Freedom Forever | Ch. 11 Apr 2026 — now in Priority 1 | — |
 | Complete Solar | Acquired SunPower assets 2024, rebranded | Active as "SunPower" |
 
 ### PermitStack Pull Notes
-- SunPower is rarely listed as "SunPower" on permits — use "Complete Solar Inc" or "BRS Field Ops" as primary search terms
-- SD County zip filter: 919xx (El Cajon, La Mesa, Santee, Lakeside) + 920xx (San Diego, Chula Vista, Poway)
+- SunPower rarely listed as "SunPower" on permits — use "Complete Solar Inc" or "BRS Field Ops"
+- SD County zip filter: 919xx + 920xx
 - System size kW extracted from permit description text via regex when not a dedicated field
-- Mosaic is a LENDER not an installer — leads from Mosaic are homeowners with outstanding loans, not necessarily broken systems
-- Portal Import tab → "Pull Live from PermitStack" button fires `permitstack-pull.js` for each selected installer, deduplicates by address, auto-populates CSV textarea
+- Mosaic is a LENDER not installer — leads = homeowners with outstanding loans, not broken systems
+- Portal Import tab → "Pull Live from PermitStack" fires `permitstack-pull.js` per installer, deduplicates by address
 
 ## CPUC / SDG&E NEM Data — Public Records Request Draft
 
-**Status: Drafted, not yet sent.**
+**Status: Email sent to CPUC; CPUC directed to online PRR portal. Online submission pending.**
 
 ### Option A — CPUC (send to `public.records@cpuc.ca.gov`, ~10 business days)
 **Subject:** `Public Records Act Request — NEM Interconnection Data (SDG&E Service Territory)`
-
----
 
 California Public Utilities Commission  
 Attn: Public Records Office  
@@ -355,7 +488,7 @@ Pursuant to the California Public Records Act (Gov. Code § 7920.000 et seq.), I
 4. Installing contractor or solar company name as reported on the application
 5. NEM tariff type (NEM 1.0, NEM 2.0, NEM-A)
 
-**Purpose:** Solar Review Corp (operating as FixMy.Energy) provides independent solar diagnostic, repair, monitoring, and battery retrofit services to San Diego County homeowners. A significant number of residential solar customers in the SDG&E territory were left without support when their original installers — including SunPower (Chapter 11, 2024), Sullivan Solar Power (closed 2019), Petersen Dean (closed 2020), and Sungevity (closed 2017) — ceased operations. We are using this data solely to identify affected households so we can offer them a path to restore full system performance. We have no intention of publishing, reselling, or sharing this data.
+**Purpose:** Solar Review Corp (operating as FixMy.Energy) provides independent solar diagnostic, repair, monitoring, and battery retrofit services to San Diego County homeowners. A significant number of residential solar customers in the SDG&E territory were left without support when their original installers — including SunPower (Chapter 11, 2024), Sullivan Solar Power (closed 2021), Petersen Dean (closed 2020), and Sungevity (closed 2017) — ceased operations. We are using this data solely to identify affected households so we can offer them a path to restore full system performance. We have no intention of publishing, reselling, or sharing this data.
 
 **Format:** CSV, Excel, or pipe-delimited text preferred.
 
@@ -370,7 +503,7 @@ Solar Review Corp / FixMy.Energy
 ### Option B — SDG&E Direct (faster, send to `regulatory@sdge.com`)
 **Subject:** `CPRA Request — Residential NEM Interconnection Records, 2015–2023`
 
-SDG&E files quarterly NEM data with the CPUC and maintains it in structured form. Cite the same CPRA authority (Gov. Code § 7920.000 et seq.) and request the same five fields. Use the same purpose and fee waiver language as Option A. SDG&E's regulatory affairs team typically responds faster than the CPUC's public records office.
+SDG&E files quarterly NEM data with CPUC and maintains it in structured form. Cite the same CPRA authority (Gov. Code § 7920.000 et seq.) and request the same five fields. Same purpose and fee waiver language as Option A.
 
 ## Common Patterns
 ```js
@@ -384,4 +517,11 @@ if (!isNSSave) { updates.deposit_status = ...; }
 // Supabase client
 var client = supabase.createClient(SUPA_URL, SUPA_KEY);
 var { data, error } = await client.from('customers').update(updates).eq('id', id);
+
+// Scheduled agent report write
+await client.from('agent_reports').insert({ agent: 'marketing-agent', title, body, priority, action_url });
+
+// pipeline_state KV read/write
+var { data } = await client.from('pipeline_state').select('value').eq('key', 'expansion_index').single();
+await client.from('pipeline_state').upsert({ key: 'expansion_index', value: idx, updated_at: new Date() });
 ```
