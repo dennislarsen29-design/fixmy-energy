@@ -4449,7 +4449,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     renderAdminCanvassView();
     try {
       var pos = await new Promise(function(resolve, reject) {
-        navigator.geolocation.getCurrentPosition(resolve, reject, {enableHighAccuracy:true, timeout:15000});
+        navigator.geolocation.getCurrentPosition(resolve, reject, {enableHighAccuracy:true, timeout:8000});
       });
       adminCanvassUserLat = pos.coords.latitude;
       adminCanvassUserLng = pos.coords.longitude;
@@ -4459,17 +4459,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       return;
     }
     var D = 0.10; // ~7-mile bounding box — only pre-geocoded leads, instant query
-    var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
-    var { data: rawLeads, error: lErr } = await c2
-      .from('customers')
-      .select('id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,original_installer,install_year')
-      .eq('lead_source','orphaned_list')
-      .is('sold_type', null)
-      .not('lat','is',null)
-      .gte('lat', adminCanvassUserLat - D).lte('lat', adminCanvassUserLat + D)
-      .gte('lng', adminCanvassUserLng - D).lte('lng', adminCanvassUserLng + D)
-      .limit(100);
-    if (lErr || !rawLeads) { adminCanvassGpsStatus = 'error'; renderAdminCanvassView(); return; }
+    var adminSEL = 'id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,original_installer,install_year';
+    var adminParams = 'lead_source=eq.orphaned_list&sold_type=is.null&lat=not.is.null&select=' + adminSEL
+      + '&lat=gte.' + (adminCanvassUserLat - D) + '&lat=lte.' + (adminCanvassUserLat + D)
+      + '&lng=gte.' + (adminCanvassUserLng - D) + '&lng=lte.' + (adminCanvassUserLng + D)
+      + '&limit=100';
+    var adminResp = await fetch(SUPA_URL + '/rest/v1/customers?' + adminParams, {
+      headers: { 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY }
+    });
+    var rawLeads = adminResp.ok ? await adminResp.json() : null;
+    if (!Array.isArray(rawLeads)) { adminCanvassGpsStatus = 'error'; renderAdminCanvassView(); return; }
     rawLeads.forEach(function(l) {
       var isHot = l.knock_status === 'callback' || l.knock_status === 'interested';
       l._distMi = adminCanvassHaversine(adminCanvassUserLat, adminCanvassUserLng, l.lat, l.lng);
@@ -9987,10 +9986,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       try {
         var pos = await Promise.race([
           new Promise(function(resolve, reject) {
-            navigator.geolocation.getCurrentPosition(resolve, reject, {enableHighAccuracy:true, timeout:15000});
+            navigator.geolocation.getCurrentPosition(resolve, reject, {enableHighAccuracy:true, timeout:8000});
           }),
           new Promise(function(_, reject) {
-            setTimeout(function(){ reject(new Error('GPS timeout')); }, 16000);
+            setTimeout(function(){ reject(new Error('GPS timeout')); }, 9000);
           })
         ]);
         await _canvassLoadLeads(pos.coords.latitude, pos.coords.longitude);
@@ -10010,31 +10009,27 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       renderSales();
 
       var SEL = 'id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,original_installer,install_year';
-      var c0 = supabase.createClient(SUPA_URL, SUPA_KEY);
-      // Note: .not('lat','is',null) = WHERE lat IS NOT NULL — only pre-geocoded leads
-      var q = c0.from('customers').select(SEL)
-        .eq('lead_source','orphaned_list')
-        .is('sold_type', null)
-        .not('lat', 'is', null);
-
+      var params = 'lead_source=eq.orphaned_list&sold_type=is.null&lat=not.is.null&select=' + SEL;
       if (userLat && userLng) {
         var D = 0.10; // ~7-mile bounding box
-        q = q.gte('lat', userLat - D).lte('lat', userLat + D)
-             .gte('lng', userLng - D).lte('lng', userLng + D);
+        params += '&lat=gte.' + (userLat - D) + '&lat=lte.' + (userLat + D)
+                + '&lng=gte.' + (userLng - D) + '&lng=lte.' + (userLng + D);
       } else {
-        q = q.order('lead_score', {ascending: false, nullsFirst: false});
+        params += '&order=lead_score.desc.nullslast';
       }
-      q = q.limit(80);
-
-      var result = await q;
-      if (result.error || !result.data) {
-        canvassErrMsg = result.error ? result.error.message : 'Query timeout';
+      params += '&limit=80';
+      var resp = await fetch(SUPA_URL + '/rest/v1/customers?' + params, {
+        headers: { 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY }
+      });
+      var leads = resp.ok ? await resp.json() : null;
+      if (!Array.isArray(leads)) {
+        canvassErrMsg = 'Query failed (' + resp.status + ')';
         canvassGpsStatus = 'error';
         renderSales();
         return;
       }
 
-      var leads = result.data.slice();
+      leads = leads.slice();
       if (userLat && userLng) {
         leads.forEach(function(l) {
           var isHot = l.knock_status === 'callback' || l.knock_status === 'interested';
