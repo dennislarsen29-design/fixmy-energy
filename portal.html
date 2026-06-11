@@ -9943,10 +9943,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       try {
         var pos = await Promise.race([
           new Promise(function(resolve, reject) {
-            navigator.geolocation.getCurrentPosition(resolve, reject, {enableHighAccuracy:true, timeout:5000});
+            navigator.geolocation.getCurrentPosition(resolve, reject, {enableHighAccuracy:true, timeout:15000});
           }),
           new Promise(function(_, reject) {
-            setTimeout(function(){ reject(new Error('GPS timeout')); }, 6000);
+            setTimeout(function(){ reject(new Error('GPS timeout')); }, 16000);
           })
         ]);
         await _canvassLoadLeads(pos.coords.latitude, pos.coords.longitude);
@@ -9968,44 +9968,32 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       renderSales();
 
       var SEL = 'id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,original_installer,install_year';
-      var PAGE = 1000;
-      var PARALLEL = 5;
+      var LIMIT = 300;
 
-      // Phase 1: fetch first page + get total count
+      // Build query — filter by GPS bounding box when available (avoids loading all 18K rows)
       var c0 = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var q = c0.from('customers').select(SEL)
+        .eq('lead_source','orphaned_list').is('sold_type',null)
+        .or('archived.is.null,archived.eq.false');
+      if (userLat && userLng) {
+        // ~10-mile bounding box (0.15 deg ≈ 10 mi)
+        var D = 0.15;
+        q = q.gte('lat', userLat - D).lte('lat', userLat + D)
+             .gte('lng', userLng - D).lte('lng', userLng + D);
+      } else {
+        q = q.order('lead_score', {ascending: false, nullsFirst: false});
+      }
+      q = q.limit(LIMIT);
+
       var first = await Promise.race([
-        c0.from('customers').select(SEL, {count:'exact'})
-          .eq('lead_source','orphaned_list').is('sold_type',null)
-          .or('archived.is.null,archived.eq.false').range(0, PAGE-1),
-        new Promise(function(r){ setTimeout(function(){ r({data:null,error:new Error('timeout'),count:0}); }, 10000); })
+        q,
+        new Promise(function(r){ setTimeout(function(){ r({data:null,error:new Error('timeout')}); }, 20000); })
       ]);
       if (!first.data) { canvassGpsStatus = 'error'; renderSales(); return; }
 
       var allLeads = first.data.slice();
-      var total = first.count || allLeads.length;
-      _canvassLoadProgress = allLeads.length + ' / ~' + total;
+      _canvassLoadProgress = allLeads.length + ' leads loaded';
       renderSales();
-
-      // Phase 2: fetch remaining pages in parallel batches
-      var startTime = Date.now();
-      for (var offset = PAGE; offset < total && (Date.now() - startTime) < 22000; offset += PAGE * PARALLEL) {
-        var batch = [];
-        for (var i = 0; i < PARALLEL && (offset + i * PAGE) < total; i++) {
-          var from = offset + i * PAGE;
-          var to = from + PAGE - 1;
-          (function(f,t){
-            var cb = supabase.createClient(SUPA_URL, SUPA_KEY);
-            batch.push(Promise.race([
-              cb.from('customers').select(SEL).eq('lead_source','orphaned_list').is('sold_type',null).or('archived.is.null,archived.eq.false').range(f,t),
-              new Promise(function(r){ setTimeout(function(){ r({data:[],error:null}); }, 8000); })
-            ]));
-          })(from, to);
-        }
-        var results = await Promise.all(batch);
-        results.forEach(function(r){ if (r.data && r.data.length) allLeads = allLeads.concat(r.data); });
-        _canvassLoadProgress = allLeads.length + ' / ~' + total;
-        renderSales();
-      }
 
       if (!allLeads.length) {
         canvassGpsStatus = 'ready';
