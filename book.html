@@ -165,17 +165,17 @@ body{font-family:'Inter',sans-serif;background:var(--cream);color:var(--dark);mi
         </div>
       </div>
       <div class="field">
-        <label>Phone Number *</label>
-        <input type="tel" id="fPhone" placeholder="(619) 555-1234" autocomplete="tel" required/>
-      </div>
-      <div class="field">
         <label>Home Address *</label>
         <input type="text" id="fAddress" placeholder="Start typing your address…" autocomplete="off" required/>
         <div class="field-note">Select from the dropdown or type the full address including city, state &amp; ZIP.</div>
         <div class="field-err" id="addrError">Please enter a complete address including city, state, and ZIP.</div>
       </div>
       <div class="field">
-        <label>Email <span style="font-weight:400;text-transform:none;letter-spacing:0;">(optional)</span></label>
+        <label>Phone Number *</label>
+        <input type="tel" id="fPhone" placeholder="(619) 555-1234" autocomplete="tel" required/>
+      </div>
+      <div class="field">
+        <label>Email</label>
         <input type="email" id="fEmail" placeholder="jane@example.com" autocomplete="email"/>
       </div>
 
@@ -261,8 +261,8 @@ fbq('init','955546210177969');fbq('track','PageView');
 <noscript><img height="1" width="1" style="display:none" src="https://www.facebook.com/tr?id=955546210177969&ev=PageView&noscript=1"/></noscript>
 
 <script>
-var _partialSent = false;
-var _addrChosen  = false;
+var _captureLevel = 0; // 0=none 1=name+addr 2=+phone 3=+email
+var _addrChosen   = false;
 
 /* ── Google Places ── */
 window.initAddrAC = function() {
@@ -270,29 +270,40 @@ window.initAddrAC = function() {
   var ac  = new google.maps.places.Autocomplete(inp, { types: ['address'], componentRestrictions: { country: 'us' } });
   ac.addListener('place_changed', function() {
     var p = ac.getPlace();
-    if (p && p.formatted_address) { inp.value = p.formatted_address; _addrChosen = true; inp.classList.remove('err'); document.getElementById('addrError').style.display='none'; }
+    if (p && p.formatted_address) { inp.value = p.formatted_address; _addrChosen = true; inp.classList.remove('err'); document.getElementById('addrError').style.display='none'; maybeSend(); }
   });
   inp.addEventListener('input', function() { _addrChosen = false; });
 };
 
-/* ── Partial capture on blur ── */
-function maybePartial() {
-  var fn = document.getElementById('fFirst').value.trim();
-  var ph = document.getElementById('fPhone').value.trim();
-  if (!fn || !ph || _partialSent) return;
-  _partialSent = true;
+/* ── Progressive partial capture ── */
+function maybeSend() {
+  var fn   = document.getElementById('fFirst').value.trim();
+  var ln   = document.getElementById('fLast').value.trim();
+  var addr = document.getElementById('fAddress').value.trim();
+  var ph   = document.getElementById('fPhone').value.trim();
+  var em   = document.getElementById('fEmail').value.trim();
+
+  var level = 0;
+  if (fn && ln && addr) level = 1;
+  if (fn && ln && addr && ph) level = 2;
+  if (fn && ln && addr && ph && em) level = 3;
+
+  if (level === 0 || level <= _captureLevel) return;
+  _captureLevel = level;
+
   fetch('/.netlify/functions/ghl-inbound', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      firstName: fn, lastName: document.getElementById('fLast').value.trim() || '',
-      phone: ph, email: document.getElementById('fEmail').value.trim() || null,
-      address1: document.getElementById('fAddress').value.trim() || null,
+      firstName: fn, lastName: ln,
+      phone: ph || null, email: em || null, address1: addr || null,
       source: 'book_page_partial', tags: ['partial-capture'], black_box: true
     })
   }).catch(function(){});
 }
-document.getElementById('fFirst').addEventListener('blur', maybePartial);
-document.getElementById('fPhone').addEventListener('blur', maybePartial);
+document.getElementById('fLast').addEventListener('blur', maybeSend);
+document.getElementById('fAddress').addEventListener('blur', maybeSend);
+document.getElementById('fPhone').addEventListener('blur', maybeSend);
+document.getElementById('fEmail').addEventListener('blur', maybeSend);
 
 /* ── Validate required fields, returns true if valid ── */
 function validateForm() {
@@ -353,13 +364,10 @@ async function bookSlot(btn) {
   var end   = btn.dataset.end;
   var label = decodeURIComponent(btn.dataset.label);
 
-  if (!_partialSent) {
-    _partialSent = true;
-    fetch('/.netlify/functions/ghl-inbound', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ firstName: fn, lastName: ln, phone: ph, email: em||null, address1: addr||null, source: 'book_page_submit', tags: ['webpage-lead'] })
-    }).catch(function(){});
-  }
+  fetch('/.netlify/functions/ghl-inbound', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ firstName: fn, lastName: ln, phone: ph, email: em||null, address1: addr||null, source: 'book_page_submit', tags: ['webpage-lead'] })
+  }).catch(function(){});
 
   if (typeof gtag !== 'undefined') {
     gtag('event', 'generate_lead', { event_category: 'book_page' });
