@@ -4465,7 +4465,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       .select('id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,original_installer,install_year')
       .eq('lead_source','orphaned_list')
       .is('sold_type', null)
-      .or('archived.is.null,archived.eq.false')
       .not('lat','is',null)
       .gte('lat', adminCanvassUserLat - D).lte('lat', adminCanvassUserLat + D)
       .gte('lng', adminCanvassUserLng - D).lte('lng', adminCanvassUserLng + D)
@@ -9438,7 +9437,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
         else if (canvassGpsStatus === 'error') {
           h += '<div style="text-align:center;padding:32px 16px 100px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.2);border-radius:14px;">';
-          h += '<div style="color:#ef4444;font-size:0.85rem;margin-bottom:14px;">⚠ Location unavailable.</div>';
+          h += '<div style="color:#ef4444;font-size:0.85rem;margin-bottom:6px;">⚠ Location unavailable.</div>';
+          if (canvassErrMsg) h += '<div style="color:#888;font-size:0.68rem;margin-bottom:12px;font-family:monospace;">' + canvassErrMsg + '</div>';
           h += '<button onclick="canvassLoadNoGps()" style="background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;padding:12px 28px;font-size:0.85rem;font-weight:700;cursor:pointer;margin-bottom:10px;">Load Leads Without GPS</button>';
           h += '<div><button onclick="canvassInit()" style="background:none;border:none;color:#555;font-size:0.72rem;cursor:pointer;text-decoration:underline;">↻ Try GPS again</button></div>';
           h += '</div>';
@@ -9969,6 +9969,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var canvassLeads = [];
     var canvassUserLat = null, canvassUserLng = null;
     var canvassGpsStatus = 'idle';
+    var canvassErrMsg = '';
     var canvassSkipIds = [];
 
     function canvassHaversine(lat1, lng1, lat2, lng2) {
@@ -10010,10 +10011,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
       var SEL = 'id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,original_installer,install_year';
       var c0 = supabase.createClient(SUPA_URL, SUPA_KEY);
+      // Note: .not('lat','is',null) = WHERE lat IS NOT NULL — only pre-geocoded leads
       var q = c0.from('customers').select(SEL)
-        .eq('lead_source','orphaned_list').is('sold_type',null)
-        .or('archived.is.null,archived.eq.false')
-        .not('lat','is',null);  // pre-geocoded only — keeps query fast
+        .eq('lead_source','orphaned_list')
+        .is('sold_type', null)
+        .not('lat', 'is', null);
 
       if (userLat && userLng) {
         var D = 0.10; // ~7-mile bounding box
@@ -10024,11 +10026,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }
       q = q.limit(80);
 
-      var result = await Promise.race([
-        q,
-        new Promise(function(r){ setTimeout(function(){ r({data:null}); }, 20000); })
-      ]);
-      if (!result.data) { canvassGpsStatus = 'error'; renderSales(); return; }
+      var result = await q;
+      if (result.error || !result.data) {
+        canvassErrMsg = result.error ? result.error.message : 'Query timeout';
+        canvassGpsStatus = 'error';
+        renderSales();
+        return;
+      }
 
       var leads = result.data.slice();
       if (userLat && userLng) {
