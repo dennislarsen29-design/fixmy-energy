@@ -4,7 +4,7 @@
 // 60-second server-side cache to avoid rate-limiting GHL.
 
 const CALENDAR_ID   = process.env.GHL_CALENDAR_ID || 'UjlvHxE8AlyhG5frBkqr';
-const SLOT_DURATION = 125; // minutes — must match GHL calendar duration setting
+const SLOT_DURATION = 125; // minutes — display window shown to customer
 const GHL_BASE      = 'https://services.leadconnectorhq.com';
 
 let _cache    = null;
@@ -34,7 +34,7 @@ exports.handler = async function(event) {
   const now       = new Date();
   const startDate = now.getTime();
   const endDate   = now.getTime() + 14 * 24 * 60 * 60 * 1000;
-  const url = `${GHL_BASE}/calendars/${CALENDAR_ID}/free-slots?startDate=${startDate}&endDate=${endDate}&timezone=America%2FLos_Angeles&slotDuration=${SLOT_DURATION}`;
+  const url = `${GHL_BASE}/calendars/${CALENDAR_ID}/free-slots?startDate=${startDate}&endDate=${endDate}&timezone=America%2FLos_Angeles`;
   console.log('GHL slots: calendarId=', CALENDAR_ID, 'url=', url);
 
   let raw;
