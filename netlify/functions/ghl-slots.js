@@ -4,7 +4,7 @@
 // 60-second server-side cache to avoid rate-limiting GHL.
 
 const CALENDAR_ID   = process.env.GHL_CALENDAR_ID || 'UjlvHxE8AlyhG5frBkqr';
-const SLOT_DURATION = 125; // minutes — display window shown to customer
+const SLOT_DURATION = 120; // minutes — matches GHL calendar's 2hr appointment duration
 const GHL_BASE      = 'https://services.leadconnectorhq.com';
 
 let _cache    = null;
