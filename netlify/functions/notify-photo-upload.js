@@ -45,8 +45,8 @@ exports.handler = async function(event) {
   }
 
   if (!repId) {
-    console.warn('[notify-photo-upload] no rep_id for customer', customerId);
-    return { statusCode: 200, headers: cors, body: JSON.stringify({ ok: false, reason: 'no_rep_id' }) };
+    console.warn('[notify-photo-upload] no rep_id for customer', customerId, '— falling back to tech4 (admin)');
+    repId = 'tech4';
   }
 
   // 2 — Look up rep's phone + name from team_members
