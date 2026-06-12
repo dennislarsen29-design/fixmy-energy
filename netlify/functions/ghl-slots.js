@@ -55,18 +55,22 @@ exports.handler = async function(event) {
   // Return raw response in debug mode
   if (debug) return { statusCode: 200, headers: cors, body: JSON.stringify({ raw, calendarId: CALENDAR_ID }) };
 
-  // GHL returns { data: { "YYYY-MM-DD": [ { startTime, endTime } ] } }
+  // GHL returns { "YYYY-MM-DD": { slots: ["ISO-string", ...] }, traceId: "..." }
+  // (also handles legacy format: { data: { "YYYY-MM-DD": [{ startTime }] } })
   const slots   = [];
   const dateMap = raw.data || raw;
-  for (const [, daySlots] of Object.entries(dateMap)) {
-    if (!Array.isArray(daySlots)) continue;
+  for (const [dateKey, dayObj] of Object.entries(dateMap)) {
+    if (dateKey === 'traceId') continue;
+    // Normalize: new format has { slots: [...] }, old format has [{ startTime }]
+    const daySlots = Array.isArray(dayObj) ? dayObj : (dayObj && Array.isArray(dayObj.slots) ? dayObj.slots : null);
+    if (!daySlots) continue;
     for (const slot of daySlots) {
-      const startISO = slot.startTime || slot.time;
+      // New format: slot is an ISO string; old format: slot is { startTime, endTime }
+      const startISO = typeof slot === 'string' ? slot : (slot.startTime || slot.time);
       if (!startISO) continue;
       const startDt = new Date(startISO);
       if (startDt <= now) continue;
 
-      // Use GHL's actual slot duration for display; customer sees the full window
       const endDt        = new Date(startDt.getTime() + SLOT_DURATION * 60 * 1000);
       const displayEndDt = new Date(startDt.getTime() + (SLOT_DURATION + 60) * 60 * 1000);
 
