@@ -83,7 +83,7 @@ exports.handler = async function(event) {
   }
 
   slots.sort((a, b) => new Date(a.startISO) - new Date(b.startISO));
-  _cache   = { slots: slots.slice(0, 5), fetchedAt: new Date().toISOString() };
+  _cache   = { slots: slots.slice(0, 10), fetchedAt: new Date().toISOString() };
   _cacheAt = Date.now();
 
   return { statusCode: 200, headers: cors, body: JSON.stringify(_cache) };
