@@ -23,7 +23,7 @@ exports.handler = async function(event) {
   // calendarId can be passed in the request body to support multiple calendars (TT, Diagnostic, etc.)
   const calendarId = body.calendarId || process.env.GHL_DIAG_CALENDAR_ID || process.env.GHL_CALENDAR_ID;
 
-  const { firstName, lastName, email, phone, address, appointmentDate, appointmentTime, appointmentEndTime, trigger, diagnosticDate, updateAppointmentId } = body;
+  const { firstName, lastName, email, phone, address, appointmentDate, appointmentTime, appointmentEndTime, trigger, diagnosticDate, arrivalWindow, updateAppointmentId } = body;
 
   // ── 1. Upsert GHL contact ────────────────────────────────────────────────
   let contactId;
@@ -98,7 +98,7 @@ exports.handler = async function(event) {
         await fetch(webhookUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ trigger, contactId, firstName, lastName, email, phone, address, diagnosticDate: diagnosticDate || undefined }),
+          body: JSON.stringify({ trigger, contactId, firstName, lastName, email, phone, address, diagnosticDate: diagnosticDate || undefined, arrivalWindow: arrivalWindow || undefined }),
         });
       } catch (err) {
         console.error('GHL trigger webhook failed:', err.message);
