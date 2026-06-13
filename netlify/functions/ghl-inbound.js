@@ -117,6 +117,10 @@ exports.handler = async function(event) {
     }
   }
 
+  // Detect partial captures from the /book page form
+  const inboundSource  = payload.source || 'inbound_web';
+  const isPartial      = inboundSource === 'book_page_partial';
+
   // ── Build the customer record ──────────────────────────────────────────────────────────────────────────────────────────────────
   const now = new Date().toISOString();
   const record = {
@@ -130,6 +134,7 @@ exports.handler = async function(event) {
     lead_category:   'fixmy',
     lead_source:     'inbound_web',
     lead_temp:       'cold',
+    partial_capture: isPartial,
     diagnostic_date: diagnosticDate,
     arrival_end:     arrivalEnd,
     notes:           JSON.stringify([{ts:new Date().toISOString(),by:'GHL Booking',text:nameMissing?'Lead captured via GHL booking — name not provided. Check GHL contact record.':'Lead captured via GHL booking.'}])
@@ -139,9 +144,10 @@ exports.handler = async function(event) {
   if (existingId) {
     // Update existing — stamp step/category, fill in any blanks
     const patch = {
-      step:          1,
-      lead_category: 'fixmy',
-      lead_source:   'inbound_web',
+      step:            1,
+      lead_category:   'fixmy',
+      lead_source:     'inbound_web',
+      partial_capture: isPartial, // cleared to false when a full booking arrives
     };
     if (firstName)      patch.first_name = firstName;
     if (lastName)       patch.last_name  = lastName;
