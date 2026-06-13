@@ -673,121 +673,131 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     try { renderAdminCanvassView(); }
     catch(e) { _dbEl.innerHTML = '<p style="color:#ef4444;">Render error: '+e.message+'. <button onclick="loadAdminDashboard()" style="width:auto;padding:8px 16px;font-size:0.75rem;background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;cursor:pointer;">Retry</button></p>'; console.error('[renderAdminCanvassView]', e); }
     showBlackBoxPopup();
-    showPartialCaptureAlert();
-    if (!window._partialCapturePoll) {
-      window._partialCapturePoll = setInterval(showPartialCaptureAlert, 5 * 60 * 1000);
+    if (!window._hotLeadsPoll) {
+      window._hotLeadsPoll = setInterval(function() {
+        if (!document.getElementById('bbHotPopup')) showBlackBoxPopup();
+      }, 5 * 60 * 1000);
     }
   }
 
-  async function showPartialCaptureAlert() {
+  async function showBlackBoxPopup() {
+    var alreadyDismissed = !!sessionStorage.getItem('bbPopupDismissed');
     try {
       var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
-      var cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+      // Partial web captures — always checked, not suppressed by dismiss
+      var cutoff24 = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
       var { data: partials } = await c2.from('customers')
         .select('id,first_name,last_name,address,phone,email,created_at')
         .eq('partial_capture', true)
-        .gte('created_at', cutoff)
+        .gte('created_at', cutoff24)
         .order('created_at', {ascending: false})
         .limit(5);
-      var existing = document.getElementById('partialCaptureAlert');
-      if (!partials || !partials.length) { if (existing) existing.remove(); return; }
-      var el = existing || document.createElement('div');
-      el.id = 'partialCaptureAlert';
-      el.style.cssText = 'position:fixed;top:16px;right:16px;z-index:9999;max-width:320px;background:#1c1c1c;border:1px solid rgba(251,146,60,0.4);border-radius:14px;box-shadow:0 8px 32px rgba(0,0,0,0.7);overflow:hidden;';
-      var h = '<div style="background:rgba(251,146,60,0.1);padding:11px 14px;display:flex;align-items:center;justify-content:space-between;">';
-      h += '<span style="color:#fb923c;font-weight:700;font-size:0.78rem;">&#128293; '+partials.length+' Partial Web Lead'+(partials.length>1?'s':'')+'</span>';
-      h += '<button onclick="document.getElementById(\'partialCaptureAlert\').remove();" style="background:none;border:none;color:#6b7280;cursor:pointer;font-size:1rem;line-height:1;">&#x2715;</button>';
-      h += '</div><div style="max-height:260px;overflow-y:auto;">';
-      partials.forEach(function(p) {
-        var name = ((p.first_name||'')+' '+(p.last_name||'')).trim() || 'Unknown';
-        var ago  = Math.round((Date.now() - new Date(p.created_at).getTime()) / 60000);
-        var agoStr = ago < 60 ? ago+'m ago' : Math.round(ago/60)+'h ago';
-        h += '<div style="padding:10px 14px;border-bottom:1px solid #252525;">';
-        h += '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px;">';
-        h += '<strong style="font-size:0.83rem;color:#eee;">'+name+'</strong>';
-        h += '<span style="font-size:0.65rem;color:#6b7280;">'+agoStr+'</span></div>';
-        if (p.address) h += '<div style="font-size:0.7rem;color:#888;margin-bottom:2px;">&#128205; '+p.address+'</div>';
-        if (p.phone)   h += '<div style="font-size:0.7rem;color:#888;margin-bottom:2px;">&#128222; '+p.phone+'</div>';
-        var em = p.email || '';
-        if (em && !em.endsWith('@setter.local')) h += '<div style="font-size:0.7rem;color:#888;margin-bottom:6px;">&#9993; '+em+'</div>';
-        h += '<button onclick="document.getElementById(\'partialCaptureAlert\').remove();openLeadEditor(\''+p.id+'\');" style="width:100%;padding:6px;background:rgba(251,146,60,0.12);border:1px solid rgba(251,146,60,0.3);border-radius:7px;color:#fb923c;font-weight:700;font-size:0.73rem;cursor:pointer;">Call / Open Lead &#8594;</button>';
-        h += '</div>';
-      });
-      h += '</div>';
-      el.innerHTML = h;
-      if (!existing) document.body.appendChild(el);
-    } catch(e) { console.warn('partialCaptureAlert:', e.message); }
-  }
+      partials = partials || [];
 
-  async function showBlackBoxPopup() {
-    if (sessionStorage.getItem('bbPopupDismissed')) return;
-    try {
-      var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
-      var cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
-
-      // Include leads from the last 48hrs + any pinned from previous session
-      var savedIds = [];
-      try { savedIds = JSON.parse(localStorage.getItem('bbSavedLeads') || '[]'); } catch(e) {}
-
-      var { data: freshLeads } = await c2.from('customers').select('id,first_name,last_name,address,phone,knock_status,knocked_at').in('knock_status',['callback','interested']).gte('knocked_at', cutoff).order('knocked_at', {ascending: false}).limit(10);
-      var hotLeads = freshLeads || [];
-
-      // Merge saved leads (deduped) if any
-      if (savedIds.length) {
-        var freshIds = hotLeads.map(function(l){ return l.id; });
-        var missingIds = savedIds.filter(function(id){ return !freshIds.includes(id); });
-        if (missingIds.length) {
-          var { data: savedLeads } = await c2.from('customers').select('id,first_name,last_name,address,phone,knock_status,knocked_at').in('id', missingIds);
-          if (savedLeads && savedLeads.length) hotLeads = hotLeads.concat(savedLeads);
+      // GPS knock hot leads — suppressed if dismissed this session
+      var hotLeads = [], savedIds = [];
+      if (!alreadyDismissed) {
+        var cutoff48 = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+        try { savedIds = JSON.parse(localStorage.getItem('bbSavedLeads') || '[]'); } catch(e) {}
+        var { data: freshLeads } = await c2.from('customers')
+          .select('id,first_name,last_name,address,phone,knock_status,knocked_at')
+          .in('knock_status', ['callback','interested'])
+          .gte('knocked_at', cutoff48)
+          .order('knocked_at', {ascending: false})
+          .limit(10);
+        hotLeads = freshLeads || [];
+        if (savedIds.length) {
+          var freshIds = hotLeads.map(function(l){ return l.id; });
+          var missing  = savedIds.filter(function(id){ return !freshIds.includes(id); });
+          if (missing.length) {
+            var { data: sv } = await c2.from('customers').select('id,first_name,last_name,address,phone,knock_status,knocked_at').in('id', missing);
+            if (sv && sv.length) hotLeads = hotLeads.concat(sv);
+          }
         }
       }
 
-      if (!hotLeads.length) return;
+      if (!partials.length && !hotLeads.length) return;
 
-      // Store minimal lead data in a global so onclick handlers can reference it cleanly
       window._bbHotLeads = hotLeads.map(function(l) {
         return { id: l.id, first_name: l.first_name||'', last_name: l.last_name||'', address: l.address||'', phone: l.phone||'', knock_status: l.knock_status||'' };
       });
 
-      var rows = hotLeads.map(function(l) {
-        var label = l.address || ((l.first_name||'')+' '+(l.last_name||'')).trim() || 'Unknown';
-        var isPinned = savedIds.includes(l.id);
-        var ago = Math.round((Date.now() - new Date(l.knocked_at).getTime()) / 60000);
-        var agoStr = ago < 60 ? ago+'m ago' : Math.round(ago/60)+'h ago';
-        var badge = l.knock_status === 'interested'
-          ? '<span style="color:#f59e0b;font-size:0.7rem;">&#11088; Interested</span>'
-          : '<span style="color:#60a5fa;font-size:0.7rem;">&#128222; Callback</span>';
-        var pin = isPinned ? ' <span style="color:#8DC63F;font-size:0.7rem;">&#128204;</span>' : '';
-        var ph = l.phone ? '<span style="color:#6b7280;font-size:0.7rem;"> &middot; '+l.phone+'</span>' : '';
-        return '<div style="padding:7px 0;border-bottom:1px solid #2a2a2a;">'
-          + '<div style="display:flex;justify-content:space-between;align-items:center;font-size:0.8rem;">'
-          + '<span style="color:#e5e7eb;">'+label+pin+'</span>'
-          + '<span style="color:#6b7280;">'+agoStr+'</span>'
-          + '</div>'
-          + '<div style="margin-top:2px;">'+badge+ph+'</div>'
-          + '</div>';
-      }).join('');
+      var totalCount = partials.length + hotLeads.length;
+      var inner = '<div style="background:#1a1a1a;border:1px solid #333;border-radius:14px;max-width:440px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,0.8);overflow:hidden;">';
+
+      // Header
+      inner += '<div style="background:rgba(141,198,63,0.07);padding:14px 18px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #282828;">';
+      inner += '<h3 style="color:#8DC63F;margin:0;font-size:1rem;">&#128293; '+totalCount+' Hot Lead'+(totalCount>1?'s':'')+' Waiting</h3>';
+      inner += '<button onclick="document.getElementById(\'bbHotPopup\').remove();sessionStorage.setItem(\'bbPopupDismissed\',\'1\');" style="background:none;border:none;color:#6b7280;font-size:1.2rem;cursor:pointer;padding:0 4px;">&times;</button>';
+      inner += '</div><div style="max-height:320px;overflow-y:auto;">';
+
+      // Partial web leads section
+      if (partials.length) {
+        inner += '<div style="padding:8px 14px 4px;border-bottom:1px solid #282828;">';
+        inner += '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#fb923c;margin-bottom:4px;">&#127760; Web Partial Captures</div>';
+        partials.forEach(function(p) {
+          var name = ((p.first_name||'')+' '+(p.last_name||'')).trim() || 'Unknown';
+          var ago  = Math.round((Date.now() - new Date(p.created_at).getTime()) / 60000);
+          var agoStr = ago < 60 ? ago+'m ago' : Math.round(ago/60)+'h ago';
+          var em = p.email || '';
+          inner += '<div style="padding:7px 0;border-bottom:1px solid #222;">';
+          inner += '<div style="display:flex;justify-content:space-between;align-items:baseline;">';
+          inner += '<span style="font-size:0.82rem;font-weight:600;color:#eee;">'+name+'</span>';
+          inner += '<span style="font-size:0.65rem;color:#6b7280;">'+agoStr+'</span></div>';
+          if (p.address) inner += '<div style="font-size:0.7rem;color:#9ca3af;">&#128205; '+p.address+'</div>';
+          if (p.phone)   inner += '<div style="font-size:0.7rem;color:#9ca3af;">&#128222; '+p.phone+'</div>';
+          if (em && !em.endsWith('@setter.local')) inner += '<div style="font-size:0.7rem;color:#9ca3af;">&#9993; '+em+'</div>';
+          inner += '<button onclick="document.getElementById(\'bbHotPopup\').remove();sessionStorage.setItem(\'bbPopupDismissed\',\'1\');openLeadEditor(\''+p.id+'\');" style="margin-top:5px;width:100%;padding:5px;background:rgba(251,146,60,0.1);border:1px solid rgba(251,146,60,0.3);border-radius:7px;color:#fb923c;font-weight:700;font-size:0.72rem;cursor:pointer;">Call / Open Lead &#8594;</button>';
+          inner += '</div>';
+        });
+        inner += '</div>';
+      }
+
+      // GPS knock hot leads section
+      if (hotLeads.length) {
+        inner += '<div style="padding:8px 14px 4px;">';
+        inner += '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#8DC63F;margin-bottom:4px;">&#128205; GPS Knock Leads (48h)</div>';
+        hotLeads.forEach(function(l) {
+          var label   = l.address || ((l.first_name||'')+' '+(l.last_name||'')).trim() || 'Unknown';
+          var isPinned = savedIds.includes(l.id);
+          var ago     = Math.round((Date.now() - new Date(l.knocked_at).getTime()) / 60000);
+          var agoStr  = ago < 60 ? ago+'m ago' : Math.round(ago/60)+'h ago';
+          var badge   = l.knock_status === 'interested'
+            ? '<span style="color:#f59e0b;font-size:0.7rem;">&#11088; Interested</span>'
+            : '<span style="color:#60a5fa;font-size:0.7rem;">&#128222; Callback</span>';
+          var pin = isPinned ? ' <span style="color:#8DC63F;font-size:0.7rem;">&#128204;</span>' : '';
+          var ph  = l.phone ? '<span style="color:#6b7280;font-size:0.7rem;"> &middot; '+l.phone+'</span>' : '';
+          inner += '<div style="padding:7px 0;border-bottom:1px solid #2a2a2a;">';
+          inner += '<div style="display:flex;justify-content:space-between;align-items:center;font-size:0.8rem;">';
+          inner += '<span style="color:#e5e7eb;">'+label+pin+'</span><span style="color:#6b7280;">'+agoStr+'</span></div>';
+          inner += '<div style="margin-top:2px;">'+badge+ph+'</div></div>';
+        });
+        inner += '</div>';
+      }
+
+      inner += '</div>'; // end scroll
+
+      // Action buttons
+      inner += '<div style="padding:12px 16px;border-top:1px solid #282828;display:flex;flex-direction:column;gap:8px;">';
+      inner += '<div style="display:flex;gap:8px;">';
+      inner += '<button onclick="document.getElementById(\'bbHotPopup\').remove();sessionStorage.setItem(\'bbPopupDismissed\',\'1\');renderAdminCanvassView();" style="flex:1;padding:10px;background:#8DC63F;color:#1A1A1A;border:none;border-radius:8px;font-weight:700;cursor:pointer;font-size:0.85rem;">View Black Box</button>';
+      inner += '<button onclick="document.getElementById(\'bbHotPopup\').remove();sessionStorage.setItem(\'bbPopupDismissed\',\'1\');" style="padding:10px 16px;background:#2a2a2a;color:#9ca3af;border:none;border-radius:8px;cursor:pointer;font-size:0.85rem;">Dismiss</button>';
+      inner += '</div>';
+      if (hotLeads.length) {
+        inner += '<div style="display:flex;gap:8px;">';
+        inner += '<button onclick="(function(){try{localStorage.setItem(\'bbSavedLeads\',JSON.stringify((window._bbHotLeads||[]).map(function(l){return l.id;})));}catch(e){}document.getElementById(\'bbHotPopup\').remove();sessionStorage.setItem(\'bbPopupDismissed\',\'1\');})()" style="flex:1;padding:9px;background:#1f2937;color:#8DC63F;border:1px solid #374151;border-radius:8px;cursor:pointer;font-size:0.8rem;">&#128204; Save for Next Login</button>';
+        inner += '<button onclick="(function(){try{sessionStorage.setItem(\'bbPinnedRouteLeads\',JSON.stringify(window._bbHotLeads||[]));}catch(e){}document.getElementById(\'bbHotPopup\').remove();sessionStorage.setItem(\'bbPopupDismissed\',\'1\');renderAdminView(\'dashboard\');})()" style="flex:1;padding:9px;background:#1f2937;color:#a78bfa;border:1px solid #374151;border-radius:8px;cursor:pointer;font-size:0.8rem;">&#128203; Push to Routes</button>';
+        inner += '</div>';
+      }
+      inner += '</div></div>'; // end buttons + card
 
       var overlay = document.createElement('div');
       overlay.id = 'bbHotPopup';
       overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;';
-      overlay.innerHTML = '<div style="background:#1a1a1a;border:1px solid #8DC63F;border-radius:12px;padding:24px;max-width:420px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,0.8);">'
-        + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">'
-        + '<h3 style="color:#8DC63F;margin:0;font-size:1rem;">&#128293; ' + hotLeads.length + ' Hot Lead' + (hotLeads.length > 1 ? 's' : '') + ' (Last 48h)</h3>'
-        + '<button onclick="document.getElementById(\'bbHotPopup\').remove();sessionStorage.setItem(\'bbPopupDismissed\',\'1\');" style="background:none;border:none;color:#6b7280;font-size:1.2rem;cursor:pointer;padding:0 4px;">&times;</button>'
-        + '</div>'
-        + '<div style="max-height:220px;overflow-y:auto;margin-bottom:16px;">' + rows + '</div>'
-        + '<div style="display:flex;flex-direction:column;gap:8px;">'
-        + '<div style="display:flex;gap:8px;">'
-        + '<button onclick="document.getElementById(\'bbHotPopup\').remove();sessionStorage.setItem(\'bbPopupDismissed\',\'1\');renderAdminCanvassView();" style="flex:1;padding:10px;background:#8DC63F;color:#1A1A1A;border:none;border-radius:8px;font-weight:700;cursor:pointer;font-size:0.85rem;">View Black Box</button>'
-        + '<button onclick="document.getElementById(\'bbHotPopup\').remove();sessionStorage.setItem(\'bbPopupDismissed\',\'1\');" style="padding:10px 16px;background:#2a2a2a;color:#9ca3af;border:none;border-radius:8px;cursor:pointer;font-size:0.85rem;">Dismiss</button>'
-        + '</div>'
-        + '<div style="display:flex;gap:8px;">'
-        + '<button onclick="(function(){try{localStorage.setItem(\'bbSavedLeads\',JSON.stringify((window._bbHotLeads||[]).map(function(l){return l.id;})));}catch(e){}document.getElementById(\'bbHotPopup\').remove();sessionStorage.setItem(\'bbPopupDismissed\',\'1\');})()" style="flex:1;padding:9px;background:#1f2937;color:#8DC63F;border:1px solid #374151;border-radius:8px;cursor:pointer;font-size:0.8rem;">&#128204; Save for Next Login</button>'
-        + '<button onclick="(function(){try{sessionStorage.setItem(\'bbPinnedRouteLeads\',JSON.stringify(window._bbHotLeads||[]));}catch(e){}document.getElementById(\'bbHotPopup\').remove();sessionStorage.setItem(\'bbPopupDismissed\',\'1\');renderAdminView(\'dashboard\');})()" style="flex:1;padding:9px;background:#1f2937;color:#a78bfa;border:1px solid #374151;border-radius:8px;cursor:pointer;font-size:0.8rem;">&#128203; Push to Routes</button>'
-        + '</div>'
-        + '</div>'
-        + '</div>';
+      overlay.innerHTML = inner;
+      var existing = document.getElementById('bbHotPopup');
+      if (existing) existing.remove();
       document.body.appendChild(overlay);
     } catch(e) { console.warn('BB popup error:', e.message); }
   }
