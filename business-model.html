@@ -118,6 +118,28 @@
   .roadmap-completed-header:hover{color:rgba(243,237,227,0.55);}
   #roadmap-completed{display:none;}
 
+  /* Task cards (milestones — card-based) */
+  .task-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 16px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:flex-start;gap:12px;transition:border-color 0.15s,background 0.15s;}
+  .task-card:hover{border-color:rgba(255,255,255,0.12);background:rgba(255,255,255,0.05);}
+  .task-card-left{flex:1;min-width:0;}
+  .task-card-right{display:flex;flex-direction:column;align-items:flex-end;gap:7px;flex-shrink:0;}
+  .task-card-title{font-size:0.85rem;font-weight:700;color:var(--text);margin:5px 0 3px;}
+  .task-card-desc{font-size:0.73rem;color:rgba(243,237,227,0.5);line-height:1.5;}
+  .task-done-wrap{display:flex;align-items:center;gap:5px;font-size:0.72rem;color:rgba(243,237,227,0.4);cursor:pointer;white-space:nowrap;}
+  .task-done-wrap input[type=checkbox]{width:14px;height:14px;accent-color:var(--green);cursor:pointer;flex-shrink:0;}
+  .task-card.task-card-done{opacity:0.5;border-color:rgba(141,198,63,0.1);}
+  .task-card.task-card-done:hover{opacity:0.75;border-color:rgba(141,198,63,0.2);}
+  .task-done-date{font-size:0.65rem;color:var(--dim);white-space:nowrap;margin-top:2px;}
+  .task-group-header{font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.1em;margin:22px 0 8px;display:flex;align-items:center;gap:8px;}
+  .task-badge{display:inline-flex;align-items:center;font-size:0.62rem;font-weight:700;padding:3px 10px;border-radius:100px;letter-spacing:0.04em;white-space:nowrap;}
+  .task-badge-done{background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.2);color:var(--green);}
+  .task-badge-active{background:rgba(249,115,22,0.1);border:1px solid rgba(249,115,22,0.3);color:var(--orange);}
+  .task-badge-nearterm{background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);color:var(--blue);}
+  .task-badge-scale{background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.3);color:var(--green);}
+  .task-history-toggle{font-size:0.72rem;color:rgba(243,237,227,0.35);cursor:pointer;padding:8px 0;user-select:none;display:inline-flex;align-items:center;gap:5px;}
+  .task-history-toggle:hover{color:rgba(243,237,227,0.6);}
+  @media(max-width:600px){.task-card{flex-direction:column;}.task-card-right{flex-direction:row;align-items:center;width:100%;justify-content:flex-start;}}
+
   /* Phase blocks */
   .phase{border-left:3px solid var(--green);padding:12px 18px;margin-bottom:10px;background:var(--surface);border-radius:0 12px 12px 0;transition:border-color 0.15s;}
   .phase-label{font-size:0.63rem;font-weight:700;text-transform:uppercase;letter-spacing:0.09em;color:var(--green);margin-bottom:5px;}
@@ -887,15 +909,34 @@
     _into('team-table', '<table><thead><tr><th>Role</th><th>Function</th></tr></thead><tbody>' + rows + '</tbody></table>');
   }
 
-  function _checklistHtml(items, groupKey) {
-    return (items||[]).map(function(item, i) {
-      var key = groupKey + '_' + i;
-      var done = item.done;
-      return '<li class="' + (done ? 'done' : '') + '">' +
-        '<input type="checkbox" ' + (done ? 'checked' : '') + ' onchange="_toggleMilestone(\'' + groupKey + '\',' + i + ',this.checked)">' +
-        ' ' + item.text + '</li>';
-    }).join('');
+  function _taskCardHtml(item, groupKey, idx) {
+    var isDone = item.done;
+    var badgeClass = groupKey === 'history' || isDone ? 'task-badge-done' :
+      groupKey === 'active' ? 'task-badge-active' :
+      groupKey === 'nearterm' ? 'task-badge-nearterm' : 'task-badge-scale';
+    var badgeLabel = groupKey === 'history' || isDone ? '✅ Done' :
+      groupKey === 'active' ? '🔄 In Progress' :
+      groupKey === 'nearterm' ? '📅 Near-Term' : '📈 Scale';
+    var dateStr = item.date || item.completed_at || '';
+    var rightHtml;
+    if (groupKey === 'history' || isDone) {
+      rightHtml = dateStr ? '<span class="task-done-date">' + dateStr + '</span>' : '';
+    } else {
+      rightHtml =
+        (item.prompt ? '<button class="prompt-btn" onclick="copyPromptKey(\'' + item.prompt + '\')">📋 Prompt</button>' : '') +
+        '<label class="task-done-wrap"><input type="checkbox" onchange="_toggleMilestone(\'' + groupKey + '\',' + idx + ',this.checked)"> Done</label>';
+    }
+    return '<div class="task-card' + (isDone || groupKey === 'history' ? ' task-card-done' : '') + '">' +
+      '<div class="task-card-left">' +
+        '<span class="task-badge ' + badgeClass + '">' + badgeLabel + '</span>' +
+        '<div class="task-card-title">' + item.text + '</div>' +
+        (item.desc ? '<div class="task-card-desc">' + item.desc + '</div>' : '') +
+      '</div>' +
+      '<div class="task-card-right">' + rightHtml + '</div>' +
+      '</div>';
   }
+
+  var _milestonesData = null;
 
   async function _toggleMilestone(group, idx, checked) {
     try {
@@ -905,31 +946,42 @@
       var data = rows[0].data;
       if (data[group] && data[group][idx] !== undefined) {
         data[group][idx].done = checked;
+        if (checked) data[group][idx].completed_at = new Date().toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+        else delete data[group][idx].completed_at;
         await fetch(_SUPA_URL + '/rest/v1/business_model_data?section_key=eq.milestones', {
           method: 'PATCH',
           headers: Object.assign({}, _supaHeaders, { 'Prefer': 'return=minimal' }),
           body: JSON.stringify({ data: data, updated_at: new Date().toISOString(), updated_by: 'dennis' })
         });
+        _milestonesData = data;
+        _renderMilestones(data);
       }
     } catch(e) { console.warn('Milestone save failed', e); }
   }
 
   function _renderMilestones(d) {
-    var html = '<h3 style="margin-bottom:12px;">History</h3>' +
-      '<ul class="checklist">' + _checklistHtml(d.history, 'history') + '</ul>';
-    html += '<h3 style="margin-top:28px;margin-bottom:4px;">Upcoming</h3>';
-    html += '<p style="font-size:0.72rem;color:var(--dim);margin-bottom:12px;">Check off when done. Saved instantly to Supabase.</p>';
+    _milestonesData = d;
+    var html = '';
+    if (d.history && d.history.length) {
+      var histCards = d.history.map(function(item, i) { return _taskCardHtml(item, 'history', i); }).join('');
+      html += '<div id="task-history-wrap">' +
+        '<span class="task-history-toggle" onclick="(function(el){var c=document.getElementById(\'task-history-inner\');var open=c.style.display!==\'none\';c.style.display=open?\'none\':\'block\';el.textContent=(open?\'▶\':\'▼\')+\' \'+' + d.history.length + '+\' completed milestones\';}).call(null,this)">▶ ' + d.history.length + ' completed milestones</span>' +
+        '<div id="task-history-inner" style="display:none;">' + histCards + '</div>' +
+        '</div>';
+    }
+    html += '<h3 style="margin:24px 0 4px;">Upcoming</h3>';
+    html += '<p style="font-size:0.72rem;color:var(--dim);margin-bottom:16px;">Check off when done. Saved instantly to Supabase.</p>';
     if (d.active && d.active.length) {
-      html += '<p style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:var(--orange);margin:14px 0 6px;">In Progress</p>';
-      html += '<ul class="checklist">' + _checklistHtml(d.active, 'active') + '</ul>';
+      html += '<div class="task-group-header" style="color:var(--orange);">🔄 In Progress</div>';
+      html += d.active.map(function(item, i) { return _taskCardHtml(item, 'active', i); }).join('');
     }
     if (d.nearterm && d.nearterm.length) {
-      html += '<p style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:var(--blue);margin:20px 0 6px;">Near-Term</p>';
-      html += '<ul class="checklist">' + _checklistHtml(d.nearterm, 'nearterm') + '</ul>';
+      html += '<div class="task-group-header" style="margin-top:24px;color:var(--blue);">📅 Near-Term</div>';
+      html += d.nearterm.map(function(item, i) { return _taskCardHtml(item, 'nearterm', i); }).join('');
     }
     if (d.scale && d.scale.length) {
-      html += '<p style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:var(--green);margin:20px 0 6px;">Scale</p>';
-      html += '<ul class="checklist">' + _checklistHtml(d.scale, 'scale') + '</ul>';
+      html += '<div class="task-group-header" style="margin-top:24px;color:var(--green);">📈 Scale</div>';
+      html += d.scale.map(function(item, i) { return _taskCardHtml(item, 'scale', i); }).join('');
     }
     _into('milestones', html);
   }
@@ -962,6 +1014,25 @@
 
   syncBusinessModel();
 
+  // Scroll-spy: highlight active nav pill as user scrolls
+  (function() {
+    var nav = document.getElementById('section-nav');
+    if (!nav) return;
+    var links = Array.prototype.slice.call(nav.querySelectorAll('a[href^="#"]'));
+    function updateActive() {
+      var scrollY = window.scrollY + 80;
+      var current = links[0] ? links[0].getAttribute('href') : '';
+      links.forEach(function(link) {
+        var id = link.getAttribute('href').slice(1);
+        var el = document.getElementById(id);
+        if (el && el.getBoundingClientRect().top + window.scrollY <= scrollY) current = link.getAttribute('href');
+      });
+      links.forEach(function(link) { link.classList.toggle('active', link.getAttribute('href') === current); });
+    }
+    window.addEventListener('scroll', updateActive, { passive: true });
+    updateActive();
+  })();
+
   // Prompt Library
   var PROMPTS = {
     'google-ads': 'I need to fix Google Ads conversion tracking for the FixMy.Energy /book page.\n\nContext:\n- GTM container: GTM-TSJVG2GT\n- Google Ads account: AW-18121666624\n- book.html is a single-file page at /home/user/fixmy-energy/book.html\n- Two conversion events exist: (1) slot click = "select_time_slot", (2) booking confirmed = "schedule_appointment" with label u8R7COLKt7AcEMDgisFD\n- I need to create a SECOND Google Ads conversion action for "Booking Confirmed" so the two events use separate conversion labels\n\nSteps:\n1. Read the current book.html gtag() calls near the slot click and booking confirmation sections\n2. I will provide a new conversion label for "Booking Confirmed" — update the label in the correct gtag() call\n3. Verify the fbq() Meta Pixel calls (InitiateCheckout on slot click, Schedule + CompleteRegistration on booking confirmed) are present and correct\n4. Commit and push to branch claude/fixmy-sms-automation-debug-t3jpvi\n\nPlease start by reading the current conversion tracking code in book.html.',
@@ -982,7 +1053,7 @@
 
     'call-center': 'I need to add CSV export and call outcome tracking to the Black Box canvassing system in portal.html.\n\nContext:\n- portal.html Black Box section handles GPS canvassing for orphaned solar leads\n- Leads are in Supabase customers table with lead_source=orphaned_list\n- knock_status field: callback | interested | not_home | no_answer | dnc\n- Goal: export a dialer-ready CSV + track call outcomes on each lead card\n\nSteps:\n1. Read portal.html to find the Black Box / canvass route section and lead card rendering\n2. Add a "Export for Dialer" button that downloads a CSV of all orphaned_list leads with columns: first_name, last_name, phone, address, knock_status, knocked_at\n3. Add a Call Outcome dropdown to each Black Box lead card: Answered | Voicemail | Callback | No Answer | DNC\n4. Saving the outcome updates knock_status in Supabase and stamps knocked_at to now\n5. Add a conversion metric to the Black Box header: "X callbacks → Y booked (Z%)" pulling from leads with knock_status=callback and step>=1\n6. Commit and push to branch claude/fixmy-sms-automation-debug-t3jpvi',
 
-    'booking-ux': 'I need to implement: (1) auto-redirect after booking, (2) first-login onboarding tour, and (3) photo upload triggers.\n\nContext:\n- /home/user/fixmy-energy/book.html is the booking page\n- /home/user/fixmy-energy/portal.html is the customer portal\n- There is an existing plan in /root/.claude/plans/ describing these features in detail\n\nSteps:\n1. Read /root/.claude/plans/wiggly-pondering-quokka.md for the full spec\n2. In book.html: after bookSlot() success, replace the "View My Appointment" button with a 3-second countdown that auto-redirects to portal?email=X&code=Y\n3. In portal.html: add _showPortalOnboarding(c) function — 5-slide bottom-sheet modal with progress dots, stored in localStorage so it only shows once per customer\n4. In portal.html handleUpload(): after upload, PATCH step to 2 if currently step 1; update currentUser.step local state\n5. In netlify/functions/notify-photo-upload.js: fallback to repId=tech4 when no rep_id\n6. Commit and push to branch claude/fixmy-sms-automation-debug-t3jpvi',
+    'booking-ux': 'Implement slot display: 3 visible + Load more on the /book booking page (Change 4 from /root/.claude/plans/wiggly-pondering-quokka.md).\n\nContext:\n- /home/user/fixmy-energy/book.html renderSlots() builds time slot buttons\n- /home/user/fixmy-energy/netlify/functions/ghl-slots.js fetches available slots\n- Currently shows up to 10 slots; goal: show 3 initially with "Show more times →" button\n\nSteps:\n1. Read the plan: /root/.claude/plans/wiggly-pondering-quokka.md — follow Change 4 exactly\n2. In ghl-slots.js: change slots.slice(0,10) → slots.slice(0,20)\n3. In book.html renderSlots(): render all slots but add style="display:none" + class="slot-hidden" to slots index 3+\n4. After slot list, inject: <button id="showMoreSlots" class="show-more-btn" onclick="showMoreSlots()">Show more times →</button>\n5. Add showMoreSlots() function: removes display:none from .slot-hidden, hides the button\n6. Add .show-more-btn CSS\n7. Commit and push to branch claude/fixmy-sms-automation-debug-t3jpvi',
 
     'hiring': 'I need to build a /careers.html page for FixMy.Energy and set up an applicant tracking flow.\n\nContext:\n- Site is at /home/user/fixmy-energy/\n- Hiring for: (1) Field Solar Tech (Top Tier travel roles), (2) Black Box Canvasser (commission-only, San Diego)\n- Applicants should submit name, phone, email, and role interest via a form\n- Form submissions should go to Supabase (new table: hiring_pipeline) and trigger a GHL SMS to Dennis\n\nSteps:\n1. Read index.html to match the design language (colors, fonts, nav)\n2. Create /careers.html: hero section, two job listing cards (Field Tech + Canvasser), application form at bottom\n3. Create netlify/functions/hiring-apply.js: receives form POST, inserts to Supabase hiring_pipeline table, fires GHL SMS to Dennis via GHL API\n4. Create Supabase hiring_pipeline table: id, name, phone, email, role, created_at, status (new|reviewed|contacted|hired|rejected)\n5. Add a Hiring tab to the admin portal in portal.html showing applicants with status update buttons\n6. Commit and push to branch claude/fixmy-sms-automation-debug-t3jpvi',
 
@@ -990,7 +1061,13 @@
 
     'accounting': 'I need to add a P&L summary and QuickBooks export to the FixMy.Energy admin Finance tab.\n\nContext:\n- portal.html has an admin Finance tab\n- Supabase tables: customers (revenue), marketing_expenses (costs)\n- Customers revenue fields: invoice_amount, deposit_amount, ops_milestone1_amount, sold_type, created_at\n- Goal: monthly P&L view + CSV export formatted for QuickBooks import\n\nSteps:\n1. Read portal.html Finance tab section to understand current layout\n2. Add a P&L Summary card: month picker → shows Total Revenue (sum of paid invoices), Marketing Expenses (from marketing_expenses table), Ops Partner Payouts (ops_milestone1_amount where paid), Net Margin\n3. Add an "Export to QuickBooks CSV" button: generates IIF or CSV format with Date, Description, Amount, Account columns for each transaction\n4. Add a Deposit Tracking section: all customers with deposit_status=paid grouped by month, show deposit_amount and ops payout status\n5. Optional: if Dennis provides QuickBooks Online API credentials, wire direct sync via a new Netlify function (qbo-sync.js)\n6. Commit and push to branch claude/fixmy-sms-automation-debug-t3jpvi',
 
-    'ghl-webhook': 'The GHL AppointmentCreate webhook needs to be configured so that when a customer books via the /book calendar, the diagnostic_date auto-populates in the portal.\n\nThis is a GHL-only configuration task — no code changes needed. The Netlify function ghl-inbound.js already handles this payload.\n\nStep-by-step GHL configuration:\n1. Log into GoHighLevel at app.gohighlevel.com\n2. Go to Automations in the left nav\n3. Find the automation named "FixMy Energy Solar Appointment Confirmation" (or the automation triggered when someone books the diagnostic calendar ZGOdyYdMUh07V1Ujav9R)\n4. Click into the automation\n5. Add a new action: Webhook\n6. Set method: POST\n7. Set URL: https://fixmy.energy/.netlify/functions/ghl-inbound\n8. No custom headers needed\n9. Save the action\n10. Test by making a test booking on /book and checking the portal lead record for the diagnostic_date field\n\nIf the automation does not exist: create a new workflow with trigger "Appointment Created" filtered to calendar ID ZGOdyYdMUh07V1Ujav9R, then add the Webhook action as above.'
+    'ghl-webhook': 'The GHL AppointmentCreate webhook needs to be configured so that when a customer books via the /book calendar, the diagnostic_date auto-populates in the portal.\n\nThis is a GHL-only configuration task — no code changes needed. The Netlify function ghl-inbound.js already handles this payload.\n\nStep-by-step GHL configuration:\n1. Log into GoHighLevel at app.gohighlevel.com\n2. Go to Automations in the left nav\n3. Find the automation named "FixMy Energy Solar Appointment Confirmation" (or the automation triggered when someone books the diagnostic calendar ZGOdyYdMUh07V1Ujav9R)\n4. Click into the automation\n5. Add a new action: Webhook\n6. Set method: POST\n7. Set URL: https://fixmy.energy/.netlify/functions/ghl-inbound\n8. No custom headers needed\n9. Save the action\n10. Test by making a test booking on /book and checking the portal lead record for the diagnostic_date field\n\nIf the automation does not exist: create a new workflow with trigger "Appointment Created" filtered to calendar ID ZGOdyYdMUh07V1Ujav9R, then add the Webhook action as above.',
+
+    'auto-redirect': 'Implement auto-redirect after booking confirmation in book.html (Change 1 from /root/.claude/plans/wiggly-pondering-quokka.md).\n\nContext:\n- /home/user/fixmy-energy/book.html is the booking page\n- After bookSlot() succeeds, the confirmation screen shows a "View My Appointment" button\n- Goal: replace that button with a 3-second countdown div that auto-navigates to the portal magic link\n- Magic link format: https://fixmy.energy/portal?email=EMAIL&code=PHONE10DIGITS\n\nSteps:\n1. Read the plan: /root/.claude/plans/wiggly-pondering-quokka.md — follow Change 1 exactly\n2. Read book.html to find bookSlot() success handler and the "portalMagicLink" button\n3. Replace the button HTML with: <div class="portal-cta-block"><div class="portal-cta-label">Taking you to your portal</div><div id="redirectCountdown" class="redirect-countdown">Loading your appointment…</div></div>\n4. In bookSlot() success, extract phone10 and email, build magic link, run _tick() countdown (3s → redirect)\n5. Add .redirect-countdown CSS: font-size:16px; font-weight:600; color:var(--lime)\n6. Commit and push to branch claude/fixmy-sms-automation-debug-t3jpvi',
+
+    'onboarding-tour': 'Add a 5-slide first-login onboarding tour to portal.html (Change 2 from /root/.claude/plans/wiggly-pondering-quokka.md).\n\nContext:\n- /home/user/fixmy-energy/portal.html customer view renders in loadCustomerDashboard(c)\n- Tour slides up from bottom as a bottom-sheet modal on first login\n- localStorage key: portalOnboard_CUSTOMERID — skip if already set\n\nSlides:\n1. ✅ Your Evaluation is Confirmed — show diagnostic_date + arrival_window in lime card\n2. 📝 Notes for Your Tech — gate codes, dogs, parking; "scroll to Add a Note"\n3. ℹ️ Tell Us About Your System — system size, utility, monthly bill\n4. 📷 Upload Your Photos — utility bill, inverter, serial number, panel; "upload before visit = faster service"\n5. 📅 What to Expect — 2-hour visit, written report, no sales pressure\n\nSteps:\n1. Read the plan: /root/.claude/plans/wiggly-pondering-quokka.md — follow Change 2 exactly\n2. Add _showPortalOnboarding(c) function before loadCustomerDashboard()\n3. Add @keyframes obSlideUp animation once via <style id="ob-style">\n4. At end of loadCustomerDashboard(c): setTimeout(function(){ _showPortalOnboarding(c); }, 800)\n5. Commit and push to branch claude/fixmy-sms-automation-debug-t3jpvi',
+
+    'photo-triggers': 'Implement photo upload triggers in portal.html + notify-photo-upload.js (Changes 3 and 5 from /root/.claude/plans/wiggly-pondering-quokka.md).\n\nChange A — portal.html handleUpload(): after the notify fetch, PATCH customers step=2 if currently step<2, then set currentUser.step=2 so repeat uploads skip the PATCH.\n\nChange B — netlify/functions/notify-photo-upload.js: when repId is null/empty, fall back to repId="tech4" (Dennis — default admin for unassigned inbound leads) so GHL SMS always fires.\n\nSteps:\n1. Read the plan: /root/.claude/plans/wiggly-pondering-quokka.md — follow Changes 3 and 5 exactly\n2. Read portal.html and find handleUpload() — add the step PATCH after the notify fetch\n3. Read notify-photo-upload.js — replace the early return with the tech4 fallback\n4. Commit both files in one commit and push to claude/fixmy-sms-automation-debug-t3jpvi'
   };
 
   function copyPromptKey(key) {
