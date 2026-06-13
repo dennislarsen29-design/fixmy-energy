@@ -100,6 +100,15 @@
   .prompt-btn:hover{background:rgba(141,198,63,0.15);}
   .prompt-btn.copied{color:#fff;background:var(--green);border-color:var(--green);}
   .roadmap-group-label{font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.1em;color:rgba(141,198,63,0.6);margin:14px 0 7px;}
+  .roadmap-check-wrap{display:flex;align-items:center;gap:5px;font-size:0.72rem;color:rgba(243,237,227,0.45);cursor:pointer;flex-shrink:0;margin-top:2px;white-space:nowrap;}
+  .roadmap-check-wrap input[type=checkbox]{width:14px;height:14px;accent-color:var(--green);cursor:pointer;}
+  .roadmap-done{opacity:0.45;border-color:rgba(141,198,63,0.15);}
+  .roadmap-done .roadmap-card-title::before{content:'✅ ';font-size:0.8em;}
+  .roadmap-blocked{border-color:rgba(245,158,11,0.3);}
+  .blocked-badge{font-size:0.62rem;font-weight:700;color:#f59e0b;background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:4px;padding:1px 6px;margin-left:6px;vertical-align:middle;}
+  .roadmap-completed-header{font-size:0.72rem;color:rgba(243,237,227,0.35);cursor:pointer;padding:8px 0;display:flex;align-items:center;gap:6px;user-select:none;}
+  .roadmap-completed-header:hover{color:rgba(243,237,227,0.55);}
+  #roadmap-completed{display:none;}
 
   /* Phase blocks */
   .phase{border-left:3px solid var(--green-border);padding:12px 16px;margin-bottom:12px;background:var(--surface);border-radius:0 10px 10px 0;}
@@ -770,6 +779,13 @@
     <button class="prompt-btn" onclick="copyPromptKey('ghl-webhook')">📋 Prompt</button>
   </div>
 
+  <div id="roadmap-completed-wrap" style="margin-top:18px;display:none;">
+    <div class="roadmap-completed-header" onclick="var s=document.getElementById('roadmap-completed');s.style.display=s.style.display==='none'?'block':'none';this.querySelector('.rc-arrow').textContent=s.style.display==='block'?'▾':'▸';">
+      <span class="rc-arrow">▸</span> Completed items
+    </div>
+    <div id="roadmap-completed"></div>
+  </div>
+
 </div>
 
 <!-- 9. KEY METRICS -->
@@ -833,6 +849,102 @@
     });
   }
   loadChecks();
+
+  // ── Supabase-backed Roadmap Tracking ──────────────────────────────────────
+  var _SUPA_URL = 'https://kbtobyoumvbcxfbugsid.supabase.co';
+  var _SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtidG9ieW91bXZiY3hmYnVnc2lkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ1NjY5MDcsImV4cCI6MjA5MDE0MjkwN30.nLE0TlMu43E4dNRxxjoc6P1OQMjfwXgonbA2MrCCrhk';
+  var _supaHeaders = { 'apikey': _SUPA_KEY, 'Authorization': 'Bearer ' + _SUPA_KEY, 'Content-Type': 'application/json' };
+
+  function _injectRoadmapCheckboxes() {
+    document.querySelectorAll('.roadmap-card').forEach(function(card) {
+      var btn = card.querySelector('.prompt-btn');
+      if (!btn) return;
+      var match = (btn.getAttribute('onclick')||'').match(/copyPromptKey\('([^']+)'\)/);
+      if (!match) return;
+      card.dataset.key = match[1];
+      var label = document.createElement('label');
+      label.className = 'roadmap-check-wrap';
+      var cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.dataset.key = match[1];
+      cb.addEventListener('change', function() { _toggleRoadmapItem(this); });
+      label.appendChild(cb);
+      label.appendChild(document.createTextNode(' Done'));
+      card.appendChild(label);
+    });
+  }
+
+  async function loadRoadmapItems() {
+    try {
+      var resp = await fetch(_SUPA_URL + '/rest/v1/roadmap_items?select=key,checked,blocked_by', { headers: _supaHeaders });
+      if (!resp.ok) return;
+      var items = await resp.json();
+      var itemMap = {};
+      items.forEach(function(it) { itemMap[it.key] = it; });
+
+      var completedSection = document.getElementById('roadmap-completed');
+      var completedWrap = document.getElementById('roadmap-completed-wrap');
+      var anyDone = false;
+
+      document.querySelectorAll('.roadmap-card[data-key]').forEach(function(card) {
+        var key = card.dataset.key;
+        var item = itemMap[key];
+        if (!item) return;
+        var cb = card.querySelector('input[type=checkbox]');
+        if (!cb) return;
+
+        if (item.checked) {
+          cb.checked = true;
+          card.classList.add('roadmap-done');
+          completedSection.appendChild(card);
+          anyDone = true;
+        }
+
+        if (item.blocked_by && itemMap[item.blocked_by] && !itemMap[item.blocked_by].checked) {
+          card.classList.add('roadmap-blocked');
+          var titleEl = card.querySelector('.roadmap-card-title');
+          if (titleEl && !titleEl.querySelector('.blocked-badge')) {
+            var badge = document.createElement('span');
+            badge.className = 'blocked-badge';
+            badge.textContent = '⚠ Blocked';
+            titleEl.appendChild(badge);
+          }
+        }
+      });
+
+      if (anyDone && completedWrap) completedWrap.style.display = 'block';
+    } catch(e) { console.warn('Roadmap load failed', e); }
+  }
+
+  async function _toggleRoadmapItem(cb) {
+    var key = cb.dataset.key;
+    var checked = cb.checked;
+    var card = cb.closest('.roadmap-card');
+    var completedSection = document.getElementById('roadmap-completed');
+    var completedWrap = document.getElementById('roadmap-completed-wrap');
+
+    try {
+      await fetch(_SUPA_URL + '/rest/v1/roadmap_items?key=eq.' + encodeURIComponent(key), {
+        method: 'PATCH',
+        headers: Object.assign({}, _supaHeaders, { 'Prefer': 'return=minimal' }),
+        body: JSON.stringify({ checked: checked, completed_at: checked ? new Date().toISOString() : null })
+      });
+    } catch(e) { console.warn('Roadmap save failed', e); }
+
+    if (checked) {
+      card.classList.add('roadmap-done');
+      completedSection.appendChild(card);
+      if (completedWrap) completedWrap.style.display = 'block';
+    } else {
+      card.classList.remove('roadmap-done');
+      // Reload to restore card to original position and remove blocked badges
+      _injectRoadmapCheckboxes();
+      loadRoadmapItems();
+    }
+  }
+
+  _injectRoadmapCheckboxes();
+  loadRoadmapItems();
 
   // Prompt Library
   var PROMPTS = {
