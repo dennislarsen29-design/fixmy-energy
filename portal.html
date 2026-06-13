@@ -673,6 +673,50 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     try { renderAdminCanvassView(); }
     catch(e) { _dbEl.innerHTML = '<p style="color:#ef4444;">Render error: '+e.message+'. <button onclick="loadAdminDashboard()" style="width:auto;padding:8px 16px;font-size:0.75rem;background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;cursor:pointer;">Retry</button></p>'; console.error('[renderAdminCanvassView]', e); }
     showBlackBoxPopup();
+    showPartialCaptureAlert();
+    if (!window._partialCapturePoll) {
+      window._partialCapturePoll = setInterval(showPartialCaptureAlert, 5 * 60 * 1000);
+    }
+  }
+
+  async function showPartialCaptureAlert() {
+    try {
+      var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+      var { data: partials } = await c2.from('customers')
+        .select('id,first_name,last_name,address,phone,email,created_at')
+        .eq('partial_capture', true)
+        .gte('created_at', cutoff)
+        .order('created_at', {ascending: false})
+        .limit(5);
+      var existing = document.getElementById('partialCaptureAlert');
+      if (!partials || !partials.length) { if (existing) existing.remove(); return; }
+      var el = existing || document.createElement('div');
+      el.id = 'partialCaptureAlert';
+      el.style.cssText = 'position:fixed;top:16px;right:16px;z-index:9999;max-width:320px;background:#1c1c1c;border:1px solid rgba(251,146,60,0.4);border-radius:14px;box-shadow:0 8px 32px rgba(0,0,0,0.7);overflow:hidden;';
+      var h = '<div style="background:rgba(251,146,60,0.1);padding:11px 14px;display:flex;align-items:center;justify-content:space-between;">';
+      h += '<span style="color:#fb923c;font-weight:700;font-size:0.78rem;">&#128293; '+partials.length+' Partial Web Lead'+(partials.length>1?'s':'')+'</span>';
+      h += '<button onclick="document.getElementById(\'partialCaptureAlert\').remove();" style="background:none;border:none;color:#6b7280;cursor:pointer;font-size:1rem;line-height:1;">&#x2715;</button>';
+      h += '</div><div style="max-height:260px;overflow-y:auto;">';
+      partials.forEach(function(p) {
+        var name = ((p.first_name||'')+' '+(p.last_name||'')).trim() || 'Unknown';
+        var ago  = Math.round((Date.now() - new Date(p.created_at).getTime()) / 60000);
+        var agoStr = ago < 60 ? ago+'m ago' : Math.round(ago/60)+'h ago';
+        h += '<div style="padding:10px 14px;border-bottom:1px solid #252525;">';
+        h += '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px;">';
+        h += '<strong style="font-size:0.83rem;color:#eee;">'+name+'</strong>';
+        h += '<span style="font-size:0.65rem;color:#6b7280;">'+agoStr+'</span></div>';
+        if (p.address) h += '<div style="font-size:0.7rem;color:#888;margin-bottom:2px;">&#128205; '+p.address+'</div>';
+        if (p.phone)   h += '<div style="font-size:0.7rem;color:#888;margin-bottom:2px;">&#128222; '+p.phone+'</div>';
+        var em = p.email || '';
+        if (em && !em.endsWith('@setter.local')) h += '<div style="font-size:0.7rem;color:#888;margin-bottom:6px;">&#9993; '+em+'</div>';
+        h += '<button onclick="document.getElementById(\'partialCaptureAlert\').remove();openLeadEditor(\''+p.id+'\');" style="width:100%;padding:6px;background:rgba(251,146,60,0.12);border:1px solid rgba(251,146,60,0.3);border-radius:7px;color:#fb923c;font-weight:700;font-size:0.73rem;cursor:pointer;">Call / Open Lead &#8594;</button>';
+        h += '</div>';
+      });
+      h += '</div>';
+      el.innerHTML = h;
+      if (!existing) document.body.appendChild(el);
+    } catch(e) { console.warn('partialCaptureAlert:', e.message); }
   }
 
   async function showBlackBoxPopup() {
