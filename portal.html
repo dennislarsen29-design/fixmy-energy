@@ -9630,9 +9630,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
         else if (canvassGpsStatus === 'error') {
           h += '<div style="text-align:center;padding:32px 16px 100px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.2);border-radius:14px;">';
-          h += '<div style="color:#ef4444;font-size:0.85rem;margin-bottom:6px;">⚠ Location unavailable.</div>';
-          if (canvassErrMsg) h += '<div style="color:#888;font-size:0.68rem;margin-bottom:12px;font-family:monospace;">' + canvassErrMsg + '</div>';
-          h += '<button onclick="canvassLoadNoGps()" style="background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;padding:12px 28px;font-size:0.85rem;font-weight:700;cursor:pointer;margin-bottom:10px;">Load Leads Without GPS</button>';
+          h += '<div style="color:#ef4444;font-size:0.85rem;margin-bottom:6px;">⚠ GPS unavailable</div>';
+          h += '<div style="color:#888;font-size:0.72rem;margin-bottom:6px;">Allow location in your browser settings, or load all leads below.</div>';
+          if (canvassErrMsg) h += '<div style="color:#666;font-size:0.65rem;margin-bottom:12px;font-family:monospace;">' + canvassErrMsg + '</div>';
+          h += '<button onclick="canvassLoadNoGps()" style="background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;padding:12px 28px;font-size:0.85rem;font-weight:700;cursor:pointer;margin-bottom:10px;">Load All Leads</button>';
           h += '<div><button onclick="canvassInit()" style="background:none;border:none;color:#555;font-size:0.72rem;cursor:pointer;text-decoration:underline;">↻ Try GPS again</button></div>';
           h += '</div>';
         }
@@ -10171,6 +10172,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     window.canvassInit = async function() {
       canvassGpsStatus = 'gps';
       renderSales();
+      var gpsLat = null, gpsLng = null;
       try {
         var pos = await Promise.race([
           new Promise(function(resolve, reject) {
@@ -10180,14 +10182,28 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             setTimeout(function(){ reject(new Error('GPS timeout')); }, 9000);
           })
         ]);
-        await _canvassLoadLeads(pos.coords.latitude, pos.coords.longitude);
+        gpsLat = pos.coords.latitude;
+        gpsLng = pos.coords.longitude;
       } catch(e) {
-        await _canvassLoadLeads(null, null); // GPS failed or timed out — load without sorting
+        // GPS unavailable — proceed without location (loads all leads sorted by score)
+      }
+      try {
+        await _canvassLoadLeads(gpsLat, gpsLng);
+      } catch(e2) {
+        canvassErrMsg = e2.message || 'Network error — check connection';
+        canvassGpsStatus = 'error';
+        renderSales();
       }
     };
 
     window.canvassLoadNoGps = async function() {
-      await _canvassLoadLeads(null, null);
+      try {
+        await _canvassLoadLeads(null, null);
+      } catch(e) {
+        canvassErrMsg = e.message || 'Network error — check connection';
+        canvassGpsStatus = 'error';
+        renderSales();
+      }
     };
 
     async function _canvassLoadLeads(userLat, userLng) {
@@ -10197,10 +10213,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       renderSales();
 
       var SEL = 'id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,original_installer,install_year';
-      var params = 'lead_source=eq.orphaned_list&sold_type=is.null&lat=not.is.null&select=' + SEL;
+      var params = 'lead_source=eq.orphaned_list&sold_type=is.null&select=' + SEL;
       if (userLat && userLng) {
         var D = 0.10; // ~7-mile bounding box
-        params += '&lat=gte.' + (userLat - D) + '&lat=lte.' + (userLat + D)
+        params += '&lat=not.is.null'
+                + '&lat=gte.' + (userLat - D) + '&lat=lte.' + (userLat + D)
                 + '&lng=gte.' + (userLng - D) + '&lng=lte.' + (userLng + D);
       } else {
         params += '&order=lead_score.desc.nullslast';
