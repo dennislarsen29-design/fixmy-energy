@@ -64,6 +64,7 @@ exports.handler = async function(event) {
 
   // ── 2. Book appointment ────────────────────────────────────────────────────
   let appointmentId;
+  let apptError = null;
   try {
     const apptResp = await fetch(`${GHL_BASE}/calendars/events/appointments`, {
       method:  'POST',
@@ -81,8 +82,14 @@ exports.handler = async function(event) {
     });
     const apptData = await apptResp.json();
     appointmentId  = apptData?.id || apptData?.event?.id;
-    console.log('GHL appointment', apptResp.status, 'id:', appointmentId);
+    if (!apptResp.ok || !appointmentId) {
+      apptError = { status: apptResp.status, body: JSON.stringify(apptData).slice(0, 400) };
+      console.error('GHL appointment failed', apptResp.status, JSON.stringify(apptData).slice(0, 400));
+    } else {
+      console.log('GHL appointment created', apptResp.status, 'id:', appointmentId, 'calendarId:', CALENDAR_ID);
+    }
   } catch(e) {
+    apptError = { status: 0, body: e.message };
     console.error('GHL appointment create failed:', e.message);
   }
 
@@ -158,6 +165,6 @@ exports.handler = async function(event) {
   return {
     statusCode: 200,
     headers: cors,
-    body: JSON.stringify({ ok: true, contactId, appointmentId }),
+    body: JSON.stringify({ ok: true, contactId, appointmentId, apptError }),
   };
 };
