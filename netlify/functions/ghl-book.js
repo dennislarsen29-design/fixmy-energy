@@ -3,7 +3,7 @@
 // Body: { firstName, lastName, phone, email, address, startISO, endISO }
 
 const GHL_BASE    = 'https://services.leadconnectorhq.com';
-const CALENDAR_ID = process.env.GHL_CALENDAR_ID || 'UjlvHxE8AlyhG5frBkqr';
+const CALENDAR_ID = process.env.GHL_DIAG_CALENDAR_ID || process.env.GHL_CALENDAR_ID || 'ZGOdyYdMUh07V1Ujav9R';
 const SUPA_URL    = process.env.SUPABASE_URL || 'https://kbtobyoumvbcxfbugsid.supabase.co';
 const SUPA_KEY    = process.env.SUPABASE_ANON_KEY || process.env.SUPA_KEY ||
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtidG9ieW91bXZiY3hmYnVnc2lkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ1NjY5MDcsImV4cCI6MjA5MDE0MjkwN30.nLE0TlMu43E4dNRxxjoc6P1OQMjfwXgonbA2MrCCrhk';
@@ -38,60 +38,28 @@ exports.handler = async function(event) {
     Version:        '2021-07-28',
   };
 
-  // ── 1. Find or create GHL contact ─────────────────────────────────────────
+  // ── 1. Upsert GHL contact (single call — more reliable than search+create) ──
   let contactId;
   try {
-    const param      = email ? `email=${encodeURIComponent(email)}` : `phone=${encodeURIComponent(phone)}`;
-    const searchResp = await fetch(
-      `${GHL_BASE}/contacts/search/duplicate?locationId=${locationId}&${param}`,
-      { headers: ghlHeaders }
-    );
-    const searchData = await searchResp.json();
-    contactId = searchData?.contact?.id;
+    const upsertResp = await fetch(`${GHL_BASE}/contacts/upsert`, {
+      method:  'POST',
+      headers: ghlHeaders,
+      body:    JSON.stringify({
+        locationId,
+        firstName: firstName || '',
+        lastName:  lastName  || '',
+        email:     email     || undefined,
+        phone:     phone     || undefined,
+        address1:  address   || undefined,
+        tags:      ['booking-confirmed'],
+      }),
+    });
+    const upsertData = await upsertResp.json();
+    contactId = upsertData?.contact?.id;
+    if (!contactId) throw new Error('No contactId: ' + JSON.stringify(upsertData).slice(0, 200));
   } catch(e) {
-    console.warn('GHL contact search failed:', e.message);
-  }
-
-  if (!contactId) {
-    try {
-      const createResp = await fetch(`${GHL_BASE}/contacts/`, {
-        method:  'POST',
-        headers: ghlHeaders,
-        body:    JSON.stringify({
-          locationId,
-          firstName: firstName || '',
-          lastName:  lastName  || '',
-          email:     email     || undefined,
-          phone:     phone     || undefined,
-          address1:  address   || undefined,
-          tags:      ['booking-confirmed'],
-        }),
-      });
-      const createData = await createResp.json();
-      contactId = createData?.contact?.id;
-    } catch(e) {
-      console.error('GHL contact create failed:', e.message);
-    }
-  } else {
-    // Add booking-confirmed, remove partial-capture
-    try {
-      await fetch(`${GHL_BASE}/contacts/${contactId}/tags`, {
-        method:  'POST',
-        headers: ghlHeaders,
-        body:    JSON.stringify({ tags: ['booking-confirmed'] }),
-      });
-      await fetch(`${GHL_BASE}/contacts/${contactId}/tags`, {
-        method:  'DELETE',
-        headers: ghlHeaders,
-        body:    JSON.stringify({ tags: ['partial-capture'] }),
-      });
-    } catch(e) {
-      console.warn('GHL tag update failed:', e.message);
-    }
-  }
-
-  if (!contactId) {
-    return { statusCode: 502, headers: cors, body: JSON.stringify({ error: 'Failed to find or create GHL contact' }) };
+    console.error('GHL contact upsert failed:', e.message);
+    return { statusCode: 502, headers: cors, body: JSON.stringify({ error: 'GHL contact upsert failed', detail: e.message }) };
   }
 
   // ── 2. Book appointment ────────────────────────────────────────────────────

@@ -3,7 +3,7 @@
 // GET /.netlify/functions/ghl-slots?debug=1  — returns raw GHL response for diagnosis
 // 60-second server-side cache to avoid rate-limiting GHL.
 
-const CALENDAR_ID   = process.env.GHL_CALENDAR_ID || 'UjlvHxE8AlyhG5frBkqr';
+const CALENDAR_ID   = process.env.GHL_DIAG_CALENDAR_ID || process.env.GHL_CALENDAR_ID || 'ZGOdyYdMUh07V1Ujav9R';
 const SLOT_DURATION = 120; // minutes — matches GHL calendar's 2hr appointment duration
 const GHL_BASE      = 'https://services.leadconnectorhq.com';
 
@@ -71,13 +71,12 @@ exports.handler = async function(event) {
       const startDt = new Date(startISO);
       if (startDt <= now) continue;
 
-      const endDt        = new Date(startDt.getTime() + SLOT_DURATION * 60 * 1000);
-      const displayEndDt = new Date(startDt.getTime() + (SLOT_DURATION + 60) * 60 * 1000);
+      const endDt = new Date(startDt.getTime() + SLOT_DURATION * 60 * 1000);
 
       slots.push({
         startISO: startDt.toISOString(),
         endISO:   endDt.toISOString(),
-        label:    formatLabel(startDt, displayEndDt),
+        label:    formatLabel(startDt, endDt),
       });
     }
   }
