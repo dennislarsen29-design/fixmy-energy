@@ -10111,12 +10111,58 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         : '')+
         '<div class="editor-section-title">Lead Source</div>'+
         '<select id="seLeadSource" class="ed-input" style="margin-bottom:14px;"><option value="">— Unknown —</option><option value="self_generated"'+(l.lead_source==='self_generated'?' selected':'')+'>Self-Generated (Black Box)</option><option value="referral"'+(l.lead_source==='referral'?' selected':'')+'>Referral</option><option value="inbound_web"'+(l.lead_source==='inbound_web'?' selected':'')+'>Inbound / Web</option><option value="orphaned_list"'+(l.lead_source==='orphaned_list'?' selected':'')+'>Orphaned Installer List</option><option value="top_tier_appt"'+(l.lead_source==='top_tier_appt'?' selected':'')+'>Top Tier Appt</option></select>'+
+        '<div class="editor-section-title">Photos</div>'+
+        '<div id="sePhotoStatus" style="font-size:0.72rem;color:#8DC63F;min-height:18px;margin-bottom:6px;"></div>'+
+        '<div id="sePhotoGrid" style="margin-bottom:10px;"><div style="font-size:0.72rem;color:#888;">Loading photos…</div></div>'+
+        '<label style="display:inline-flex;align-items:center;gap:6px;font-size:0.8rem;font-weight:700;cursor:pointer;padding:8px 16px;background:rgba(141,198,63,0.1);color:#8DC63F;border:1px solid rgba(141,198,63,0.3);border-radius:100px;margin-bottom:16px;">'+
+          '&#128247; Add Photos<input type="file" multiple accept="image/*" style="display:none" onchange="salesUploadPhotos(this)">'+
+        '</label>'+
         '<div class="editor-footer">'+
           '<button class="lead-btn lime" style="padding:12px 28px;" onclick="savesSalesEdit()">Save Changes</button>'+
           '<button class="lead-btn ghost" style="padding:12px 20px;" onclick="document.getElementById(\'editorSlot\').innerHTML=\'\'">Cancel</button>'+
           '<span id="seSaved" style="display:none;font-size:0.72rem;color:#8DC63F;margin-left:10px;">&#10003; Saved</span>'+
         '</div></div>';
       slot.scrollIntoView({behavior:'smooth',block:'start'});
+      currentJobId = l.id;
+      loadJobPhotos(l.id).then(function() { window.renderSalesPhotoGrid(l.id); });
+    };
+
+    window.renderSalesPhotoGrid = function(id) {
+      var grid = document.getElementById('sePhotoGrid');
+      if (!grid) return;
+      var photos = jobPhotos[id] || [];
+      if (!photos.length) {
+        grid.innerHTML = '<div style="font-size:0.72rem;color:#888;">No photos yet — tap Add Photos to upload.</div>';
+        return;
+      }
+      var h = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(76px,1fr));gap:6px;">';
+      photos.forEach(function(p) {
+        var custBadge = p.uploaded_by === 'customer'
+          ? '<div style="position:absolute;bottom:2px;right:2px;background:rgba(74,158,255,0.85);color:#fff;font-size:0.5rem;padding:1px 4px;border-radius:3px;font-weight:700;">CUST</div>' : '';
+        var lbl = (p.Label || p.label || 'Photo').replace(' Photo','').replace('MSP ','').slice(0, 12);
+        h += '<div style="position:relative;">' +
+          '<img src="' + p.url + '" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:8px;cursor:pointer;border:1.5px solid rgba(0,0,0,0.1);" ' +
+          'onclick="window.open(\'' + p.url + '\',\'_blank\')" title="' + (p.Label||p.label||'') + '">' +
+          custBadge +
+          '<div style="font-size:0.58rem;color:#888;text-align:center;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + lbl + '</div>' +
+          '</div>';
+      });
+      h += '</div>';
+      grid.innerHTML = h;
+    };
+
+    window.salesUploadPhotos = function(input) {
+      var id = (document.getElementById('seId') || {}).value;
+      if (!id) return;
+      currentJobId = id;
+      var files = Array.from(input.files);
+      if (!files.length) return;
+      var statusEl = document.getElementById('sePhotoStatus');
+      if (statusEl) statusEl.textContent = 'Uploading ' + files.length + ' photo' + (files.length > 1 ? 's' : '') + '…';
+      uploadPhotos(files).then(function() {
+        if (statusEl) { statusEl.textContent = '✓ ' + files.length + ' photo' + (files.length > 1 ? 's' : '') + ' uploaded'; setTimeout(function() { if (statusEl) statusEl.textContent = ''; }, 3000); }
+        window.renderSalesPhotoGrid(id);
+      });
     };
 
     window.seSetCat = function(cat) {
@@ -10668,10 +10714,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     try { client = supabase.createClient(SUPA_URL, SUPA_KEY); }
     catch(e) { document.getElementById('dashBody').innerHTML = '<p style="color:#ef4444;">Database error.</p>'; return; }
 
-    // Only jobs assigned to this ops partner
+    // Only confirmed jobs assigned to this ops partner (sold_type set, not archived)
     var resp = await client.from('customers').select('*')
       .eq('assigned_ops', ops.id)
       .not('sold_type', 'is', null)
+      .or('archived.eq.false,archived.is.null')
       .order('created_at', {ascending:false});
     var jobs = resp.data || [];
 
@@ -10847,6 +10894,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             (job.phone ? '<a href="tel:' + (job.phone||'').replace(/\D/g,'') + '" class="tech-btn tech-btn-call">&#128222; Call</a>' : '') +
             (job.email ? '<a href="mailto:' + (job.email||'') + '" class="tech-btn tech-btn-secondary">&#9993; Email</a>' : '') +
             (job.address ? '<a href="https://maps.apple.com/?q=' + encodeURIComponent(job.address) + '" target="_blank" class="tech-btn tech-btn-secondary">&#128506; Directions</a>' : '') +
+            '<button onclick="opsArchiveJob(\'' + jid + '\')" class="tech-btn tech-btn-secondary" title="Archive job" style="color:#ef4444;border-color:rgba(239,68,68,0.25);padding:7px 10px;">&#128451;</button>' +
             '<button class="tech-btn tech-btn-primary" onclick="opsToggleJob(this.closest(\'[data-jid]\').dataset.jid)">' + (isOpen?'&#9650; Close':'&#9660; Open Job') + '</button>' +
           '</div>';
 
@@ -10953,6 +11001,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       event.preventDefault();
       currentJobId = jid; activeJobId = jid;
       uploadPhotos(Array.from(event.dataTransfer.files).filter(function(f){ return f.type.startsWith('image/'); })).then(renderOps);
+    };
+    window.opsArchiveJob = async function(jid) {
+      if (!confirm('Archive this job? It will be removed from your jobs list.')) return;
+      var client2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var res = await client2.from('customers').update({ archived: true }).eq('id', jid);
+      if (res.error) { alert('Archive failed: ' + res.error.message); return; }
+      jobs = jobs.filter(function(j) { return j.id !== jid; });
+      renderOps();
     };
     window.opsToggleCheck = function(jid, key) {
       var checkKey = 'job_' + jid;
