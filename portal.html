@@ -3458,6 +3458,18 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '<div id="photoStatus" class="job-upload-status"></div>'+
           '<div id="photoGrid" class="photo-grid"></div>'+
 
+          // AI Inverter Analysis panel
+          '<div id="inverterAnalysisWrap" style="margin-top:16px;">'+
+            '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">'+
+              '<div class="job-subsection-title" style="margin:0;">&#128269; AI Inverter Analysis</div>'+
+              '<button id="inverterAnalysisBtn" onclick="runInverterAnalysis()" '+
+                'style="font-size:0.7rem;padding:5px 13px;background:rgba(74,158,255,0.12);color:#4a9eff;border:1px solid rgba(74,158,255,0.3);border-radius:100px;cursor:pointer;flex-shrink:0;">'+
+                '&#128269; Analyze Inverter'+
+              '</button>'+
+            '</div>'+
+            '<div id="inverterAnalysisResult" style="font-size:0.78rem;color:#666;">Upload inverter photos above, then tap Analyze.</div>'+
+          '</div>'+
+
           // Field Notes subsection
           '<div style="margin-top:14px;">'+
             '<div class="job-subsection-title">&#128221; Ops Notes</div>'+
@@ -4792,6 +4804,119 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (ta) ta.value = 'Error: ' + e.message;
     } finally {
       if (btn) { btn.disabled = false; btn.textContent = '✨ Generate'; }
+    }
+  };
+
+  window.runInverterAnalysis = async function() {
+    var photos = (jobPhotos[currentJobId] || []).filter(function(p) {
+      return (p.Label || p.label || '').toLowerCase().includes('inverter');
+    });
+    var btn = document.getElementById('inverterAnalysisBtn');
+    var resultEl = document.getElementById('inverterAnalysisResult');
+    if (!resultEl) return;
+
+    if (!photos.length) {
+      resultEl.innerHTML = '<div style="color:#f59e0b;font-size:0.75rem;">&#9888; No inverter photos found — upload photos labeled &ldquo;Inverter Photo&rdquo; first.</div>';
+      return;
+    }
+
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Analyzing…'; }
+    resultEl.innerHTML = '<div style="color:#94a3b8;font-size:0.75rem;line-height:1.6;">&#128269; Scanning photos &amp; searching web for warranty, recalls, and known issues&hellip; (15&ndash;30 seconds)</div>';
+
+    var rec = adminCustomers.find(function(c) { return String(c.id) === String(currentJobId); });
+    var notes = [
+      rec && rec.notes,
+      document.getElementById('fieldNotesTA') && document.getElementById('fieldNotesTA').value,
+      document.getElementById('assessmentNotesTA') && document.getElementById('assessmentNotesTA').value,
+    ].filter(Boolean).join('\n').trim();
+
+    try {
+      var r = await fetch('/.netlify/functions/inverter-analysis', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          photoUrls: photos.map(function(p) { return p.url; }),
+          notes: notes,
+          installer: (rec && rec.notes) || '',
+          address: (rec && rec.address) || '',
+          systemSize: (rec && rec.system_size) || '',
+        }),
+      });
+      var result = await r.json();
+
+      if (btn) { btn.disabled = false; btn.textContent = '&#128260; Re-analyze'; }
+
+      if (result.error) {
+        resultEl.innerHTML = '<div style="color:#ef4444;font-size:0.75rem;">&#10005; ' + result.error + '</div>';
+        return;
+      }
+
+      // Render analysis card
+      var h = '<div style="background:rgba(74,158,255,0.06);border:1px solid rgba(74,158,255,0.2);border-radius:10px;padding:14px;">';
+
+      // Equipment header
+      if (result.brand || result.model) {
+        h += '<div style="font-size:0.85rem;font-weight:700;color:#e2e8f0;margin-bottom:2px;">' +
+          [result.brand, result.model].filter(Boolean).join(' ') + '</div>';
+      }
+      var metaLines = [];
+      if (result.serial)          metaLines.push('S/N: ' + result.serial);
+      if (result.manufactureYear) metaLines.push('Year: ' + result.manufactureYear);
+      if (metaLines.length) h += '<div style="font-size:0.7rem;color:#94a3b8;margin-bottom:4px;">' + metaLines.join(' &middot; ') + '</div>';
+      if (result.warrantyStatus)  h += '<div style="font-size:0.7rem;color:#94a3b8;margin-bottom:10px;">Warranty: ' + result.warrantyStatus + '</div>';
+
+      // Can-fix badge
+      if (result.canFixOnSpot !== undefined) {
+        var fixBg    = result.canFixOnSpot ? 'rgba(34,197,94,0.12)' : 'rgba(239,68,68,0.1)';
+        var fixColor = result.canFixOnSpot ? '#4ade80' : '#f87171';
+        h += '<div style="background:' + fixBg + ';border-radius:6px;padding:8px 12px;margin-bottom:10px;font-size:0.73rem;color:' + fixColor + ';line-height:1.5;">' +
+          (result.canFixOnSpot ? '&#9989; Likely fixable on-site' : '&#128295; Likely requires parts / return visit') +
+          (result.fixOnSpotNotes ? '<br><span style="opacity:0.75;">' + result.fixOnSpotNotes + '</span>' : '') +
+          '</div>';
+      }
+
+      // Summary
+      if (result.summary) {
+        h += '<div style="font-size:0.78rem;color:#cbd5e1;line-height:1.6;margin-bottom:12px;padding:10px;background:rgba(0,0,0,0.15);border-radius:6px;">' +
+          result.summary + '</div>';
+      }
+
+      // Findings sections
+      if (result.findings && result.findings.length) {
+        result.findings.forEach(function(f) {
+          h += '<div style="margin-bottom:12px;">';
+          h += '<div style="font-size:0.73rem;font-weight:700;color:#93c5fd;margin-bottom:3px;">' + (f.title || '') + '</div>';
+          if (f.body) h += '<div style="font-size:0.73rem;color:#94a3b8;line-height:1.6;margin-bottom:5px;">' + f.body + '</div>';
+          if (f.links && f.links.length) {
+            h += '<div style="display:flex;flex-wrap:wrap;gap:5px;">';
+            f.links.forEach(function(lnk) {
+              h += '<a href="' + lnk.url + '" target="_blank" rel="noopener noreferrer" ' +
+                'style="font-size:0.65rem;padding:3px 8px;background:rgba(74,158,255,0.15);color:#60a5fa;border:1px solid rgba(74,158,255,0.25);border-radius:100px;text-decoration:none;white-space:nowrap;">' +
+                lnk.label + ' &#8599;</a>';
+            });
+            h += '</div>';
+          }
+          h += '</div>';
+        });
+      }
+
+      // On-site steps
+      if (result.onSiteSteps && result.onSiteSteps.length) {
+        h += '<div style="margin-top:4px;">';
+        h += '<div style="font-size:0.73rem;font-weight:700;color:#93c5fd;margin-bottom:6px;">&#128203; On-Site Steps</div>';
+        h += '<ol style="margin:0;padding-left:16px;">';
+        result.onSiteSteps.forEach(function(step) {
+          h += '<li style="font-size:0.72rem;color:#94a3b8;line-height:1.6;margin-bottom:2px;">' + step + '</li>';
+        });
+        h += '</ol></div>';
+      }
+
+      h += '</div>';
+      resultEl.innerHTML = h;
+
+    } catch(e) {
+      if (btn) { btn.disabled = false; btn.textContent = '&#128269; Analyze Inverter'; }
+      resultEl.innerHTML = '<div style="color:#ef4444;font-size:0.75rem;">Analysis failed: ' + e.message + '</div>';
     }
   };
 
