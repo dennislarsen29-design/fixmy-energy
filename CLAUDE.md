@@ -78,7 +78,8 @@ var OPS_PARTNERS = [
 - `GHL_API_KEY` — GoHighLevel private integration key
 - `GHL_LOCATION_ID` — GHL sub-account location ID: `gXWwbOVymY0iRfj7c1It`
 - `GHL_CALENDAR_ID` — GHL top-tier calendar ID (if used)
-- `GHL_DIAG_CALENDAR_ID` — GHL diagnostic calendar ID: `ZGOdyYdMUh07V1Ujav9R`
+- `GHL_EVAL_CALENDAR_ID` — GHL "FixMy.Energy Evaluation" calendar ID: `UjlvHxE8AlyhG5frBkqr` — used by `/book` (`ghl-book.js`, `ghl-slots.js`) ✅
+- `GHL_DIAG_CALENDAR_ID` — GHL "Ops - Diagnostic Appointments" calendar ID: `ZGOdyYdMUh07V1Ujav9R` — used ONLY by the admin's post-payment diagnostic scheduling (`confirmDiagSchedule()` in portal.html)
 - `GHL_TT_WEBHOOK` — GHL webhook URL for Top Tier workflow triggers
 - `STRIPE_SECRET_KEY` — Stripe secret key (server-side only, for sign-init.js / sign-complete.js) ✅
 - `STRIPE_PUBLISHABLE_KEY` — Stripe publishable key (returned to client by sign-init.js) ✅
@@ -90,7 +91,11 @@ Stored in portal.html as `GKEY` (client-side key, restrict to domain in Google C
 
 ## GHL Integration
 - Location ID: `gXWwbOVymY0iRfj7c1It`
-- Diagnostic Calendar ID: `ZGOdyYdMUh07V1Ujav9R`
+- **Two distinct calendars/appointment types — do not conflate (fixed 2026-06-16, was previously bugged):**
+  - **Evaluation** (`GHL_EVAL_CALENDAR_ID` = `UjlvHxE8AlyhG5frBkqr`, GHL calendar "FixMy.Energy Evaluation", 2hr slots) — the initial Tech visit booked by the customer via `/book`. Tech sets up the Diagnostic, signs the agreement, collects the Diagnostic Fee. Used by `ghl-book.js` + `ghl-slots.js` only.
+  - **Diagnostic** (`GHL_DIAG_CALENDAR_ID` = `ZGOdyYdMUh07V1Ujav9R`, GHL calendar "Ops - Diagnostic Appointments", 10min slots) — the real technical-analysis visit by Cosmic/internal electrician, scheduled by admin in `confirmDiagSchedule()` AFTER agreement signed + invoice paid. Used by portal.html's diag-scheduling/reschedule calls to `ghl-calendar.js` only.
+  - Bug history: `ghl-book.js`/`ghl-slots.js` originally defaulted to the Diagnostic calendar ID (copy-paste/stale default), so `/book` confirmations went out with "Diagnostic" wording/SMS instead of "Evaluation" even though the customer only booked an Evaluation. Fixed by repointing those two functions to `GHL_EVAL_CALENDAR_ID`.
+  - Each calendar's Confirmation SMS/Email template is configured independently in GHL (Calendars → select calendar → Notifications tab, or via a Workflow keyed to that calendar's "Appointment Booked" trigger) — verify each says the correct terminology for its own appointment type.
 - Agreement flow: portal calls `ghl-diag-agreement.js` → upserts contact → adds `send-diag-agreement` tag → GHL workflow fires
 - Status sync: GHL calls `ghl-status-update.js` with triggers: `invoice_paid`, `invoice_created`, `agreement_signed`, `agreement_sent`
 - Scheduling: portal calls `ghl-calendar.js` to book real GHL calendar appointment (so reminders auto-recalculate on reschedule)
