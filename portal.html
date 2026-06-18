@@ -10276,10 +10276,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         }
 
         else if (canvassGpsStatus === 'error') {
-          h += '<div style="text-align:center;padding:32px 16px 100px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.2);border-radius:14px;">';
-          h += '<div style="color:#ef4444;font-size:0.85rem;margin-bottom:6px;">'+(canvassGpsFailed ? '⚠ GPS unavailable' : '⚠ Couldn\'t load leads')+'</div>';
-          h += '<div style="color:#888;font-size:0.72rem;margin-bottom:6px;">'+(canvassGpsFailed ? 'Allow location in your browser settings, or load all leads below.' : 'Check your connection and try again.')+'</div>';
-          if (canvassErrMsg) h += '<div style="font-size:0.65rem;color:#555;margin-bottom:10px;font-family:monospace;">'+canvassErrMsg+'</div>';
+          h += '<div style="text-align:center;padding:24px 16px 100px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.2);border-radius:14px;">';
+          h += '<div style="color:#ef4444;font-size:0.85rem;margin-bottom:4px;">'+(canvassGpsFailed ? '⚠ GPS unavailable' : '⚠ Couldn\'t load leads')+'</div>';
+          h += '<div style="color:#888;font-size:0.72rem;margin-bottom:10px;">'+(canvassGpsFailed ? 'Allow location in your browser settings, or load all leads below.' : 'Check your connection and try again')+'</div>';
+          if (canvassErrMsg) {
+            var _esc = canvassErrMsg.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+            h += '<div style="background:rgba(0,0,0,0.35);border:1px solid rgba(239,68,68,0.25);border-radius:8px;padding:8px 12px;margin:0 8px 12px;text-align:left;">';
+            h += '<div style="font-size:0.58rem;color:#ef4444;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.05em;">Error Details</div>';
+            h += '<div style="font-size:0.66rem;color:#ccc;font-family:monospace;word-break:break-all;line-height:1.5;white-space:pre-wrap;">' + _esc + '</div>';
+            h += '<button onclick="try{navigator.clipboard.writeText(decodeURIComponent(\''+encodeURIComponent(canvassErrMsg)+'\'))}catch(x){}" style="background:none;border:1px solid #333;color:#666;border-radius:6px;padding:3px 8px;font-size:0.6rem;cursor:pointer;margin-top:6px;">Copy</button>';
+            h += '</div>';
+          }
           h += '<button onclick="canvassLoadNoGps()" style="background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;padding:12px 28px;font-size:0.85rem;font-weight:700;cursor:pointer;margin-bottom:10px;">Load All Leads</button>';
           h += '<div><button onclick="canvassInit()" style="background:none;border:none;color:#555;font-size:0.72rem;cursor:pointer;text-decoration:underline;">↻ Try GPS again</button></div>';
           h += '</div>';
@@ -10955,9 +10962,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       try {
         await _canvassLoadLeads(null, null);
       } catch(e) {
-        canvassErrMsg = (e && e.name === 'ReferenceError')
-          ? 'Script error — try refreshing the page'
-          : (e && e.message ? e.message : 'Network error — check connection');
+        canvassErrMsg = (e && e.message ? e.name + ': ' + e.message : String(e)) +
+          (e && e.stack ? '\n' + e.stack.split('\n').slice(0,3).join('\n') : '');
         canvassGpsStatus = 'error';
         renderSales();
       }
@@ -10988,8 +10994,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       query = query.limit(80);
 
       var result = await query;
-      if (result.error || !Array.isArray(result.data)) {
-        canvassErrMsg = result.error ? result.error.message : 'Query returned unexpected data';
+      if (result.error) {
+        canvassErrMsg = 'Supabase: ' + result.error.message +
+          (result.error.details ? ' | ' + result.error.details : '') +
+          (result.error.hint   ? ' | hint: ' + result.error.hint : '') +
+          ' (code: ' + (result.error.code || '?') + ')';
+        canvassGpsStatus = 'error';
+        renderSales();
+        return;
+      }
+      if (!Array.isArray(result.data)) {
+        canvassErrMsg = 'Unexpected response type: ' + typeof result.data + '. Check Supabase RLS and anon key.';
         canvassGpsStatus = 'error';
         renderSales();
         return;
@@ -11015,7 +11030,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var fb = await client.from('customers').select(SEL)
           .eq('lead_source', 'orphaned_list')
           .is('sold_type', null)
-          .order('lead_score', { ascending: false })
+          .not('lat', 'is', null)
+          .order('lead_score', { ascending: false, nullsFirst: false })
           .limit(80);
         leads = Array.isArray(fb.data) ? fb.data : [];
       }
