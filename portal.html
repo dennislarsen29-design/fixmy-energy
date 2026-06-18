@@ -4795,20 +4795,30 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var monthlyLossEst  = (svcType==='inverter_swap' && sysKw>0) ? Math.round(sysKw*yield_kw*0.75*blendedRate/12) : null;
       var newSysKw        = (svcType==='inverter_swap' && sysKw>0) ? Math.round((sysKw+newPanelKw)*10)/10 : null;
       var annualKwhBundle = newSysKw ? Math.round(newSysKw*yield_kw) : null;
+      // Fix: calculate expected bill after fix instead of hardcoding 25
+      var expectedBillWithFix = (svcType==='inverter_swap' && newSysKw && bill>0)
+        ? Math.max(24, Math.round(bill - newSysKw*yield_kw/12*blendedRate))
+        : null;
+      // Use actual diagnostic findings as the issue description
+      var issueContext = svcType==='inverter_swap'
+        ? (rec.diagnostic_findings ? rec.diagnostic_findings.slice(0,250) : 'inverter degraded — operating below rated capacity')
+        : (rec.diagnostic_findings ? rec.diagnostic_findings.slice(0,250) : null);
       var r = await fetch('/.netlify/functions/generate-proposal-insight', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           service_type:           svcType,
-          notes:                  rec.notes        || '',
+          notes:                  rec.notes              || '',
+          diagnostic_findings:    rec.diagnostic_findings || '',
+          first_name:             rec.first_name          || '',
           system_size:            rec.system_size  || null,
           monthly_bill:           rec.monthly_bill || null,
           nem_status:             rec.nem_status   || '',
           installer:              rec.installer    || '',
           option_totals:          optionTotals,
-          issue:                  svcType==='inverter_swap' ? 'inverter degraded — operating at ~25% of rated capacity' : null,
+          issue:                  issueContext,
           inverter_output_pct:    svcType==='inverter_swap' ? 25 : null,
           monthly_loss_est:       monthlyLossEst,
-          expected_bill_with_fix: svcType==='inverter_swap' ? 25 : null,
+          expected_bill_with_fix: expectedBillWithFix,
           new_system_size_kw:     newSysKw,
           annual_kwh_with_bundle: annualKwhBundle,
         })
@@ -6435,6 +6445,41 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     setTimeout(function(){ if (t.parentNode) t.remove(); }, 2500);
   };
 
+  var _propShowCustom = {};
+
+  window._propSaveBill = async function(id, val) {
+    var bill = parseFloat(val) || 0;
+    if (bill <= 0) { alert('Enter a valid monthly bill amount.'); return; }
+    var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var { error } = await client.from('customers').update({ monthly_bill: bill }).eq('id', id);
+    if (error) { alert('Save failed: ' + error.message); return; }
+    var rec = adminCustomers.find(function(x){ return x.id === id; });
+    if (rec) rec.monthly_bill = bill;
+    var _pType = sessionStorage.getItem('proposalType_' + id) || 'br';
+    var _m = document.getElementById('proposalModal');
+    if (_m) _m.remove();
+    openProposalBuilder(id, _pType);
+  };
+
+  window._propSetPriceManual = function(optIdx, val) {
+    var build = _propBuilds[optIdx];
+    if (!build) return;
+    var newPrice = parseFloat(val) || 0;
+    var primary = build.lineItems.find(function(li){ return !li.isCustom; });
+    if (primary) {
+      var otherTotal = build.lineItems.filter(function(li){ return li !== primary; })
+        .reduce(function(s, li){ return s + (parseFloat(li.price)||0); }, 0);
+      primary.price = newPrice - otherTotal;
+    }
+    build.price = newPrice;
+    _propRenderBuilds();
+  };
+
+  window._propToggleCustomRow = function(optIdx) {
+    _propShowCustom[optIdx] = !_propShowCustom[optIdx];
+    _propRenderBuilds();
+  };
+
   async function _loadCatalog(serviceType) {
     if (_proposalCatalogCache[serviceType]) return _proposalCatalogCache[serviceType];
     var client = supabase.createClient(SUPA_URL, SUPA_KEY);
@@ -6477,8 +6522,18 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // AI Insight + Savings Scenarios (all service types)
     var existingInsight = (existing && existing.insight) || '';
     var bill = parseFloat(c.monthly_bill) || 0;
+    var _billPromptMsg = (typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE !== 'admin')
+      ? '&#9888; Ask the customer for their average monthly SDG&amp;E bill to unlock AI insight and savings estimates.'
+      : '&#9888; No utility bill on file &mdash; enter it here to enable savings estimates.';
     var noBillBanner = bill === 0
-      ? '<div style="background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.35);border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:0.75rem;color:#ffaa00;">&#9888; No utility bill on file &mdash; savings estimates and AI insight require a monthly bill. <strong style="color:#fff;">Add the bill to this customer\'s profile before sending.</strong></div>'
+      ? '<div id="propNoBillBanner" style="background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.35);border-radius:10px;padding:12px 14px;margin-bottom:12px;">'+
+          '<div style="font-size:0.75rem;color:#ffaa00;margin-bottom:8px;">'+_billPromptMsg+'</div>'+
+          '<div style="display:flex;gap:6px;align-items:center;">'+
+            '<span style="font-size:0.8rem;color:#888;">Monthly bill: $</span>'+
+            '<input id="propBillInput" type="number" placeholder="e.g. 280" min="1" step="1" style="width:90px;background:#111;border:1px solid rgba(255,170,0,0.3);border-radius:6px;color:#fff;padding:5px 8px;font-size:0.82rem;" />'+
+            '<button onclick="_propSaveBill(\''+c.id+'\',document.getElementById(\'propBillInput\').value)" style="padding:5px 14px;background:rgba(255,170,0,0.15);border:1px solid rgba(255,170,0,0.4);border-radius:8px;color:#ffaa00;cursor:pointer;font-size:0.75rem;font-weight:700;">Save &amp; Enable</button>'+
+          '</div>'+
+        '</div>'
       : '';
     var billNote = bill > 0
       ? '<div style="font-size:0.75rem;color:#aaa;margin-bottom:10px;">Based on current bill of <strong style="color:#fff;">$'+bill.toFixed(0)+'/mo</strong></div>'
@@ -6517,10 +6572,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
     var modal = document.createElement('div');
     modal.id = 'proposalModal';
-    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:9999;display:flex;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto;';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.92);z-index:9999;display:flex;align-items:flex-start;justify-content:center;padding:10px;overflow-y:auto;';
     modal.innerHTML =
       '<input type="hidden" id="prop_service_type" value="'+serviceType+'"/>'+
-      '<div style="background:#1a1c17;border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:28px;max-width:600px;width:100%;margin:auto;">'+
+      '<div style="background:#1a1c17;border:1px solid rgba(255,255,255,0.12);border-radius:14px;padding:20px 22px;max-width:min(98vw,900px);width:100%;margin:auto;box-shadow:0 0 80px rgba(0,0,0,0.8);">'+
         '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">'+
           '<div>'+
             '<div style="font-size:0.62rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#8DC63F;margin-bottom:4px;">Build Proposal</div>'+
@@ -6781,73 +6836,79 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '</div>';
       }
 
-      // Line items list
+      // Selected items as compact chips
       if (build.lineItems.length) {
-        h += '<div style="border-top:1px solid rgba(255,255,255,0.06);padding-top:8px;margin-bottom:8px;">';
+        h += '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px;">';
         build.lineItems.forEach(function(item, itemIdx) {
-          h += '<div style="display:flex;align-items:center;gap:7px;margin-bottom:6px;">';
-          h += '<div style="flex:1;font-size:0.78rem;color:#ddd;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="'+item.name+'">'+item.name+'</div>';
-          if (item.isCustom) h += '<span style="font-size:0.6rem;color:#444;">custom</span>';
-          h += '<input type="number" value="'+item.price+'" step="0.01" oninput="_propItemPrice('+optIdx+','+itemIdx+',this.value)" style="width:86px;background:#111;border:1px solid rgba(255,255,255,0.14);border-radius:6px;color:#fff;padding:4px 7px;font-size:0.78rem;text-align:right;"/>';
-          h += '<button onclick="_propRemoveItem('+optIdx+','+itemIdx+')" style="background:none;border:none;color:#555;cursor:pointer;font-size:1.1rem;padding:1px 4px;line-height:1;" title="Remove">&times;</button>';
+          h += '<div style="display:inline-flex;align-items:center;gap:4px;background:rgba(141,198,63,0.07);border:1px solid rgba(141,198,63,0.2);border-radius:20px;padding:3px 8px 3px 10px;">';
+          h += '<span style="font-size:0.72rem;color:#bbb;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+item.name+(item.isCustom?' <span style="font-size:0.58rem;color:#555;">custom</span>':'')+'</span>';
+          h += '<button onclick="_propRemoveItem('+optIdx+','+itemIdx+')" style="background:none;border:none;color:#555;cursor:pointer;font-size:1rem;line-height:1;padding:0 2px;">&times;</button>';
           h += '</div>';
         });
         h += '</div>';
       }
 
-      // Custom line input row
-      h += '<div style="display:flex;gap:5px;margin-bottom:10px;">';
-      h += '<input id="propCustName_'+optIdx+'" placeholder="Custom item name…" style="flex:1;background:#0e0e0e;border:1px solid rgba(255,255,255,0.09);border-radius:6px;color:#ccc;padding:5px 8px;font-size:0.72rem;min-width:0;"/>';
-      h += '<input id="propCustPrice_'+optIdx+'" type="number" placeholder="$0" step="0.01" style="width:72px;background:#0e0e0e;border:1px solid rgba(255,255,255,0.09);border-radius:6px;color:#ccc;padding:5px 7px;font-size:0.72rem;"/>';
-      h += '<button onclick="_propAddCustomLine('+optIdx+')" style="padding:5px 9px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.11);border-radius:6px;color:#aaa;cursor:pointer;font-size:0.72rem;font-weight:600;white-space:nowrap;">+ Custom</button>';
+      // Workflow action buttons (always visible)
+      h += '<div style="display:flex;gap:6px;margin-bottom:8px;">';
+      h += '<button onclick="window.open(\'https://v2.aurorasolar.com/new-project\',\'_blank\');navigator.clipboard.writeText(\''+_propBuildAddr+'\').then(function(){_propToast(\'✓ Address copied — paste in Aurora\');});" style="flex:1;padding:8px 6px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);border-radius:8px;color:#4a9eff;cursor:pointer;font-size:0.72rem;font-weight:700;">&#9728; Open Aurora</button>';
+      h += '<button onclick="window.open(\'https://imgur.com/upload\',\'_blank\')" style="flex:1;padding:8px 6px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:#aaa;cursor:pointer;font-size:0.72rem;font-weight:700;">&#128247; Imgur</button>';
       h += '</div>';
 
-      // Running total + commission
-      h += '<div style="display:flex;justify-content:space-between;align-items:center;border-top:1px solid rgba(255,255,255,0.07);padding-top:9px;">';
-      h += '<div style="font-size:0.65rem;color:#555;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;">Option Total</div>';
-      h += '<div id="propOptTotal_'+optIdx+'" style="font-size:1.1rem;font-weight:800;color:#8DC63F;">$'+Math.round(build.price).toLocaleString('en-US')+'</div>';
+      // Image URL + System Price (2-column)
+      h += '<div style="display:grid;grid-template-columns:2fr 1fr;gap:6px;margin-bottom:10px;">';
+      h += '<div><label style="font-size:0.6rem;color:#555;display:block;margin-bottom:2px;">Image URL (Imgur)</label>';
+      h += '<input type="url" id="propAuroraImg_'+optIdx+'" value="'+(build.auroraImg||'')+'" placeholder="https://imgur.com/…" style="width:100%;background:#0e0e0e;border:1px solid rgba(255,255,255,0.09);border-radius:6px;color:#bbb;padding:5px 7px;font-size:0.68rem;box-sizing:border-box;"/></div>';
+      h += '<div><label style="font-size:0.6rem;color:#8DC63F;display:block;margin-bottom:2px;">System Price ($)</label>';
+      h += '<input type="number" id="propManualPrice_'+optIdx+'" value="'+Math.round(build.price)+'" step="1" onchange="_propSetPriceManual('+optIdx+',this.value)" style="width:100%;background:#0e0e0e;border:1px solid rgba(141,198,63,0.2);border-radius:6px;color:#8DC63F;font-weight:700;padding:5px 7px;font-size:0.78rem;box-sizing:border-box;"/></div>';
       h += '</div>';
-      var _oComm = build.redline > 0 ? _calcPropComm(build.price, build.redline) : null;
+
+      // Pricing waterfall
+      var _custPays = (build.participate && build.partPrice) ? build.partPrice : build.price;
+      var _partSavings = (build.participate && build.partPrice) ? (build.price - build.partPrice) : 0;
+      var _oComm = build.redline > 0 ? _calcPropComm(_custPays, build.redline) : null;
       var _commMin = _commMins[_propServiceType] || 0;
+      h += '<div style="background:rgba(0,0,0,0.25);border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:10px 12px;">';
+      h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">';
+      h += '<span style="font-size:0.7rem;color:#666;">System price</span><span style="font-size:0.78rem;color:#ddd;font-weight:700;">$'+Math.round(build.price).toLocaleString('en-US')+'</span>';
+      h += '</div>';
+      if (build.participate && build.partPrice) {
+        h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">';
+        h += '<span style="font-size:0.7rem;color:#666;">Participate savings</span><span style="font-size:0.78rem;color:#8DC63F;">&minus;$'+Math.round(_partSavings).toLocaleString('en-US')+'</span>';
+        h += '</div>';
+        h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">';
+        h += '<span style="font-size:0.72rem;color:#aaa;font-weight:700;">Customer pays</span><span style="font-size:0.88rem;color:#fff;font-weight:800;">$'+Math.round(_custPays).toLocaleString('en-US')+'</span>';
+        h += '</div>';
+      }
+      if (build.teslaRebate > 0) {
+        h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">';
+        h += '<span style="font-size:0.7rem;color:#666;">Tesla rebate</span><span style="font-size:0.78rem;color:#8DC63F;">&minus;$'+Math.round(build.teslaRebate).toLocaleString('en-US')+'</span>';
+        h += '</div>';
+      }
+      if (build.sdcpRebate > 0) {
+        h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">';
+        h += '<span style="font-size:0.7rem;color:#4a9eff;">SDCP rebate</span><span style="font-size:0.78rem;color:#4a9eff;">&minus;$'+Math.round(build.sdcpRebate).toLocaleString('en-US')+'</span>';
+        h += '</div>';
+      }
+      h += '<div style="border-top:1px solid rgba(255,255,255,0.07);margin:6px 0;"></div>';
       if (_oComm !== null) {
-        h += '<div style="text-align:right;font-size:0.72rem;color:#ffaa00;font-weight:700;margin-top:4px;">Rep Commission: ~$'+_oComm.toLocaleString('en-US')+'</div>';
+        h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">';
+        h += '<span style="font-size:0.72rem;color:#ffaa00;font-weight:700;">Rep commission</span><span style="font-size:0.88rem;color:#ffaa00;font-weight:800;">~$'+_oComm.toLocaleString('en-US')+'</span>';
+        h += '</div>';
         if (_oComm < _commMin && _commMin > 0) {
-          h += '<div style="text-align:right;font-size:0.65rem;color:#ef4444;margin-top:2px;">&#9888; Below $'+_commMin.toLocaleString('en-US')+' minimum &mdash; manager approval required</div>';
+          h += '<div style="font-size:0.65rem;color:#ef4444;text-align:right;">&#9888; Below $'+_commMin.toLocaleString('en-US')+' minimum &mdash; manager approval required</div>';
         }
       }
+      h += '</div>';
 
-      // Participate price (conditional)
-      if (build.participate) {
-        h += '<div style="display:flex;gap:8px;align-items:center;margin-top:9px;">';
-        h += '<label style="font-size:0.65rem;color:#666;white-space:nowrap;">Participate Price ($)</label>';
-        h += '<input type="number" id="propPartPrice_'+optIdx+'" value="'+(build.partPrice!=null?build.partPrice:'')+'" step="0.01" style="flex:1;background:#111;border:1px solid rgba(255,255,255,0.14);border-radius:6px;color:#fff;padding:5px 8px;font-size:0.78rem;"/>';
-        h += '</div>';
-      }
-
-      // Advanced toggle (Aurora URLs + Redline)
-      var advOpen = !!_propOpenAdvanced[optIdx];
-      h += '<div style="margin-top:10px;">';
-      h += '<button onclick="_propToggleAdvanced('+optIdx+')" style="background:none;border:none;color:#555;cursor:pointer;font-size:0.67rem;padding:2px 0;letter-spacing:0.03em;">&#9881; Advanced '+(advOpen?'&#9650;':'&#9660;')+'</button>';
-      if (advOpen) {
-        h += '<div style="margin-top:8px;">';
-        h += '<div style="display:flex;gap:6px;margin-bottom:10px;">';
-        h += '<button onclick="window.open(\'https://v2.aurorasolar.com/new-project\',\'_blank\');navigator.clipboard.writeText(\''+_propBuildAddr+'\').then(function(){_propToast(\'✓ Address copied — paste in Aurora\');});" style="flex:1;padding:8px 4px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);border-radius:8px;color:#4a9eff;cursor:pointer;font-size:0.7rem;font-weight:700;">&#9728; Aurora</button>';
-        h += '<button onclick="window.open(\'https://imgur.com/upload\',\'_blank\')" style="flex:1;padding:8px 4px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:#aaa;cursor:pointer;font-size:0.7rem;font-weight:700;">&#128247; Imgur</button>';
-        h += '</div>';
-        h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px;">';
-        h += '<div><label style="font-size:0.6rem;color:#555;display:block;margin-bottom:2px;">Aurora Image URL</label>';
-        h += '<input type="url" id="propAuroraImg_'+optIdx+'" value="'+(build.auroraImg||'')+'" placeholder="https://…" style="width:100%;background:#0e0e0e;border:1px solid rgba(255,255,255,0.09);border-radius:6px;color:#bbb;padding:4px 7px;font-size:0.68rem;box-sizing:border-box;"/></div>';
-        h += '<div><label style="font-size:0.6rem;color:#4a9eff;display:block;margin-bottom:2px;">Aurora Portal URL</label>';
-        h += '<input type="url" id="propAuroraPortal_'+optIdx+'" value="'+(build.auroraPortal||'')+'" placeholder="https://…" style="width:100%;background:#0e0e0e;border:1px solid rgba(74,158,255,0.15);border-radius:6px;color:#bbb;padding:4px 7px;font-size:0.68rem;box-sizing:border-box;"/></div>';
-        h += '</div>';
-        if (typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE === 'admin' && build.redline > 0) {
-          h += '<div style="padding:8px 11px;background:rgba(255,170,0,0.04);border:1px solid rgba(255,170,0,0.12);border-radius:8px;">';
-          h += '<div style="font-size:0.6rem;color:#555;margin-bottom:5px;text-transform:uppercase;letter-spacing:0.07em;">Commission</div>';
-          h += '<div style="display:flex;gap:8px;align-items:center;">';
-          h += '<label style="font-size:0.65rem;color:#555;white-space:nowrap;">Redline ($)</label>';
-          h += '<input type="number" id="propRedline_'+optIdx+'" value="'+build.redline+'" step="0.01" style="flex:1;background:#0a0a0a;border:1px solid rgba(255,170,0,0.2);border-radius:6px;color:#ffaa00;padding:5px 8px;font-size:0.78rem;"/>';
-          h += '</div></div>';
-        }
+      // Custom item collapsed row
+      var _cOpen = !!_propShowCustom[optIdx];
+      h += '<div style="margin-top:6px;">';
+      h += '<button onclick="_propToggleCustomRow('+optIdx+')" style="background:none;border:none;color:#444;cursor:pointer;font-size:0.67rem;padding:3px 0;">&#43; custom line item '+(_cOpen?'&#9650;':'&#9660;')+'</button>';
+      if (_cOpen) {
+        h += '<div style="display:flex;gap:5px;margin-top:5px;">';
+        h += '<input id="propCustName_'+optIdx+'" placeholder="Item name…" style="flex:1;background:#0e0e0e;border:1px solid rgba(255,255,255,0.09);border-radius:6px;color:#ccc;padding:5px 8px;font-size:0.72rem;min-width:0;"/>';
+        h += '<input id="propCustPrice_'+optIdx+'" type="number" placeholder="$0" step="0.01" style="width:72px;background:#0e0e0e;border:1px solid rgba(255,255,255,0.09);border-radius:6px;color:#ccc;padding:5px 7px;font-size:0.72rem;"/>';
+        h += '<button onclick="_propAddCustomLine('+optIdx+')" style="padding:5px 9px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.11);border-radius:6px;color:#aaa;cursor:pointer;font-size:0.72rem;font-weight:600;white-space:nowrap;">Add</button>';
         h += '</div>';
       }
       h += '</div>';
@@ -6874,6 +6935,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     });
     _propPropId = c.id;
     _propOpenAdvanced = {};
+    _propShowCustom = {};
     _propBuilds = [];
     if (existing && existing.options && existing.options.length) {
       existing.options.forEach(function(opt) {

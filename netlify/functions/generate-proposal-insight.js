@@ -77,28 +77,31 @@ exports.handler = async function(event) {
   }
 
   const {
-    notes, system_size, monthly_bill, nem_status, installer, issue,
+    notes, diagnostic_findings, first_name,
+    system_size, monthly_bill, nem_status, installer, issue,
     inverter_output_pct, monthly_loss_est, expected_bill_with_fix,
     new_system_size_kw, annual_kwh_with_bundle
   } = body;
 
   // Build a rich, specific user message from all available data
   const parts = [];
+  if (first_name)            parts.push(`Customer first name: ${first_name} (use once, naturally)`);
   if (installer)             parts.push(`Original installer: ${installer}`);
   if (system_size)           parts.push(`Current system size: ${system_size} kW DC`);
-  if (nem_status)            parts.push(`NEM status: ${nem_status.toUpperCase()} — full retail rate credit preserved`);
-  if (monthly_bill)          parts.push(`Current monthly SDG&E bill: $${monthly_bill} (with broken inverter)`);
+  if (nem_status)            parts.push(`NEM status: ${nem_status.toUpperCase()} — full retail rate credit grandfathered`);
+  if (monthly_bill)          parts.push(`Current monthly SDG&E bill: $${monthly_bill} (while system is underperforming)`);
   if (inverter_output_pct)   parts.push(`Inverter currently running at: ~${inverter_output_pct}% of rated capacity`);
-  if (monthly_loss_est)      parts.push(`Estimated monthly generation loss: ~$${Math.round(monthly_loss_est)}/month paid to SDG&E that solar should cover`);
-  if (expected_bill_with_fix)parts.push(`Expected monthly bill after fix: ~$${Math.round(expected_bill_with_fix)} (Base Services Charge only)`);
-  if (new_system_size_kw)    parts.push(`New system size after adding 10 × 420W panels: ${new_system_size_kw} kW`);
+  if (monthly_loss_est)      parts.push(`Estimated monthly generation loss: ~$${Math.round(monthly_loss_est)}/month the customer is paying SDG&E that their solar should cover`);
+  if (expected_bill_with_fix)parts.push(`Expected monthly bill after full fix: ~$${Math.round(expected_bill_with_fix)} (near the $24 base services charge minimum under NEM 1.0)`);
+  if (new_system_size_kw)    parts.push(`New system size after adding panels: ${new_system_size_kw} kW`);
   if (annual_kwh_with_bundle)parts.push(`Expected annual production with full bundle: ~${Math.round(annual_kwh_with_bundle).toLocaleString()} kWh/yr`);
-  if (issue)                 parts.push(`Diagnostic finding: ${issue}`);
-  if (notes)                 parts.push(`Tech notes: ${notes.slice(0, 600)}`);
+  if (diagnostic_findings)   parts.push(`Tech's on-site diagnostic findings (reference these specifically — the customer saw this firsthand): ${diagnostic_findings.slice(0, 300)}`);
+  else if (issue)            parts.push(`Diagnostic finding: ${issue}`);
+  if (notes)                 parts.push(`Additional tech notes: ${notes.slice(0, 400)}`);
 
   const userMessage = parts.length
-    ? `Customer profile:\n${parts.join('\n')}\n\nWrite a 2–3 sentence customer-facing insight for their proposal now.`
-    : 'Write a 2–3 sentence customer-facing insight for a San Diego homeowner with a failing solar inverter on SDG&E NEM 1.0.';
+    ? `Customer profile:\n${parts.join('\n')}\n\nWrite the proposal insight paragraph now.`
+    : 'Write a proposal insight paragraph for a San Diego homeowner with a failing solar inverter on SDG&E NEM 1.0.';
 
   try {
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
@@ -109,15 +112,20 @@ exports.handler = async function(event) {
         'content-type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 250,
-        system: `You are a solar energy advisor writing a 2–3 sentence customer-facing insight for a proposal.
-Use the verified research context below to make the insight specific and credible.
-Reference actual numbers when available (system size, monthly loss, expected post-fix bill).
-Explain clearly what the problem is costing them RIGHT NOW and what the full bundle will do.
-Highlight NEM 1.0 status as a valuable preserved asset.
-Plain English only. No jargon. Do NOT mention dollar amounts unless they are provided in the customer profile.
-Do NOT start with "I". Output only the insight paragraph — no labels, no headers.
+        model: 'claude-sonnet-4-6',
+        max_tokens: 500,
+        system: `You are a solar sales coach writing a customer-facing proposal insight paragraph.
+Write 3–5 sentences that do ALL of the following:
+1. Open with the customer's specific diagnosed problem and what it is costing them RIGHT NOW in real dollars per month — make it concrete and personal
+2. Reference their NEM 1.0 status as a grandfathered asset worth serious money — losing production now costs them full retail-rate dollars
+3. Describe exactly what the proposed fix restores and adds in concrete production and bill terms
+4. Close with urgency — every month without the fix is another month of overpaying SDG&E
+
+Rules:
+- Use ONLY the data provided. Never invent numbers. If diagnostic findings are given, reference them directly and specifically — the tech saw this with their own eyes, making it credible and personal to this homeowner.
+- Write in plain conversational English. No jargon, no buzzwords.
+- Do NOT start with "I" or "Your system". Do NOT use the word "journey".
+- Output ONLY the insight paragraph — no labels, headers, quotes, or introductory phrases.
 
 ${RESEARCH_CONTEXT}`,
         messages: [{ role: 'user', content: userMessage }],
