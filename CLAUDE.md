@@ -385,3 +385,72 @@ if (!isNSSave) { updates.deposit_status = ...; }
 var client = supabase.createClient(SUPA_URL, SUPA_KEY);
 var { data, error } = await client.from('customers').update(updates).eq('id', id);
 ```
+
+## Proposal Builder Roadmap
+
+Research sourced from: Aurora Solar, Solargraf, Enact Systems, Scoop Solar, OpenSolar — June 2026.
+
+### Already Built
+- Multi-option pricing builder (up to 3 options) with tap-to-select catalog card grid
+- Conservative / Moderate / Significant savings tiers (55% / 75% / 90% offset × annual rate escalator)
+- Non-Export (CA) toggle per option — reduces all savings tiers by 25% (export factor 0.75)
+- Rep commission display on catalog cards and option totals in amber (matches diagnostic modal pattern)
+- Rep commission minimum warnings by service type (inverter_swap: $400, battery_retrofit: $2K)
+- AI-generated savings insight via Claude API (`generateProposalInsight`)
+- Aurora Solar launch + copy-address/copy-name buttons per option
+- Tesla rebate + SDCP rebate fields per option
+- Participate in Program pricing toggle
+- Missing utility bill detection — amber banner + disabled Generate button
+- Stale insight notice when re-opening a saved proposal
+- Dynamic savings subtitle from first selected option
+- Send proposal via SMS (sign link pattern)
+
+### Priority 1 — High Impact, Achievable in portal.html
+
+**P1-A: Interactive Customer-Facing Proposal Page**
+Create `proposal.html` (mirrors `sign.html` pattern) rendered from a `proposal_token` URL param.
+- Show: company logo, customer name, system summary, 3 savings tier cards, option comparison, 25-year cumulative savings chart
+- "Accept Option X" button → writes acceptance to Supabase `proposals` table → redirects to sign.html flow
+- Build prompt: "Create proposal.html that reads proposal_id from URL, fetches from proposals table via Supabase anon key, renders dark-themed mobile card layout. Add Netlify function proposal-token.js that generates short-lived token stored in proposals.view_token."
+
+**P1-B: 25-Year Savings Chart in Builder**
+Inline SVG polyline chart inside the builder modal showing year-by-year cumulative savings for all 3 tiers.
+- Inputs: monthly bill, offset %, annual rate escalator % — updates whenever values change
+- Build prompt: "In _propRenderBuilds(), after savings tiers table, render SVG chart (300×180 viewBox) with 3 polyline paths: conservative (blue), moderate (green), significant (amber). 25 data points each. No external library."
+
+**P1-C: Proposal Open/View Tracking**
+Log `viewed_at` + `view_count` to proposals table when customer opens the link. Show amber chip in portal.
+- Build prompt: "In proposal-view.js Netlify function, after token validation, UPDATE proposals SET viewed_at=now(), view_count=view_count+1. In portal.html proposal row, show '👁 Opened N×' chip in amber if viewed_at set, else '⬜ Not yet opened'."
+
+**P1-D: PDF Export via window.print()**
+"Print / Save PDF" button in builder footer. Zero dependencies — pure `@media print` CSS.
+- Build prompt: "Add Print/Save PDF button to proposal builder footer calling window.print(). Add @media print rules: hide .modal-close, .lead-btn, .prop-advanced-toggle; set background:#fff; color:#000; expand all collapsed Advanced sections."
+
+### Priority 2 — Medium Impact
+
+**P2-A: Financing Side-by-Side Comparison**
+Add "Cash" vs. "Financed" columns per option. Show monthly payment, total cost, net savings crossover. Industry data: proposals with financing options close 3× faster.
+- Build prompt: "Add financing_apr field (default 7.99) to each _propBuild. In _propRenderBuilds(), below option price, render two sub-columns: 'Cash: $X,XXX' and 'Financed: ~$XXX/mo' using standard amortization formula (r=apr/12/100, n=300). Show payback crossover month."
+
+**P2-B: SDG&E Rate Auto-Calculation**
+Derive estimated kWh/mo from monthly bill ÷ blended rate. Show alongside bill field. Update annually.
+- Short path: hardcode SDG&E 2026 blended rate ~$0.453/kWh. Display "~X kWh/mo at SDG&E 2026 rate" below bill field.
+- Build prompt: "In openProposalBuilder(), if monthly_bill > 0, show below the bill field: 'Est. usage: X kWh/mo (SDG&E $0.453/kWh)' where X = Math.round(bill / 0.453). Store estimated_kwh in proposal metadata."
+
+**P2-C: Battery Sizing Helper**
+When a battery catalog item is added, show recommended kWh size based on daily consumption and backup hours goal.
+- Build prompt: "In _propAddCatItem(), if item.option_key includes 'battery' or 'powerwall', append sizing note below line item: daily_kwh = (rec.monthly_bill||200)/(0.453*30); show 'Est. daily use: X kWh — this battery covers ~Y hours backup' where Y = batteryKwh/daily_kwh*24."
+
+### Priority 3 — Future / Nice-to-Have
+
+**P3-A: E-Signature on Proposal Acceptance**
+Extend sign.html to handle proposal acceptance (mode=proposal). Show solar project agreement instead of diagnostic agreement. Trigger from proposal.html "Accept" button.
+
+**P3-B: Before/After Roof Visualization**
+Split-view showing satellite tile of home (Google Maps Static API) with panel outline overlay on "after" side. Can use Aurora PNG embed from `auroraImg` field already stored per option.
+
+**P3-C: Proposal Section Engagement Tracking**
+JS IntersectionObserver on proposal.html sections → POST section dwell times to Netlify function on unload. Low priority until P1-A ships.
+
+**P3-D: Customer Post-Install Monitoring Portal**
+After job complete (step=9 or solar_status=ns_pto), generate monitoring magic link. Show estimated vs. actual production, bill impact, warranty status. Requires inverter API integration (Tesla Energy, Enphase, SolarEdge).
