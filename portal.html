@@ -10279,6 +10279,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           h += '<div style="text-align:center;padding:32px 16px 100px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.2);border-radius:14px;">';
           h += '<div style="color:#ef4444;font-size:0.85rem;margin-bottom:6px;">'+(canvassGpsFailed ? '⚠ GPS unavailable' : '⚠ Couldn\'t load leads')+'</div>';
           h += '<div style="color:#888;font-size:0.72rem;margin-bottom:6px;">'+(canvassGpsFailed ? 'Allow location in your browser settings, or load all leads below.' : 'Check your connection and try again.')+'</div>';
+          if (canvassErrMsg) h += '<div style="font-size:0.65rem;color:#555;margin-bottom:10px;font-family:monospace;">'+canvassErrMsg+'</div>';
           h += '<button onclick="canvassLoadNoGps()" style="background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;padding:12px 28px;font-size:0.85rem;font-weight:700;cursor:pointer;margin-bottom:10px;">Load All Leads</button>';
           h += '<div><button onclick="canvassInit()" style="background:none;border:none;color:#555;font-size:0.72rem;cursor:pointer;text-decoration:underline;">↻ Try GPS again</button></div>';
           h += '</div>';
@@ -10969,33 +10970,36 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       renderSales();
 
       var SEL = 'id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,original_installer,install_year';
-      var params = 'lead_source=eq.orphaned_list&sold_type=is.null&select=' + SEL;
+      var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+
+      var query = client.from('customers').select(SEL)
+        .eq('lead_source', 'orphaned_list')
+        .is('sold_type', null);
+
       if (userLat && userLng) {
         var D = 0.10; // ~7-mile bounding box
-        params += '&lat=not.is.null'
-                + '&lat=gte.' + (userLat - D) + '&lat=lte.' + (userLat + D)
-                + '&lng=gte.' + (userLng - D) + '&lng=lte.' + (userLng + D);
+        query = query
+          .not('lat', 'is', null)
+          .gte('lat', userLat - D).lte('lat', userLat + D)
+          .gte('lng', userLng - D).lte('lng', userLng + D);
       } else {
-        params += '&order=lead_score.desc.nullslast';
+        query = query.order('lead_score', { ascending: false });
       }
-      params += '&limit=80';
-      var resp = await fetch(SUPA_URL + '/rest/v1/customers?' + params, {
-        headers: { 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY }
-      });
-      var leads = resp.ok ? await resp.json() : null;
-      if (!Array.isArray(leads)) {
-        canvassErrMsg = 'Query failed (' + resp.status + ')';
+      query = query.limit(80);
+
+      var result = await query;
+      if (result.error || !Array.isArray(result.data)) {
+        canvassErrMsg = result.error ? result.error.message : 'Query returned unexpected data';
         canvassGpsStatus = 'error';
         renderSales();
         return;
       }
+      var leads = result.data.slice();
 
-      leads = leads.slice();
       if (userLat && userLng) {
         leads.forEach(function(l) {
-          var isHot = l.knock_status === 'callback' || l.knock_status === 'interested';
           l._distMi = canvassHaversine(userLat, userLng, l.lat, l.lng);
-          l._hot = isHot;
+          l._hot = l.knock_status === 'callback' || l.knock_status === 'interested';
         });
         leads.sort(function(a, b) {
           if (a._hot && !b._hot) return -1;
@@ -11008,12 +11012,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
       // If GPS filter returned nothing, reload without geo constraint
       if (userLat && userLng && leads.length === 0) {
-        var fallbackParams = 'lead_source=eq.orphaned_list&sold_type=is.null&select=' + SEL + '&order=lead_score.desc.nullslast&limit=80';
-        var fbResp = await fetch(SUPA_URL + '/rest/v1/customers?' + fallbackParams, {
-          headers: { 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY }
-        });
-        leads = fbResp.ok ? await fbResp.json() : [];
-        if (!Array.isArray(leads)) leads = [];
+        var fb = await client.from('customers').select(SEL)
+          .eq('lead_source', 'orphaned_list')
+          .is('sold_type', null)
+          .order('lead_score', { ascending: false })
+          .limit(80);
+        leads = Array.isArray(fb.data) ? fb.data : [];
       }
 
       canvassLeads = leads.filter(function(l){ return canvassSkipIds.indexOf(l.id) < 0; });
