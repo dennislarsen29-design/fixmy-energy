@@ -9554,10 +9554,18 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         }
 
         else if (canvassGpsStatus === 'error') {
-          h += '<div style="text-align:center;padding:32px 16px 100px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.2);border-radius:14px;">';
-          h += '<div style="color:#ef4444;font-size:0.85rem;margin-bottom:6px;">⚠ Location unavailable.</div>';
-          if (canvassErrMsg) h += '<div style="color:#888;font-size:0.68rem;margin-bottom:12px;font-family:monospace;">' + canvassErrMsg + '</div>';
-          h += '<button onclick="canvassLoadNoGps()" style="background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;padding:12px 28px;font-size:0.85rem;font-weight:700;cursor:pointer;margin-bottom:10px;">Load Leads Without GPS</button>';
+          h += '<div style="text-align:center;padding:24px 16px 100px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.2);border-radius:14px;">';
+          h += '<div style="color:#ef4444;font-size:0.85rem;margin-bottom:4px;">⚠ Couldn\'t load leads</div>';
+          h += '<div style="color:#888;font-size:0.72rem;margin-bottom:10px;">Check your connection and try again</div>';
+          if (canvassErrMsg) {
+            var _escaped = canvassErrMsg.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+            h += '<div style="background:rgba(0,0,0,0.35);border:1px solid rgba(239,68,68,0.25);border-radius:8px;padding:8px 12px;margin:0 8px 12px;text-align:left;">';
+            h += '<div style="font-size:0.58rem;color:#ef4444;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.05em;">Error Details</div>';
+            h += '<div style="font-size:0.66rem;color:#ccc;font-family:monospace;word-break:break-all;line-height:1.5;">' + _escaped + '</div>';
+            h += '<button onclick="try{navigator.clipboard.writeText(decodeURIComponent(\''+encodeURIComponent(canvassErrMsg)+'\'))}catch(x){}" style="background:none;border:1px solid #333;color:#666;border-radius:6px;padding:3px 8px;font-size:0.6rem;cursor:pointer;margin-top:6px;">Copy</button>';
+            h += '</div>';
+          }
+          h += '<button onclick="canvassLoadNoGps()" style="background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;padding:12px 28px;font-size:0.85rem;font-weight:700;cursor:pointer;margin-bottom:10px;">Load All Leads</button>';
           h += '<div><button onclick="canvassInit()" style="background:none;border:none;color:#555;font-size:0.72rem;cursor:pointer;text-decoration:underline;">↻ Try GPS again</button></div>';
           h += '</div>';
         }
@@ -10119,48 +10127,83 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       canvassGpsStatus = 'loading';
       canvassUserLat = userLat;
       canvassUserLng = userLng;
+      canvassErrMsg = '';
       renderSales();
 
-      var SEL = 'id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,original_installer,install_year';
-      var params = 'lead_source=eq.orphaned_list&sold_type=is.null&lat=not.is.null&select=' + SEL;
-      if (userLat && userLng) {
-        var D = 0.10; // ~7-mile bounding box
-        params += '&lat=gte.' + (userLat - D) + '&lat=lte.' + (userLat + D)
-                + '&lng=gte.' + (userLng - D) + '&lng=lte.' + (userLng + D);
-      } else {
-        params += '&order=lead_score.desc.nullslast';
-      }
-      params += '&limit=80';
-      var resp = await fetch(SUPA_URL + '/rest/v1/customers?' + params, {
-        headers: { 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY }
-      });
-      var leads = resp.ok ? await resp.json() : null;
-      if (!Array.isArray(leads)) {
-        canvassErrMsg = 'Query failed (' + resp.status + ')';
+      try {
+        var SEL = 'id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,original_installer,install_year';
+        var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+        var query = c2.from('customers')
+          .select(SEL)
+          .eq('lead_source', 'orphaned_list')
+          .is('sold_type', null)
+          .not('lat', 'is', null);
+
+        if (userLat && userLng) {
+          var D = 0.10;
+          query = query
+            .gte('lat', userLat - D).lte('lat', userLat + D)
+            .gte('lng', userLng - D).lte('lng', userLng + D);
+        } else {
+          query = query.order('lead_score', { ascending: false, nullsFirst: false });
+        }
+        query = query.limit(80);
+
+        var result = await query;
+
+        if (result.error) {
+          canvassErrMsg = 'Supabase: ' + result.error.message +
+            (result.error.details ? ' | ' + result.error.details : '') +
+            (result.error.hint   ? ' | hint: ' + result.error.hint : '') +
+            ' (code: ' + (result.error.code || '?') + ')';
+          canvassGpsStatus = 'error';
+          renderSales();
+          return;
+        }
+
+        if (!Array.isArray(result.data)) {
+          canvassErrMsg = 'Unexpected response type: ' + typeof result.data + '. Check Supabase RLS and anon key.';
+          canvassGpsStatus = 'error';
+          renderSales();
+          return;
+        }
+
+        var leads = result.data.slice();
+
+        // GPS-bounded query returned 0 results — fall back to top-scored without bounds
+        if (userLat && userLng && leads.length === 0) {
+          var fb = await c2.from('customers').select(SEL)
+            .eq('lead_source', 'orphaned_list').is('sold_type', null).not('lat', 'is', null)
+            .order('lead_score', { ascending: false, nullsFirst: false }).limit(80);
+          if (!fb.error && Array.isArray(fb.data) && fb.data.length) {
+            leads = fb.data.slice();
+          }
+        }
+
+        if (userLat && userLng) {
+          leads.forEach(function(l) {
+            l._distMi = canvassHaversine(userLat, userLng, l.lat, l.lng);
+            l._hot = l.knock_status === 'callback' || l.knock_status === 'interested';
+          });
+          leads.sort(function(a, b) {
+            if (a._hot && !b._hot) return -1;
+            if (!a._hot && b._hot) return 1;
+            if (a.knock_status && !b.knock_status) return 1;
+            if (!a.knock_status && b.knock_status) return -1;
+            return a._distMi - b._distMi;
+          });
+        }
+
+        canvassLeads = leads.filter(function(l){ return canvassSkipIds.indexOf(l.id) < 0; });
+        canvassGpsStatus = 'ready';
+        renderSales();
+
+      } catch(err) {
+        canvassErrMsg = (err && err.message ? err.message : String(err)) +
+          (err && err.stack ? '\n' + err.stack.split('\n').slice(0,3).join('\n') : '');
         canvassGpsStatus = 'error';
         renderSales();
-        return;
       }
-
-      leads = leads.slice();
-      if (userLat && userLng) {
-        leads.forEach(function(l) {
-          var isHot = l.knock_status === 'callback' || l.knock_status === 'interested';
-          l._distMi = canvassHaversine(userLat, userLng, l.lat, l.lng);
-          l._hot = isHot;
-        });
-        leads.sort(function(a, b) {
-          if (a._hot && !b._hot) return -1;
-          if (!a._hot && b._hot) return 1;
-          if (a.knock_status && !b.knock_status) return 1;
-          if (!a.knock_status && b.knock_status) return -1;
-          return a._distMi - b._distMi;
-        });
-      }
-
-      canvassLeads = leads.filter(function(l){ return canvassSkipIds.indexOf(l.id) < 0; });
-      canvassGpsStatus = 'ready';
-      renderSales();
     }
 
     window.canvassKnock = async function(id, knockStatus) {
