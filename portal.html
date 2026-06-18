@@ -6462,6 +6462,47 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     openProposalBuilder(id, _pType);
   };
 
+  window._propExtractBill = async function(id, file) {
+    var btn = document.getElementById('propBillUploadBtn');
+    var statusEl = document.getElementById('propBillStatus');
+    if (!file) return;
+    if (btn) { btn.disabled = true; btn.textContent = 'Reading bill…'; }
+    var base64 = await new Promise(function(resolve) {
+      var reader = new FileReader();
+      reader.onload = function(e){ resolve(e.target.result.split(',')[1]); };
+      reader.readAsDataURL(file);
+    });
+    var isPdf = file.type === 'application/pdf';
+    var contentBlock = isPdf
+      ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } }
+      : { type: 'image', source: { type: 'base64', media_type: file.type, data: base64 } };
+    try {
+      var resp = await fetch('/.netlify/functions/claude-vision', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 80,
+          messages: [{ role: 'user', content: [
+            contentBlock,
+            { type: 'text', text: 'Extract the total monthly bill amount from this utility bill. Return ONLY this JSON: {"monthly_bill": <number or null>}. monthly_bill = TOTAL AMOUNT DUE for the current billing period.' }
+          ]}]
+        })
+      });
+      var data = await resp.json();
+      var text = (data.content && data.content[0] && data.content[0].text) ? data.content[0].text.trim() : '';
+      var match = text.match(/"monthly_bill"\s*:\s*([\d.]+)/);
+      var extracted = match ? parseFloat(match[1]) : null;
+      if (extracted && extracted > 0) {
+        if (statusEl) statusEl.textContent = 'Found $' + Math.round(extracted) + '/mo — saving…';
+        await _propSaveBill(id, extracted);
+      } else {
+        if (btn) { btn.disabled = false; btn.textContent = '📄 Upload Utility Bill'; }
+        if (statusEl) statusEl.innerHTML = 'Could not read amount. <a href="#" onclick="document.getElementById(\'propBillManualFallback\').style.display=\'flex\';return false;" style="color:#ffaa00;text-decoration:none;">Enter manually ▸</a>';
+      }
+    } catch(e) {
+      if (btn) { btn.disabled = false; btn.textContent = '📄 Upload Utility Bill'; }
+      if (statusEl) statusEl.textContent = 'Upload failed — try again';
+    }
+  };
+
   window._propRestoreExisting = function() {
     if (!_propExisting || !_propExisting.options) return;
     _propBuilds = [];
@@ -6557,8 +6598,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       : '&#9888; No utility bill on file &mdash; enter it here to enable savings estimates.';
     var noBillBanner = bill === 0
       ? '<div id="propNoBillBanner" style="background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.35);border-radius:10px;padding:12px 14px;margin-bottom:12px;">'+
-          '<div style="font-size:0.75rem;color:#ffaa00;margin-bottom:8px;">'+_billPromptMsg+'</div>'+
-          '<div style="display:flex;gap:6px;align-items:center;">'+
+          '<div style="font-size:0.75rem;color:#ffaa00;margin-bottom:10px;">'+_billPromptMsg+'</div>'+
+          '<input type="file" id="propBillFile" accept="image/*,application/pdf" style="display:none;" onchange="_propExtractBill(\''+c.id+'\',this.files[0])"/>'+
+          '<button id="propBillUploadBtn" onclick="document.getElementById(\'propBillFile\').click()" style="width:100%;padding:10px;background:rgba(255,170,0,0.15);border:1px solid rgba(255,170,0,0.4);border-radius:8px;color:#ffaa00;cursor:pointer;font-size:0.8rem;font-weight:700;">&#128196; Upload Utility Bill (Photo or PDF)</button>'+
+          '<div id="propBillStatus" style="font-size:0.72rem;color:#888;margin-top:6px;text-align:center;min-height:16px;"></div>'+
+          '<div id="propBillManualFallback" style="display:none;gap:6px;align-items:center;margin-top:8px;">'+
             '<span style="font-size:0.8rem;color:#888;">Monthly bill: $</span>'+
             '<input id="propBillInput" type="number" placeholder="e.g. 280" min="1" step="1" style="width:90px;background:#111;border:1px solid rgba(255,170,0,0.3);border-radius:6px;color:#fff;padding:5px 8px;font-size:0.82rem;" />'+
             '<button onclick="_propSaveBill(\''+c.id+'\',document.getElementById(\'propBillInput\').value)" style="padding:5px 14px;background:rgba(255,170,0,0.15);border:1px solid rgba(255,170,0,0.4);border-radius:8px;color:#ffaa00;cursor:pointer;font-size:0.75rem;font-weight:700;">Save &amp; Enable</button>'+
@@ -6617,9 +6661,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           tabsHtml+
         '</div>'+
         acceptedBanner+
-        aiInsightHtml+
-        savingsHtml+
         optionsHtml+
+        savingsHtml+
+        aiInsightHtml+
         '<div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:16px;">'+
           '<button onclick="var _m=document.getElementById(\'proposalModal\');if(_m)_m.remove();" style="padding:10px 18px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:100px;color:#aaa;cursor:pointer;font-size:0.82rem;">Cancel</button>'+
           '<button onclick="previewProposal(\''+c.id+'\')" style="padding:10px 16px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);border-radius:100px;color:#4a9eff;cursor:pointer;font-size:0.82rem;font-weight:700;">&#128269; Preview</button>'+
@@ -6859,7 +6903,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       h += '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:14px;margin-bottom:10px;">';
       h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">';
       h += '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.1em;color:#8DC63F;">Option ' + alpha + '</div>';
-      h += '<label style="font-size:0.65rem;color:#666;display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox"'+(build.nonExport?' checked':'')+' onchange="_propSetNonExport('+optIdx+',this.checked)" style="accent-color:#8DC63F;"> Non-Export (CA)</label>';
+      h += '<button onclick="_propToggleNonExport('+optIdx+')" style="font-size:0.6rem;padding:3px 10px;border-radius:20px;background:'+(build.nonExport?'rgba(255,170,0,0.2)':'rgba(255,255,255,0.06)')+';border:1px solid '+(build.nonExport?'rgba(255,170,0,0.4)':'rgba(255,255,255,0.12)')+';color:'+(build.nonExport?'#ffaa00':'#555')+';cursor:pointer;white-space:nowrap;flex-shrink:0;">'+(build.nonExport?'&#9889; ':'')+'Non-Export (CA)</button>';
       h += '</div>';
 
       // Catalog card grid (always visible)
@@ -6971,6 +7015,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
   window._propSetNonExport = function(optIdx, val) {
     if (_propBuilds[optIdx]) { _propBuilds[optIdx].nonExport = !!val; _propRenderBuilds(); }
+  };
+  window._propToggleNonExport = function(optIdx) {
+    if (_propBuilds[optIdx]) { _propBuilds[optIdx].nonExport = !_propBuilds[optIdx].nonExport; _propRenderBuilds(); }
   };
 
   window._propInitFromCatalog = function(c, catalog, existing) {
@@ -7449,8 +7496,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         .then(function(d){
           var ok = !!(d.success || (d.ghlStatus >= 200 && d.ghlStatus < 300));
           var smsOk = d.smsStatus >= 200 && d.smsStatus < 300;
-          var tagOk = d.tagStatus >= 200 && d.tagStatus < 300;
-          var smsTxt = d.tagStatus ? (tagOk ? ' · tag ✓ (SMS via workflow)' : ' · tag ' + d.tagStatus + ' ✗ ' + (d.tagBody||'').slice(0,60)) : ' · SMS skipped';
+          var smsTxt = d.smsStatus ? (smsOk ? ' · SMS ✓' : ' · SMS ✗ (' + d.smsStatus + ')') : ' · SMS not sent';
           var b = document.createElement('div');
           b.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);padding:12px 20px;border-radius:12px;z-index:99999;font-size:0.8rem;font-weight:700;white-space:nowrap;box-shadow:0 4px 24px rgba(0,0,0,0.5);background:'+(ok?'#1e2a14':'#2a1414')+';border:1px solid '+(ok?'rgba(141,198,63,0.4)':'rgba(239,68,68,0.4)')+';color:'+(ok?'#8DC63F':'#ef4444')+';';
           b.textContent = ok ? '⚡ GHL synced' + smsTxt : '❌ GHL error: '+(d.error||JSON.stringify(d).slice(0,80));
@@ -10974,8 +11020,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             console.log('GHL diag-agreement proxy:', d);
             var ok = !!(d.success || (d.ghlStatus >= 200 && d.ghlStatus < 300));
             var smsOk = d.smsStatus >= 200 && d.smsStatus < 300;
-            var tagOk2 = d.tagStatus >= 200 && d.tagStatus < 300;
-            var smsTxt = d.tagStatus ? (tagOk2 ? ' · tag ✓ (SMS via workflow)' : ' · tag ' + d.tagStatus + ' ✗ ' + (d.tagBody||'').slice(0,60)) : ' · SMS skipped';
+            var smsTxt = d.smsStatus ? (smsOk ? ' · SMS ✓' : ' · SMS ✗ (' + d.smsStatus + ')') : ' · SMS not sent';
             var msg = ok ? '⚡ GHL synced' + smsTxt : '❌ GHL error: '+(d.error||JSON.stringify(d).slice(0,80));
             var b = document.createElement('div');
             b.style.cssText = 'position:fixed;bottom:90px;left:50%;transform:translateX(-50%);padding:10px 18px;border-radius:12px;z-index:99999;font-size:0.78rem;font-weight:700;max-width:90vw;text-align:center;box-shadow:0 4px 24px rgba(0,0,0,0.5);background:'+(ok?'#1e2a14':'#2a1414')+';border:1px solid '+(ok?'rgba(141,198,63,0.4)':'rgba(239,68,68,0.4)')+';color:'+(ok?'#8DC63F':'#ef4444')+';';
