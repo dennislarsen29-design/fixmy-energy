@@ -4759,40 +4759,39 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
   };
 
-  window.generateProposalInsight = async function(id) {
+  window.generateProposalInsight = async function(id, serviceType) {
     var rec = adminCustomers.find(function(x){ return x.id === id; });
     if (!rec) return;
     var btn = document.getElementById('propInsightBtn');
     var ta  = document.getElementById('propInsightText');
     if (btn) { btn.disabled = true; btn.textContent = '…'; }
+    var svcType = serviceType || 'inverter_swap';
     try {
-      // Compute derived fields from verified research data
       var sysKw       = parseFloat(rec.system_size) || 0;
       var bill        = parseFloat(rec.monthly_bill) || 0;
-      var blendedRate = 0.453; // confirmed from actual SDG&E bill: $3,115 / 6,877 kWh
-      var yield_kw    = 1600;  // NREL San Diego specific yield (kWh/kW/yr)
-      var newPanelKw  = 4.2;   // 10 × 420W Tesla panels
-
-      // At 25% inverter output: 75% of generation is lost
-      var invOutputPct      = 25;
-      var monthlyLossEst    = sysKw > 0 ? Math.round(sysKw * yield_kw * 0.75 * blendedRate / 12) : null;
-      var newSysKw          = sysKw > 0 ? Math.round((sysKw + newPanelKw) * 10) / 10 : null;
-      var annualKwhBundle   = newSysKw ? Math.round(newSysKw * yield_kw) : null;
-      // With a working NEM 1.0 system sized above consumption, bill drops to ~$25 (Base Services Charge)
-      var expectedBillFixed = 25;
-
+      var blendedRate = 0.453;
+      var yield_kw    = 1600;
+      var newPanelKw  = 4.2;
+      // Build option totals from current _propBuilds for context
+      var optionTotals = (_propBuilds||[]).map(function(b){ return b.price||0; }).filter(Boolean);
+      // Inverter-specific calculations (used when service type is inverter_swap)
+      var monthlyLossEst  = (svcType==='inverter_swap' && sysKw>0) ? Math.round(sysKw*yield_kw*0.75*blendedRate/12) : null;
+      var newSysKw        = (svcType==='inverter_swap' && sysKw>0) ? Math.round((sysKw+newPanelKw)*10)/10 : null;
+      var annualKwhBundle = newSysKw ? Math.round(newSysKw*yield_kw) : null;
       var r = await fetch('/.netlify/functions/generate-proposal-insight', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          notes:                  rec.notes       || '',
-          system_size:            rec.system_size || null,
-          monthly_bill:           rec.monthly_bill|| null,
-          nem_status:             rec.nem_status  || '',
-          installer:              rec.installer   || '',
-          issue:                  'inverter degraded — operating at ~25% of rated capacity',
-          inverter_output_pct:    invOutputPct,
+          service_type:           svcType,
+          notes:                  rec.notes        || '',
+          system_size:            rec.system_size  || null,
+          monthly_bill:           rec.monthly_bill || null,
+          nem_status:             rec.nem_status   || '',
+          installer:              rec.installer    || '',
+          option_totals:          optionTotals,
+          issue:                  svcType==='inverter_swap' ? 'inverter degraded — operating at ~25% of rated capacity' : null,
+          inverter_output_pct:    svcType==='inverter_swap' ? 25 : null,
           monthly_loss_est:       monthlyLossEst,
-          expected_bill_with_fix: expectedBillFixed,
+          expected_bill_with_fix: svcType==='inverter_swap' ? 25 : null,
           new_system_size_kw:     newSysKw,
           annual_kwh_with_bundle: annualKwhBundle,
         })
@@ -4943,13 +4942,21 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // Escalation rates — verified from CPUC SB 695 reports and BLS data:
     // Conservative 5%/yr  — below CPUC official avg; floor for skeptical customers
     // Moderate     7%/yr  — CPUC SB 695 official: SDG&E avg 2016–2024 = 7%/yr
-    // Significant 10%/yr  — CPUC 2023 SB 695 projected 10.4%/yr; recent 4-yr CAGR = 13.4%
+    // Impact Trend 10%/yr — CPUC 2023 SB 695 projected 10.4%/yr; recent 4-yr CAGR = 13.4%
     var configs = {
       conservative: { label:'Conservative', color:'#4a9eff', offsetPct:0.55, r:0.05, rLabel:'5%/yr', rSrc:'below CPUC avg — conservative floor', note:'Inverter restored · Panels added · Basic Powerwall backup' },
       moderate:     { label:'Moderate',     color:'#ffaa00', offsetPct:0.75, r:0.07, rLabel:'7%/yr', rSrc:'CPUC SB 695 official avg 2016–2024',   note:'Full bundle optimized · Powerwall covers evening peaks' },
-      significant:  { label:'Significant',  color:'#8DC63F', offsetPct:0.90, r:0.10, rLabel:'10%/yr',rSrc:'CPUC 2023 SB 695 projection; EV/AI/electrification drivers', note:'NEM 1 preserved · Near grid independence · Recent 4-yr CAGR: 13.4%' }
+      significant:  { label:'Impact Trend', color:'#8DC63F', offsetPct:0.90, r:0.10, rLabel:'10%/yr',rSrc:'CPUC 2023 SB 695 projection; EV/AI/electrification drivers', note:'NEM 1 preserved · Near grid independence · Recent 4-yr CAGR: 13.4%' }
     };
     var cfg = configs[type];
+    // Update active button highlight
+    ['conservative','moderate','significant'].forEach(function(k){
+      var btn = document.getElementById('propScenBtn_'+k);
+      if (!btn) return;
+      btn.style.opacity    = k === type ? '1' : '0.5';
+      btn.style.fontWeight = k === type ? '800' : '700';
+      btn.style.boxShadow  = k === type ? ('0 0 0 1px ' + configs[k].color) : 'none';
+    });
 
     // Year 1 savings
     var monthlySaved = bill * cfg.offsetPct;
@@ -6394,6 +6401,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
   // ── PROPOSAL SYSTEM ────────────────────────────────────────────────────────
   var _proposalCatalogCache = {};
+  var _propBuilds = [];       // [{lineItems,price,deposit,participate,partPrice,...}]
+  var _propCatItems = [];     // catalog items for current open modal
+  var _propPropId = null;     // customer ID for current open modal
+  var _propOpenCatPickers = {}; // tracks which option catalog pickers are expanded
 
   async function _loadCatalog(serviceType) {
     if (_proposalCatalogCache[serviceType]) return _proposalCatalogCache[serviceType];
@@ -6434,117 +6445,45 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       return '<button onclick="var _m=document.getElementById(\'proposalModal\');if(_m)_m.remove();openProposalBuilder(\''+c.id+'\',\''+t.key+'\')" style="flex:1;padding:7px 4px;border:none;border-radius:7px;font-size:0.68rem;font-weight:700;cursor:pointer;'+(active?'background:'+t.bg+';color:'+t.fg+';':'background:transparent;color:#555;')+'">'+t.label+'</button>';
     }).join('');
 
-    // AI Insight + Savings Scenarios (inverter_swap only)
+    // AI Insight + Savings Scenarios (all service types)
     var existingInsight = (existing && existing.insight) || '';
-    var aiInsightHtml = '';
-    var savingsHtml = '';
-    if (serviceType === 'inverter_swap') {
-      aiInsightHtml =
-        '<div style="background:rgba(255,170,0,0.06);border:1px solid rgba(255,170,0,0.2);border-radius:12px;padding:16px;margin-bottom:14px;">'+
-        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">'+
-          '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#ffaa00;">&#10024; AI System Insight</div>'+
-          '<button id="propInsightBtn" onclick="generateProposalInsight(\''+c.id+'\')" style="font-size:0.72rem;padding:5px 12px;background:rgba(255,170,0,0.12);border:1px solid rgba(255,170,0,0.3);border-radius:8px;color:#ffaa00;cursor:pointer;font-weight:600;">&#10024; Generate</button>'+
-        '</div>'+
-        '<textarea id="propInsightText" placeholder="Tap Generate for an AI-drafted insight, then edit as needed before sending..." rows="4" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:#ccc;padding:10px;font-size:0.82rem;resize:vertical;box-sizing:border-box;line-height:1.5;">'+existingInsight.replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</textarea>'+
-        '<div style="font-size:0.68rem;color:#555;margin-top:5px;">Rep reviews and edits before sending to customer.</div>'+
-        '</div>';
+    var bill = parseFloat(c.monthly_bill) || 0;
+    var billNote = bill > 0
+      ? '<div style="font-size:0.75rem;color:#aaa;margin-bottom:10px;">Based on current bill of <strong style="color:#fff;">$'+bill.toFixed(0)+'/mo</strong></div>'
+      : '<div style="font-size:0.75rem;color:#666;margin-bottom:10px;">Add monthly bill to customer profile to see savings estimates.</div>';
+    var aiInsightHtml =
+      '<div style="background:rgba(255,170,0,0.06);border:1px solid rgba(255,170,0,0.2);border-radius:12px;padding:16px;margin-bottom:14px;">'+
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">'+
+        '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#ffaa00;">&#10024; AI Savings Insight</div>'+
+        '<button id="propInsightBtn" onclick="generateProposalInsight(\''+c.id+'\',\''+serviceType+'\')" style="font-size:0.72rem;padding:5px 12px;background:rgba(255,170,0,0.12);border:1px solid rgba(255,170,0,0.3);border-radius:8px;color:#ffaa00;cursor:pointer;font-weight:600;">&#10024; Generate</button>'+
+      '</div>'+
+      '<textarea id="propInsightText" placeholder="Tap Generate for an AI-drafted savings insight, then edit as needed before sending..." rows="4" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:#ccc;padding:10px;font-size:0.82rem;resize:vertical;box-sizing:border-box;line-height:1.5;">'+existingInsight.replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</textarea>'+
+      '<div style="font-size:0.68rem;color:#555;margin-top:5px;">Rep reviews and edits before sending to customer.</div>'+
+      '</div>';
+    var savingsHtml =
+      '<div style="background:rgba(74,158,255,0.05);border:1px solid rgba(74,158,255,0.18);border-radius:12px;padding:16px;margin-bottom:14px;">'+
+      '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#4a9eff;margin-bottom:10px;">&#128202; Projected Savings</div>'+
+      billNote+
+      '<div style="display:flex;gap:6px;margin-bottom:10px;">'+
+        '<button id="propScenBtn_conservative" onclick="propShowScenario(\'conservative\','+bill+','+(c.system_size||0)+')" style="flex:1;padding:8px 4px;background:rgba(74,158,255,0.08);border:1px solid rgba(74,158,255,0.25);border-radius:8px;color:#4a9eff;cursor:pointer;font-size:0.72rem;font-weight:700;">Conservative</button>'+
+        '<button id="propScenBtn_moderate" onclick="propShowScenario(\'moderate\','+bill+','+(c.system_size||0)+')" style="flex:1;padding:8px 4px;background:rgba(255,170,0,0.15);border:1px solid #ffaa00;border-radius:8px;color:#ffaa00;cursor:pointer;font-size:0.72rem;font-weight:800;box-shadow:0 0 0 1px #ffaa00;">Moderate</button>'+
+        '<button id="propScenBtn_significant" onclick="propShowScenario(\'significant\','+bill+','+(c.system_size||0)+')" style="flex:1;padding:8px 4px;background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.25);border-radius:8px;color:#8DC63F;cursor:pointer;font-size:0.72rem;font-weight:700;">Impact Trend</button>'+
+      '</div>'+
+      '<div id="propSavingsDetail" style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:14px;"></div>'+
+      (serviceType==='inverter_swap'?'<div style="font-size:0.65rem;color:#555;margin-top:8px;">SDG&amp;E NEM 1 &mdash; 10 Tesla 420W panels + Tesla Powerwall 3 (13.5 kWh, non-export)</div>':'')+
+      '</div>';
 
-      var bill = parseFloat(c.monthly_bill) || 0;
-      var billNote = bill > 0
-        ? '<div style="font-size:0.75rem;color:#aaa;margin-bottom:10px;">Based on current bill of <strong style="color:#fff;">$'+bill.toFixed(0)+'/mo</strong></div>'
-        : '<div style="font-size:0.75rem;color:#666;margin-bottom:10px;">Add monthly bill to customer profile to see savings estimates.</div>';
-      savingsHtml =
-        '<div style="background:rgba(74,158,255,0.05);border:1px solid rgba(74,158,255,0.18);border-radius:12px;padding:16px;margin-bottom:14px;">'+
-        '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#4a9eff;margin-bottom:10px;">&#128202; Projected Savings &mdash; Option 2</div>'+
-        billNote+
-        '<div style="display:flex;gap:6px;margin-bottom:10px;">'+
-          '<button onclick="propShowScenario(\'conservative\','+bill+','+(c.system_size||0)+')" style="flex:1;padding:8px 4px;background:rgba(74,158,255,0.08);border:1px solid rgba(74,158,255,0.25);border-radius:8px;color:#4a9eff;cursor:pointer;font-size:0.72rem;font-weight:700;">Conservative</button>'+
-          '<button onclick="propShowScenario(\'moderate\','+bill+','+(c.system_size||0)+')" style="flex:1;padding:8px 4px;background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.25);border-radius:8px;color:#ffaa00;cursor:pointer;font-size:0.72rem;font-weight:700;">Moderate</button>'+
-          '<button onclick="propShowScenario(\'significant\','+bill+','+(c.system_size||0)+')" style="flex:1;padding:8px 4px;background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.25);border-radius:8px;color:#8DC63F;cursor:pointer;font-size:0.72rem;font-weight:700;">Significant</button>'+
-        '</div>'+
-        '<div id="propSavingsDetail" style="display:none;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:14px;"></div>'+
-        '<div style="font-size:0.65rem;color:#555;margin-top:8px;">SDG&amp;E NEM 1 &mdash; 10 Tesla 420W panels + Tesla Powerwall 3 (13.5 kWh, non-export)</div>'+
-        '</div>';
-    }
-
-    var optionsHtml = '';
-    if (!catalog.length) {
-      optionsHtml = '<div style="padding:20px;text-align:center;color:#555;font-size:0.82rem;">No active catalog entries for this service type.</div>';
-    } else {
-      catalog.forEach(function(row, i) {
-        var eOpt = existing && existing.options && existing.options.find(function(o){ return o.id === row.option_key; });
-        var price    = eOpt ? eOpt.price : row.default_price;
-        var partPrice = eOpt ? (eOpt.participate_price != null ? eOpt.participate_price : row.default_participate_price) : row.default_participate_price;
-        var isHighlight = i > 0;
-        var borderColor = isHighlight ? 'rgba(141,198,63,0.25)' : 'rgba(255,255,255,0.1)';
-        var bgColor     = isHighlight ? 'rgba(141,198,63,0.05)' : 'rgba(255,255,255,0.04)';
-        var titleColor  = isHighlight ? '#8DC63F' : '#fff';
-        var optLabel    = catalog.length === 1 ? 'Option 1' : (i === 0 ? 'Option 1' : 'Option '+(i+1));
-        var showAurora  = (row.option_key === 'bundle' || serviceType === 'new_solar' || serviceType === 'inverter_swap');
-        var auroraImg    = (eOpt && eOpt.aurora_image_url)    || (existing && existing.aurora_image_url)    || '';
-        var auroraPortal = (eOpt && eOpt.aurora_portal_url)   || (existing && existing.aurora_portal_url)   || '';
-        var auroraFields = showAurora
-          ? '<div style="margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:10px;">'+
-              '<div><label style="font-size:0.68rem;color:#666;display:block;margin-bottom:4px;">Aurora Design Image URL <span style="color:#555;">(optional)</span></label>'+
-                '<input type="url" id="prop_aurora_img_'+i+'" value="'+auroraImg+'" placeholder="https://i.imgur.com/..." style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:8px 10px;font-size:0.82rem;"/></div>'+
-              '<div><label style="font-size:0.68rem;color:#4a9eff;display:block;margin-bottom:4px;">&#9728; Aurora Customer Portal URL</label>'+
-                '<input type="url" id="prop_aurora_portal_'+i+'" value="'+auroraPortal+'" placeholder="https://v2.aurorasolar.com/..." style="width:100%;background:#111;border:1px solid rgba(74,158,255,0.3);border-radius:8px;color:#fff;padding:8px 10px;font-size:0.82rem;"/></div>'+
-            '</div>'
-          : '';
-        var redline = parseFloat(row.redline) || 0;
-        var minRepComm = parseFloat(row.min_rep_commission) || 0;
-        var maxRepComm = parseFloat(row.max_rep_commission) || 0;
-        var commHtml = redline > 0
-          ? '<div id="propComm_'+i+'" data-min-comm="'+minRepComm+'" data-max-comm="'+maxRepComm+'" style="margin-top:10px;padding:10px 14px;background:rgba(255,170,0,0.05);border:1px solid rgba(255,170,0,0.15);border-radius:8px;">'+
-              (CURRENT_ROLE === 'admin'
-                ? '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#555;margin-bottom:8px;">Commission</div>'+
-                  '<div style="display:flex;gap:10px;align-items:flex-end;margin-bottom:8px;">'+
-                    '<div style="flex:1;"><label style="font-size:0.65rem;color:#555;display:block;margin-bottom:4px;">Redline / Sub Sheet ($)</label>'+
-                      '<input type="number" id="propRedline_'+i+'" value="'+redline+'" step="0.01" oninput="propCalcComm('+i+')" style="width:100%;background:#0a0a0a;border:1px solid rgba(255,170,0,0.25);border-radius:8px;color:#ffaa00;padding:7px 10px;font-size:0.82rem;box-sizing:border-box;"/></div>'+
-                    '<div style="flex:1;">'+
-                      '<div style="font-size:0.65rem;color:#555;margin-bottom:4px;">Gross Commission</div>'+
-                      '<div id="propGrossComm_'+i+'" style="font-size:0.85rem;color:#888;font-weight:600;">—</div>'+
-                    '</div>'+
-                  '</div>'
-                : '')+
-              '<div style="display:flex;justify-content:space-between;align-items:center;">'+
-                '<span style="font-size:0.75rem;color:#888;">&#128176; Your Commissions</span>'+
-                '<span id="propRepComm_'+i+'" style="font-weight:700;color:#ffaa00;font-size:0.92rem;">—</span>'+
-              '</div>'+
-              '<div id="propCommWarn_'+i+'" style="display:none;align-items:center;gap:6px;margin-top:8px;padding:7px 10px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.3);border-radius:6px;font-size:0.72rem;color:#ef4444;font-weight:600;">&#9888; Manager approval required — below minimum commission</div>'+
-            '</div>'
-          : '';
-        optionsHtml +=
-          '<div style="background:'+bgColor+';border:1px solid '+borderColor+';border-radius:12px;padding:18px;margin-bottom:12px;">'+
-            '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;">'+
-              '<div>'+
-                '<div style="font-weight:700;color:'+titleColor+';margin-bottom:4px;">'+optLabel+' &mdash; '+row.title+'</div>'+
-                '<div style="font-size:0.72rem;color:#888;">'+(row.subtitle||'')+'</div>'+
-              '</div>'+
-              '<input type="checkbox" id="prop_opt_'+i+'" checked style="width:18px;height:18px;margin-top:2px;accent-color:#8DC63F;"/>'+
-            '</div>'+
-            '<div style="display:flex;gap:10px;">'+
-              '<div style="flex:1;"><label style="font-size:0.68rem;color:#666;display:block;margin-bottom:4px;">Purchase Price ($)</label>'+
-                '<input type="number" id="prop_price_'+i+'" value="'+price+'" step="0.01" oninput="propCalcComm('+i+')" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:8px 10px;font-size:0.85rem;"/>'+
-              '</div>'+
-              (row.participate
-                ? '<div style="flex:1;"><label style="font-size:0.68rem;color:#666;display:block;margin-bottom:4px;">Participate Price ($)</label>'+
-                    '<input type="number" id="prop_part_'+i+'" value="'+(partPrice!=null?partPrice:'')+'" step="0.01" oninput="propCalcComm('+i+')" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:8px 10px;font-size:0.85rem;"/></div>'
-                : '')+
-            '</div>'+
-            (row.milestone_notes ? '<div style="font-size:0.7rem;color:#555;margin-top:8px;">'+row.milestone_notes+'</div>' : '')+
-            auroraFields+
-            commHtml+
-          '</div>';
-      });
-    }
+    // Menu builder skeleton — populated after modal is appended
+    var optionsHtml =
+      '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#8DC63F;margin-bottom:10px;">&#128204; Build Options</div>'+
+      '<div id="propBuilderBuilds"></div>';
 
     var modal = document.createElement('div');
     modal.id = 'proposalModal';
     modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:9999;display:flex;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto;';
     modal.innerHTML =
       '<input type="hidden" id="prop_service_type" value="'+serviceType+'"/>'+
-      '<div style="background:#1a1c17;border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:28px;max-width:580px;width:100%;margin:auto;">'+
+      '<div style="background:#1a1c17;border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:28px;max-width:600px;width:100%;margin:auto;">'+
         '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">'+
           '<div>'+
             '<div style="font-size:0.62rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#8DC63F;margin-bottom:4px;">Build Proposal</div>'+
@@ -6559,75 +6498,113 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         aiInsightHtml+
         savingsHtml+
         optionsHtml+
-        '<div style="display:flex;gap:10px;justify-content:flex-end;">'+
-          '<button onclick="var _m=document.getElementById(\'proposalModal\');if(_m)_m.remove();" style="padding:10px 20px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:100px;color:#aaa;cursor:pointer;font-size:0.85rem;">Cancel</button>'+
-          '<button id="propSendBtn" onclick="sendProposal(\''+c.id+'\')" style="padding:10px 24px;background:#8DC63F;color:#000;border:none;border-radius:100px;font-weight:700;cursor:pointer;font-size:0.85rem;">&#128228; Send to Customer</button>'+
+        '<div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:16px;">'+
+          '<button onclick="var _m=document.getElementById(\'proposalModal\');if(_m)_m.remove();" style="padding:10px 18px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:100px;color:#aaa;cursor:pointer;font-size:0.82rem;">Cancel</button>'+
+          '<button onclick="previewProposal(\''+c.id+'\')" style="padding:10px 16px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);border-radius:100px;color:#4a9eff;cursor:pointer;font-size:0.82rem;font-weight:700;">&#128269; Preview</button>'+
+          '<button onclick="copyProposalLink(\''+c.id+'\')" id="propCopyLinkBtn" style="padding:10px 16px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);border-radius:100px;color:#aaa;cursor:pointer;font-size:0.82rem;font-weight:600;">&#128203; Copy Link</button>'+
+          '<button id="propSendBtn" onclick="sendProposal(\''+c.id+'\')" style="padding:10px 22px;background:#8DC63F;color:#000;border:none;border-radius:100px;font-weight:700;cursor:pointer;font-size:0.85rem;">&#128228; Send to Customer</button>'+
         '</div>'+
         '<div id="propSaveStatus" style="margin-top:8px;font-size:0.78rem;text-align:center;min-height:18px;"></div>'+
       '</div>';
     document.body.appendChild(modal);
     modal._catalog = catalog;
-    setTimeout(function(){ catalog.forEach(function(_r, i){ window.propCalcComm(i); }); }, 0);
+    // Initialize menu builder state and render
+    window._propInitFromCatalog(c, catalog, existing);
+    // Default to Moderate savings scenario
+    setTimeout(function(){ if (bill > 0) propShowScenario('moderate', bill, c.system_size||0); }, 0);
   }
 
   async function sendProposal(id) {
     var modal = document.getElementById('proposalModal');
     var sendBtn = document.getElementById('propSendBtn');
     var statusEl = document.getElementById('propSaveStatus');
-    var catalog = (modal && modal._catalog) || [];
     var serviceType = (document.getElementById('prop_service_type')||{}).value || 'battery_retrofit';
     var insight = ((document.getElementById('propInsightText')||{}).value || '').trim() || null;
 
     if (sendBtn) { sendBtn.disabled = true; sendBtn.textContent = 'Saving…'; }
 
+    // Build options from _propBuilds (menu builder state)
     var options = [];
-    for (var i = 0; i < catalog.length; i++) {
-      var row = catalog[i];
-      var onEl = document.getElementById('prop_opt_'+i);
-      if (!onEl || !onEl.checked) continue;
-      var price     = parseFloat((document.getElementById('prop_price_'+i)||{}).value) || Number(row.default_price);
-      var partEl    = document.getElementById('prop_part_'+i);
-      var partPrice = partEl ? (parseFloat(partEl.value)||null) : null;
-      var aImgEl    = document.getElementById('prop_aurora_img_'+i);
-      var aPortEl   = document.getElementById('prop_aurora_portal_'+i);
-      var deposit   = Number(row.deposit_amount) || 0;
+    _propBuilds.forEach(function(build, optIdx) {
+      if (!build.lineItems.length || !build.price) return;
+      var price = build.price;
+      var primaryItem = build.lineItems.find(function(li){ return !li.isCustom; });
+      var partPriceEl = document.getElementById('propPartPrice_' + optIdx);
+      var partPrice = partPriceEl ? (parseFloat(partPriceEl.value) || null) : (build.partPrice || null);
+      var aImgEl  = document.getElementById('propAuroraImg_'   + optIdx);
+      var aPortEl = document.getElementById('propAuroraPortal_'+ optIdx);
+      var deposit = build.deposit || 0;
       var effectivePrice = partPrice || price;
       var milestones = {};
       if (deposit > 0) {
         milestones.deposit = deposit;
         var remaining = Math.round((effectivePrice - deposit) * 100) / 100;
-        if (serviceType === 'inverter_swap' && row.option_key === 'bundle') {
+        if (serviceType === 'inverter_swap' && primaryItem && primaryItem.id === 'bundle') {
           var half = Math.round(remaining / 2 * 100) / 100;
           milestones.permit = half; milestones.inspection = half;
         } else {
           milestones.remaining = remaining;
         }
       }
+      var title = build.lineItems.length === 1
+        ? build.lineItems[0].name
+        : build.lineItems[0].name + ' + ' + (build.lineItems.length - 1) + ' more';
       var opt = {
-        id: row.option_key, title: row.title, subtitle: row.subtitle,
-        description: row.description, price: price,
-        participate: row.participate, participate_price: partPrice,
-        milestones: milestones
+        id: primaryItem ? primaryItem.id : ('custom_' + optIdx),
+        title: title,
+        subtitle: (primaryItem && primaryItem.subtitle) || '',
+        description: (primaryItem && primaryItem.description) || build.lineItems.map(function(li){ return li.name; }).join(' · '),
+        price: price,
+        participate: build.participate,
+        participate_price: partPrice,
+        milestones: milestones,
+        line_items: build.lineItems.map(function(li){ return { name: li.name, price: li.price, isCustom: !!li.isCustom }; })
       };
-      if (row.tesla_rebate) opt.tesla_rebate = Number(row.tesla_rebate);
-      if (row.sdcp_rebate)  opt.sdcp_rebate  = Number(row.sdcp_rebate);
-      if (aImgEl)  opt.aurora_image_url  = aImgEl.value.trim()  || null;
-      if (aPortEl) opt.aurora_portal_url = aPortEl.value.trim() || null;
-      var redlineCommEl = document.getElementById('propRedline_'+i);
-      var redlineComm   = redlineCommEl ? (parseFloat(redlineCommEl.value) || 0) : 0;
-      if (redlineComm > 0) {
-        var effectiveCommPrice = (partPrice != null ? partPrice : price);
-        opt.rep_commission  = Math.round(Math.max(0, effectiveCommPrice - redlineComm) * 0.40 * 100) / 100;
-        opt.gross_commission = Math.round(Math.max(0, effectiveCommPrice - redlineComm) * 100) / 100;
-        opt.redline = redlineComm;
+      if (build.teslaRebate) opt.tesla_rebate = build.teslaRebate;
+      if (build.sdcpRebate)  opt.sdcp_rebate  = build.sdcpRebate;
+      opt.aurora_image_url  = aImgEl  ? (aImgEl.value.trim()  || null) : null;
+      opt.aurora_portal_url = aPortEl ? (aPortEl.value.trim() || null) : null;
+      var redlineEl = document.getElementById('propRedline_' + optIdx);
+      var redline = redlineEl ? (parseFloat(redlineEl.value) || 0) : (build.redline || 0);
+      if (redline > 0) {
+        var effCommPrice = partPrice != null ? partPrice : price;
+        opt.rep_commission   = Math.round(Math.max(0, effCommPrice - redline) * 0.40 * 100) / 100;
+        opt.gross_commission = Math.round(Math.max(0, effCommPrice - redline) * 100) / 100;
+        opt.redline = redline;
       }
       options.push(opt);
-    }
+    });
+
     if (!options.length) {
-      if (statusEl) { statusEl.style.color = '#ef4444'; statusEl.textContent = 'Enable at least one option first.'; }
+      if (statusEl) { statusEl.style.color = '#ef4444'; statusEl.textContent = 'Add at least one item to build first.'; }
       if (sendBtn) { sendBtn.disabled = false; sendBtn.innerHTML = '&#128228; Send to Customer'; }
       return;
     }
+
+    // Sort options descending by price — most expensive = Option 1
+    options.sort(function(a, b) { return b.price - a.price; });
+
+    // Compute savings scenarios for each option (client-side math, stored with proposal)
+    var custRec = adminCustomers.find(function(x){ return x.id === id; });
+    var bill = parseFloat(custRec && custRec.monthly_bill) || 0;
+    if (bill > 0) {
+      var _savingsCfgs = [
+        { key: 'conservative', offsetPct: 0.55, r: 0.05 },
+        { key: 'moderate',     offsetPct: 0.75, r: 0.07 },
+        { key: 'significant',  offsetPct: 0.90, r: 0.10 }
+      ];
+      options.forEach(function(opt) {
+        var scen = {};
+        _savingsCfgs.forEach(function(s) {
+          var monthly = Math.round(bill * s.offsetPct);
+          var annual  = monthly * 12;
+          var total20 = Math.round(annual * (Math.pow(1 + s.r, 20) - 1) / s.r);
+          scen[s.key] = { monthly: monthly, annual: annual, total20yr: total20 };
+        });
+        opt.savings = scen;
+      });
+    }
+
     var commissionEstimate = options.reduce(function(sum, o){ return sum + (o.rep_commission || 0); }, 0);
     try {
       var client = supabase.createClient(SUPA_URL, SUPA_KEY);
@@ -6650,6 +6627,339 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (sendBtn) { sendBtn.disabled = false; sendBtn.innerHTML = '&#128228; Send to Customer'; }
     }
   }
+
+  // ── PROPOSAL MENU BUILDER HELPERS ─────────────────────────────────────────
+
+  function _propInitBuild() {
+    return { lineItems: [], price: 0, deposit: 0, participate: false, partPrice: null, teslaRebate: 0, sdcpRebate: 0, redline: 0, auroraImg: '', auroraPortal: '' };
+  }
+
+  window._propAddCatItem = function(catIdx, optIdx) {
+    var row = _propCatItems[catIdx];
+    if (!row || optIdx === undefined || !_propBuilds[optIdx]) return;
+    var build = _propBuilds[optIdx];
+    if (build.lineItems.some(function(li){ return li.id === row.option_key && !li.isCustom; })) return;
+    var isFirst = !build.lineItems.some(function(li){ return !li.isCustom; });
+    if (isFirst) {
+      build.deposit     = parseFloat(row.deposit_amount) || 0;
+      build.participate = !!row.participate;
+      build.partPrice   = row.default_participate_price != null ? parseFloat(row.default_participate_price) : null;
+      build.teslaRebate = parseFloat(row.tesla_rebate) || 0;
+      build.sdcpRebate  = parseFloat(row.sdcp_rebate)  || 0;
+      build.redline     = parseFloat(row.redline) || 0;
+    }
+    build.lineItems.push({ id: row.option_key, name: row.title, subtitle: row.subtitle||'', description: row.description||'', price: parseFloat(row.default_price)||0, isCustom: false });
+    window._propUpdateTotal(optIdx);
+    window._propRenderBuilds();
+  };
+
+  window._propRemoveItem = function(optIdx, itemIdx) {
+    if (!_propBuilds[optIdx]) return;
+    _propBuilds[optIdx].lineItems.splice(itemIdx, 1);
+    window._propUpdateTotal(optIdx);
+    window._propRenderBuilds();
+  };
+
+  window._propItemPrice = function(optIdx, itemIdx, val) {
+    if (_propBuilds[optIdx] && _propBuilds[optIdx].lineItems[itemIdx] !== undefined) {
+      _propBuilds[optIdx].lineItems[itemIdx].price = parseFloat(val) || 0;
+      window._propUpdateTotal(optIdx);
+    }
+  };
+
+  window._propUpdateTotal = function(optIdx) {
+    var build = _propBuilds[optIdx];
+    if (!build) return;
+    build.price = build.lineItems.reduce(function(s, li){ return s + (parseFloat(li.price) || 0); }, 0);
+    var el = document.getElementById('propOptTotal_' + optIdx);
+    if (el) el.textContent = '$' + Math.round(build.price).toLocaleString('en-US');
+  };
+
+  window._propAddCustomLine = function(optIdx) {
+    var nameEl  = document.getElementById('propCustName_'  + optIdx);
+    var priceEl = document.getElementById('propCustPrice_' + optIdx);
+    var name  = nameEl  ? nameEl.value.trim()  : '';
+    var price = priceEl ? (parseFloat(priceEl.value) || 0) : 0;
+    if (!name) { if (nameEl) nameEl.focus(); return; }
+    if (!_propBuilds[optIdx]) return;
+    _propBuilds[optIdx].lineItems.push({ id: null, name: name, price: price, isCustom: true });
+    if (nameEl)  nameEl.value  = '';
+    if (priceEl) priceEl.value = '';
+    window._propUpdateTotal(optIdx);
+    window._propRenderBuilds();
+  };
+
+  window._propAddOption = function() {
+    _propBuilds.push(_propInitBuild());
+    window._propRenderBuilds();
+  };
+
+  window._propToggleCatalog = function(optIdx) {
+    _propOpenCatPickers[optIdx] = !_propOpenCatPickers[optIdx];
+    var el = document.getElementById('propCatPicker_' + optIdx);
+    if (el) el.style.display = _propOpenCatPickers[optIdx] ? 'block' : 'none';
+    var btn = document.getElementById('propCatToggleBtn_' + optIdx);
+    if (btn) btn.textContent = (_propOpenCatPickers[optIdx] ? '▲' : '▾') + ' Add from Catalog';
+  };
+
+  window._propRenderBuilds = function() {
+    var container = document.getElementById('propBuilderBuilds');
+    if (!container) return;
+    var h = '';
+    _propBuilds.forEach(function(build, optIdx) {
+      var alpha = String.fromCharCode(65 + optIdx);
+      h += '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:14px;margin-bottom:10px;">';
+      h += '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.1em;color:#8DC63F;margin-bottom:10px;">Option ' + alpha + '</div>';
+      if (build.lineItems.length) {
+        build.lineItems.forEach(function(item, itemIdx) {
+          h += '<div style="display:flex;align-items:center;gap:7px;margin-bottom:6px;">';
+          h += '<div style="flex:1;font-size:0.78rem;color:#ddd;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="'+item.name+'">'+item.name+'</div>';
+          h += '<span style="font-size:0.6rem;color:#444;">'+(item.isCustom?'custom':'catalog')+'</span>';
+          h += '<input type="number" value="'+item.price+'" step="0.01" oninput="_propItemPrice('+optIdx+','+itemIdx+',this.value)" style="width:86px;background:#111;border:1px solid rgba(255,255,255,0.14);border-radius:6px;color:#fff;padding:4px 7px;font-size:0.78rem;text-align:right;"/>';
+          h += '<button onclick="_propRemoveItem('+optIdx+','+itemIdx+')" style="background:none;border:none;color:#555;cursor:pointer;font-size:1.1rem;padding:1px 4px;line-height:1;" title="Remove">&times;</button>';
+          h += '</div>';
+        });
+      } else {
+        h += '<div style="font-size:0.72rem;color:#444;text-align:center;padding:8px 0 4px;">← Add items from catalog below</div>';
+      }
+      // Custom line input row
+      h += '<div style="display:flex;gap:5px;margin-top:8px;margin-bottom:10px;">';
+      h += '<input id="propCustName_'+optIdx+'" placeholder="Custom item name…" style="flex:1;background:#0e0e0e;border:1px solid rgba(255,255,255,0.09);border-radius:6px;color:#ccc;padding:5px 8px;font-size:0.72rem;min-width:0;"/>';
+      h += '<input id="propCustPrice_'+optIdx+'" type="number" placeholder="$0" step="0.01" style="width:72px;background:#0e0e0e;border:1px solid rgba(255,255,255,0.09);border-radius:6px;color:#ccc;padding:5px 7px;font-size:0.72rem;"/>';
+      h += '<button onclick="_propAddCustomLine('+optIdx+')" style="padding:5px 9px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.11);border-radius:6px;color:#aaa;cursor:pointer;font-size:0.72rem;font-weight:600;white-space:nowrap;">+ Add</button>';
+      h += '</div>';
+      // Running total
+      h += '<div style="display:flex;justify-content:space-between;align-items:center;border-top:1px solid rgba(255,255,255,0.07);padding-top:9px;">';
+      h += '<div style="font-size:0.65rem;color:#555;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;">Option Total</div>';
+      h += '<div id="propOptTotal_'+optIdx+'" style="font-size:1.1rem;font-weight:800;color:#8DC63F;">$'+Math.round(build.price).toLocaleString('en-US')+'</div>';
+      h += '</div>';
+      // Participate price
+      if (build.participate) {
+        h += '<div style="display:flex;gap:8px;align-items:center;margin-top:9px;">';
+        h += '<label style="font-size:0.65rem;color:#666;white-space:nowrap;">Participate Price ($)</label>';
+        h += '<input type="number" id="propPartPrice_'+optIdx+'" value="'+(build.partPrice!=null?build.partPrice:'')+'" step="0.01" style="flex:1;background:#111;border:1px solid rgba(255,255,255,0.14);border-radius:6px;color:#fff;padding:5px 8px;font-size:0.78rem;"/>';
+        h += '</div>';
+      }
+      // Aurora URLs
+      h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px;">';
+      h += '<div><label style="font-size:0.6rem;color:#555;display:block;margin-bottom:2px;">Aurora Image URL</label>';
+      h += '<input type="url" id="propAuroraImg_'+optIdx+'" value="'+(build.auroraImg||'')+'" placeholder="https://…" style="width:100%;background:#0e0e0e;border:1px solid rgba(255,255,255,0.09);border-radius:6px;color:#bbb;padding:4px 7px;font-size:0.68rem;box-sizing:border-box;"/></div>';
+      h += '<div><label style="font-size:0.6rem;color:#4a9eff;display:block;margin-bottom:2px;">Aurora Portal URL</label>';
+      h += '<input type="url" id="propAuroraPortal_'+optIdx+'" value="'+(build.auroraPortal||'')+'" placeholder="https://…" style="width:100%;background:#0e0e0e;border:1px solid rgba(74,158,255,0.15);border-radius:6px;color:#bbb;padding:4px 7px;font-size:0.68rem;box-sizing:border-box;"/></div>';
+      h += '</div>';
+      // Commission (admin only)
+      if (typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE === 'admin' && build.redline > 0) {
+        h += '<div style="margin-top:8px;padding:8px 11px;background:rgba(255,170,0,0.04);border:1px solid rgba(255,170,0,0.12);border-radius:8px;">';
+        h += '<div style="font-size:0.6rem;color:#555;margin-bottom:5px;text-transform:uppercase;letter-spacing:0.07em;">Commission</div>';
+        h += '<div style="display:flex;gap:8px;align-items:center;">';
+        h += '<label style="font-size:0.65rem;color:#555;white-space:nowrap;">Redline ($)</label>';
+        h += '<input type="number" id="propRedline_'+optIdx+'" value="'+build.redline+'" step="0.01" style="flex:1;background:#0a0a0a;border:1px solid rgba(255,170,0,0.2);border-radius:6px;color:#ffaa00;padding:5px 8px;font-size:0.78rem;"/>';
+        h += '</div></div>';
+      }
+      // Catalog picker (collapsible)
+      if (_propCatItems.length) {
+        var pickerOpen = !!_propOpenCatPickers[optIdx];
+        h += '<button id="propCatToggleBtn_'+optIdx+'" onclick="_propToggleCatalog('+optIdx+')" style="width:100%;padding:7px;background:rgba(141,198,63,0.04);border:1px dashed rgba(141,198,63,0.22);border-radius:8px;color:#8DC63F;cursor:pointer;font-size:0.72rem;font-weight:600;margin-top:10px;">'+(pickerOpen?'▲':'▾')+' Add from Catalog</button>';
+        h += '<div id="propCatPicker_'+optIdx+'" style="display:'+(pickerOpen?'block':'none')+';margin-top:8px;">';
+        _propCatItems.forEach(function(row, catIdx) {
+          var isAdded = build.lineItems.some(function(li){ return li.id === row.option_key && !li.isCustom; });
+          h += '<div style="display:flex;align-items:center;gap:8px;padding:7px 10px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);border-radius:7px;margin-bottom:4px;">';
+          h += '<div style="flex:1;min-width:0;">';
+          h += '<div style="font-size:0.75rem;font-weight:600;color:'+(isAdded?'#555':'#ddd')+';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+row.title+'</div>';
+          h += '<div style="font-size:0.68rem;color:#8DC63F;font-weight:700;">$'+parseFloat(row.default_price).toLocaleString('en-US')+'</div>';
+          h += '</div>';
+          h += '<button onclick="_propAddCatItem('+catIdx+','+optIdx+')" '+(isAdded?'disabled style="padding:4px 10px;background:transparent;border:1px solid rgba(255,255,255,0.07);border-radius:100px;color:#444;font-size:0.7rem;cursor:default;">✓':'style="padding:4px 10px;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.28);border-radius:100px;color:#8DC63F;cursor:pointer;font-size:0.7rem;font-weight:700;">+')+' Add</button>';
+          h += '</div>';
+        });
+        h += '</div>';
+      }
+      h += '</div>';
+    });
+    // Add Another Option
+    h += '<button onclick="_propAddOption()" style="width:100%;padding:9px;background:rgba(141,198,63,0.03);border:1px dashed rgba(141,198,63,0.22);border-radius:10px;color:#8DC63F;cursor:pointer;font-size:0.77rem;font-weight:600;letter-spacing:0.01em;">＋ Add Another Option</button>';
+    container.innerHTML = h;
+  };
+
+  window._propInitFromCatalog = function(c, catalog, existing) {
+    _propCatItems = catalog;
+    _propPropId = c.id;
+    _propOpenCatPickers = {};
+    _propBuilds = [];
+    if (existing && existing.options && existing.options.length) {
+      existing.options.forEach(function(opt) {
+        var build = _propInitBuild();
+        build.price      = opt.price || 0;
+        build.participate= !!opt.participate;
+        build.partPrice  = opt.participate_price != null ? opt.participate_price : null;
+        build.teslaRebate= opt.tesla_rebate || 0;
+        build.sdcpRebate = opt.sdcp_rebate  || 0;
+        build.redline    = opt.redline || 0;
+        build.auroraImg  = opt.aurora_image_url  || '';
+        build.auroraPortal= opt.aurora_portal_url || '';
+        if (opt.milestones) build.deposit = opt.milestones.deposit || 0;
+        if (opt.line_items && opt.line_items.length) {
+          build.lineItems = opt.line_items.map(function(li){
+            return { id: li.isCustom ? null : opt.id, name: li.name, price: li.price || 0, isCustom: !!li.isCustom, subtitle: '', description: '' };
+          });
+        } else {
+          build.lineItems = [{ id: opt.id, name: opt.title, price: opt.price || 0, isCustom: false, subtitle: opt.subtitle||'', description: opt.description||'' }];
+        }
+        _propBuilds.push(build);
+      });
+    } else {
+      _propBuilds.push(_propInitBuild());
+    }
+    window._propRenderBuilds();
+  };
+
+  window.copyProposalLink = function(id) {
+    var c = adminCustomers.find(function(x){ return x.id === id; });
+    if (!c) return;
+    if (!c.email) { alert('No email on file for this customer. Add an email address first.'); return; }
+    var link = 'https://fixmy.energy/portal?email=' + encodeURIComponent(c.email) + '&code=' + encodeURIComponent(c.access_code || (c.phone||'').replace(/\D/g,''));
+    navigator.clipboard.writeText(link).then(function(){
+      var btn = document.getElementById('propCopyLinkBtn');
+      if (btn) { var orig = btn.innerHTML; btn.innerHTML = '&#10003; Copied!'; setTimeout(function(){ btn.innerHTML = orig; }, 2200); }
+    }).catch(function(){ prompt('Copy this link:', link); });
+  };
+
+  window.previewProposal = function(id) {
+    var c = adminCustomers.find(function(x){ return x.id === id; });
+    if (!c) return;
+    // Build a temporary proposal object from current _propBuilds state
+    var previewOptions = [];
+    _propBuilds.forEach(function(build, optIdx) {
+      if (!build.lineItems.length || !build.price) return;
+      var partPriceEl = document.getElementById('propPartPrice_' + optIdx);
+      var partPrice = partPriceEl ? (parseFloat(partPriceEl.value)||null) : (build.partPrice||null);
+      var aImgEl  = document.getElementById('propAuroraImg_'    + optIdx);
+      var aPortEl = document.getElementById('propAuroraPortal_' + optIdx);
+      var deposit = build.deposit || 0;
+      var effectivePrice = partPrice || build.price;
+      var milestones = {};
+      if (deposit > 0) {
+        milestones.deposit = deposit;
+        milestones.remaining = Math.round((effectivePrice - deposit) * 100) / 100;
+      }
+      var primaryItem = build.lineItems.find(function(li){ return !li.isCustom; });
+      var title = build.lineItems.length === 1 ? build.lineItems[0].name : build.lineItems[0].name + ' + ' + (build.lineItems.length-1) + ' more';
+      var opt = {
+        id: primaryItem ? primaryItem.id : ('custom_'+optIdx),
+        title: title, subtitle: (primaryItem&&primaryItem.subtitle)||'',
+        description: (primaryItem&&primaryItem.description)||build.lineItems.map(function(li){return li.name;}).join(' · '),
+        price: build.price, participate: build.participate, participate_price: partPrice,
+        milestones: milestones,
+        tesla_rebate: build.teslaRebate||0, sdcp_rebate: build.sdcpRebate||0,
+        aurora_image_url:  aImgEl  ? aImgEl.value.trim()||null  : null,
+        aurora_portal_url: aPortEl ? aPortEl.value.trim()||null : null,
+        line_items: build.lineItems.map(function(li){ return {name:li.name,price:li.price,isCustom:!!li.isCustom}; })
+      };
+      // Compute savings
+      var bill = parseFloat(c.monthly_bill)||0;
+      if (bill > 0) {
+        var scen = {};
+        [{key:'conservative',offsetPct:0.55,r:0.05},{key:'moderate',offsetPct:0.75,r:0.07},{key:'significant',offsetPct:0.90,r:0.10}].forEach(function(s){
+          var mo = Math.round(bill*s.offsetPct); var ann = mo*12;
+          scen[s.key] = {monthly:mo,annual:ann,total20yr:Math.round(ann*(Math.pow(1+s.r,20)-1)/s.r)};
+        });
+        opt.savings = scen;
+      }
+      previewOptions.push(opt);
+    });
+    previewOptions.sort(function(a,b){ return b.price - a.price; });
+    if (!previewOptions.length) {
+      alert('Add at least one item to an option before previewing.');
+      return;
+    }
+    var _custOptSavingsPreview = {};
+    var _optHtml = '';
+    previewOptions.forEach(function(opt, _i) {
+      var _hp = opt.participate && opt.participate_price;
+      var _disp = _hp ? opt.participate_price : opt.price;
+      var _strike = _hp ? '<span style="font-size:0.72rem;color:#555;text-decoration:line-through;margin-right:6px;">$'+parseFloat(opt.price).toLocaleString('en-US',{minimumFractionDigits:2})+'</span>' : '';
+      var _optLabel = 'Option ' + (_i+1);
+      var _lineItemsHtml = '';
+      if (opt.line_items && opt.line_items.length > 1) {
+        _lineItemsHtml = '<div style="margin-bottom:10px;padding:8px 12px;background:rgba(255,255,255,0.03);border-radius:8px;">';
+        opt.line_items.forEach(function(li){
+          _lineItemsHtml += '<div style="display:flex;justify-content:space-between;font-size:0.72rem;padding:2px 0;"><span style="color:#888;">'+li.name+'</span><span style="color:#ccc;">$'+parseFloat(li.price).toLocaleString('en-US',{minimumFractionDigits:2})+'</span></div>';
+        });
+        _lineItemsHtml += '</div>';
+      }
+      // Savings panel
+      var _savHtml = '';
+      if (opt.savings) {
+        ['conservative','moderate','significant'].forEach(function(k){ _custOptSavingsPreview[_i+'_'+k] = opt.savings[k]; });
+        var _labels = {conservative:'Conservative',moderate:'Moderate',significant:'Impact Trend'};
+        var _colors = {conservative:'#4a9eff',moderate:'#ffaa00',significant:'#8DC63F'};
+        var _scen = opt.savings.moderate;
+        _savHtml =
+          '<div style="background:rgba(74,158,255,0.05);border:1px solid rgba(74,158,255,0.15);border-radius:10px;padding:12px;margin-top:12px;">'+
+          '<div style="font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#4a9eff;margin-bottom:8px;">Projected Savings</div>'+
+          '<div style="display:flex;gap:4px;margin-bottom:8px;">'+
+            ['conservative','moderate','significant'].map(function(k){
+              var isAct = k==='moderate';
+              return '<button onclick="propCustScenPreview('+_i+',\''+k+'\')" id="prevScenBtn_'+_i+'_'+k+'" style="flex:1;padding:5px 2px;background:'+(isAct?'rgba(255,170,0,0.15)':'rgba(255,255,255,0.04)')+';border:1px solid '+(isAct?'#ffaa00':'rgba(255,255,255,0.08)')+';border-radius:6px;color:'+_colors[k]+';cursor:pointer;font-size:0.65rem;font-weight:'+(isAct?'800':'700')+';">'+_labels[k]+'</button>';
+            }).join('')+
+          '</div>'+
+          '<div id="prevSavDetail_'+_i+'" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;">'+
+            '<div style="text-align:center;"><div style="font-size:0.58rem;color:#666;">Monthly</div><div style="font-size:0.95rem;font-weight:700;color:#ffaa00;">~$'+_scen.monthly.toLocaleString()+'</div></div>'+
+            '<div style="text-align:center;"><div style="font-size:0.58rem;color:#666;">Year 1</div><div style="font-size:0.95rem;font-weight:700;color:#fff;">~$'+_scen.annual.toLocaleString()+'</div></div>'+
+            '<div style="text-align:center;"><div style="font-size:0.58rem;color:#666;">20-Year Est.</div><div style="font-size:0.95rem;font-weight:700;color:#fff;">~$'+_scen.total20yr.toLocaleString()+'</div></div>'+
+          '</div>'+
+          '</div>';
+      }
+      _optHtml +=
+        '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:16px;margin-bottom:10px;">'+
+        '<div style="font-size:0.58rem;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#8DC63F;margin-bottom:8px;">'+_optLabel+'</div>'+
+        '<div style="font-weight:700;font-size:0.95rem;color:#fff;margin-bottom:4px;">'+opt.title+'</div>'+
+        (opt.subtitle?'<div style="font-size:0.72rem;color:#777;margin-bottom:10px;">'+opt.subtitle+'</div>':'')+
+        _lineItemsHtml+
+        (opt.description&&(!opt.line_items||opt.line_items.length<=1)?'<div style="font-size:0.78rem;color:#bbb;line-height:1.65;margin-bottom:10px;">'+opt.description+'</div>':'')+
+        '<div style="display:flex;align-items:baseline;gap:4px;">'+_strike+'<span style="font-size:1.4rem;font-weight:800;color:'+(_hp?'#8DC63F':'#fff')+';">$'+parseFloat(_disp).toLocaleString('en-US',{minimumFractionDigits:2})+'</span>'+(_hp?'<span style="font-size:0.7rem;color:#666;margin-left:4px;">with Participate</span>':'')+'</div>'+
+        _savHtml+
+        '<button disabled style="width:100%;margin-top:12px;padding:11px;background:rgba(141,198,63,0.4);color:#000;border:none;border-radius:100px;font-weight:700;font-size:0.85rem;cursor:default;opacity:0.6;">Accept Option '+(_i+1)+' ✓ (preview)</button>'+
+        '</div>';
+    });
+    window._custOptSavingsPreview = _custOptSavingsPreview;
+    var overlay = document.createElement('div');
+    overlay.id = 'propPreviewOverlay';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.9);z-index:10000;display:flex;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto;';
+    overlay.innerHTML =
+      '<div style="background:#1a1c17;border:1px solid rgba(255,255,255,0.12);border-radius:16px;padding:24px;max-width:500px;width:100%;margin:auto;">'+
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">'+
+          '<div>'+
+            '<div style="font-size:0.6rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#4a9eff;margin-bottom:3px;">Customer Preview</div>'+
+            '<div style="font-weight:700;font-size:0.95rem;">'+(c.first_name||'')+' '+(c.last_name||'')+'</div>'+
+          '</div>'+
+          '<button onclick="document.getElementById(\'propPreviewOverlay\').remove();" style="background:none;border:none;color:#666;cursor:pointer;font-size:1.2rem;">&#10005;</button>'+
+        '</div>'+
+        '<div style="font-size:0.8rem;color:#aaa;margin-bottom:14px;">This is how your customer will see the proposal. Sort order: most expensive first.</div>'+
+        _optHtml+
+        '<button onclick="document.getElementById(\'propPreviewOverlay\').remove();" style="width:100%;padding:10px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:100px;color:#aaa;cursor:pointer;font-size:0.85rem;margin-top:4px;">Close Preview</button>'+
+      '</div>';
+    document.body.appendChild(overlay);
+  };
+
+  window.propCustScenPreview = function(optIdx, scenKey) {
+    var saved = window._custOptSavingsPreview && window._custOptSavingsPreview[optIdx+'_'+scenKey];
+    if (!saved) return;
+    var colors = {conservative:'#4a9eff',moderate:'#ffaa00',significant:'#8DC63F'};
+    var detail = document.getElementById('prevSavDetail_'+optIdx);
+    if (detail) {
+      detail.innerHTML =
+        '<div style="text-align:center;"><div style="font-size:0.58rem;color:#666;">Monthly</div><div style="font-size:0.95rem;font-weight:700;color:'+colors[scenKey]+';">~$'+saved.monthly.toLocaleString()+'</div></div>'+
+        '<div style="text-align:center;"><div style="font-size:0.58rem;color:#666;">Year 1</div><div style="font-size:0.95rem;font-weight:700;color:#fff;">~$'+saved.annual.toLocaleString()+'</div></div>'+
+        '<div style="text-align:center;"><div style="font-size:0.58rem;color:#666;">20-Year Est.</div><div style="font-size:0.95rem;font-weight:700;color:#fff;">~$'+saved.total20yr.toLocaleString()+'</div></div>';
+    }
+    ['conservative','moderate','significant'].forEach(function(k){
+      var btn = document.getElementById('prevScenBtn_'+optIdx+'_'+k);
+      if (!btn) return;
+      btn.style.fontWeight = k===scenKey ? '800' : '700';
+      btn.style.background = k===scenKey ? 'rgba('+{conservative:'74,158,255',moderate:'255,170,0',significant:'141,198,63'}[k]+',0.15)' : 'rgba(255,255,255,0.04)';
+      btn.style.borderColor = k===scenKey ? colors[k] : 'rgba(255,255,255,0.08)';
+    });
+  };
 
   async function acceptProposal(custId, optionId, financing, loanTerm) {
     try {
@@ -6681,6 +6991,28 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '</div>';
     } catch(e) { alert('Error: '+e.message); }
   }
+
+  window.propCustScen = function(optIdx, scenKey) {
+    var saved = window._custOptSavings && window._custOptSavings[optIdx+'_'+scenKey];
+    if (!saved) return;
+    var colors = {conservative:'#4a9eff',moderate:'#ffaa00',significant:'#8DC63F'};
+    var rgbs   = {conservative:'74,158,255',moderate:'255,170,0',significant:'141,198,63'};
+    var detail = document.getElementById('custSavingsDetail_'+optIdx);
+    if (detail) {
+      detail.innerHTML =
+        '<div style="text-align:center;"><div style="font-size:0.58rem;color:#666;">Monthly</div><div style="font-size:0.95rem;font-weight:700;color:'+colors[scenKey]+';">~$'+saved.monthly.toLocaleString()+'</div></div>'+
+        '<div style="text-align:center;"><div style="font-size:0.58rem;color:#666;">Year 1</div><div style="font-size:0.95rem;font-weight:700;color:#fff;">~$'+saved.annual.toLocaleString()+'</div></div>'+
+        '<div style="text-align:center;"><div style="font-size:0.58rem;color:#666;">20-Year Est.</div><div style="font-size:0.95rem;font-weight:700;color:#fff;">~$'+saved.total20yr.toLocaleString()+'</div></div>';
+    }
+    ['conservative','moderate','significant'].forEach(function(k){
+      var btn = document.getElementById('custScenBtn_'+optIdx+'_'+k);
+      if (!btn) return;
+      var isAct = k===scenKey;
+      btn.style.background   = isAct ? 'rgba('+rgbs[k]+',0.15)' : 'rgba(255,255,255,0.04)';
+      btn.style.borderColor  = isAct ? colors[k] : 'rgba(255,255,255,0.07)';
+      btn.style.fontWeight   = isAct ? '800' : '700';
+    });
+  };
 
   function selectLoanTerm(optId, term, idx) {
     window._selectedLoanTerm = term;
@@ -8391,7 +8723,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '</div></div>';
       } else if (_prop.status === 'sent' && _prop.options && _prop.options.length) {
         var _optCards = '';
+        window._custOptSavings = {};
         _prop.options.forEach(function(opt, _i) {
+          if (opt.savings) {
+            ['conservative','moderate','significant'].forEach(function(k){
+              if (opt.savings[k]) window._custOptSavings[_i+'_'+k] = opt.savings[k];
+            });
+          }
           var _isBundle = opt.id === 'bundle';
           var _hasParticipate = !!(opt.participate && opt.participate_price);
           var _dispPrice = _hasParticipate ? opt.participate_price : opt.price;
@@ -8426,13 +8764,37 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
                 '<div style="font-size:0.68rem;color:#555;line-height:1.6;">Wheelhouse CU &middot; 7.99% APR &middot; Participate lease-to-own. Monthly payments after 30% Participate discount. Select a payment option above then tap Accept below.</div>'+
               '</div>';
           }
+          var _optNumLabel = 'Option ' + (_i + 1);
           var _acceptBtn = _hasParticipate ?
-            '<button id="acceptBundle_'+_i+'" data-cid="'+c.id+'" onclick="acceptProposal(\''+c.id+'\',\''+opt.id+'\',\'participate\',(window._selectedLoanTerm||10))" style="width:100%;margin-top:14px;padding:13px;background:#8DC63F;color:#000;border:none;border-radius:100px;font-weight:700;font-size:0.88rem;cursor:pointer;">'+(_isBundle?'Accept Bundle':'Accept Option 1')+' &#10003;</button>' :
-            '<button onclick="acceptProposal(\''+c.id+'\',\''+opt.id+'\',\'cash\',null)" style="width:100%;margin-top:14px;padding:13px;background:rgba(255,255,255,0.08);color:#fff;border:1px solid rgba(255,255,255,0.2);border-radius:100px;font-weight:700;font-size:0.88rem;cursor:pointer;">Accept Option 1 Only</button>';
+            '<button id="acceptBundle_'+_i+'" data-cid="'+c.id+'" onclick="acceptProposal(\''+c.id+'\',\''+opt.id+'\',\'participate\',(window._selectedLoanTerm||10))" style="width:100%;margin-top:14px;padding:13px;background:#8DC63F;color:#000;border:none;border-radius:100px;font-weight:700;font-size:0.88rem;cursor:pointer;">Accept '+_optNumLabel+' &#10003;</button>' :
+            '<button onclick="acceptProposal(\''+c.id+'\',\''+opt.id+'\',\'cash\',null)" style="width:100%;margin-top:14px;padding:13px;background:rgba(255,255,255,0.08);color:#fff;border:1px solid rgba(255,255,255,0.2);border-radius:100px;font-weight:700;font-size:0.88rem;cursor:pointer;">Accept '+_optNumLabel+'</button>';
+          // Per-option savings panel
+          var _savingsPanel = '';
+          if (opt.savings) {
+            var _sColors = {conservative:'#4a9eff',moderate:'#ffaa00',significant:'#8DC63F'};
+            var _sLabels = {conservative:'Conservative',moderate:'Moderate',significant:'Impact Trend'};
+            var _mod = opt.savings.moderate || {};
+            _savingsPanel =
+              '<div style="background:rgba(74,158,255,0.05);border:1px solid rgba(74,158,255,0.14);border-radius:10px;padding:12px;margin-top:14px;">'+
+              '<div style="font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#4a9eff;margin-bottom:8px;">&#128202; Projected Savings</div>'+
+              '<div style="display:flex;gap:4px;margin-bottom:8px;">'+
+                Object.keys(_sColors).map(function(k){
+                  var isAct = k==='moderate';
+                  return '<button onclick="propCustScen('+_i+',\''+k+'\')" id="custScenBtn_'+_i+'_'+k+'" style="flex:1;padding:5px 2px;background:'+(isAct?'rgba(255,170,0,0.15)':'rgba(255,255,255,0.04)')+';border:1px solid '+(isAct?'#ffaa00':'rgba(255,255,255,0.07)')+';border-radius:6px;color:'+_sColors[k]+';cursor:pointer;font-size:0.64rem;font-weight:'+(isAct?'800':'700')+';">'+_sLabels[k]+'</button>';
+                }).join('')+
+              '</div>'+
+              '<div id="custSavingsDetail_'+_i+'" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;">'+
+                '<div style="text-align:center;"><div style="font-size:0.58rem;color:#666;">Monthly</div><div style="font-size:0.95rem;font-weight:700;color:#ffaa00;">~$'+(_mod.monthly||0).toLocaleString()+'</div></div>'+
+                '<div style="text-align:center;"><div style="font-size:0.58rem;color:#666;">Year 1</div><div style="font-size:0.95rem;font-weight:700;color:#fff;">~$'+(_mod.annual||0).toLocaleString()+'</div></div>'+
+                '<div style="text-align:center;"><div style="font-size:0.58rem;color:#666;">20-Year Est.</div><div style="font-size:0.95rem;font-weight:700;color:#fff;">~$'+(_mod.total20yr||0).toLocaleString()+'</div></div>'+
+              '</div>'+
+              (opt.insight?'<div style="font-size:0.7rem;color:#666;line-height:1.6;margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.06);font-style:italic;">'+opt.insight.replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</div>':'')+
+              '</div>';
+          }
           var _imgSrc = _hasParticipate ? '/assets/tesla-powerwall3.jpg' : '/assets/tesla-inverter.jpg';
           _optCards +=
             '<div style="background:rgba(255,255,255,0.03);border:1px solid '+(_hasParticipate?'rgba(141,198,63,0.3)':'rgba(255,255,255,0.1)')+';border-radius:14px;padding:20px;margin-bottom:12px;">'+
-              '<div style="font-size:0.58rem;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:'+(_isBundle?'#8DC63F':'#555')+';margin-bottom:10px;">'+(_isBundle?'&#11088; RECOMMENDED BUNDLE':'OPTION 1')+'</div>'+
+              '<div style="font-size:0.58rem;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:'+(_i===0?'#8DC63F':'#555')+';margin-bottom:10px;">'+(_i===0?'&#11088; ':'')+_optNumLabel+'</div>'+
               '<div style="display:flex;align-items:center;gap:14px;margin-bottom:12px;">'+
                 '<img src="'+_imgSrc+'" alt="'+opt.title+'" style="width:56px;height:56px;object-fit:contain;flex-shrink:0;" onerror="this.style.display=\'none\'"/>'+
                 '<div>'+
@@ -8469,7 +8831,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
                 _rb += '</div>';
                 return _rb;
               })()+
-              _milestones+_finHtml+_acceptBtn+
+              _milestones+_finHtml+_acceptBtn+_savingsPanel+
             '</div>';
         });
         proposalHtml =
