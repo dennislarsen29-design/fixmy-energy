@@ -86,35 +86,34 @@ For questions about specific pricing, proposal details, or anything requiring ad
 - Use bullet points for clarity when listing multiple items
 `;
 
+const CORS = {
+  'Content-Type': 'application/json',
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS'
+};
+
 exports.handler = async function(event) {
   if (event.httpMethod === 'OPTIONS') {
-    return {
-      statusCode: 200,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'Content-Type',
-        'Access-Control-Allow-Methods': 'POST, OPTIONS'
-      },
-      body: ''
-    };
+    return { statusCode: 200, headers: CORS, body: '' };
   }
 
   if (event.httpMethod !== 'POST') {
-    return { statusCode: 405, body: 'Method Not Allowed' };
+    return { statusCode: 405, headers: CORS, body: JSON.stringify({ error: 'Method Not Allowed' }) };
   }
 
   const key = process.env.ANTHROPIC_KEY;
   if (!key) {
-    return { statusCode: 500, body: JSON.stringify({ error: 'ANTHROPIC_KEY not set' }) };
+    return { statusCode: 500, headers: CORS, body: JSON.stringify({ error: 'ANTHROPIC_KEY not configured on server' }) };
   }
 
   let body;
   try { body = JSON.parse(event.body); } catch(e) {
-    return { statusCode: 400, body: JSON.stringify({ error: 'Invalid JSON' }) };
+    return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: 'Invalid JSON' }) };
   }
 
   const { message, history = [], repName = 'Rep', repRole = 'setter' } = body;
-  if (!message) return { statusCode: 400, body: JSON.stringify({ error: 'message required' }) };
+  if (!message) return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: 'message required' }) };
 
   // Build messages: last 8 turns of history + new message
   const trimmedHistory = history.slice(-8);
@@ -141,20 +140,12 @@ exports.handler = async function(event) {
 
     const data = await resp.json();
     if (!resp.ok) {
-      return { statusCode: resp.status, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify({ error: data.error?.message || 'API error' }) };
+      return { statusCode: resp.status, headers: CORS, body: JSON.stringify({ error: data.error?.message || 'Claude API error ' + resp.status }) };
     }
 
     const reply = data.content?.[0]?.text || '';
-    return {
-      statusCode: 200,
-      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-      body: JSON.stringify({ reply })
-    };
+    return { statusCode: 200, headers: CORS, body: JSON.stringify({ reply }) };
   } catch (e) {
-    return {
-      statusCode: 500,
-      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-      body: JSON.stringify({ error: e.message })
-    };
+    return { statusCode: 500, headers: CORS, body: JSON.stringify({ error: e.message }) };
   }
 };
