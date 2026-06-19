@@ -10952,7 +10952,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }
       openNewLead(person.id, person.name, config.setterMode);
     };
-    window.salesSetView = function(v) { salesView=v; sessionStorage.setItem('salesView_'+person.id,v); renderSales(); };
+    window.salesSetView = function(v) {
+      if (v !== 'canvass' && _canvassWatchId !== null) {
+        try { navigator.geolocation.clearWatch(_canvassWatchId); } catch(e){}
+        _canvassWatchId = null;
+      }
+      salesView=v; sessionStorage.setItem('salesView_'+person.id,v); renderSales();
+    };
     window.dismissWelcome = function(id) { try { sessionStorage.removeItem('showWelcome_'+id); } catch(e){} renderSales(); };
     window.renderSales = renderSales;
     window.salesSetLeadCat = function(v) { salesLeadCat=v; try{sessionStorage.setItem('salesLeadCat_'+person.id,v);}catch(e){} renderSales(); };
@@ -11121,12 +11127,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var canvassGpsFailed = false; // true = GPS denied/timeout, false = network/query error
     var canvassSkipIds = [];
     var _canvassLoadProgress = '';
+    var _canvassWatchId = null; // live GPS watch handle
 
-    // Restore leads from session cache (< 10 min old) to survive tab switches / Safari reloads
+    // Restore leads from local cache (< 60 min old) to survive re-login / page reloads
     (function() {
       try {
-        var _bbCache = JSON.parse(sessionStorage.getItem('bbLeadsCache') || 'null');
-        if (_bbCache && typeof _bbCache.ts === 'number' && Date.now() - _bbCache.ts < 600000 && Array.isArray(_bbCache.leads)) {
+        var _bbCache = JSON.parse(localStorage.getItem('bbLeadsCache') || 'null');
+        if (_bbCache && typeof _bbCache.ts === 'number' && Date.now() - _bbCache.ts < 3600000 && Array.isArray(_bbCache.leads)) {
           canvassLeads = _bbCache.leads;
           canvassUserLat = _bbCache.lat || null;
           canvassUserLng = _bbCache.lng || null;
@@ -11255,8 +11262,28 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
       canvassLeads = leads.filter(function(l){ return canvassSkipIds.indexOf(l.id) < 0; });
       canvassGpsStatus = 'ready';
-      try { sessionStorage.setItem('bbLeadsCache', JSON.stringify({ts: Date.now(), leads: canvassLeads, lat: canvassUserLat, lng: canvassUserLng, skipIds: canvassSkipIds})); } catch(e) {}
+      try { localStorage.setItem('bbLeadsCache', JSON.stringify({ts: Date.now(), leads: canvassLeads, lat: canvassUserLat, lng: canvassUserLng, skipIds: canvassSkipIds})); } catch(e) {}
       renderSales();
+
+      // Start live GPS watch so route re-sorts as user walks — clears previous watch first
+      if (_canvassWatchId !== null) { try { navigator.geolocation.clearWatch(_canvassWatchId); } catch(e){} _canvassWatchId = null; }
+      if (navigator.geolocation) {
+        _canvassWatchId = navigator.geolocation.watchPosition(function(pos) {
+          canvassUserLat = pos.coords.latitude;
+          canvassUserLng = pos.coords.longitude;
+          canvassLeads.forEach(function(l) {
+            if (l.lat && l.lng) l._distMi = canvassHaversine(canvassUserLat, canvassUserLng, l.lat, l.lng);
+          });
+          canvassLeads.sort(function(a, b) {
+            if (a._hot && !b._hot) return -1;
+            if (!a._hot && b._hot) return 1;
+            if (a.knock_status && !b.knock_status) return 1;
+            if (!a.knock_status && b.knock_status) return -1;
+            return (a._distMi || 999) - (b._distMi || 999);
+          });
+          renderSales();
+        }, null, { enableHighAccuracy: true, maximumAge: 15000, timeout: 30000 });
+      }
     }
 
     window.canvassKnock = async function(id, knockStatus) {
@@ -11302,7 +11329,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var unvisited = canvassLeads.filter(function(l){ return !l.knock_status; });
       if (unvisited.length) canvassSkipIds.push(unvisited[0].id);
       canvassLeads = canvassLeads.filter(function(l){ return canvassSkipIds.indexOf(l.id) < 0; });
-      try { sessionStorage.setItem('bbLeadsCache', JSON.stringify({ts: Date.now(), leads: canvassLeads, lat: canvassUserLat, lng: canvassUserLng, skipIds: canvassSkipIds})); } catch(e) {}
+      try { localStorage.setItem('bbLeadsCache', JSON.stringify({ts: Date.now(), leads: canvassLeads, lat: canvassUserLat, lng: canvassUserLng, skipIds: canvassSkipIds})); } catch(e) {}
       renderSales();
     };
 
