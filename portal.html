@@ -6503,6 +6503,53 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
   };
 
+  // Utility bill upload + AI extraction for lead editors (admin + tech)
+  window._edExtractBill = async function(inputId, file, fileInputEl) {
+    if (!file) return;
+    var input    = document.getElementById(inputId);
+    var statusId = inputId + 'UploadStatus';
+    var statusEl = document.getElementById(statusId);
+    var btnId    = inputId + 'UploadBtn';
+    var btn      = document.getElementById(btnId);
+    if (btn) { btn.disabled = true; btn.textContent = 'Reading…'; }
+    if (statusEl) statusEl.textContent = 'Reading bill…';
+    var base64 = await new Promise(function(resolve) {
+      var reader = new FileReader();
+      reader.onload = function(e){ resolve(e.target.result.split(',')[1]); };
+      reader.readAsDataURL(file);
+    });
+    var isPdf = file.type === 'application/pdf';
+    var contentBlock = isPdf
+      ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } }
+      : { type: 'image', source: { type: 'base64', media_type: file.type, data: base64 } };
+    try {
+      var resp = await fetch('/.netlify/functions/claude-vision', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 80,
+          messages: [{ role: 'user', content: [
+            contentBlock,
+            { type: 'text', text: 'Extract the total monthly bill amount from this utility bill. Return ONLY this JSON: {"monthly_bill": <number or null>}. monthly_bill = TOTAL AMOUNT DUE for the current billing period.' }
+          ]}]
+        })
+      });
+      var data = await resp.json();
+      var text = (data.content && data.content[0] && data.content[0].text) ? data.content[0].text.trim() : '';
+      var match = text.match(/"monthly_bill"\s*:\s*([\d.]+)/);
+      var extracted = match ? parseFloat(match[1]) : null;
+      if (extracted && extracted > 0 && input) {
+        input.value = Math.round(extracted);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        if (statusEl) statusEl.innerHTML = '<span style="color:#8DC63F;">&#10003; $' + Math.round(extracted) + '/mo — verify &amp; save</span>';
+      } else {
+        if (statusEl) statusEl.innerHTML = '<span style="color:#ffaa00;">Could not read — enter manually</span>';
+      }
+    } catch(e) {
+      if (statusEl) statusEl.innerHTML = '<span style="color:#ef4444;">Failed — try again</span>';
+    }
+    if (btn) { btn.disabled = false; btn.textContent = '📄'; }
+    if (fileInputEl) fileInputEl.value = '';
+  };
+
   window._propRestoreExisting = function() {
     if (!_propExisting || !_propExisting.options) return;
     _propBuilds = [];
@@ -7621,7 +7668,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         edField('First Name','edFirst',c.first_name||'','text')+edField('Last Name','edLast',c.last_name||'','text')+
         edField('Email','edEmail',c.email||'','email')+edField('Phone','edPhone',c.phone||'','tel')+
         edField('Address','edAddr',c.address||'','text')+(isNSEdit?'':edField('System Size (kW)','edSys',c.system_size||'','text'))+
-        edField('Utility','edUtil',c.utility||'','text')+edField('Monthly Bill ($)','edBill',c.monthly_bill||'','text')+
+        edField('Utility','edUtil',c.utility||'','text')+
+        '<div><label class="ed-label">Monthly Bill ($)</label>'+
+          '<div style="display:flex;gap:5px;align-items:center;">'+
+            '<input type="text" id="edBill" class="ed-input" value="'+(c.monthly_bill||'')+'" style="flex:1;min-width:0;"/>'+
+            '<input type="file" id="edBillFile" accept="image/*,application/pdf" style="display:none;" onchange="_edExtractBill(\'edBill\',this.files[0],this)"/>'+
+            '<button type="button" id="edBillUploadBtn" title="Upload bill to auto-fill" onclick="document.getElementById(\'edBillFile\').click()" style="padding:6px 8px;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.3);border-radius:6px;color:#8DC63F;cursor:pointer;font-size:0.85rem;flex-shrink:0;line-height:1;">&#128196;</button>'+
+          '</div>'+
+          '<div id="edBillUploadStatus" style="font-size:0.65rem;margin-top:3px;min-height:14px;"></div>'+
+        '</div>'+
         (isNSEdit ? '' : edField('NEM Status','edNem',c.nem_status||'','text'))+
         '<div style="grid-column:1/-1;">'+
           '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">'+
@@ -10778,7 +10833,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<div class="editor-section-title">Property</div>'+
         '<div class="ed-grid">'+
           '<div><label class="ed-label">Service Address</label><input type="text" id="seAddr" class="ed-input" value="'+(l.address||'')+'"/></div>'+
-          '<div><label class="ed-label">Monthly Bill ($)</label><input type="number" id="seBill" class="ed-input" value="'+(l.monthly_bill||'')+'"/></div>'+
+          '<div><label class="ed-label">Monthly Bill ($)</label>'+
+            '<div style="display:flex;gap:5px;align-items:center;">'+
+              '<input type="number" id="seBill" class="ed-input" value="'+(l.monthly_bill||'')+'" style="flex:1;min-width:0;"/>'+
+              '<input type="file" id="seBillFile" accept="image/*,application/pdf" style="display:none;" onchange="_edExtractBill(\'seBill\',this.files[0],this)"/>'+
+              '<button type="button" id="seBillUploadBtn" title="Upload bill to auto-fill" onclick="document.getElementById(\'seBillFile\').click()" style="padding:6px 8px;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.3);border-radius:6px;color:#8DC63F;cursor:pointer;font-size:0.85rem;flex-shrink:0;line-height:1;">&#128196;</button>'+
+            '</div>'+
+            '<div id="seBillUploadStatus" style="font-size:0.65rem;margin-top:3px;min-height:14px;"></div>'+
+          '</div>'+
         '</div>'+
         '<div class="editor-section-title">Notes</div>'+
         '<textarea id="seNotes" class="ed-input" rows="2" style="margin-bottom:14px;">'+(l.notes||'')+'</textarea>'+
