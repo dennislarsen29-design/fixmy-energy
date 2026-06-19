@@ -502,7 +502,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += ssRow('2 × Powerwall 3 + Gateway', '$20,250.00');
     h += ssRow('3 × Powerwall 3 + Gateway', '$29,250.00');
     h += ssSection('Other Services');
-    h += ssRow('Tesla Inverter Swap', '$3,500.00');
+    h += ssRow('Tesla Inverter Swap (with MCI2 Optimizer Chips)', '$3,500.00');
     h += ssRow('Custom / Adjusted Pricing', 'Call admin');
     h += '</div>';
     h += '<div style="background:#fff;border:1px solid rgba(0,0,0,0.09);border-radius:12px;padding:16px;margin-bottom:12px;">';
@@ -6447,6 +6447,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   };
 
   var _propShowCustom = {};
+  var _propPanelCounts = {}; // per-option Tesla 420W panel quantity
 
   window._propSaveBill = async function(id, val) {
     var bill = parseFloat(val) || 0;
@@ -6598,44 +6599,27 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     _propRenderBuilds();
   };
 
-  async function _loadCatalog(serviceType) {
-    if (_proposalCatalogCache[serviceType]) return _proposalCatalogCache[serviceType];
+  async function _loadCatalog() {
+    if (_proposalCatalogCache['all']) return _proposalCatalogCache['all'];
     var client = supabase.createClient(SUPA_URL, SUPA_KEY);
     var { data } = await client.from('proposal_catalog')
-      .select('*').eq('service_type', serviceType).eq('is_active', true).order('sort_order');
-    _proposalCatalogCache[serviceType] = data || [];
-    return _proposalCatalogCache[serviceType];
+      .select('*').eq('is_active', true).order('sort_order');
+    _proposalCatalogCache['all'] = data || [];
+    return _proposalCatalogCache['all'];
   }
 
   async function openProposalBuilder(id, typeOverride) {
     var c = adminCustomers.find(function(x){ return x.id===id; });
     if (!c) return;
 
-    var autoType = c.lead_category === 'new_solar' ? 'ns' : 'br';
-    var pType = typeOverride || sessionStorage.getItem('proposalType_'+id) || autoType;
-    sessionStorage.setItem('proposalType_'+id, pType);
-
-    var serviceTypeMap = { br: 'battery_retrofit', inv: 'inverter_swap', diag: 'diagnostic', ns: 'new_solar' };
-    var serviceType = serviceTypeMap[pType] || 'battery_retrofit';
-
-    var catalog = await _loadCatalog(serviceType);
+    var catalog = await _loadCatalog();
     var existing = c.proposal ? (typeof c.proposal==='string' ? JSON.parse(c.proposal) : c.proposal) : null;
+    var serviceType = 'battery_retrofit'; // default; sendProposal() re-derives from selected items
 
     var acceptedBanner = '';
     if (existing && existing.status === 'accepted') {
       acceptedBanner = '<div style="padding:10px 14px;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.3);border-radius:8px;font-size:0.8rem;color:#8DC63F;margin-bottom:16px;">&#10003; Customer accepted: <strong>'+(existing.accepted_option||'')+'</strong>'+(existing.loan_term?' &middot; '+existing.loan_term+'-yr financing':'')+' &middot; '+existing.financing+'</div>';
     }
-
-    var tabDefs = [
-      { key: 'br',   label: '&#128267; Battery Installation & Retrofit', bg: '#8DC63F', fg: '#000' },
-      { key: 'inv',  label: '&#9889; Inverter Swap',       bg: '#4a9eff', fg: '#fff' },
-      { key: 'diag', label: '&#128269; Diagnostic',        bg: '#ffaa00', fg: '#000' },
-      { key: 'ns',   label: '&#9728; New Solar',           bg: '#9b6de8', fg: '#fff' }
-    ];
-    var tabsHtml = tabDefs.map(function(t) {
-      var active = t.key === pType;
-      return '<button onclick="var _m=document.getElementById(\'proposalModal\');if(_m)_m.remove();openProposalBuilder(\''+c.id+'\',\''+t.key+'\')" style="flex:1;padding:7px 4px;border:none;border-radius:7px;font-size:0.68rem;font-weight:700;cursor:pointer;'+(active?'background:'+t.bg+';color:'+t.fg+';':'background:transparent;color:#555;')+'">'+t.label+'</button>';
-    }).join('');
 
     // AI Insight + Savings Scenarios (all service types)
     var existingInsight = (existing && existing.insight) || '';
@@ -6704,9 +6688,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '</div>'+
           '<button onclick="var _m=document.getElementById(\'proposalModal\');if(_m)_m.remove();" style="background:none;border:none;color:#666;cursor:pointer;font-size:1.2rem;">&#10005;</button>'+
         '</div>'+
-        '<div style="display:flex;gap:4px;margin-bottom:18px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:4px;">'+
-          tabsHtml+
-        '</div>'+
         acceptedBanner+
         optionsHtml+
         savingsHtml+
@@ -6732,7 +6713,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var modal = document.getElementById('proposalModal');
     var sendBtn = document.getElementById('propSendBtn');
     var statusEl = document.getElementById('propSaveStatus');
-    var serviceType = (document.getElementById('prop_service_type')||{}).value || 'battery_retrofit';
+    // Derive service type from first selected catalog item
+    var _stPrimary = (_propBuilds[0] && _propBuilds[0].lineItems.find(function(li){ return !li.isCustom; }));
+    var _stCatRow  = _stPrimary && _propCatItems.find(function(r){ return r.option_key === _stPrimary.id; });
+    var serviceType = (_stCatRow && _stCatRow.service_type) || (document.getElementById('prop_service_type')||{}).value || 'battery_retrofit';
     var insight = ((document.getElementById('propInsightText')||{}).value || '').trim() || null;
 
     if (sendBtn) { sendBtn.disabled = true; sendBtn.textContent = 'Saving…'; }
@@ -6948,9 +6932,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     _propBuilds.forEach(function(build, optIdx) {
       var alpha = String.fromCharCode(65 + optIdx);
       h += '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:14px;margin-bottom:10px;">';
-      h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">';
+      h += '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px 8px;margin-bottom:10px;">';
       h += '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.1em;color:#8DC63F;">Option ' + alpha + '</div>';
-      h += '<button onclick="_propToggleNonExport('+optIdx+')" style="font-size:0.6rem;padding:3px 10px;border-radius:20px;background:'+(build.nonExport?'rgba(255,170,0,0.2)':'rgba(255,255,255,0.06)')+';border:1px solid '+(build.nonExport?'rgba(255,170,0,0.4)':'rgba(255,255,255,0.12)')+';color:'+(build.nonExport?'#ffaa00':'#555')+';cursor:pointer;white-space:nowrap;flex-shrink:0;">'+(build.nonExport?'&#9889; ':'')+'Non-Export (CA)</button>';
+      h += '<button onclick="_propToggleNonExport('+optIdx+')" style="font-size:0.6rem;padding:3px 8px;border-radius:20px;background:'+(build.nonExport?'rgba(255,170,0,0.2)':'rgba(255,255,255,0.06)')+';border:1px solid '+(build.nonExport?'rgba(255,170,0,0.4)':'rgba(255,255,255,0.12)')+';color:'+(build.nonExport?'#ffaa00':'#555')+';cursor:pointer;white-space:nowrap;">'+(build.nonExport?'&#9889; ':'')+'Non-Export</button>';
       h += '</div>';
 
       // Catalog card grid (always visible)
@@ -6963,11 +6947,29 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           if (isAdded) h += '<div style="position:absolute;top:6px;right:7px;font-size:0.6rem;font-weight:800;color:#8DC63F;">&#10003;</div>';
           h += '<div style="font-size:0.74rem;font-weight:700;color:'+(isAdded?'#8DC63F':'#ddd')+';padding-right:14px;line-height:1.3;">'+cardTitle+'</div>';
           if (row.subtitle) h += '<div style="font-size:0.62rem;color:#666;margin-top:2px;">'+row.subtitle+'</div>';
-          h += '<div style="font-size:0.78rem;color:'+(isAdded?'rgba(141,198,63,0.7)':'#8DC63F')+';font-weight:700;margin-top:5px;">$'+parseFloat(row.default_price||0).toLocaleString('en-US')+'</div>';
-          var _cComm = _calcPropComm(parseFloat(row.default_price||0), (parseFloat(row.redline||0)+5000));
+          var _cPrice = Math.round(parseFloat(row.default_price||0));
+          h += '<div style="font-size:0.78rem;color:'+(isAdded?'rgba(141,198,63,0.7)':'#8DC63F')+';font-weight:700;margin-top:5px;">$'+_cPrice.toLocaleString('en-US')+'</div>';
+          var _cComm = _calcPropComm(_cPrice, (parseFloat(row.redline||0)+5000));
           if (_cComm && _cComm > 0) h += '<div style="font-size:0.62rem;color:#ffaa00;margin-top:2px;">Rep: ~$'+_cComm.toLocaleString('en-US')+'</div>';
           h += '</div>';
         });
+        // Tesla 420W panel quantity card (spans full width, below catalog items)
+        var _panelCount = _propPanelCounts[optIdx] || 0;
+        var _panelTotal = Math.round(_panelCount * 919.80);
+        h += '<div style="grid-column:1/-1;border:1px solid '+(_panelCount>0?'rgba(141,198,63,0.5)':'rgba(255,255,255,0.1)')+';background:'+(_panelCount>0?'rgba(141,198,63,0.07)':'rgba(255,255,255,0.03)')+';border-radius:8px;padding:10px;">';
+        h += '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">';
+        h += '<div style="flex:1;min-width:0;">';
+        h += '<div style="font-size:0.74rem;font-weight:700;color:'+(_panelCount>0?'#8DC63F':'#ddd')+';line-height:1.3;">Tesla 420W Panel</div>';
+        h += '<div style="font-size:0.62rem;color:#666;margin-top:2px;">$920/panel &middot; Non-Export / NEM 1.0</div>';
+        if (_panelCount > 0) h += '<div style="font-size:0.78rem;color:rgba(141,198,63,0.8);font-weight:700;margin-top:4px;">'+_panelCount+' panel'+(_panelCount>1?'s':'')+' &middot; $'+_panelTotal.toLocaleString('en-US')+'</div>';
+        h += '</div>';
+        h += '<div style="display:flex;align-items:center;gap:8px;flex-shrink:0;" onclick="event.stopPropagation()">';
+        h += '<button onclick="_propPanelDec('+optIdx+')" style="width:30px;height:30px;border-radius:50%;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:#ccc;cursor:pointer;font-size:1.1rem;line-height:1;display:flex;align-items:center;justify-content:center;flex-shrink:0;">&#8722;</button>';
+        h += '<span style="font-size:1rem;font-weight:700;color:#fff;min-width:22px;text-align:center;">'+_panelCount+'</span>';
+        h += '<button onclick="_propPanelInc('+optIdx+')" style="width:30px;height:30px;border-radius:50%;background:rgba(141,198,63,0.2);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;cursor:pointer;font-size:1.1rem;line-height:1;display:flex;align-items:center;justify-content:center;flex-shrink:0;">+</button>';
+        h += '</div>';
+        h += '</div>';
+        h += '</div>';
         h += '</div>';
       }
 
@@ -7067,6 +7069,30 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (_propBuilds[optIdx]) { _propBuilds[optIdx].nonExport = !_propBuilds[optIdx].nonExport; _propRenderBuilds(); }
   };
 
+  window._propPanelInc = function(optIdx) {
+    _propPanelCounts[optIdx] = (_propPanelCounts[optIdx] || 0) + 1;
+    _propUpdatePanelItem(optIdx);
+  };
+  window._propPanelDec = function(optIdx) {
+    _propPanelCounts[optIdx] = Math.max(0, (_propPanelCounts[optIdx] || 0) - 1);
+    _propUpdatePanelItem(optIdx);
+  };
+  window._propUpdatePanelItem = function(optIdx) {
+    var build = _propBuilds[optIdx];
+    if (!build) return;
+    var count = _propPanelCounts[optIdx] || 0;
+    var existing = build.lineItems.findIndex(function(li){ return li.id === 'panel_addon_420w'; });
+    if (count === 0) {
+      if (existing >= 0) build.lineItems.splice(existing, 1);
+    } else {
+      var kw = (count * 0.420).toFixed(2);
+      var item = { id: 'panel_addon_420w', name: 'Tesla 420W Panel ×'+count+' ('+kw+' kW)', price: Math.round(count * 919.80), isCustom: false };
+      if (existing >= 0) { build.lineItems[existing] = item; } else { build.lineItems.push(item); }
+    }
+    _propUpdateTotal(optIdx);
+    _propRenderBuilds();
+  };
+
   window._propInitFromCatalog = function(c, catalog, existing) {
     _propCatItems = catalog.slice().sort(function(a, b) {
       return (parseFloat(b.default_price)||0) - (parseFloat(a.default_price)||0);
@@ -7074,6 +7100,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     _propPropId = c.id;
     _propOpenAdvanced = {};
     _propShowCustom = {};
+    _propPanelCounts = {};
     _propBuilds = [];
     // Always start fresh — one empty build option
     _propBuilds.push(_propInitBuild());
