@@ -6584,14 +6584,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   window._propSetPriceManual = function(optIdx, val) {
     var build = _propBuilds[optIdx];
     if (!build) return;
-    var newPrice = parseFloat(val) || 0;
-    var primary = build.lineItems.find(function(li){ return !li.isCustom; });
-    if (primary) {
-      var otherTotal = build.lineItems.filter(function(li){ return li !== primary; })
-        .reduce(function(s, li){ return s + (parseFloat(li.price)||0); }, 0);
-      primary.price = newPrice - otherTotal;
-    }
-    build.price = newPrice;
+    build.price = parseFloat(val) || 0;
     _propRenderBuilds();
   };
 
@@ -6604,7 +6597,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (_proposalCatalogCache['all']) return _proposalCatalogCache['all'];
     var client = supabase.createClient(SUPA_URL, SUPA_KEY);
     var { data } = await client.from('proposal_catalog')
-      .select('*').eq('is_active', true).order('sort_order');
+      .select('*').eq('is_active', true).neq('service_type', 'diagnostic').order('sort_order');
     _proposalCatalogCache['all'] = data || [];
     return _proposalCatalogCache['all'];
   }
@@ -6698,6 +6691,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '<button onclick="previewProposal(\''+c.id+'\')" style="padding:10px 16px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);border-radius:100px;color:#4a9eff;cursor:pointer;font-size:0.82rem;font-weight:700;">&#128269; Preview</button>'+
           '<button onclick="copyProposalLink(\''+c.id+'\')" id="propCopyLinkBtn" style="padding:10px 16px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);border-radius:100px;color:#aaa;cursor:pointer;font-size:0.82rem;font-weight:600;">&#128203; Copy Link</button>'+
           '<button id="propSendBtn" onclick="sendProposal(\''+c.id+'\')" style="padding:10px 22px;background:#8DC63F;color:#000;border:none;border-radius:100px;font-weight:700;cursor:pointer;font-size:0.85rem;">&#128228; Send to Customer</button>'+
+          '<button id="propApprovalBtn" onclick="sendProposal(\''+c.id+'\',true)" style="display:none;padding:10px 22px;background:rgba(239,68,68,0.15);color:#ef4444;border:1px solid rgba(239,68,68,0.4);border-radius:100px;font-weight:700;cursor:pointer;font-size:0.82rem;">&#9888; Request Admin Approval</button>'+
         '</div>'+
         '<div id="propSaveStatus" style="margin-top:8px;font-size:0.78rem;text-align:center;min-height:18px;"></div>'+
       '</div>';
@@ -6710,7 +6704,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     setTimeout(function(){ if (bill > 0) propShowScenario('moderate', bill, c.system_size||0); }, 0);
   }
 
-  async function sendProposal(id) {
+  async function sendProposal(id, approvalRequest) {
     var modal = document.getElementById('proposalModal');
     var sendBtn = document.getElementById('propSendBtn');
     var statusEl = document.getElementById('propSaveStatus');
@@ -6810,7 +6804,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var commissionEstimate = options.reduce(function(sum, o){ return sum + (o.rep_commission || 0); }, 0);
     try {
       var client = supabase.createClient(SUPA_URL, SUPA_KEY);
-      var proposal = { status: 'sent', created_at: new Date().toISOString(), options: options, accepted_option: null, financing: null, loan_term: null };
+      var proposal = { status: 'sent', created_at: new Date().toISOString(), options: options, accepted_option: null, financing: null, loan_term: null, approvalRequired: !!approvalRequest };
       if (insight) proposal.insight = insight;
       var custUpdate = { proposal: proposal };
       if (commissionEstimate > 0) custUpdate.commission_estimate = commissionEstimate;
@@ -6822,6 +6816,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (!saved) throw new Error('Proposal column may not exist — run: ALTER TABLE customers ADD COLUMN IF NOT EXISTS proposal jsonb;');
       var idx = adminCustomers.findIndex(function(x){ return x.id===id; });
       if (idx > -1) { adminCustomers[idx].proposal = proposal; if (commissionEstimate > 0) adminCustomers[idx].commission_estimate = commissionEstimate; }
+      if (approvalRequest) {
+        // Notify admin via GHL webhook instead of sending to customer
+        await fetch(GHL_PROPOSAL_WEBHOOK, { method: 'POST', mode: 'no-cors', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ type: 'proposal_approval_request', customer_name: ((custRec&&custRec.first_name)||'') + ' ' + ((custRec&&custRec.last_name)||''), customer_id: id, rep_name: (typeof person !== 'undefined' ? person.name : 'Rep'), commission_note: 'Below $1,000 minimum — requires approval' }) }).catch(function(){});
+        if (statusEl) statusEl.textContent = '⚠ Submitted for admin approval — not yet sent to customer.';
+        if (sendBtn) { sendBtn.disabled = false; sendBtn.textContent = '⚠ Request Admin Approval'; }
+        return;
+      }
       if (statusEl) { statusEl.style.color = '#8DC63F'; statusEl.textContent = '✓ Proposal saved — customer can view via their magic link.'; }
       setTimeout(function(){ if (modal && modal.parentNode) modal.remove(); }, 1800);
     } catch(e) {
@@ -6852,10 +6853,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var _sdcpZipM = (_sdcpCust.address||'').match(/\b(\d{5})\b/);
       build.sdcpRebate  = (_sdcpZipM && typeof SDCP_ZIPS!=='undefined' && SDCP_ZIPS.has(_sdcpZipM[1]))
         ? (parseFloat(row.sdcp_rebate)||0) : 0;
-      // Redline set so commission defaults to $5k for large packages (>$15k), $2k for small
-      var _catPrice = parseFloat(row.default_price) || 0;
-      var _targetComm = _catPrice > 15000 ? 5000 : 2000;
-      build.redline = Math.max(0, Math.round(_catPrice - _targetComm / 0.40));
     }
     build.lineItems.push({ id: row.option_key, name: row.title, subtitle: row.subtitle||'', description: row.description||'', price: parseFloat(row.default_price)||0, isCustom: false });
     window._propUpdateTotal(optIdx);
@@ -6865,6 +6862,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   window._propRemoveItem = function(optIdx, itemIdx) {
     if (!_propBuilds[optIdx]) return;
     _propBuilds[optIdx].lineItems.splice(itemIdx, 1);
+    _propRecalcRedline(optIdx);
     window._propUpdateTotal(optIdx);
     window._propRenderBuilds();
   };
@@ -6876,10 +6874,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
   };
 
+  function _propRecalcRedline(optIdx) {
+    var build = _propBuilds[optIdx];
+    if (!build) return;
+    build.redline = build.lineItems
+      .filter(function(li){ return !li.isCustom; })
+      .reduce(function(s, li){ return s + (parseFloat(li.price)||0); }, 0);
+    if (build.price < build.redline) build.price = build.redline;
+  }
+
   window._propUpdateTotal = function(optIdx) {
     var build = _propBuilds[optIdx];
     if (!build) return;
-    build.price = build.lineItems.reduce(function(s, li){ return s + (parseFloat(li.price) || 0); }, 0);
+    _propRecalcRedline(optIdx);
     var el = document.getElementById('propOptTotal_' + optIdx);
     if (el) el.textContent = '$' + Math.round(build.price).toLocaleString('en-US');
   };
@@ -6950,11 +6957,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           if (row.subtitle) h += '<div style="font-size:0.62rem;color:#666;margin-top:2px;">'+row.subtitle+'</div>';
           var _cPrice = Math.round(parseFloat(row.default_price||0));
           h += '<div style="font-size:0.78rem;color:'+(isAdded?'rgba(141,198,63,0.7)':'#8DC63F')+';font-weight:700;margin-top:5px;">$'+_cPrice.toLocaleString('en-US')+'</div>';
-          // Commission preview uses same logic as _propAddCatItem (target $5k for >$15k, $2k for smaller)
-          var _cTargetComm = _cPrice > 15000 ? 5000 : 2000;
-          var _cRedline = Math.max(0, Math.round(_cPrice - _cTargetComm / 0.40));
-          var _cComm = _calcPropComm(_cPrice, _cRedline);
-          if (_cComm && _cComm > 0) h += '<div style="font-size:0.62rem;color:#ffaa00;margin-top:2px;">Rep: ~$'+_cComm.toLocaleString('en-US')+'</div>';
+          h += '<div style="font-size:0.6rem;color:#555;margin-top:2px;">Dealer cost</div>';
           h += '</div>';
         });
         // Tesla 420W panel quantity card (spans full width, below catalog items)
@@ -7006,8 +7009,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // Pricing waterfall
       var _custPays = (build.participate && build.partPrice) ? build.partPrice : build.price;
       var _partSavings = (build.participate && build.partPrice) ? (build.price - build.partPrice) : 0;
-      var _oComm = build.redline > 0 ? _calcPropComm(_custPays, build.redline) : null;
-      var _commMin = _commMins[_propServiceType] || 0;
+      var _oComm = build.redline > 0 ? Math.round((_custPays - build.redline) * 0.40) : 0;
+      var _commMin = 1000;
       h += '<div style="background:rgba(0,0,0,0.25);border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:10px 12px;">';
       h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">';
       h += '<span style="font-size:0.7rem;color:#666;">System price</span><span style="font-size:0.78rem;color:#ddd;font-weight:700;">$'+Math.round(build.price).toLocaleString('en-US')+'</span>';
@@ -7031,12 +7034,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '</div>';
       }
       h += '<div style="border-top:1px solid rgba(255,255,255,0.07);margin:6px 0;"></div>';
-      if (_oComm !== null) {
+      if (build.lineItems.length > 0) {
+        var _commColor = _oComm >= _commMin ? '#ffaa00' : _oComm >= 0 ? '#ef4444' : '#ef4444';
         h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">';
-        h += '<span style="font-size:0.72rem;color:#ffaa00;font-weight:700;">Rep commission</span><span style="font-size:0.88rem;color:#ffaa00;font-weight:800;">~$'+_oComm.toLocaleString('en-US')+'</span>';
+        h += '<span style="font-size:0.7rem;color:#555;">Dealer cost</span><span style="font-size:0.75rem;color:#555;">$'+Math.round(build.redline).toLocaleString('en-US')+'</span>';
         h += '</div>';
-        if (_oComm < _commMin && _commMin > 0) {
-          h += '<div style="font-size:0.65rem;color:#ef4444;text-align:right;">&#9888; Below $'+_commMin.toLocaleString('en-US')+' minimum &mdash; manager approval required</div>';
+        h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">';
+        h += '<span style="font-size:0.72rem;color:'+_commColor+';font-weight:700;">Rep commission</span><span style="font-size:0.88rem;color:'+_commColor+';font-weight:800;">$'+Math.max(0,_oComm).toLocaleString('en-US')+'</span>';
+        h += '</div>';
+        if (_oComm < _commMin) {
+          h += '<div style="font-size:0.65rem;color:#ef4444;margin-top:2px;">&#9888; Below $1,000 minimum &mdash; admin approval required to send</div>';
         }
       }
       h += '</div>';
@@ -7064,6 +7071,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var _firstItem = _firstBuild && _firstBuild.lineItems.find(function(li){ return !li.isCustom && li.subtitle; });
     var _subEl = document.getElementById('propSavingsSubtitle');
     if (_subEl) { _subEl.textContent = _firstItem ? _firstItem.subtitle : ''; _subEl.style.display = (_firstItem && _firstItem.subtitle) ? '' : 'none'; }
+    // Show/hide send vs approval button based on commission
+    var _anyBelowMin = _propBuilds.some(function(b) {
+      if (!b.lineItems.length) return false;
+      return Math.round((b.price - b.redline) * 0.40) < 1000;
+    });
+    var _sendBtn = document.getElementById('propSendBtn');
+    var _approvalBtn = document.getElementById('propApprovalBtn');
+    if (_sendBtn) _sendBtn.style.display = _anyBelowMin ? 'none' : '';
+    if (_approvalBtn) _approvalBtn.style.display = _anyBelowMin ? '' : 'none';
   };
 
   window._propSetNonExport = function(optIdx, val) {
