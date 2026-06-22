@@ -4794,38 +4794,52 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var blendedRate = 0.453;
       var yield_kw    = 1600;
       var newPanelKw  = 4.2;
+      // Production-based savings from _propCalcBaseProduction (same source as builder preview)
+      var activeBuild = (_propBuilds && _propBuilds[0]) || null;
+      var prod = (typeof _propCalcBaseProduction === 'function')
+        ? _propCalcBaseProduction(activeBuild, _propSolarData, rec.system_size)
+        : { panelKwh:0, inverterKwh:0, batteryArbitrageKwh:0, panelKw:0, panelSource:null, hasData:false };
+      var calculatedAnnualSavings = prod.hasData
+        ? Math.round(prod.panelKwh * blendedRate + prod.inverterKwh * blendedRate + prod.batteryArbitrageKwh * 0.31)
+        : null;
+      var calculatedMonthlySavings = calculatedAnnualSavings ? Math.round(calculatedAnnualSavings / 12) : null;
+      var annualKwhSolarApi = (_propSolarData && _propSolarData.annualSunshineKwh) ? Math.round(_propSolarData.annualSunshineKwh) : null;
       // Build option totals from current _propBuilds for context
       var optionTotals = (_propBuilds||[]).map(function(b){ return b.price||0; }).filter(Boolean);
-      // Inverter-specific calculations (used when service type is inverter_swap)
+      // Inverter-specific calculations
       var monthlyLossEst  = (svcType==='inverter_swap' && sysKw>0) ? Math.round(sysKw*yield_kw*0.75*blendedRate/12) : null;
       var newSysKw        = (svcType==='inverter_swap' && sysKw>0) ? Math.round((sysKw+newPanelKw)*10)/10 : null;
       var annualKwhBundle = newSysKw ? Math.round(newSysKw*yield_kw) : null;
-      // Fix: calculate expected bill after fix instead of hardcoding 25
       var expectedBillWithFix = (svcType==='inverter_swap' && newSysKw && bill>0)
         ? Math.max(24, Math.round(bill - newSysKw*yield_kw/12*blendedRate))
         : null;
-      // Use actual diagnostic findings as the issue description
       var issueContext = svcType==='inverter_swap'
         ? (rec.diagnostic_findings ? rec.diagnostic_findings.slice(0,250) : 'inverter degraded — operating below rated capacity')
         : (rec.diagnostic_findings ? rec.diagnostic_findings.slice(0,250) : null);
       var r = await fetch('/.netlify/functions/generate-proposal-insight', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          service_type:           svcType,
-          notes:                  rec.notes              || '',
-          diagnostic_findings:    rec.diagnostic_findings || '',
-          first_name:             rec.first_name          || '',
-          system_size:            rec.system_size  || null,
-          monthly_bill:           rec.monthly_bill || null,
-          nem_status:             rec.nem_status   || '',
-          installer:              rec.installer    || '',
-          option_totals:          optionTotals,
-          issue:                  issueContext,
-          inverter_output_pct:    svcType==='inverter_swap' ? 25 : null,
-          monthly_loss_est:       monthlyLossEst,
-          expected_bill_with_fix: expectedBillWithFix,
-          new_system_size_kw:     newSysKw,
-          annual_kwh_with_bundle: annualKwhBundle,
+          service_type:                svcType,
+          notes:                       rec.notes              || '',
+          diagnostic_findings:         rec.diagnostic_findings || '',
+          first_name:                  rec.first_name          || '',
+          system_size:                 rec.system_size  || null,
+          monthly_bill:                rec.monthly_bill || null,
+          nem_status:                  rec.nem_status   || '',
+          installer:                   rec.installer    || '',
+          option_totals:               optionTotals,
+          issue:                       issueContext,
+          inverter_output_pct:         svcType==='inverter_swap' ? 25 : null,
+          monthly_loss_est:            monthlyLossEst,
+          expected_bill_with_fix:      expectedBillWithFix,
+          new_system_size_kw:          newSysKw,
+          annual_kwh_with_bundle:      annualKwhBundle,
+          annual_kwh_solar_api:        annualKwhSolarApi,
+          calculated_monthly_savings:  calculatedMonthlySavings,
+          calculated_annual_savings:   calculatedAnnualSavings,
+          savings_source:              prod.panelSource || null,
+          panel_kw_added:              prod.panelKw > 0 ? prod.panelKw : null,
+          has_battery:                 prod.hasBattery || false,
         })
       });
       var d = await r.json();
@@ -4951,37 +4965,87 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
   };
 
+  // Production-based savings helper — calculates kWh contributions by component
+  // Used by propShowScenario (builder preview) and sendProposal (stored proposal)
+  function _propCalcBaseProduction(build, solarData, systemSize) {
+    var specificYield = 1600; // NREL NSRDB San Diego residential tilted array
+    var sysKw = parseFloat(systemSize) || 0;
+
+    // Panel kW from line items (stepper creates id: 'panel_addon_420w')
+    var panelItem = build && build.lineItems && build.lineItems.find(function(li){ return li.id === 'panel_addon_420w'; });
+    var panelKw = 0, panelCount = 0;
+    if (panelItem) {
+      var countMatch = panelItem.name.match(/[×x](\d+)/i);
+      panelCount = countMatch ? parseInt(countMatch[1], 10) : 0;
+      panelKw = Math.round(panelCount * 0.420 * 100) / 100;
+    }
+
+    // Annual panel kWh — prefer Solar API address-specific, fall back to NREL average
+    var panelKwh = 0, panelSource = null;
+    if (panelKw > 0) {
+      if (solarData && solarData.annualSunshineKwh && solarData.maxPanelCount && solarData.panelCapacityWatts) {
+        var maxKw = (solarData.maxPanelCount * solarData.panelCapacityWatts) / 1000;
+        panelKwh = Math.round(solarData.annualSunshineKwh * (panelKw / maxKw));
+        panelSource = 'Google Solar API — address estimate for this roof';
+      } else {
+        panelKwh = Math.round(panelKw * specificYield);
+        panelSource = 'NREL NSRDB San Diego avg (1,600 kWh/kW/yr)';
+      }
+    }
+
+    // Inverter recovery: at 25% output, 75% of system production is being lost
+    // Real data: tech's diagnostic establishes 25% output (hardcoded for inverter swap items)
+    var hasInverter = !!(build && build.lineItems && build.lineItems.find(function(li){ return li.id && li.id.indexOf('inverter') !== -1; }));
+    var inverterKwh = 0;
+    if (hasInverter && sysKw > 0) {
+      inverterKwh = Math.round(sysKw * specificYield * 0.75);
+    }
+
+    // Battery TOU arbitrage: Powerwall 3 stores midday solar, discharges 4–9 PM peak
+    // 13.5 kWh × 1.5 cycles/day × $0.31/kWh arbitrage × 365 days
+    // ($0.31 = discharge at $0.749 on-peak × 89% efficiency − store at $0.360 super off-peak)
+    var hasBattery = !!(build && build.lineItems && build.lineItems.find(function(li){ return li.id === 'pw3_retrofit'; }));
+    var batteryArbitrageKwh = hasBattery ? Math.round(13.5 * 1.5 * 365) : 0;
+
+    return {
+      panelKwh: panelKwh, panelKw: panelKw, panelCount: panelCount, panelSource: panelSource,
+      inverterKwh: inverterKwh, hasInverter: hasInverter, sysKw: sysKw,
+      batteryArbitrageKwh: batteryArbitrageKwh, hasBattery: hasBattery,
+      hasData: (panelKwh > 0 || inverterKwh > 0 || batteryArbitrageKwh > 0)
+    };
+  }
+
   window.propShowScenario = function(type, bill, sysKw) {
     var detail = document.getElementById('propSavingsDetail');
     if (!detail) return;
     bill = parseFloat(bill) || 0;
     sysKw = parseFloat(sysKw) || 0;
+
+    // SDG&E confirmed effective rate (verified from actual bill: $3,115 / 6,877 kWh = $0.453/kWh)
+    var blendedRate = 0.453;
+
+    // Get production from current build state (first option in builder)
+    var activeBuild = (_propBuilds && _propBuilds[0]) || null;
+    var prod = _propCalcBaseProduction(activeBuild, _propSolarData, sysKw);
+
+    if (!prod.hasData) {
+      detail.style.display = 'block';
+      detail.innerHTML = '<div style="font-size:0.78rem;color:#888;background:rgba(255,170,0,0.06);border:1px solid rgba(255,170,0,0.2);border-radius:8px;padding:12px;">&#9888; Missing system data — ask tech to add: system size &amp; run Site Map for this address to unlock real savings calculations.</div>';
+      return;
+    }
     if (!bill) {
       detail.style.display = 'block';
       detail.innerHTML = '<div style="font-size:0.78rem;color:#666;">Add monthly bill to customer profile to calculate savings.</div>';
       return;
     }
 
-    // SDG&E confirmed effective rate (verified from actual bill: $3,115 / 6,877 kWh = $0.453/kWh)
-    // Tier 1: 41¢/kWh | Tier 2: 52¢/kWh | Blended: ~45¢/kWh
-    var blendedRate = 0.453;
-    // San Diego specific yield — NREL NSRDB (residential tilted array, ~1,600 kWh/kW/yr)
-    var specificYield = 1600;
-    // New capacity: 10 × Tesla 420W panels
-    var newPanelKw = 4.2;
-    var newPanelAnnualKwh = newPanelKw * specificYield; // 6,720 kWh/yr
-
-    // Escalation rates — verified from CPUC SB 695 reports and BLS data:
-    // Conservative 5%/yr  — below CPUC official avg; floor for skeptical customers
-    // Moderate     7%/yr  — CPUC SB 695 official: SDG&E avg 2016–2024 = 7%/yr
-    // Impact Trend 10%/yr — CPUC 2023 SB 695 projected 10.4%/yr; recent 4-yr CAGR = 13.4%
+    // Escalation rates — CPUC SB 695 (source in rSrc tooltip)
     var configs = {
-      conservative: { label:'Conservative', color:'#4a9eff', offsetPct:0.55, r:0.05, rLabel:'5%/yr', rSrc:'below CPUC avg — conservative floor', note:'Inverter restored · Panels added · Basic Powerwall backup' },
-      moderate:     { label:'Moderate',     color:'#ffaa00', offsetPct:0.75, r:0.07, rLabel:'7%/yr', rSrc:'CPUC SB 695 official avg 2016–2024',   note:'Full bundle optimized · Powerwall covers evening peaks' },
-      significant:  { label:'Impact Trend', color:'#8DC63F', offsetPct:0.90, r:0.10, rLabel:'10%/yr',rSrc:'CPUC 2023 SB 695 projection; EV/AI/electrification drivers', note:'NEM 1 preserved · Near grid independence · Recent 4-yr CAGR: 13.4%' }
+      conservative: { label:'Conservative', color:'#4a9eff', confidence:0.85, r:0.05, rLabel:'5%/yr', rSrc:'below CPUC avg — conservative floor' },
+      moderate:     { label:'Moderate',     color:'#ffaa00', confidence:1.00, r:0.07, rLabel:'7%/yr', rSrc:'CPUC SB 695 official avg 2016–2024' },
+      significant:  { label:'Impact Trend', color:'#8DC63F', confidence:1.15, r:0.10, rLabel:'10%/yr',rSrc:'CPUC 2023 SB 695 projection; EV/AI electrification' }
     };
     var cfg = configs[type];
-    // Update active button highlight
     ['conservative','moderate','significant'].forEach(function(k){
       var btn = document.getElementById('propScenBtn_'+k);
       if (!btn) return;
@@ -4990,33 +5054,41 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       btn.style.boxShadow  = k === type ? ('0 0 0 1px ' + configs[k].color) : 'none';
     });
 
-    // Year 1 savings
-    var monthlySaved = bill * cfg.offsetPct;
-    var annualSaved  = monthlySaved * 12;
+    // Apply production confidence band (Conservative=85%, Moderate=100%, Impact=115%)
+    var panelKwh    = Math.round(prod.panelKwh    * cfg.confidence);
+    var inverterKwh = Math.round(prod.inverterKwh * cfg.confidence);
+    var battArbitrageKwh = prod.batteryArbitrageKwh;
 
-    // 20-year savings — geometric series (each year's savings grow as SDG&E rates rise)
-    // S = Year1 × [(1+r)^20 − 1] / r
+    var annualFromPanels   = panelKwh   * blendedRate;
+    var annualFromInverter = inverterKwh * blendedRate;
+    var annualFromBattery  = battArbitrageKwh * 0.31; // arbitrage rate, not full blended
+    var annualSaved = annualFromPanels + annualFromInverter + annualFromBattery;
+    var monthlySaved = Math.round(annualSaved / 12);
+
+    // Bill comparison: compare production to estimated annual usage
+    var annualUsageKwh = Math.round(bill * 12 / blendedRate);
+    var totalNewProdKwh = panelKwh + inverterKwh;
+    var afterBill = (totalNewProdKwh > 0 && totalNewProdKwh >= annualUsageKwh) ? 24 : Math.max(24, Math.round(bill - monthlySaved));
+
+    // 20-year geometric series: Year1 × [(1+r)^20 − 1] / r
     var factor20 = (Math.pow(1 + cfg.r, 20) - 1) / cfg.r;
-    var total20yr = annualSaved * factor20;
-
-    // Inverter recovery callout — at estimated 25% output, 75% of generation is lost
-    var inverterHtml = '';
-    if (sysKw > 0) {
-      var recovKwh = sysKw * specificYield * 0.75;
-      var recovMo  = Math.round(recovKwh * blendedRate / 12);
-      inverterHtml =
-        '<div style="background:rgba(255,170,0,0.06);border:1px solid rgba(255,170,0,0.18);border-radius:8px;padding:9px 12px;margin-top:10px;">'+
-        '<div style="font-size:0.67rem;font-weight:700;color:#ffaa00;margin-bottom:3px;">⚡ Inverter Recovery</div>'+
-        '<div style="font-size:0.7rem;color:#aaa;line-height:1.5;">'+
-          'At 25% output your <strong style="color:#ccc;">'+sysKw+' kW</strong> system loses ~<strong style="color:#fff;">'+Math.round(recovKwh).toLocaleString()+' kWh/yr</strong> in generation — '+
-          'roughly <strong style="color:#ffaa00;">$'+recovMo+'/month</strong> paid to SDG&E that your solar should cover. A new inverter restores this immediately.'+
-        '</div>'+
-        '</div>';
-    }
-
-    // New panel value line
-    var newPanelMo = Math.round(newPanelAnnualKwh * blendedRate / 12);
+    var total20yr = Math.round(annualSaved * factor20);
     var fmt = function(n){ return '$'+Math.round(n).toLocaleString(); };
+
+    // Methodology breakdown lines
+    var bLines = [];
+    if (prod.panelKw > 0) {
+      bLines.push(prod.panelCount+' panels ('+prod.panelKw+' kW) &rarr; '+panelKwh.toLocaleString()+' kWh/yr ['+prod.panelSource+'] &times; $0.453 = '+fmt(annualFromPanels)+'/yr');
+    }
+    if (prod.hasInverter && prod.sysKw > 0) {
+      bLines.push(prod.sysKw+' kW system at 25% output &rarr; '+inverterKwh.toLocaleString()+' kWh/yr recovered &times; $0.453 = '+fmt(annualFromInverter)+'/yr');
+    }
+    if (prod.hasBattery) {
+      bLines.push('Battery TOU arbitrage: 13.5 kWh &times; 1.5 cycles &times; $0.31/kWh &times; 365 = '+fmt(annualFromBattery)+'/yr');
+    }
+    bLines.push('Rate: $0.453/kWh SDG&E verified blended (Tier 1: $0.41, Tier 2: $0.52)');
+    bLines.push('Escalation '+cfg.rLabel+': '+cfg.rSrc);
+    bLines.push('20-year total = Year1 &times; [(1+'+cfg.r+')&sup2;&sup0;&minus;1] / '+cfg.r+' (geometric series)');
 
     detail.style.display = 'block';
     detail.innerHTML =
@@ -5038,12 +5110,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '<div style="font-size:1.2rem;font-weight:700;color:#fff;">~'+fmt(total20yr)+'</div>'+
         '</div>'+
       '</div>'+
-      '<div style="font-size:0.67rem;color:#666;line-height:1.6;">'+
-        Math.round(cfg.offsetPct*100)+'% bill offset · '+
-        '10 × 420W panels add ~'+Math.round(newPanelAnnualKwh).toLocaleString()+' kWh/yr (~$'+newPanelMo+'/mo) · '+
-        cfg.note+
-      '</div>'+
-      inverterHtml;
+      (bill > 0 ?
+        '<div style="display:flex;align-items:center;gap:12px;background:rgba(255,255,255,0.03);border-radius:6px;padding:8px 12px;margin-bottom:10px;">'+
+          '<div style="flex:1;text-align:center;"><div style="font-size:0.58rem;color:#555;margin-bottom:2px;">Your bill today</div><div style="font-size:0.9rem;font-weight:700;color:#ef4444;">$'+Math.round(bill)+'/mo</div></div>'+
+          '<div style="color:#555;font-size:0.9rem;">&rarr;</div>'+
+          '<div style="flex:1;text-align:center;"><div style="font-size:0.58rem;color:#555;margin-bottom:2px;">After upgrade</div><div style="font-size:0.9rem;font-weight:700;color:#8DC63F;">~$'+afterBill+'/mo</div></div>'+
+        '</div>' : '')+
+      '<details style="margin-top:2px;"><summary style="font-size:0.65rem;color:#555;cursor:pointer;user-select:none;outline:none;">&#128202; How we calculated this &#9660;</summary>'+
+        '<div style="font-size:0.63rem;color:#666;line-height:1.8;padding-top:6px;">'+
+          bLines.map(function(l){ return '&bull; '+l; }).join('<br>')+
+        '</div>'+
+      '</details>';
   };
 
   window.bbDncWarn = function(type, value) {
@@ -6712,6 +6789,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     window._propInitFromCatalog(c, catalog, existing);
     // Default to Moderate savings scenario
     setTimeout(function(){ if (bill > 0) propShowScenario('moderate', bill, c.system_size||0); }, 0);
+    // Auto-generate insight if bill is set and no existing insight — fires after builder renders
+    if (bill > 0 && !existingInsight) {
+      setTimeout(function() {
+        var ta = document.getElementById('propInsightText');
+        if (!ta || ta.value.trim()) return; // already filled
+        var _stItem = (_propBuilds[0] && _propBuilds[0].lineItems.find(function(li){ return !li.isCustom; }));
+        var _stRow  = _stItem && _propCatItems && _propCatItems.find(function(r){ return r.option_key === _stItem.id; });
+        var autoSvcType = (_stRow && _stRow.service_type) || serviceType;
+        generateProposalInsight(c.id, autoSvcType);
+      }, 1800);
+    }
   }
 
   async function sendProposal(id, approvalRequest) {
@@ -6788,28 +6876,46 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // Sort options descending by price — most expensive = Option 1
     options.sort(function(a, b) { return b.price - a.price; });
 
-    // Compute savings scenarios for each option (client-side math, stored with proposal)
+    // Compute savings scenarios for each option — production-based (kWh × rate), not bill-offset
     var custRec = adminCustomers.find(function(x){ return x.id === id; });
     var bill = parseFloat(custRec && custRec.monthly_bill) || 0;
-    if (bill > 0) {
-      var _savingsCfgs = [
-        { key: 'conservative', offsetPct: 0.55, r: 0.05 },
-        { key: 'moderate',     offsetPct: 0.75, r: 0.07 },
-        { key: 'significant',  offsetPct: 0.90, r: 0.10 }
-      ];
-      options.forEach(function(opt, oIdx) {
-        // Non-export systems can't sell back excess — reduce effective offset by 25%
-        var exportFactor = opt.non_export ? 0.75 : 1.0;
-        var scen = {};
-        _savingsCfgs.forEach(function(s) {
-          var monthly = Math.round(bill * s.offsetPct * exportFactor);
-          var annual  = monthly * 12;
-          var total20 = Math.round(annual * (Math.pow(1 + s.r, 20) - 1) / s.r);
-          scen[s.key] = { monthly: monthly, annual: annual, total20yr: total20 };
-        });
-        opt.savings = scen;
+    var blendedRate = 0.453;
+    var _sendScenCfgs = [
+      { key: 'conservative', confidence: 0.85, r: 0.05 },
+      { key: 'moderate',     confidence: 1.00, r: 0.07 },
+      { key: 'significant',  confidence: 1.15, r: 0.10 }
+    ];
+    options.forEach(function(opt, oIdx) {
+      var buildForOpt = _propBuilds[oIdx] || _propBuilds[0];
+      var prod = _propCalcBaseProduction(buildForOpt, _propSolarData, custRec ? custRec.system_size : null);
+      if (!prod.hasData || !bill) return;
+      // Non-export systems can't sell back excess — reduce panel+inverter production by 25%
+      var exportFactor = opt.non_export ? 0.75 : 1.0;
+      var annualUsageKwh = Math.round(bill * 12 / blendedRate);
+      var scen = {};
+      _sendScenCfgs.forEach(function(s) {
+        var panelKwh    = Math.round(prod.panelKwh    * s.confidence * exportFactor);
+        var inverterKwh = Math.round(prod.inverterKwh * s.confidence * exportFactor);
+        var battKwh     = prod.batteryArbitrageKwh;
+        var annualFromPanels   = panelKwh   * blendedRate;
+        var annualFromInverter = inverterKwh * blendedRate;
+        var annualFromBattery  = battKwh    * 0.31;
+        var annualSaved  = annualFromPanels + annualFromInverter + annualFromBattery;
+        var monthly      = Math.round(annualSaved / 12);
+        var total20yr    = Math.round(annualSaved * (Math.pow(1 + s.r, 20) - 1) / s.r);
+        var totalNewProd = panelKwh + inverterKwh;
+        var afterBill    = (totalNewProd > 0 && totalNewProd >= annualUsageKwh) ? 24 : Math.max(24, Math.round(bill - monthly));
+        scen[s.key] = { monthly: monthly, annual: Math.round(annualSaved), total20yr: total20yr, afterBill: afterBill };
       });
-    }
+      opt.savings = scen;
+      // Store production data so customer proposal can show methodology
+      opt.prod_data = {
+        panelKwh: prod.panelKwh, panelKw: prod.panelKw, panelCount: prod.panelCount, panelSource: prod.panelSource,
+        inverterKwh: prod.inverterKwh, hasInverter: prod.hasInverter, sysKw: prod.sysKw,
+        batteryArbitrageKwh: prod.batteryArbitrageKwh, hasBattery: prod.hasBattery,
+        billBaseline: bill
+      };
+    });
 
     var commissionEstimate = options.reduce(function(sum, o){ return sum + (o.rep_commission || 0); }, 0);
     try {
@@ -7361,15 +7467,25 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         aurora_portal_url: aPortEl ? aPortEl.value.trim()||null : null,
         line_items: build.lineItems.map(function(li){ return {name:li.name,price:li.price,isCustom:!!li.isCustom}; })
       };
-      // Compute savings
-      var bill = parseFloat(c.monthly_bill)||0;
-      if (bill > 0) {
-        var scen = {};
-        [{key:'conservative',offsetPct:0.55,r:0.05},{key:'moderate',offsetPct:0.75,r:0.07},{key:'significant',offsetPct:0.90,r:0.10}].forEach(function(s){
-          var mo = Math.round(bill*s.offsetPct); var ann = mo*12;
-          scen[s.key] = {monthly:mo,annual:ann,total20yr:Math.round(ann*(Math.pow(1+s.r,20)-1)/s.r)};
+      // Compute savings — production-based
+      var _pvBill = parseFloat(c.monthly_bill)||0;
+      var _pvRate = 0.453;
+      var _pvProd = _propCalcBaseProduction(build, _propSolarData, c.system_size);
+      if (_pvBill > 0 && _pvProd.hasData) {
+        var _pvUsageKwh = Math.round(_pvBill * 12 / _pvRate);
+        var _pvScen = {};
+        [{key:'conservative',confidence:0.85,r:0.05},{key:'moderate',confidence:1.00,r:0.07},{key:'significant',confidence:1.15,r:0.10}].forEach(function(s){
+          var pKwh = Math.round(_pvProd.panelKwh * s.confidence);
+          var iKwh = Math.round(_pvProd.inverterKwh * s.confidence);
+          var bKwh = _pvProd.batteryArbitrageKwh;
+          var ann  = Math.round(pKwh * _pvRate + iKwh * _pvRate + bKwh * 0.31);
+          var mo   = Math.round(ann / 12);
+          var totalProd = pKwh + iKwh;
+          var aBill = (totalProd > 0 && totalProd >= _pvUsageKwh) ? 24 : Math.max(24, Math.round(_pvBill - mo));
+          _pvScen[s.key] = { monthly: mo, annual: ann, total20yr: Math.round(ann*(Math.pow(1+s.r,20)-1)/s.r), afterBill: aBill };
         });
-        opt.savings = scen;
+        opt.savings = _pvScen;
+        opt.prod_data = { panelKwh: _pvProd.panelKwh, panelKw: _pvProd.panelKw, panelCount: _pvProd.panelCount, panelSource: _pvProd.panelSource, inverterKwh: _pvProd.inverterKwh, hasInverter: _pvProd.hasInverter, sysKw: _pvProd.sysKw, batteryArbitrageKwh: _pvProd.batteryArbitrageKwh, hasBattery: _pvProd.hasBattery, billBaseline: _pvBill };
       }
       previewOptions.push(opt);
     });
@@ -7386,10 +7502,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var _strike = _hp ? '<span style="font-size:0.72rem;color:#555;text-decoration:line-through;margin-right:6px;">$'+parseFloat(opt.price).toLocaleString('en-US',{minimumFractionDigits:2})+'</span>' : '';
       var _optLabel = 'Option ' + (_i+1);
       var _lineItemsHtml = '';
-      if (opt.line_items && opt.line_items.length > 1) {
+      if (opt.line_items && opt.line_items.length > 0) {
         _lineItemsHtml = '<div style="margin-bottom:10px;padding:8px 12px;background:rgba(255,255,255,0.03);border-radius:8px;">';
+        _lineItemsHtml += '<div style="font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#555;margin-bottom:6px;">What\'s Included</div>';
         opt.line_items.forEach(function(li){
-          _lineItemsHtml += '<div style="display:flex;justify-content:space-between;font-size:0.72rem;padding:2px 0;"><span style="color:#888;">'+li.name+'</span><span style="color:#ccc;">$'+parseFloat(li.price).toLocaleString('en-US',{minimumFractionDigits:2})+'</span></div>';
+          _lineItemsHtml += '<div style="display:flex;align-items:center;gap:6px;font-size:0.72rem;padding:3px 0;"><span style="color:#8DC63F;font-size:0.65rem;">&#10003;</span><span style="color:#ccc;">'+li.name+'</span></div>';
         });
         _lineItemsHtml += '</div>';
       }
@@ -7400,9 +7517,24 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var _labels = {conservative:'Conservative',moderate:'Moderate',significant:'Impact Trend'};
         var _colors = {conservative:'#4a9eff',moderate:'#ffaa00',significant:'#8DC63F'};
         var _scen = opt.savings.moderate;
+        var _pd = opt.prod_data || null;
+        // Bill comparison using Moderate scenario
+        var _billCompare = (_pd && _pd.billBaseline > 0 && _scen.afterBill != null) ?
+          '<div style="display:flex;align-items:center;gap:12px;background:rgba(255,255,255,0.03);border-radius:6px;padding:7px 10px;margin-bottom:8px;">'+
+            '<div style="flex:1;text-align:center;"><div style="font-size:0.58rem;color:#555;margin-bottom:1px;">Bill today</div><div style="font-size:0.85rem;font-weight:700;color:#ef4444;">$'+_pd.billBaseline+'/mo</div></div>'+
+            '<div style="color:#555;font-size:0.8rem;">&rarr;</div>'+
+            '<div style="flex:1;text-align:center;"><div style="font-size:0.58rem;color:#555;margin-bottom:1px;">After upgrade</div><div style="font-size:0.85rem;font-weight:700;color:#8DC63F;">~$'+_scen.afterBill+'/mo</div></div>'+
+          '</div>' : '';
+        // Methodology lines
+        var _mLines = [];
+        if (_pd && _pd.panelKw > 0) _mLines.push(_pd.panelCount+' panels ('+_pd.panelKw+' kW) &rarr; '+_pd.panelKwh.toLocaleString()+' kWh/yr ['+_pd.panelSource+'] &times; $0.453');
+        if (_pd && _pd.hasInverter && _pd.sysKw > 0) _mLines.push(_pd.sysKw+' kW system at 25% output &rarr; '+_pd.inverterKwh.toLocaleString()+' kWh/yr recovered &times; $0.453');
+        if (_pd && _pd.hasBattery) _mLines.push('Battery TOU arbitrage: 13.5 kWh &times; 1.5 cycles &times; $0.31/kWh &times; 365');
+        _mLines.push('Rate: $0.453/kWh SDG&E verified | 7%/yr CPUC SB 695 escalation (Moderate)');
         _savHtml =
           '<div style="background:rgba(74,158,255,0.05);border:1px solid rgba(74,158,255,0.15);border-radius:10px;padding:12px;margin-top:12px;">'+
-          '<div style="font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#4a9eff;margin-bottom:8px;">Projected Savings</div>'+
+          '<div style="font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#4a9eff;margin-bottom:8px;">&#128202; Projected Savings</div>'+
+          _billCompare+
           '<div style="display:flex;gap:4px;margin-bottom:8px;">'+
             ['conservative','moderate','significant'].map(function(k){
               var isAct = k==='moderate';
@@ -7414,6 +7546,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             '<div style="text-align:center;"><div style="font-size:0.58rem;color:#666;">Year 1</div><div style="font-size:0.95rem;font-weight:700;color:#fff;">~$'+_scen.annual.toLocaleString()+'</div></div>'+
             '<div style="text-align:center;"><div style="font-size:0.58rem;color:#666;">20-Year Est.</div><div style="font-size:0.95rem;font-weight:700;color:#fff;">~$'+_scen.total20yr.toLocaleString()+'</div></div>'+
           '</div>'+
+          (_mLines.length ? '<details style="margin-top:8px;"><summary style="font-size:0.6rem;color:#555;cursor:pointer;user-select:none;outline:none;">&#128202; How we calculated this &#9660;</summary><div style="font-size:0.6rem;color:#666;line-height:1.8;padding-top:6px;">'+_mLines.map(function(l){ return '&bull; '+l; }).join('<br>')+'</div></details>' : '')+
           '</div>';
       }
       _optHtml +=
@@ -9319,15 +9452,60 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           var _acceptBtn = _hasParticipate ?
             '<button id="acceptBundle_'+_i+'" data-cid="'+c.id+'" onclick="acceptProposal(\''+c.id+'\',\''+opt.id+'\',\'participate\',(window._selectedLoanTerm||10))" style="width:100%;margin-top:14px;padding:13px;background:#8DC63F;color:#000;border:none;border-radius:100px;font-weight:700;font-size:0.88rem;cursor:pointer;">Accept '+_optNumLabel+' &#10003;</button>' :
             '<button onclick="acceptProposal(\''+c.id+'\',\''+opt.id+'\',\'cash\',null)" style="width:100%;margin-top:14px;padding:13px;background:rgba(255,255,255,0.08);color:#fff;border:1px solid rgba(255,255,255,0.2);border-radius:100px;font-weight:700;font-size:0.88rem;cursor:pointer;">Accept '+_optNumLabel+'</button>';
-          // Per-option savings panel
+          // Production data (new proposals) and savings panel
+          var _pd = opt.prod_data || null;
+
+          // Warranty strip — based on prod_data flags or opt.id pattern
+          var _wParts = [];
+          if (_pd && _pd.panelKw > 0) _wParts.push('Panels 25yr');
+          else if (opt.id && opt.id.indexOf('panel') !== -1) _wParts.push('Panels 25yr');
+          if (_pd && _pd.hasBattery) _wParts.push('Powerwall 10yr');
+          else if (opt.id && opt.id.indexOf('pw3') !== -1) _wParts.push('Powerwall 10yr');
+          if (_pd && _pd.hasInverter) _wParts.push('Inverter 10yr');
+          else if (opt.id && opt.id.indexOf('inverter') !== -1) _wParts.push('Inverter 10yr');
+          _wParts.push('Installation 1yr workmanship');
+          var _warrantyHtml = '<div style="font-size:0.62rem;color:#555;margin-bottom:12px;padding:5px 10px;background:rgba(255,255,255,0.02);border-radius:6px;border:1px solid rgba(255,255,255,0.05);">&#9989; Included warranties: '+_wParts.join(' &middot; ')+'</div>';
+
+          // Savings panel — enhanced with bill comparison, insight, methodology, environmental
           var _savingsPanel = '';
           if (opt.savings) {
             var _sColors = {conservative:'#4a9eff',moderate:'#ffaa00',significant:'#8DC63F'};
             var _sLabels = {conservative:'Conservative',moderate:'Moderate',significant:'Impact Trend'};
             var _mod = opt.savings.moderate || {};
+
+            // Bill comparison (Moderate scenario)
+            var _custBillCmp = (_pd && _pd.billBaseline > 0 && _mod.afterBill != null) ?
+              '<div style="display:flex;align-items:center;gap:12px;background:rgba(255,255,255,0.03);border-radius:8px;padding:10px 12px;margin-bottom:10px;">'+
+                '<div style="flex:1;text-align:center;"><div style="font-size:0.58rem;color:#555;margin-bottom:2px;">Your current bill</div><div style="font-size:1rem;font-weight:700;color:#ef4444;">$'+_pd.billBaseline+'/mo</div></div>'+
+                '<div style="color:#555;font-size:1.2rem;">&rarr;</div>'+
+                '<div style="flex:1;text-align:center;"><div style="font-size:0.58rem;color:#555;margin-bottom:2px;">After this upgrade</div><div style="font-size:1rem;font-weight:700;color:#8DC63F;">~$'+_mod.afterBill+'/mo</div></div>'+
+              '</div>' : '';
+
+            // AI insight — shown on first option only; reads from proposal-level insight
+            var _insightHtml = (_i === 0 && _prop.insight) ?
+              '<div style="background:rgba(255,170,0,0.05);border-left:3px solid rgba(255,170,0,0.4);border-radius:0 8px 8px 0;padding:10px 12px;margin-bottom:10px;">'+
+                '<div style="font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#ffaa00;margin-bottom:5px;">Why this upgrade makes sense</div>'+
+                '<div style="font-size:0.75rem;color:#aaa;line-height:1.65;font-style:italic;">'+_prop.insight.replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</div>'+
+              '</div>' : '';
+
+            // Payback period
+            var _paybackHtml = (opt.price > 0 && _mod.annual > 0) ?
+              '<div style="font-size:0.72rem;color:#aaa;margin-bottom:10px;text-align:center;">Investment pays for itself in approximately <strong style="color:#fff;">'+Math.round(opt.price / _mod.annual * 10) / 10+' years</strong></div>' : '';
+
+            // Methodology (only when prod_data present)
+            var _mLines = [];
+            if (_pd && _pd.panelKw > 0) _mLines.push(_pd.panelCount+' panels ('+_pd.panelKw+' kW) &rarr; '+_pd.panelKwh.toLocaleString()+' kWh/yr ['+_pd.panelSource+'] &times; $0.453/kWh');
+            if (_pd && _pd.hasInverter && _pd.sysKw > 0) _mLines.push(_pd.sysKw+' kW system at 25% output &rarr; '+_pd.inverterKwh.toLocaleString()+' kWh/yr recovered &times; $0.453/kWh');
+            if (_pd && _pd.hasBattery) _mLines.push('Battery TOU arbitrage: 13.5 kWh &times; 1.5 cycles/day &times; $0.31/kWh &times; 365 days');
+            _mLines.push('Rate: $0.453/kWh SDG&E verified blended (Tier 1: $0.41, Tier 2: $0.52)');
+            _mLines.push('20-year total: geometric series Year1 &times; [(1+r)&sup2;&sup0;&minus;1] / r &bull; 3 scenarios: 5/7/10%/yr (CPUC SB 695)');
+
             _savingsPanel =
-              '<div style="background:rgba(74,158,255,0.05);border:1px solid rgba(74,158,255,0.14);border-radius:10px;padding:12px;margin-top:14px;">'+
-              '<div style="font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#4a9eff;margin-bottom:8px;">&#128202; Projected Savings</div>'+
+              '<div style="background:rgba(74,158,255,0.05);border:1px solid rgba(74,158,255,0.14);border-radius:10px;padding:14px;margin-top:14px;">'+
+              '<div style="font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#4a9eff;margin-bottom:10px;">&#128202; Projected Savings</div>'+
+              _insightHtml+
+              _custBillCmp+
+              _paybackHtml+
               '<div style="display:flex;gap:4px;margin-bottom:8px;">'+
                 Object.keys(_sColors).map(function(k){
                   var isAct = k==='moderate';
@@ -9339,9 +9517,27 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
                 '<div style="text-align:center;"><div style="font-size:0.58rem;color:#666;">Year 1</div><div style="font-size:0.95rem;font-weight:700;color:#fff;">~$'+(_mod.annual||0).toLocaleString()+'</div></div>'+
                 '<div style="text-align:center;"><div style="font-size:0.58rem;color:#666;">20-Year Est.</div><div style="font-size:0.95rem;font-weight:700;color:#fff;">~$'+(_mod.total20yr||0).toLocaleString()+'</div></div>'+
               '</div>'+
-              (opt.insight?'<div style="font-size:0.7rem;color:#666;line-height:1.6;margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.06);font-style:italic;">'+opt.insight.replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</div>':'')+
+              (_mLines.length ?
+                '<details style="margin-top:10px;"><summary style="font-size:0.6rem;color:#555;cursor:pointer;user-select:none;outline:none;">&#128202; How we calculated this &#9660;</summary>'+
+                  '<div style="font-size:0.62rem;color:#666;line-height:1.85;padding-top:6px;">'+
+                    _mLines.map(function(l){ return '&bull; '+l; }).join('<br>')+
+                  '</div>'+
+                '</details>' : '')+
               '</div>';
+
+            // Environmental strip
+            var _totalProdKwh = _pd ? ((_pd.panelKwh || 0) + (_pd.inverterKwh || 0)) : 0;
+            if (_totalProdKwh > 0) {
+              var _tonsCO2 = Math.round(_totalProdKwh * 0.386 / 2000 * 10) / 10;
+              var _trees   = Math.round(_tonsCO2 / 0.024);
+              var _cars    = Math.round(_tonsCO2 / 4.6 * 10) / 10;
+              _savingsPanel +=
+                '<div style="font-size:0.65rem;color:#555;margin-top:10px;padding:7px 12px;background:rgba(141,198,63,0.03);border:1px solid rgba(141,198,63,0.1);border-radius:8px;line-height:1.8;">'+
+                  '&#127807;&nbsp; ~'+_tonsCO2+' tons CO&#8322; offset/yr &nbsp;&middot;&nbsp; like planting '+_trees.toLocaleString()+' trees &nbsp;&middot;&nbsp; equivalent to removing '+_cars+' cars from the road'+
+                '</div>';
+            }
           }
+
           var _imgSrc = _hasParticipate ? '/assets/tesla-powerwall3.jpg' : '/assets/tesla-inverter.jpg';
           _optCards +=
             '<div style="background:rgba(255,255,255,0.03);border:1px solid '+(_hasParticipate?'rgba(141,198,63,0.3)':'rgba(255,255,255,0.1)')+';border-radius:14px;padding:20px;margin-bottom:12px;">'+
@@ -9362,8 +9558,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
                 '</div>'+
                 '<span style="color:#4a9eff;font-size:1rem;">&#8599;</span>'+
               '</a>' : '')+
-              '<div style="font-size:0.8rem;color:#bbb;line-height:1.75;margin-bottom:12px;">'+opt.description+'</div>'+
-              '<div style="display:flex;align-items:baseline;gap:4px;">'+_strikeHtml+'<span style="font-size:1.55rem;font-weight:800;color:'+(_hasParticipate?'#8DC63F':'#fff')+';">$'+parseFloat(_dispPrice).toLocaleString('en-US',{minimumFractionDigits:2})+'</span>'+(_hasParticipate?'<span style="font-size:0.72rem;color:#666;margin-left:4px;">with Participate</span>':'')+'</div>'+
+              '<div style="font-size:0.8rem;color:#bbb;line-height:1.75;margin-bottom:10px;">'+opt.description+'</div>'+
+              _warrantyHtml+
+              '<div style="display:flex;align-items:baseline;gap:4px;margin-bottom:2px;">'+_strikeHtml+'<span style="font-size:1.55rem;font-weight:800;color:'+(_hasParticipate?'#8DC63F':'#fff')+';">$'+parseFloat(_dispPrice).toLocaleString('en-US',{minimumFractionDigits:2})+'</span>'+(_hasParticipate?'<span style="font-size:0.72rem;color:#666;margin-left:4px;">with Participate</span>':'')+'</div>'+
               (function(){
                 if (!opt.tesla_rebate && !opt.sdcp_rebate) return '';
                 var _rb = '<div style="margin-top:10px;padding:10px 12px;background:rgba(141,198,63,0.04);border:1px solid rgba(141,198,63,0.15);border-radius:8px;">';

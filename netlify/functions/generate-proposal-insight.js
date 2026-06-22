@@ -1,15 +1,18 @@
 // generate-proposal-insight.js
-// Generates a customer-facing AI insight for inverter_swap proposals.
-// System prompt is enriched with verified SDG&E rate research, NEM 1.0 mechanics,
-// San Diego PVWatts data, and inverter degradation findings.
+// Generates a customer-facing AI insight for solar proposal options.
+// Branches by service_type: inverter_swap | battery_retrofit | panel_add | new_solar
 //
 // POST body: {
-//   notes, system_size, monthly_bill, nem_status, installer, issue,
-//   inverter_output_pct,   // e.g. 25 (percent of rated capacity)
-//   monthly_loss_est,      // $/month being lost due to degraded inverter
-//   expected_bill_with_fix,// $/month after fix (typically ~$25 base services charge only)
-//   new_system_size_kw,    // system_size + 4.2 kW (10 × 420W panels)
-//   annual_kwh_with_bundle // new_system_size_kw × 1600
+//   service_type, notes, diagnostic_findings, first_name,
+//   system_size, monthly_bill, nem_status, installer, issue,
+//   inverter_output_pct, monthly_loss_est, expected_bill_with_fix,
+//   new_system_size_kw, annual_kwh_with_bundle,
+//   annual_kwh_solar_api,       // from Google Solar API for this specific address
+//   calculated_monthly_savings, // production-based $/month
+//   calculated_annual_savings,  // production-based $/year
+//   savings_source,             // "Google Solar API" or "NREL NSRDB San Diego avg"
+//   panel_kw_added,             // kW of new panels in this proposal
+//   has_battery                 // bool
 // }
 // Returns: { insight: "..." }
 
@@ -64,6 +67,33 @@ PROPOSAL BUNDLE DETAILS:
 - Adding storage does NOT affect NEM 1.0 grandfathering (CPUC confirmed)
 `;
 
+// ── Per-service-type focus instructions ──────────────────────────────────────
+const SERVICE_FOCUS = {
+  inverter_swap: `Write 3–5 sentences that do ALL of the following:
+1. Open with the customer's specific diagnosed problem and what it is costing them RIGHT NOW in real dollars per month — make it concrete and personal
+2. Reference their NEM 1.0 status as a grandfathered asset worth serious money — losing production now costs them full retail-rate dollars
+3. Describe exactly what the proposed fix restores and adds in concrete production and bill terms
+4. Close with urgency — every month without the fix is another month of overpaying SDG&E`,
+
+  battery_retrofit: `Write 3–5 sentences that do ALL of the following:
+1. Open with the customer's current situation — their solar generates well during the day but they're still paying $0.749/kWh peak rates (4–9 PM) because there's no storage
+2. Describe the Powerwall 3's TOU arbitrage value concretely using their numbers: stores midday solar at $0.36/kWh super off-peak rate, discharges at peak to avoid $0.749/kWh — that's a $0.31/kWh shift on every stored kWh
+3. Reference that adding storage does NOT affect their NEM 1.0 grandfathered rate (CPUC D.22-12-056) — this is a no-downside upgrade
+4. Close with urgency — SDG&E's on-peak window is 4–9 PM every weekday; every evening without storage is money going back to the utility`,
+
+  panel_add: `Write 3–5 sentences that do ALL of the following:
+1. Open with the concrete production gain from the additional panels — X kW at 1,600 kWh/kW/yr = Y kWh/yr of new generation credited at full NEM retail rate
+2. Value that production at $0.453/kWh (SDG&E blended rate) under their NEM 1.0 credit, showing the annual dollar value
+3. Reference the address-specific Solar API estimate if provided, or NREL San Diego average if not — make the source clear so the number feels real, not guessed
+4. Close with the compounding value — each additional kWh avoids rates that are rising ~7%/yr per CPUC SB 695, so the value of this production grows every year`,
+
+  new_solar: `Write 3–5 sentences that do ALL of the following:
+1. Open with the customer's current monthly SDG&E bill and what that compounds to over time at 7%/yr rate escalation (CPUC SB 695 projection)
+2. Describe the NEM lock-in opportunity — customers who install now lock in full retail-rate credits for 20 years; waiting means installing under less favorable future rate structures
+3. Show the full offset potential: annual system production vs. their annual usage at $0.453/kWh, with the specific data source (Solar API or NREL estimate)
+4. Close with urgency — every month on full utility power is another month of paying rates that compound upward with no cap`
+};
+
 exports.handler = async function(event) {
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 200, headers: { ...CORS, 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Methods': 'POST, OPTIONS' }, body: '' };
@@ -77,11 +107,17 @@ exports.handler = async function(event) {
   }
 
   const {
+    service_type,
     notes, diagnostic_findings, first_name,
     system_size, monthly_bill, nem_status, installer, issue,
     inverter_output_pct, monthly_loss_est, expected_bill_with_fix,
-    new_system_size_kw, annual_kwh_with_bundle
+    new_system_size_kw, annual_kwh_with_bundle,
+    annual_kwh_solar_api, calculated_monthly_savings, calculated_annual_savings,
+    savings_source, panel_kw_added, has_battery
   } = body;
+
+  const svcType = service_type || 'inverter_swap';
+  const focusInstructions = SERVICE_FOCUS[svcType] || SERVICE_FOCUS.inverter_swap;
 
   // Build a rich, specific user message from all available data
   const parts = [];
@@ -89,19 +125,26 @@ exports.handler = async function(event) {
   if (installer)             parts.push(`Original installer: ${installer}`);
   if (system_size)           parts.push(`Current system size: ${system_size} kW DC`);
   if (nem_status)            parts.push(`NEM status: ${nem_status.toUpperCase()} — full retail rate credit grandfathered`);
-  if (monthly_bill)          parts.push(`Current monthly SDG&E bill: $${monthly_bill} (while system is underperforming)`);
+  if (monthly_bill)          parts.push(`Current monthly SDG&E bill: $${monthly_bill} (while system is underperforming or without storage)`);
   if (inverter_output_pct)   parts.push(`Inverter currently running at: ~${inverter_output_pct}% of rated capacity`);
   if (monthly_loss_est)      parts.push(`Estimated monthly generation loss: ~$${Math.round(monthly_loss_est)}/month the customer is paying SDG&E that their solar should cover`);
   if (expected_bill_with_fix)parts.push(`Expected monthly bill after full fix: ~$${Math.round(expected_bill_with_fix)} (near the $24 base services charge minimum under NEM 1.0)`);
   if (new_system_size_kw)    parts.push(`New system size after adding panels: ${new_system_size_kw} kW`);
   if (annual_kwh_with_bundle)parts.push(`Expected annual production with full bundle: ~${Math.round(annual_kwh_with_bundle).toLocaleString()} kWh/yr`);
+  if (panel_kw_added)        parts.push(`Additional panel capacity being added: ${panel_kw_added} kW DC`);
+  if (has_battery)           parts.push(`Proposal includes Tesla Powerwall 3: 13.5 kWh usable, stores midday solar for evening peak discharge`);
+  // Production-based calculated savings (derived from actual kWh × verified SDG&E rate)
+  if (annual_kwh_solar_api)  parts.push(`Google Solar API production estimate for this specific roof: ${Math.round(annual_kwh_solar_api).toLocaleString()} kWh/yr (address-specific, not a generic estimate)`);
+  if (calculated_monthly_savings) parts.push(`Production-based monthly savings calculation: ~$${calculated_monthly_savings}/month (kWh production × $0.453/kWh SDG&E rate)`);
+  if (calculated_annual_savings)  parts.push(`Production-based annual savings calculation: ~$${calculated_annual_savings}/yr`);
+  if (savings_source && !annual_kwh_solar_api) parts.push(`Production calculation source: ${savings_source}`);
   if (diagnostic_findings)   parts.push(`Tech's on-site diagnostic findings (reference these specifically — the customer saw this firsthand): ${diagnostic_findings.slice(0, 300)}`);
   else if (issue)            parts.push(`Diagnostic finding: ${issue}`);
   if (notes)                 parts.push(`Additional tech notes: ${notes.slice(0, 400)}`);
 
   const userMessage = parts.length
     ? `Customer profile:\n${parts.join('\n')}\n\nWrite the proposal insight paragraph now.`
-    : 'Write a proposal insight paragraph for a San Diego homeowner with a failing solar inverter on SDG&E NEM 1.0.';
+    : 'Write a proposal insight paragraph for a San Diego homeowner with a solar upgrade on SDG&E NEM 1.0.';
 
   try {
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
@@ -115,14 +158,12 @@ exports.handler = async function(event) {
         model: 'claude-sonnet-4-6',
         max_tokens: 500,
         system: `You are a solar sales coach writing a customer-facing proposal insight paragraph.
-Write 3–5 sentences that do ALL of the following:
-1. Open with the customer's specific diagnosed problem and what it is costing them RIGHT NOW in real dollars per month — make it concrete and personal
-2. Reference their NEM 1.0 status as a grandfathered asset worth serious money — losing production now costs them full retail-rate dollars
-3. Describe exactly what the proposed fix restores and adds in concrete production and bill terms
-4. Close with urgency — every month without the fix is another month of overpaying SDG&E
+${focusInstructions}
 
 Rules:
 - Use ONLY the data provided. Never invent numbers. If diagnostic findings are given, reference them directly and specifically — the tech saw this with their own eyes, making it credible and personal to this homeowner.
+- If calculated_monthly_savings or calculated_annual_savings are provided, use those exact numbers — they were derived from actual kWh production × verified SDG&E rates, not guessed.
+- If Google Solar API data is provided, reference it as an address-specific estimate for this roof.
 - Write in plain conversational English. No jargon, no buzzwords.
 - Do NOT start with "I" or "Your system". Do NOT use the word "journey".
 - Output ONLY the insight paragraph — no labels, headers, quotes, or introductory phrases.
