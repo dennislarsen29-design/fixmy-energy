@@ -62,8 +62,8 @@ exports.handler = async function(event) {
       statusCode: 200,
       headers: { ...CORS, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        lat: loc.lat,
-        lng: loc.lng,
+        lat: solarData.center ? solarData.center.latitude : loc.lat,
+        lng: solarData.center ? solarData.center.longitude : loc.lng,
         maxPanelCount: sp.maxArrayPanelsCount || 0,
         roofAreaMeters2: Math.round(sp.wholeRoofStats?.areaMeters2 || 0),
         maxSunshineHours: Math.round(sp.maxSunshineHoursPerYear || 0),
