@@ -5200,6 +5200,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   var bbDialFilter = 'fresh'; // fresh | callbacks | worked
   var bbDialPriorityIds = [];
   var bbDialSkipIds = [];
+  var bbDialRightTab = 'upnext'; // upnext | recent — right sidebar toggle
+  var bbDialPinnedId = null;     // lead pulled up via search or "recent calls" — bypasses bucket order
+  var bbDialSearchStatus = null;
+  var bbDialSearchResults = null;
 
   function bbRepName() {
     if (window._bbDialerPersonName) return window._bbDialerPersonName; // set by sales portal
@@ -5277,6 +5281,32 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (!data) bbDialLoadError = lastErr || 'Unknown error';
     bbDialQueue = data || [];
     bbDialLoaded = true;
+  }
+
+  // Looks up a lead by phone anywhere in customers (not just the dialable pool) —
+  // powers the callback search box. Matches on the last 10 digits so formatting
+  // differences (with/without country code, dashes, etc.) don't matter.
+  async function bbDialFetchByPhone(d10) {
+    var tryQuery = async function(sel) {
+      var resp = await fetch(SUPA_URL + '/rest/v1/customers?select=' + sel + '&phone=like.*' + d10 + '&limit=5', {
+        headers: { 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY }
+      });
+      var data;
+      try { data = await resp.json(); } catch(e) { return null; }
+      return (resp.ok && Array.isArray(data)) ? data : null;
+    };
+    var data = await tryQuery(BB_DIAL_SEL_FULL + ',sold_type');
+    if (!data) data = await tryQuery(BB_DIAL_SEL_BASE + ',sold_type');
+    return data || [];
+  }
+
+  // Resolves whichever lead should currently be shown: a pinned lead (from search
+  // or "Recent Calls") takes priority over the normal bucket-order queue. Pinned
+  // leads are always folded into bbDialQueue first (see bbDialEnsureInQueue), so
+  // a plain id lookup here is sufficient.
+  function bbDialResolveCurrentLead(buckets) {
+    if (bbDialPinnedId) return bbDialQueue.find(function(x){ return x.id === bbDialPinnedId; }) || null;
+    return (buckets && buckets[bbDialFilter] && buckets[bbDialFilter][0]) || null;
   }
 
   function bbDialBuckets() {
@@ -5393,11 +5423,30 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '<button onclick="bbDialLoaded=false;renderBBDialerView()" title="Reloads the dial queue fresh from the database — picks up new leads and other reps&#39; activity." style="padding:6px 12px;background:none;border:none;color:#555;cursor:pointer;font-size:0.7rem;text-decoration:underline;">&#8635; Refresh</button>';
     h += '</div>';
 
+    // Callback-number search — find any lead by phone, regardless of which bucket it's in
+    h += '<div style="margin-bottom:14px;">';
+    h += '<div style="display:flex;gap:6px;">';
+    h += '<input id="bbDialSearchInput" type="tel" placeholder="Search by callback number…" onkeypress="bbDialSearchKeypress(event)" style="flex:1;min-width:0;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:100px;color:#fff;padding:9px 16px;font-size:0.82rem;">';
+    h += '<button onclick="bbDialSearchPhone()" title="Finds the lead card for whatever number just called back, even if it&#39;s not the current call in queue." style="flex-shrink:0;padding:9px 18px;background:rgba(74,158,255,0.14);border:1px solid rgba(74,158,255,0.4);color:#4a9eff;border-radius:100px;font-size:0.78rem;font-weight:700;cursor:pointer;">&#128269; Find</button>';
+    h += '</div>';
+    if (bbDialSearchStatus) h += '<div style="font-size:0.72rem;color:#888;margin-top:6px;">'+bbDialSearchStatus+'</div>';
+    if (bbDialSearchResults && bbDialSearchResults.length) {
+      h += '<div style="margin-top:8px;background:var(--panel,#161a12);border:1px solid rgba(255,255,255,0.1);border-radius:10px;overflow:hidden;">';
+      bbDialSearchResults.forEach(function(r) {
+        var rn = ((r.first_name||'')+' '+(r.last_name||'')).trim() || r.title_owner || '—';
+        h += '<button onclick="bbDialSelectResult(\''+r.id+'\')" style="width:100%;text-align:left;padding:10px 14px;background:none;border:none;border-bottom:1px solid rgba(255,255,255,0.06);color:#ccc;cursor:pointer;font-size:0.8rem;">'+rn+' <span style="color:#666;">— '+(r.address||'')+' &middot; '+(r.phone||'')+'</span></button>';
+      });
+      h += '</div>';
+    }
+    h += '</div>';
+
     if (bbDialLoadError) {
       h += '<div style="text-align:center;padding:24px 20px;background:rgba(239,68,68,0.07);border:1px solid rgba(239,68,68,0.25);border-radius:14px;color:#ef4444;font-size:0.8rem;margin-bottom:14px;">&#9888; Queue load failed: '+String(bbDialLoadError).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</div>';
     }
     var list = buckets[bbDialFilter] || [];
-    if (!list.length) {
+    var pinnedLead = bbDialResolveCurrentLead(buckets);
+    var isPinned = !!(bbDialPinnedId && pinnedLead);
+    if (!isPinned && !list.length) {
       var emptyMsg = bbDialLoadError ? 'Could not load the queue — see error above, then tap Refresh.'
                    : bbDialFilter === 'fresh' ? 'No fresh leads left to dial — check Callbacks or import more leads.'
                    : bbDialFilter === 'callbacks' ? 'No callbacks scheduled.' : 'Nothing worked yet — get dialing!';
@@ -5407,7 +5456,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       return;
     }
 
-    var lead = list[0];
+    var lead = isPinned ? pinnedLead : list[0];
     var name = ((lead.first_name||'')+' '+(lead.last_name||'')).trim() || lead.title_owner || '—';
     var ph = (lead.phone||'').replace(/\D/g,'');
     var phDisplay = ph.length === 10 ? '('+ph.slice(0,3)+') '+ph.slice(3,6)+'-'+ph.slice(6) : lead.phone;
@@ -5418,9 +5467,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '<div style="flex:1;min-width:280px;">';
 
     // ── Current lead card ──
-    h += '<div style="background:rgba(255,255,255,0.05);border:2px solid rgba(232,121,58,0.4);border-radius:16px;padding:18px;margin-bottom:12px;">';
+    h += '<div style="background:rgba(255,255,255,0.05);border:2px solid '+(isPinned?'rgba(74,158,255,0.45)':'rgba(232,121,58,0.4)')+';border-radius:16px;padding:18px;margin-bottom:12px;">';
     h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:6px;">';
-    h += '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#E8793A;">Next Call &middot; 1 of '+list.length+' in queue</div>';
+    if (isPinned) {
+      h += '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#4a9eff;">&#128204; Pinned from search — not part of queue order</div>';
+    } else {
+      h += '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#E8793A;">Next Call &middot; 1 of '+list.length+' in queue</div>';
+    }
     var attemptTxt = (lead.dial_attempts ? lead.dial_attempts + ' attempt' + (lead.dial_attempts>1?'s':'') : 'never dialed');
     h += '<div style="font-size:0.68rem;color:#666;">'+attemptTxt+(lead.dialed_at ? ' &middot; last ' + new Date(lead.dialed_at).toLocaleDateString('en-US',{month:'short',day:'numeric'}) : '')+'</div>';
     h += '</div>';
@@ -5467,26 +5520,117 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
     h += '</div>'; // end card
 
-    h += '<div style="text-align:center;"><button onclick="bbDialJump(\''+lead.id+'\',true)" title="Moves this lead to the back of the queue without logging anything." style="background:none;border:none;color:#555;cursor:pointer;font-size:0.75rem;text-decoration:underline;">Skip this lead &rsaquo;</button></div>';
+    if (isPinned) {
+      h += '<div style="text-align:center;"><button onclick="bbDialUnpin()" style="background:none;border:none;color:#4a9eff;cursor:pointer;font-size:0.75rem;text-decoration:underline;">&#8592; Back to queue</button></div>';
+    } else {
+      h += '<div style="text-align:center;"><button onclick="bbDialJump(\''+lead.id+'\',true)" title="Moves this lead to the back of the queue without logging anything." style="background:none;border:none;color:#555;cursor:pointer;font-size:0.75rem;text-decoration:underline;">Skip this lead &rsaquo;</button></div>';
+    }
     h += '</div>'; // end left col
 
-    // ── Right: up next ──
+    // ── Right: up next / recent calls ──
     h += '<div style="flex:0 0 230px;min-width:200px;">';
-    h += '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#555;margin-bottom:8px;">Up Next &mdash; tap to jump</div>';
-    list.slice(1, 9).forEach(function(nl, i) {
-      var nm = ((nl.first_name||'')+' '+(nl.last_name||'')).trim() || nl.title_owner || '—';
-      var lastN = _parseNotes(nl.notes||'').slice(-1)[0];
-      h += '<button onclick="bbDialJump(\''+nl.id+'\')" style="width:100%;text-align:left;padding:9px 10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:8px;margin-bottom:4px;cursor:pointer;">';
-      h += '<div style="font-size:0.75rem;color:#aaa;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+(i+2)+'. '+nm+'</div>';
-      h += '<div style="font-size:0.64rem;color:#555;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+(nl.address||'')+'</div>';
-      if (nl.callback_at) h += '<div style="font-size:0.62rem;color:#ffaa00;margin-top:2px;">&#128257; '+new Date(nl.callback_at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+'</div>';
-      else if (lastN) h += '<div style="font-size:0.62rem;color:#666;margin-top:2px;font-style:italic;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+String(lastN.text||'').slice(0,44)+'</div>';
-      h += '</button>';
-    });
+    h += '<div style="display:flex;gap:6px;margin-bottom:8px;">';
+    h += '<button onclick="bbDialSwitchRightTab(\'upnext\')" style="flex:1;padding:5px 8px;border-radius:8px;font-size:0.66rem;font-weight:700;cursor:pointer;'+(bbDialRightTab==='upnext'?'background:rgba(232,121,58,0.16);border:1px solid rgba(232,121,58,0.5);color:#E8793A;':'background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);color:#666;')+'">Up Next</button>';
+    h += '<button onclick="bbDialSwitchRightTab(\'recent\')" title="Leads you\'ve already dialed today, most recent first — jump back when someone returns your call." style="flex:1;padding:5px 8px;border-radius:8px;font-size:0.66rem;font-weight:700;cursor:pointer;'+(bbDialRightTab==='recent'?'background:rgba(74,158,255,0.16);border:1px solid rgba(74,158,255,0.5);color:#4a9eff;':'background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);color:#666;')+'">Recent Calls</button>';
+    h += '</div>';
+
+    if (bbDialRightTab === 'recent') {
+      var recentCalled = bbDialQueue.filter(function(l){ return !!l.dialed_at; })
+        .sort(function(a,b){ return new Date(b.dialed_at) - new Date(a.dialed_at); })
+        .slice(0, 12);
+      if (!recentCalled.length) {
+        h += '<div style="font-size:0.72rem;color:#555;padding:10px 2px;">No calls logged yet today.</div>';
+      }
+      recentCalled.forEach(function(nl) {
+        var nm = ((nl.first_name||'')+' '+(nl.last_name||'')).trim() || nl.title_owner || '—';
+        var outLbl = (BB_DIAL_OUTCOMES[nl.dial_status] && BB_DIAL_OUTCOMES[nl.dial_status].label) || nl.dial_status || '';
+        var outColor = (BB_DIAL_OUTCOMES[nl.dial_status] && BB_DIAL_OUTCOMES[nl.dial_status].color) || '#666';
+        var isCurrent = isPinned && lead.id === nl.id;
+        h += '<button onclick="bbDialPinLead(\''+nl.id+'\')" style="width:100%;text-align:left;padding:9px 10px;background:'+(isCurrent?'rgba(74,158,255,0.1)':'rgba(255,255,255,0.03)')+';border:1px solid '+(isCurrent?'rgba(74,158,255,0.4)':'rgba(255,255,255,0.07)')+';border-radius:8px;margin-bottom:4px;cursor:pointer;">';
+        h += '<div style="font-size:0.75rem;color:#aaa;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+nm+'</div>';
+        h += '<div style="font-size:0.64rem;color:#555;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+(nl.address||'')+'</div>';
+        h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:3px;">';
+        if (outLbl) h += '<span style="font-size:0.6rem;font-weight:700;color:'+outColor+';">'+outLbl+'</span>';
+        h += '<span style="font-size:0.6rem;color:#444;">'+new Date(nl.dialed_at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})+'</span>';
+        h += '</div></button>';
+      });
+    } else {
+      var upNextList = isPinned ? list.slice(0, 8) : list.slice(1, 9);
+      var upNextOffset = isPinned ? 1 : 2;
+      if (!upNextList.length) h += '<div style="font-size:0.72rem;color:#555;padding:10px 2px;">Nothing else queued in this bucket.</div>';
+      upNextList.forEach(function(nl, i) {
+        var nm = ((nl.first_name||'')+' '+(nl.last_name||'')).trim() || nl.title_owner || '—';
+        var lastN = _parseNotes(nl.notes||'').slice(-1)[0];
+        h += '<button onclick="bbDialJump(\''+nl.id+'\')" style="width:100%;text-align:left;padding:9px 10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:8px;margin-bottom:4px;cursor:pointer;">';
+        h += '<div style="font-size:0.75rem;color:#aaa;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+(i+upNextOffset)+'. '+nm+'</div>';
+        h += '<div style="font-size:0.64rem;color:#555;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+(nl.address||'')+'</div>';
+        if (nl.callback_at) h += '<div style="font-size:0.62rem;color:#ffaa00;margin-top:2px;">&#128257; '+new Date(nl.callback_at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+'</div>';
+        else if (lastN) h += '<div style="font-size:0.62rem;color:#666;margin-top:2px;font-style:italic;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+String(lastN.text||'').slice(0,44)+'</div>';
+        h += '</button>';
+      });
+    }
     h += '</div>'; // end right col
 
     h += '</div></div>';
     document.getElementById('dashBody').innerHTML = h;
+  };
+
+  window.bbDialSwitchRightTab = function(tab) { bbDialRightTab = tab; renderBBDialerView(); };
+
+  window.bbDialPinLead = function(id) {
+    bbDialPinnedId = id;
+    bbDialSearchStatus = null;
+    bbDialSearchResults = null;
+    renderBBDialerView();
+  };
+
+  window.bbDialUnpin = function() {
+    bbDialPinnedId = null;
+    bbDialSearchStatus = null;
+    bbDialSearchResults = null;
+    var el = document.getElementById('bbDialSearchInput'); if (el) el.value = '';
+    renderBBDialerView();
+  };
+
+  // Folds an externally-found lead (search hit outside the loaded queue) into
+  // bbDialQueue so every existing helper (bbLogActivity, disposition commit,
+  // etc.) finds it via normal id lookup and preserves its existing notes
+  // history instead of overwriting it with just the new entry.
+  function bbDialEnsureInQueue(rec) {
+    if (!bbDialQueue.find(function(x){ return x.id === rec.id; })) bbDialQueue.unshift(rec);
+    return rec.id;
+  }
+
+  window.bbDialSelectResult = function(id) {
+    var rec = (bbDialSearchResults||[]).find(function(x){ return x.id === id; });
+    if (rec) bbDialEnsureInQueue(rec);
+    bbDialPinLead(id);
+  };
+
+  window.bbDialSearchKeypress = function(e) { if (e.key === 'Enter') bbDialSearchPhone(); };
+
+  window.bbDialSearchPhone = async function() {
+    var el = document.getElementById('bbDialSearchInput');
+    var raw = (el && el.value || '').trim();
+    var digits = raw.replace(/\D/g,'');
+    if (digits.length < 7) { bbDialSearchStatus = 'Enter at least 7 digits of the phone number.'; bbDialSearchResults = null; renderBBDialerView(); return; }
+    var d10 = digits.slice(-10);
+
+    // Check the already-loaded queue first — instant, no network round trip
+    var localMatches = bbDialQueue.filter(function(l){ return (l.phone||'').replace(/\D/g,'').slice(-10) === d10; });
+    if (localMatches.length === 1) { bbDialPinLead(localMatches[0].id); return; }
+    if (localMatches.length > 1) { bbDialSearchStatus = null; bbDialSearchResults = localMatches; renderBBDialerView(); return; }
+
+    bbDialSearchStatus = 'Searching…';
+    bbDialSearchResults = null;
+    renderBBDialerView();
+
+    var found = await bbDialFetchByPhone(d10);
+    if (!found.length) { bbDialSearchStatus = 'No match found for that number.'; renderBBDialerView(); return; }
+    if (found.length === 1) { bbDialPinLead(bbDialEnsureInQueue(found[0])); return; }
+    bbDialSearchStatus = null;
+    bbDialSearchResults = found;
+    renderBBDialerView();
   };
 
   window.bbDialSetFilter = function(f) { bbDialFilter = f; renderBBDialerView(); };
@@ -5521,8 +5665,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
   async function bbDialCommit(outcome, callbackIso) {
     var buckets = bbDialBuckets();
-    var lead = (buckets[bbDialFilter] || [])[0];
+    var lead = bbDialResolveCurrentLead(buckets);
     if (!lead) return;
+    if (bbDialPinnedId) bbDialPinnedId = null; // disposition done — return to normal queue flow
     var note = ((document.getElementById('bbDialNote')||{}).value || '').trim();
     var now = new Date().toISOString();
     var client = supabase.createClient(SUPA_URL, SUPA_KEY);
