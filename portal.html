@@ -5252,19 +5252,23 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   var BB_DIAL_SEL_BASE = 'id,first_name,last_name,address,phone,email,dnc,notes,knock_status,title_owner,lead_source,installer,black_box,step,lead_category';
 
   async function bbDialLoadQueue() {
-    var client = supabase.createClient(SUPA_URL, SUPA_KEY);
-    var q = function(sel) {
-      return client.from('customers').select(sel)
-        .or('black_box.eq.true,lead_source.eq.orphaned_list')
-        .is('sold_type', null)
-        .not('phone','is',null).neq('phone','')
-        .or('dnc.is.null,dnc.eq.false')
-        .or('archived.is.null,archived.eq.false')
-        .limit(2000);
+    // Raw REST fetch, not supabase-js .or() chaining — PostgREST only honors one
+    // "or=" filter per request, so multiple chained .or() calls silently break
+    // the query. Three OR-groups are combined here into a single and=(or(),or(),or()).
+    var filters = 'sold_type=is.null'
+      + '&phone=not.is.null&phone=neq.'
+      + '&and=(or(black_box.eq.true,lead_source.eq.orphaned_list),or(dnc.is.null,dnc.eq.false),or(archived.is.null,archived.eq.false))'
+      + '&limit=2000';
+    var q = async function(sel) {
+      var resp = await fetch(SUPA_URL + '/rest/v1/customers?select=' + sel + '&' + filters, {
+        headers: { 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY }
+      });
+      var data = resp.ok ? await resp.json() : null;
+      return Array.isArray(data) ? data : null;
     };
-    var res = await q(BB_DIAL_SEL_FULL);
-    if (res.error) res = await q(BB_DIAL_SEL_BASE); // dialer columns not migrated yet
-    bbDialQueue = res.data || [];
+    var data = await q(BB_DIAL_SEL_FULL);
+    if (!data) data = await q(BB_DIAL_SEL_BASE); // dialer columns not migrated yet
+    bbDialQueue = data || [];
     bbDialLoaded = true;
   }
 

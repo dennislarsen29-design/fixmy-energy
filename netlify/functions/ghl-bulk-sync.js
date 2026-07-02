@@ -40,11 +40,13 @@ exports.handler = async function(event) {
   };
 
   // Dialable Black Box leads: has phone, not DNC, quarantined or from the orphaned list
+  // PostgREST only honors one "or=" filter per request — the two OR-groups here are
+  // combined into a single and=(or(),or()) rather than two chained "or=" params
+  // (which silently break the query since duplicate query keys don't merge).
   const q = SUPA_URL + '/rest/v1/customers'
     + '?select=id,first_name,last_name,email,phone,address,installer'
-    + '&or=(black_box.eq.true,lead_source.eq.orphaned_list)'
     + '&phone=not.is.null&phone=neq.'
-    + '&or=(dnc.is.null,dnc.eq.false)'
+    + '&and=(or(black_box.eq.true,lead_source.eq.orphaned_list),or(dnc.is.null,dnc.eq.false))'
     + '&limit=1000';
   const leadResp = await fetch(q, { headers: supaHeaders });
   const leads = await leadResp.json();
