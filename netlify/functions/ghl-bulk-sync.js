@@ -44,7 +44,7 @@ exports.handler = async function(event) {
   // combined into a single and=(or(),or()) rather than two chained "or=" params
   // (which silently break the query since duplicate query keys don't merge).
   const q = SUPA_URL + '/rest/v1/customers'
-    + '?select=id,first_name,last_name,email,phone,address,installer'
+    + '?select=id,first_name,last_name,email,phone,address,original_installer'
     + '&phone=not.is.null&phone=neq.'
     + '&and=(or(black_box.eq.true,lead_source.eq.orphaned_list),or(dnc.is.null,dnc.eq.false))'
     + '&limit=1000';
