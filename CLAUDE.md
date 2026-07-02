@@ -183,6 +183,20 @@ Title: `title_owner, apn, title_confirmed`
 Solar: `system_size, utility, monthly_bill, nem_status`
 Agreement: `agreement_status, agreement_url, agreement_signed_at, agreement_signature`
 Sign & Pay: `sign_token, sign_token_expires_at, stripe_payment_intent_id`
+Dialer: `dial_status, dialed_at, dial_attempts, callback_at` (added by 20260702_black_box_dialer.sql migration)
+
+## Black Box Dialer (two-way dialer ↔ door knocker note share)
+- **Dialer view:** `renderBBDialerView()` in portal.html — opened via "📞 Black Box Dialer" button on the Black Box tab. Power-dialer queue over Black Box leads (`black_box=true` or `lead_source='orphaned_list'`, phone present, not DNC, `sold_type` null).
+- **Two-way share architecture:** every dialer disposition, door-knock outcome, and quick note writes to BOTH:
+  1. `customers.notes` JSON feed (`_appendNote` format, `by` prefixed `📞 Dialer — <Rep>` / `🚪 Knock — <Rep>`) — instantly visible in canvass view, lead editor notes log, dialer card
+  2. `lead_activity` table (structured: channel, outcome, callback_at, call_duration, recording_url) — powers callback queue + future stats
+- **Single write path:** `bbLogActivity(id, channel, outcome, note, opts)` — used by dialer dispositions, `adminCanvassKnock`, `adminBBKnock`, `adminCanvassAddNote`, `addEditorNote`
+- **Dispositions:** no_answer, left_vm, callback (with datetime), warm, booked, not_interested, wrong_number, dnc. `booked` → activates lead (black_box=false, step 1) + opens editor. `dnc` → sets customers.dnc=true, removed from queue.
+- **Queue buckets:** Fresh / Callbacks / Worked, driven by `dial_status` + `callback_at` on customers.
+- **Migration:** `supabase/migrations/20260702_black_box_dialer.sql` — creates lead_activity + dialer columns. ⚠️ Must be run in Supabase (SQL Editor or MCP) — portal degrades gracefully without it (notes feed works, but worked/callback buckets don't persist across reloads).
+- **`ghl-bulk-sync.js`** — "Sync Queue to GHL" button (admin): pushes all dialable BB leads into GHL as contacts, tag `bb-dialer-lead` ONLY (deliberately never uses workflow-trigger tags like `send-diag-agreement`). Enables calling via GHL's built-in Power Dialer with no CSV import/export.
+- **`ghl-dialer-sync.js`** — inbound webhook for GHL call dispositions: matches customer by last-10-digit phone, writes lead_activity + notes feed + dial state. Wire in GHL: workflow on call disposition → Webhook POST to `https://fixmy.energy/.netlify/functions/ghl-dialer-sync` with `{ phone, outcome, note, rep_name }`.
+- **Spam protection decision (2026-07-02):** main LC Phone number = transactional only. Buy 2–3 dedicated local dialing numbers (~$1.15/mo each), cap ~100–125 calls/day each, register at freecallerregistry.com, treat as semi-disposable.
 
 ## Referral Incentive Feature
 - When `lead_source = 'referral'`, setter enters referring customer name in `referred_by`

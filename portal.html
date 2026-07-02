@@ -864,6 +864,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       adminBlackBoxCustomers = bbMini || [];
       window._adminBbTotal = bbTotal || 0;
       if (adminView === 'canvass') renderAdminCanvassView();
+      if (adminView === 'dialer') renderBBDialerView();
     } catch(e) { console.warn('BB stats load error:', e.message); }
   }
 
@@ -4208,6 +4209,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;">&#128230; Black Box &mdash; Quarantined Leads</div>';
     h += '<div style="display:flex;gap:10px;align-items:center;">';
     h += '<span style="font-size:0.72rem;color:#888;"><strong id="bbStatImported" style="color:#eee;">'+totalImported+'</strong> imported &middot; <strong style="color:#8DC63F;">'+totalActivated+'</strong> activated (<strong style="color:#8DC63F;">'+convPct+'%</strong>)</span>';
+    h += '<button onclick="renderBBDialerView()" style="padding:7px 18px;background:rgba(232,121,58,0.14);border:1px solid rgba(232,121,58,0.45);color:#E8793A;border-radius:100px;font-size:0.75rem;font-weight:700;cursor:pointer;">&#128222; Black Box Dialer</button>';
     h += '</div></div>';
     h += '<div id="bbEnrichBar" style="margin-bottom:12px;"></div>';
     if (CURRENT_ROLE === 'admin') h += '<div id="bbPullBar" style="margin-bottom:12px;"></div>';
@@ -4669,6 +4671,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
     await c2.from('customers').update({ knock_status: knockStatus, knocked_at: now, knocked_by: 'admin' }).eq('id', id);
     lead.knock_status = knockStatus; lead.knocked_at = now; lead.knocked_by = 'admin';
+    bbLogActivity(id, 'door_knock', knockStatus, ''); // shared feed — dialers see knock outcomes
     // Save to session history
     try {
       var hist = JSON.parse(localStorage.getItem('bbKnockHistory') || '[]');
@@ -5160,6 +5163,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (cl) cl.knock_status = newStatus;
     var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
     await c2.from('customers').update({ knock_status: newStatus, knocked_at: newStatus ? new Date().toISOString() : null, knocked_by: newStatus ? 'admin' : null }).eq('id', id);
+    if (newStatus) bbLogActivity(id, 'door_knock', newStatus, ''); // shared feed — dialers see knock outcomes
     if (newStatus === 'interested') { activateBlackBoxLead(id); return; }
     renderAdminCanvassView();
   };
@@ -5167,15 +5171,379 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   window.adminCanvassAddNote = async function(id, text) {
     text = (text || '').trim();
     if (!text) return;
-    var rec = adminCustomers.find(function(r){ return r.id === id; });
-    if (!rec) return;
-    var newNotes = _appendNote(rec.notes || null, 'Admin', text);
-    rec.notes = newNotes;
-    var cl = adminCanvassLeads.find(function(l){ return l.id === id; });
-    if (cl) cl.notes = newNotes;
-    var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
-    await c2.from('customers').update({ notes: newNotes }).eq('id', id);
+    await bbLogActivity(id, 'note', null, text); // shared feed + lead_activity — dialers see knocker notes
     renderAdminCanvassView();
+  };
+
+  // ═══ BLACK BOX DIALER ══════════════════════════════════════════════════════
+  // Power-dialer queue over Black Box leads. Every disposition writes to BOTH
+  // the lead_activity table (structured — callbacks, attempts, GHL sync) and the
+  // customers.notes JSON feed (human-readable — instantly visible to door
+  // knockers in the canvass view and admins in the lead editor, and vice versa).
+
+  var BB_DIAL_OUTCOMES = {
+    no_answer:      { label:'No Answer',      icon:'&#128245;', color:'#888' },
+    left_vm:        { label:'Left VM',        icon:'&#128231;', color:'#4a9eff' },
+    callback:       { label:'Callback',       icon:'&#128257;', color:'#ffaa00' },
+    warm:           { label:'Warm',           icon:'&#128293;', color:'#E8793A' },
+    booked:         { label:'Booked!',        icon:'&#9989;',   color:'#8DC63F' },
+    not_interested: { label:'Not Interested', icon:'&#128078;', color:'#ef4444' },
+    wrong_number:   { label:'Wrong #',        icon:'&#10060;',  color:'#666' },
+    dnc:            { label:'DNC',            icon:'&#9940;',   color:'#ef4444' }
+  };
+  var BB_KNOCK_FEED_LABELS = { not_home:'Not Home', not_interested:'Not Interested', interested:'Interested!', already_customer:'Already Customer' };
+  var BB_DIAL_WORKED = { booked:1, not_interested:1, dnc:1, wrong_number:1 };
+
+  var bbDialQueue = [];
+  var bbDialLoaded = false;
+  var bbDialLoading = false;
+  var bbDialFilter = 'fresh'; // fresh | callbacks | worked
+  var bbDialPriorityIds = [];
+  var bbDialSkipIds = [];
+
+  function bbRepName() {
+    try { var stored = localStorage.getItem('bbDialerRepName'); if (stored) return stored; } catch(e){}
+    if (CURRENT_ROLE === 'admin') return 'Admin';
+    var n = prompt('Your name (shown on call notes):') || 'Rep';
+    try { localStorage.setItem('bbDialerRepName', n); } catch(e){}
+    return n;
+  }
+
+  // Shared activity logger — single write path for dialer dispositions, door
+  // knock outcomes, and quick notes so both crews see the same feed on a lead.
+  async function bbLogActivity(id, channel, outcome, note, opts) {
+    opts = opts || {};
+    var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var rep = opts.rep_name || bbRepName();
+
+    // 1. Structured row — tolerated if the lead_activity table isn't created yet
+    try {
+      var ins = await client.from('lead_activity').insert({
+        customer_id: id, channel: channel, outcome: outcome || null, note: note || null,
+        rep_id: CURRENT_ROLE, rep_name: rep,
+        callback_at: opts.callback_at || null, call_duration: opts.call_duration || null
+      });
+      if (ins.error) console.warn('lead_activity insert skipped:', ins.error.message);
+    } catch(e) { console.warn('lead_activity insert error:', e.message); }
+
+    // 2. Human-readable entry in the shared notes feed
+    var chanTag = channel === 'dialer' ? '📞 Dialer — ' + rep
+                : channel === 'door_knock' ? '🚪 Knock — ' + rep
+                : rep;
+    var label = (BB_DIAL_OUTCOMES[outcome] && BB_DIAL_OUTCOMES[outcome].label) || BB_KNOCK_FEED_LABELS[outcome] || '';
+    var cbTxt = opts.callback_at ? ' → ' + new Date(opts.callback_at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : '';
+    var text = (label + cbTxt + (note ? (label ? ': ' : '') + note : '')) || 'Contact attempt';
+    var rec = adminCustomers.find(function(x){ return x.id === id; })
+           || (typeof adminCanvassLeads !== 'undefined' && adminCanvassLeads.find(function(x){ return x.id === id; }))
+           || bbDialQueue.find(function(x){ return x.id === id; });
+    var newNotes = _appendNote(rec ? rec.notes : null, chanTag, text);
+    [adminCustomers, (typeof adminCanvassLeads !== 'undefined' ? adminCanvassLeads : []), bbDialQueue].forEach(function(arr) {
+      var r = arr.find(function(x){ return x.id === id; });
+      if (r) r.notes = newNotes;
+    });
+    await client.from('customers').update({ notes: newNotes }).eq('id', id);
+    return newNotes;
+  }
+
+  var BB_DIAL_SEL_FULL = 'id,first_name,last_name,address,phone,email,dnc,notes,knock_status,title_owner,lead_source,installer,black_box,step,lead_category,dial_status,dialed_at,dial_attempts,callback_at';
+  var BB_DIAL_SEL_BASE = 'id,first_name,last_name,address,phone,email,dnc,notes,knock_status,title_owner,lead_source,installer,black_box,step,lead_category';
+
+  async function bbDialLoadQueue() {
+    var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var q = function(sel) {
+      return client.from('customers').select(sel)
+        .or('black_box.eq.true,lead_source.eq.orphaned_list')
+        .is('sold_type', null)
+        .not('phone','is',null).neq('phone','')
+        .or('dnc.is.null,dnc.eq.false')
+        .or('archived.is.null,archived.eq.false')
+        .limit(2000);
+    };
+    var res = await q(BB_DIAL_SEL_FULL);
+    if (res.error) res = await q(BB_DIAL_SEL_BASE); // dialer columns not migrated yet
+    bbDialQueue = res.data || [];
+    bbDialLoaded = true;
+  }
+
+  function bbDialBuckets() {
+    var now = Date.now();
+    var fresh = [], callbacks = [], worked = [];
+    bbDialQueue.forEach(function(l) {
+      if (BB_DIAL_WORKED[l.dial_status]) worked.push(l);
+      else if (l.callback_at) callbacks.push(l);
+      else fresh.push(l);
+    });
+    var pri = function(a,b) {
+      var pa = bbDialPriorityIds.indexOf(a.id), pb = bbDialPriorityIds.indexOf(b.id);
+      if (pa > -1 || pb > -1) return (pa > -1 ? pa : 999) - (pb > -1 ? pb : 999);
+      var sa = bbDialSkipIds.indexOf(a.id) > -1, sb = bbDialSkipIds.indexOf(b.id) > -1;
+      if (sa !== sb) return sa ? 1 : -1;
+      return 0;
+    };
+    fresh.sort(function(a,b) {
+      var p = pri(a,b); if (p) return p;
+      if (!a.dialed_at && b.dialed_at) return -1;
+      if (a.dialed_at && !b.dialed_at) return 1;
+      return new Date(a.dialed_at||0) - new Date(b.dialed_at||0);
+    });
+    callbacks.sort(function(a,b){ var p = pri(a,b); if (p) return p; return new Date(a.callback_at) - new Date(b.callback_at); });
+    return { fresh: fresh, callbacks: callbacks, worked: worked, callbacksDue: callbacks.filter(function(l){ return new Date(l.callback_at).getTime() <= now; }).length };
+  }
+
+  function bbDialSession() {
+    var s = null;
+    try { s = JSON.parse(localStorage.getItem('bbDialSession') || 'null'); } catch(e){}
+    var today = new Date().toDateString();
+    if (!s || s.date !== today) s = { date: today, dials: 0, contacts: 0, booked: 0 };
+    return s;
+  }
+  function bbDialSessionSave(s) { try { localStorage.setItem('bbDialSession', JSON.stringify(s)); } catch(e){} }
+
+  function bbDialFeedHtml(lead) {
+    var entries = _parseNotes(lead.notes || '').slice(-4).reverse();
+    if (!entries.length) return '<div style="font-size:0.72rem;color:#555;padding:8px 0;">No activity yet — first touch.</div>';
+    return entries.map(function(e) {
+      var by = e.by || '';
+      var isDial = by.indexOf('Dialer') > -1, isKnock = by.indexOf('Knock') > -1;
+      var col = isDial ? '#E8793A' : isKnock ? '#ffaa00' : by.toLowerCase().indexOf('admin') > -1 ? '#4a9eff' : '#8DC63F';
+      var when = e.ts ? new Date(e.ts).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : '';
+      return '<div style="padding:7px 0;border-bottom:1px solid rgba(255,255,255,0.05);">'+
+        '<span style="font-size:0.66rem;font-weight:700;color:'+col+';">'+by+'</span>'+
+        (when ? '<span style="font-size:0.62rem;color:#444;margin-left:7px;">'+when+'</span>' : '')+
+        '<div style="font-size:0.76rem;color:#ccc;line-height:1.5;margin-top:2px;">'+String(e.text||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</div>'+
+      '</div>';
+    }).join('');
+  }
+
+  window.renderBBDialerView = function() {
+    adminView = 'dialer';
+    var portalNav = '<div class="portal-tab-nav">'+
+      '<button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
+      '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
+      '<button class="portal-tab active" onclick="renderAdminCanvassView()">&#128230; Black Box</button>'+
+      '<button class="portal-tab" onclick="renderTeamView()">&#128101; Team &amp; Hiring</button>'+
+      '<button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button>'+
+      '<button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button>'+
+      '<button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button>'+
+      '<a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a>'+
+    '</div>';
+    var h = portalNav + '<div style="padding:4px 0 16px;">';
+
+    // Header
+    h += '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:14px;">';
+    h += '<div style="display:flex;align-items:center;gap:10px;">';
+    h += '<button onclick="renderAdminCanvassView()" style="background:none;border:none;color:#555;cursor:pointer;font-size:0.75rem;padding:0;">&#8592; Black Box</button>';
+    h += '<div style="font-size:0.78rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#E8793A;">&#128222; Black Box Dialer</div>';
+    h += '</div>';
+    if (CURRENT_ROLE === 'admin') {
+      h += '<button id="bbGhlSyncBtn" onclick="bbDialSyncGHL()" style="padding:6px 14px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);color:#4a9eff;border-radius:100px;font-size:0.7rem;font-weight:700;cursor:pointer;">&#8679; Sync Queue to GHL</button>';
+    }
+    h += '</div>';
+
+    if (!bbDialLoaded) {
+      h += '<div style="text-align:center;padding:48px;color:#888;font-size:0.85rem;">Loading dial queue&hellip;</div></div>';
+      document.getElementById('dashBody').innerHTML = h;
+      if (!bbDialLoading) {
+        bbDialLoading = true;
+        bbDialLoadQueue().then(function(){ bbDialLoading = false; renderBBDialerView(); })
+          .catch(function(e){ bbDialLoading = false; bbDialLoaded = true; console.warn('Dial queue load failed:', e); renderBBDialerView(); });
+      }
+      return;
+    }
+
+    var buckets = bbDialBuckets();
+    var sess = bbDialSession();
+
+    // Session stats
+    h += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px;">';
+    h += '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:10px;text-align:center;"><div style="font-size:1.2rem;font-weight:800;color:#E8793A;">'+sess.dials+'</div><div style="font-size:0.68rem;color:#888;">Dials Today</div></div>';
+    h += '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:10px;text-align:center;"><div style="font-size:1.2rem;font-weight:800;color:#4a9eff;">'+sess.contacts+'</div><div style="font-size:0.68rem;color:#888;">Contacts</div></div>';
+    h += '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:10px;text-align:center;"><div style="font-size:1.2rem;font-weight:800;color:#8DC63F;">'+sess.booked+'</div><div style="font-size:0.68rem;color:#888;">Booked</div></div>';
+    h += '</div>';
+
+    // Filter chips
+    var chips = [
+      { key:'fresh',     label:'&#128222; Fresh ('+buckets.fresh.length+')' },
+      { key:'callbacks', label:'&#128257; Callbacks ('+buckets.callbacks.length+(buckets.callbacksDue?' &middot; '+buckets.callbacksDue+' due':'')+')' },
+      { key:'worked',    label:'&#10003; Worked ('+buckets.worked.length+')' }
+    ];
+    h += '<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;">';
+    chips.forEach(function(ch) {
+      var on = bbDialFilter === ch.key;
+      h += '<button onclick="bbDialSetFilter(\''+ch.key+'\')" style="padding:6px 14px;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;'+
+        (on ? 'background:rgba(232,121,58,0.16);border:1px solid rgba(232,121,58,0.5);color:#E8793A;' : 'background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);color:#888;')+'">'+ch.label+'</button>';
+    });
+    h += '<button onclick="bbDialLoaded=false;renderBBDialerView()" style="padding:6px 12px;background:none;border:none;color:#555;cursor:pointer;font-size:0.7rem;text-decoration:underline;">&#8635; Refresh</button>';
+    h += '</div>';
+
+    var list = buckets[bbDialFilter] || [];
+    if (!list.length) {
+      var emptyMsg = bbDialFilter === 'fresh' ? 'No fresh leads left to dial — check Callbacks or import more leads.'
+                   : bbDialFilter === 'callbacks' ? 'No callbacks scheduled.' : 'Nothing worked yet — get dialing!';
+      h += '<div style="text-align:center;padding:40px 20px;background:rgba(255,255,255,0.03);border:1px dashed rgba(255,255,255,0.1);border-radius:14px;color:#666;font-size:0.8rem;">'+emptyMsg+'</div>';
+      h += '</div>';
+      document.getElementById('dashBody').innerHTML = h;
+      return;
+    }
+
+    var lead = list[0];
+    var name = ((lead.first_name||'')+' '+(lead.last_name||'')).trim() || lead.title_owner || '—';
+    var ph = (lead.phone||'').replace(/\D/g,'');
+    var phDisplay = ph.length === 10 ? '('+ph.slice(0,3)+') '+ph.slice(3,6)+'-'+ph.slice(6) : lead.phone;
+    var ksLabel = { interested:'&#10003; Knocked: Interested', not_home:'&#128683; Knocked: Not Home', not_interested:'&#128078; Knocked: NI', already_customer:'&#11088; Already Customer' }[lead.knock_status] || '';
+    var cbDue = lead.callback_at ? new Date(lead.callback_at) : null;
+
+    h += '<div style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap;">';
+    h += '<div style="flex:1;min-width:280px;">';
+
+    // ── Current lead card ──
+    h += '<div style="background:rgba(255,255,255,0.05);border:2px solid rgba(232,121,58,0.4);border-radius:16px;padding:18px;margin-bottom:12px;">';
+    h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:6px;">';
+    h += '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#E8793A;">Next Call &middot; 1 of '+list.length+' in queue</div>';
+    var attemptTxt = (lead.dial_attempts ? lead.dial_attempts + ' attempt' + (lead.dial_attempts>1?'s':'') : 'never dialed');
+    h += '<div style="font-size:0.68rem;color:#666;">'+attemptTxt+(lead.dialed_at ? ' &middot; last ' + new Date(lead.dialed_at).toLocaleDateString('en-US',{month:'short',day:'numeric'}) : '')+'</div>';
+    h += '</div>';
+    h += '<div style="font-size:1.15rem;font-weight:800;margin-bottom:2px;">'+name+'</div>';
+    h += '<div style="font-size:0.78rem;color:#888;margin-bottom:6px;">'+(lead.address||'—')+'</div>';
+    var badges = '';
+    if (lead.installer) badges += '<span style="display:inline-block;padding:2px 9px;background:rgba(255,170,0,0.12);color:#ffaa00;border-radius:100px;font-size:0.62rem;font-weight:700;margin-right:6px;">'+lead.installer+'</span>';
+    if (ksLabel) badges += '<span style="display:inline-block;padding:2px 9px;background:rgba(74,158,255,0.12);color:#4a9eff;border-radius:100px;font-size:0.62rem;font-weight:700;margin-right:6px;">'+ksLabel+'</span>';
+    if (cbDue) badges += '<span style="display:inline-block;padding:2px 9px;background:rgba(255,170,0,0.15);color:#ffaa00;border-radius:100px;font-size:0.62rem;font-weight:700;">&#128257; Callback '+cbDue.toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+'</span>';
+    if (badges) h += '<div style="margin-bottom:10px;">'+badges+'</div>';
+
+    h += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px;">';
+    h += '<a href="tel:'+ph+'" style="display:inline-flex;align-items:center;gap:8px;padding:12px 26px;background:#8DC63F;color:#1A1A1A;border-radius:100px;font-size:1rem;font-weight:800;text-decoration:none;">&#128222; Call '+phDisplay+'</a>';
+    h += '<a href="sms:'+ph+'" style="display:inline-flex;align-items:center;gap:4px;padding:9px 16px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);color:#4a9eff;border-radius:100px;font-size:0.75rem;font-weight:700;text-decoration:none;">&#128172; Text</a>';
+    h += '</div>';
+
+    // Shared activity feed — shows knock outcomes + prior calls + admin notes
+    h += '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#666;margin-bottom:4px;">Activity — all channels</div>';
+    h += '<div style="background:rgba(0,0,0,0.25);border:1px solid rgba(255,255,255,0.07);border-radius:10px;padding:4px 12px;margin-bottom:12px;max-height:180px;overflow-y:auto;">'+bbDialFeedHtml(lead)+'</div>';
+
+    h += '<textarea id="bbDialNote" rows="2" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:9px;font-size:0.8rem;box-sizing:border-box;resize:vertical;margin-bottom:10px;" placeholder="Call note (saved with your disposition — door knockers will see it)&hellip;"></textarea>';
+
+    // Disposition grid
+    h += '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#666;margin-bottom:8px;">How did it go?</div>';
+    h += '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:7px;">';
+    Object.keys(BB_DIAL_OUTCOMES).forEach(function(k) {
+      var o = BB_DIAL_OUTCOMES[k];
+      h += '<button onclick="bbDialDispo(\''+k+'\')" style="padding:12px 4px;border:1px solid '+o.color+'40;border-radius:11px;background:'+o.color+'14;color:'+o.color+';font-size:0.72rem;font-weight:700;cursor:pointer;">'+o.icon+'<br>'+o.label+'</button>';
+    });
+    h += '</div>';
+
+    // Callback scheduler (revealed by the Callback button)
+    var cbDefault = new Date(Date.now() + 24*3600*1000); cbDefault.setHours(10,0,0,0);
+    var cbVal = cbDefault.getFullYear()+'-'+String(cbDefault.getMonth()+1).padStart(2,'0')+'-'+String(cbDefault.getDate()).padStart(2,'0')+'T10:00';
+    h += '<div id="bbCbPanel" style="display:none;margin-top:10px;padding:12px;background:rgba(255,170,0,0.06);border:1px solid rgba(255,170,0,0.3);border-radius:10px;">';
+    h += '<div style="font-size:0.7rem;font-weight:700;color:#ffaa00;margin-bottom:8px;">&#128257; Schedule the callback</div>';
+    h += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">';
+    h += '<input type="datetime-local" id="bbCbWhen" value="'+cbVal+'" style="background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:8px;font-size:0.8rem;">';
+    h += '<button onclick="bbDialCommitCallback()" style="padding:9px 18px;background:rgba(255,170,0,0.15);border:1px solid rgba(255,170,0,0.4);color:#ffaa00;border-radius:100px;font-size:0.75rem;font-weight:700;cursor:pointer;">Confirm Callback</button>';
+    h += '</div></div>';
+
+    h += '</div>'; // end card
+
+    h += '<div style="text-align:center;"><button onclick="bbDialJump(\''+lead.id+'\',true)" style="background:none;border:none;color:#555;cursor:pointer;font-size:0.75rem;text-decoration:underline;">Skip this lead &rsaquo;</button></div>';
+    h += '</div>'; // end left col
+
+    // ── Right: up next ──
+    h += '<div style="flex:0 0 230px;min-width:200px;">';
+    h += '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#555;margin-bottom:8px;">Up Next &mdash; tap to jump</div>';
+    list.slice(1, 9).forEach(function(nl, i) {
+      var nm = ((nl.first_name||'')+' '+(nl.last_name||'')).trim() || nl.title_owner || '—';
+      var lastN = _parseNotes(nl.notes||'').slice(-1)[0];
+      h += '<button onclick="bbDialJump(\''+nl.id+'\')" style="width:100%;text-align:left;padding:9px 10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:8px;margin-bottom:4px;cursor:pointer;">';
+      h += '<div style="font-size:0.75rem;color:#aaa;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+(i+2)+'. '+nm+'</div>';
+      h += '<div style="font-size:0.64rem;color:#555;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+(nl.address||'')+'</div>';
+      if (nl.callback_at) h += '<div style="font-size:0.62rem;color:#ffaa00;margin-top:2px;">&#128257; '+new Date(nl.callback_at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+'</div>';
+      else if (lastN) h += '<div style="font-size:0.62rem;color:#666;margin-top:2px;font-style:italic;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+String(lastN.text||'').slice(0,44)+'</div>';
+      h += '</button>';
+    });
+    h += '</div>'; // end right col
+
+    h += '</div></div>';
+    document.getElementById('dashBody').innerHTML = h;
+  };
+
+  window.bbDialSetFilter = function(f) { bbDialFilter = f; renderBBDialerView(); };
+
+  window.bbDialJump = function(id, toBack) {
+    if (toBack) {
+      bbDialPriorityIds = bbDialPriorityIds.filter(function(x){ return x !== id; });
+      if (bbDialSkipIds.indexOf(id) < 0) bbDialSkipIds.push(id);
+    } else {
+      bbDialSkipIds = bbDialSkipIds.filter(function(x){ return x !== id; });
+      bbDialPriorityIds = [id].concat(bbDialPriorityIds.filter(function(x){ return x !== id; }));
+    }
+    renderBBDialerView();
+  };
+
+  window.bbDialDispo = function(outcome) {
+    if (outcome === 'callback') {
+      var p = document.getElementById('bbCbPanel');
+      if (p) p.style.display = p.style.display === 'none' ? 'block' : 'none';
+      return;
+    }
+    if (outcome === 'dnc' && !confirm('Mark this lead Do Not Contact? They will be removed from the dial queue.')) return;
+    bbDialCommit(outcome, null);
+  };
+
+  window.bbDialCommitCallback = function() {
+    var el = document.getElementById('bbCbWhen');
+    var iso = el && el.value ? new Date(el.value).toISOString() : null;
+    if (!iso) { alert('Pick a callback date/time first.'); return; }
+    bbDialCommit('callback', iso);
+  };
+
+  async function bbDialCommit(outcome, callbackIso) {
+    var buckets = bbDialBuckets();
+    var lead = (buckets[bbDialFilter] || [])[0];
+    if (!lead) return;
+    var note = ((document.getElementById('bbDialNote')||{}).value || '').trim();
+    var now = new Date().toISOString();
+    var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+
+    var updates = { dial_status: outcome, dialed_at: now, dial_attempts: (lead.dial_attempts||0)+1, callback_at: callbackIso || null };
+    if (outcome === 'dnc') updates.dnc = true;
+    var res = await client.from('customers').update(updates).eq('id', lead.id);
+    if (res.error) {
+      // Dialer columns not migrated yet — keep the critical flag at least
+      if (outcome === 'dnc') await client.from('customers').update({ dnc: true }).eq('id', lead.id);
+      console.warn('dial state update skipped (run the lead_activity migration):', res.error.message);
+    }
+    lead.dial_status = outcome; lead.dialed_at = now;
+    lead.dial_attempts = (lead.dial_attempts||0)+1; lead.callback_at = callbackIso || null;
+    if (outcome === 'dnc') lead.dnc = true;
+
+    await bbLogActivity(lead.id, 'dialer', outcome, note, { callback_at: callbackIso || null });
+
+    var sess = bbDialSession();
+    sess.dials++;
+    if (outcome === 'warm' || outcome === 'booked' || outcome === 'not_interested' || outcome === 'callback' || outcome === 'dnc') sess.contacts++;
+    if (outcome === 'booked') sess.booked++;
+    bbDialSessionSave(sess);
+
+    if (outcome === 'dnc') bbDialQueue = bbDialQueue.filter(function(x){ return x.id !== lead.id; });
+
+    if (outcome === 'booked') {
+      await client.from('customers').update({ black_box: false, step: lead.step || 1, lead_category: lead.lead_category || 'fixmy' }).eq('id', lead.id);
+      lead.black_box = false;
+      if (!adminCustomers.find(function(x){ return x.id === lead.id; })) adminCustomers.unshift(lead);
+      if (CURRENT_ROLE === 'admin' && typeof openLeadEditor === 'function') { openLeadEditor(lead.id); return; }
+    }
+    renderBBDialerView();
+  }
+
+  window.bbDialSyncGHL = async function() {
+    var btn = document.getElementById('bbGhlSyncBtn');
+    if (!confirm('Push all dialable Black Box leads into GHL as contacts (tag: bb-dialer-lead)?\n\nThis only creates/updates contacts — it will NOT fire any customer-facing automations.')) return;
+    if (btn) { btn.disabled = true; btn.textContent = 'Syncing…'; }
+    try {
+      var r = await fetch('/.netlify/functions/ghl-bulk-sync', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
+      var d = await r.json();
+      alert(r.ok ? '✓ GHL sync complete: '+d.synced+' of '+d.total+' contacts synced'+(d.failed ? ', '+d.failed+' failed' : '')+'.' : '✗ Sync failed: '+(d.error||r.status));
+    } catch(e) { alert('Sync error: '+e.message); }
+    if (btn) { btn.disabled = false; btn.innerHTML = '&#8679; Sync Queue to GHL'; }
   };
 
   var _bbEnrichRunning = false;
@@ -8913,10 +9281,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return entries.slice().reverse().map(function(e) {
       var dateStr = e.ts ? new Date(e.ts).toLocaleString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'}) : 'Prior to log';
       var by = e.by || 'Unknown';
+      var isDialer = by.indexOf('Dialer') > -1;
+      var isKnock = by.indexOf('Knock') > -1;
       var isAdmin = by.toLowerCase().indexOf('admin') > -1;
       var isSetter = by.toLowerCase().indexOf('setter') > -1;
-      var badgeColor = isAdmin ? '#4a9eff' : isSetter ? '#8DC63F' : '#aaa';
-      var borderColor = isAdmin ? 'rgba(74,158,255,0.25)' : isSetter ? 'rgba(141,198,63,0.25)' : 'rgba(255,255,255,0.1)';
+      var badgeColor = isDialer ? '#E8793A' : isKnock ? '#ffaa00' : isAdmin ? '#4a9eff' : isSetter ? '#8DC63F' : '#aaa';
+      var borderColor = isDialer ? 'rgba(232,121,58,0.3)' : isKnock ? 'rgba(255,170,0,0.3)' : isAdmin ? 'rgba(74,158,255,0.25)' : isSetter ? 'rgba(141,198,63,0.25)' : 'rgba(255,255,255,0.1)';
       return '<div style="padding:14px 16px;border-bottom:1px solid rgba(255,255,255,0.07);border-left:3px solid '+borderColor+';">'+
         '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">'+
           '<span style="font-size:0.72rem;font-weight:700;color:'+badgeColor+';">'+by+'</span>'+
@@ -8934,13 +9304,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var text = inputEl.value.trim();
     if (!text) return;
     var id = idEl.value;
-    var rec = adminCustomers.find(function(x){ return x.id===id; });
-    var newNotes = _appendNote(rec ? rec.notes : null, 'Admin', text);
     try {
-      var client = supabase.createClient(SUPA_URL, SUPA_KEY);
-      var { error } = await client.from('customers').update({ notes: newNotes }).eq('id', id);
-      if (error) throw error;
-      if (rec) rec.notes = newNotes;
+      var newNotes = await bbLogActivity(id, 'note', null, text); // shared feed + lead_activity
       inputEl.value = '';
       if (logDiv) logDiv.innerHTML = _renderNotesLog(_parseNotes(newNotes));
     } catch(e) { alert('Failed to save note: '+e.message); }
