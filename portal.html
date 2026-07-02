@@ -5251,6 +5251,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   var BB_DIAL_SEL_FULL = 'id,first_name,last_name,address,phone,email,dnc,notes,knock_status,title_owner,lead_source,installer,black_box,step,lead_category,dial_status,dialed_at,dial_attempts,callback_at';
   var BB_DIAL_SEL_BASE = 'id,first_name,last_name,address,phone,email,dnc,notes,knock_status,title_owner,lead_source,installer,black_box,step,lead_category';
 
+  var bbDialLoadError = null;
+
   async function bbDialLoadQueue() {
     // Raw REST fetch, not supabase-js .or() chaining — PostgREST only honors one
     // "or=" filter per request, so multiple chained .or() calls silently break
@@ -5259,15 +5261,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       + '&phone=not.is.null&phone=neq.'
       + '&and=(or(black_box.eq.true,lead_source.eq.orphaned_list),or(dnc.is.null,dnc.eq.false),or(archived.is.null,archived.eq.false))'
       + '&limit=2000';
+    var lastErr = null;
     var q = async function(sel) {
       var resp = await fetch(SUPA_URL + '/rest/v1/customers?select=' + sel + '&' + filters, {
         headers: { 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY }
       });
-      var data = resp.ok ? await resp.json() : null;
-      return Array.isArray(data) ? data : null;
+      var data;
+      try { data = await resp.json(); } catch(e) { lastErr = 'Bad response: ' + e.message; return null; }
+      if (!resp.ok || !Array.isArray(data)) { lastErr = (data && (data.message || data.error || data.hint)) || ('HTTP ' + resp.status); return null; }
+      return data;
     };
+    bbDialLoadError = null;
     var data = await q(BB_DIAL_SEL_FULL);
     if (!data) data = await q(BB_DIAL_SEL_BASE); // dialer columns not migrated yet
+    if (!data) bbDialLoadError = lastErr || 'Unknown error';
     bbDialQueue = data || [];
     bbDialLoaded = true;
   }
@@ -5386,9 +5393,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '<button onclick="bbDialLoaded=false;renderBBDialerView()" title="Reloads the dial queue fresh from the database — picks up new leads and other reps&#39; activity." style="padding:6px 12px;background:none;border:none;color:#555;cursor:pointer;font-size:0.7rem;text-decoration:underline;">&#8635; Refresh</button>';
     h += '</div>';
 
+    if (bbDialLoadError) {
+      h += '<div style="text-align:center;padding:24px 20px;background:rgba(239,68,68,0.07);border:1px solid rgba(239,68,68,0.25);border-radius:14px;color:#ef4444;font-size:0.8rem;margin-bottom:14px;">&#9888; Queue load failed: '+String(bbDialLoadError).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</div>';
+    }
     var list = buckets[bbDialFilter] || [];
     if (!list.length) {
-      var emptyMsg = bbDialFilter === 'fresh' ? 'No fresh leads left to dial — check Callbacks or import more leads.'
+      var emptyMsg = bbDialLoadError ? 'Could not load the queue — see error above, then tap Refresh.'
+                   : bbDialFilter === 'fresh' ? 'No fresh leads left to dial — check Callbacks or import more leads.'
                    : bbDialFilter === 'callbacks' ? 'No callbacks scheduled.' : 'Nothing worked yet — get dialing!';
       h += '<div style="text-align:center;padding:40px 20px;background:rgba(255,255,255,0.03);border:1px dashed rgba(255,255,255,0.1);border-radius:14px;color:#666;font-size:0.8rem;">'+emptyMsg+'</div>';
       h += '</div>';
@@ -5554,7 +5565,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     try {
       var r = await fetch('/.netlify/functions/ghl-bulk-sync', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
       var d = await r.json();
-      alert(r.ok ? '✓ GHL sync complete: '+d.synced+' of '+d.total+' contacts synced'+(d.failed ? ', '+d.failed+' failed' : '')+'.' : '✗ Sync failed: '+(d.error||r.status));
+      var detailTxt = d.detail ? ('\n\nDetail: ' + (typeof d.detail === 'string' ? d.detail : JSON.stringify(d.detail)).slice(0,300)) : '';
+      alert(r.ok ? '✓ GHL sync complete: '+d.synced+' of '+d.total+' contacts synced'+(d.failed ? ', '+d.failed+' failed' : '')+'.' : '✗ Sync failed: '+(d.error||r.status)+detailTxt);
     } catch(e) { alert('Sync error: '+e.message); }
     if (btn) { btn.disabled = false; btn.innerHTML = '&#8679; Sync Queue to GHL'; }
   };
