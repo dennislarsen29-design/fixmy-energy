@@ -5202,6 +5202,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   var bbDialSkipIds = [];
 
   function bbRepName() {
+    if (window._bbDialerPersonName) return window._bbDialerPersonName; // set by sales portal
     try { var stored = localStorage.getItem('bbDialerRepName'); if (stored) return stored; } catch(e){}
     if (CURRENT_ROLE === 'admin') return 'Admin';
     var n = prompt('Your name (shown on call notes):') || 'Rep';
@@ -5233,10 +5234,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var label = (BB_DIAL_OUTCOMES[outcome] && BB_DIAL_OUTCOMES[outcome].label) || BB_KNOCK_FEED_LABELS[outcome] || '';
     var cbTxt = opts.callback_at ? ' → ' + new Date(opts.callback_at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : '';
     var text = (label + cbTxt + (note ? (label ? ': ' : '') + note : '')) || 'Contact attempt';
-    var rec = adminCustomers.find(function(x){ return x.id === id; })
+    var rec = opts.rec
+           || adminCustomers.find(function(x){ return x.id === id; })
            || (typeof adminCanvassLeads !== 'undefined' && adminCanvassLeads.find(function(x){ return x.id === id; }))
            || bbDialQueue.find(function(x){ return x.id === id; });
     var newNotes = _appendNote(rec ? rec.notes : null, chanTag, text);
+    if (opts.rec) opts.rec.notes = newNotes;
     [adminCustomers, (typeof adminCanvassLeads !== 'undefined' ? adminCanvassLeads : []), bbDialQueue].forEach(function(arr) {
       var r = arr.find(function(x){ return x.id === id; });
       if (r) r.notes = newNotes;
@@ -5317,7 +5320,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
   window.renderBBDialerView = function() {
     adminView = 'dialer';
-    var portalNav = '<div class="portal-tab-nav">'+
+    var isAdminDialer = CURRENT_ROLE === 'admin';
+    var portalNav = isAdminDialer ? '<div class="portal-tab-nav">'+
       '<button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab active" onclick="renderAdminCanvassView()">&#128230; Black Box</button>'+
@@ -5326,13 +5330,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button>'+
       '<button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button>'+
       '<a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a>'+
-    '</div>';
+    '</div>' : '';
+    var backFn = isAdminDialer ? 'renderAdminCanvassView()'
+               : (typeof window.salesSetView === 'function' ? 'salesSetView(\'canvass\')' : 'renderAdminCanvassView()');
     var h = portalNav + '<div style="padding:4px 0 16px;">';
 
     // Header
     h += '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:14px;">';
     h += '<div style="display:flex;align-items:center;gap:10px;">';
-    h += '<button onclick="renderAdminCanvassView()" style="background:none;border:none;color:#555;cursor:pointer;font-size:0.75rem;padding:0;">&#8592; Black Box</button>';
+    h += '<button onclick="'+backFn+'" style="background:none;border:none;color:#555;cursor:pointer;font-size:0.75rem;padding:0;">&#8592; Black Box</button>';
     h += '<div style="font-size:0.78rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#E8793A;">&#128222; Black Box Dialer</div>';
     h += '</div>';
     if (CURRENT_ROLE === 'admin') {
@@ -5526,8 +5532,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (outcome === 'dnc') bbDialQueue = bbDialQueue.filter(function(x){ return x.id !== lead.id; });
 
     if (outcome === 'booked') {
-      await client.from('customers').update({ black_box: false, step: lead.step || 1, lead_category: lead.lead_category || 'fixmy' }).eq('id', lead.id);
+      var act = { black_box: false, step: lead.step || 1, lead_category: lead.lead_category || 'fixmy' };
+      if (CURRENT_ROLE !== 'admin' && window._bbDialerPersonId) act.rep_id = window._bbDialerPersonId; // booked by a rep — assign them the lead
+      await client.from('customers').update(act).eq('id', lead.id);
       lead.black_box = false;
+      if (act.rep_id) lead.rep_id = act.rep_id;
       if (!adminCustomers.find(function(x){ return x.id === lead.id; })) adminCustomers.unshift(lead);
       if (CURRENT_ROLE === 'admin' && typeof openLeadEditor === 'function') { openLeadEditor(lead.id); return; }
     }
@@ -11224,7 +11233,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
       // ── Canvass / Black Box view ─────────────────────────────────────────────
       else if (salesView === 'canvass') {
-        h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;margin-bottom:12px;">&#128230; Black Box &mdash; Door Knocking Route</div>';
+        window._bbDialerPersonName = person.name || null;
+        window._bbDialerPersonId = person.id || null;
+        h += '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px;">';
+        h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;">&#128230; Black Box &mdash; Door Knocking Route</div>';
+        h += '<button onclick="renderBBDialerView()" style="padding:7px 18px;background:rgba(232,121,58,0.14);border:1px solid rgba(232,121,58,0.45);color:#E8793A;border-radius:100px;font-size:0.75rem;font-weight:700;cursor:pointer;">&#128222; Black Box Dialer</button>';
+        h += '</div>';
 
         // Intel rendered below GPS section — placeholder for inline variable capture
         var _canvassIntelHtml = (function(){
@@ -12093,6 +12107,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       lead.knock_status = knockStatus;
       lead.knocked_at = now;
       lead.knocked_by = person.id;
+      bbLogActivity(id, 'door_knock', knockStatus, '', { rep_name: person.name || person.id, rec: lead }); // shared feed — dialers see knock outcomes
       // Save to session history
       try {
         var hist = JSON.parse(localStorage.getItem('bbKnockHistory') || '[]');
@@ -12168,14 +12183,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     window.canvassAddNote = async function(id, text) {
       text = (text || '').trim();
       if (!text) return;
-      var rec = allRecords.find(function(r){ return r.id === id; });
+      var rec = allRecords.find(function(r){ return r.id === id; })
+             || canvassLeads.find(function(l){ return l.id === id; });
       if (!rec) return;
-      var newNotes = _appendNote(rec.notes || null, person.name || 'Rep', text);
-      rec.notes = newNotes;
+      // shared feed + lead_activity — dialers see knocker notes
+      var newNotes = await bbLogActivity(id, 'note', null, text, { rep_name: person.name || 'Rep', rec: rec });
       var cl = canvassLeads.find(function(l){ return l.id === id; });
       if (cl) cl.notes = newNotes;
-      var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
-      await c2.from('customers').update({ notes: newNotes }).eq('id', id);
       renderSales();
     };
 
