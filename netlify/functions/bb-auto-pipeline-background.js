@@ -1344,6 +1344,25 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
     }
   }
 
+  // ── Phase 4: sync dialable Black Box leads into GHL (Power Dialer contacts) ──
+  // Reuses ghl-bulk-sync.js in-process — same code path as the portal's manual
+  // "Sync Queue to GHL" button. Idempotent: GHL upsert dedupes by phone/email.
+  let ghlSyncResult = 'skipped';
+  if (!enrichOnly && !overGlobal()) {
+    try {
+      stamp('Phase 4: GHL dialer sync starting');
+      const bulkSync = require('./ghl-bulk-sync.js');
+      const r = await bulkSync.handler({ httpMethod: 'POST', body: '{}' });
+      const d = JSON.parse(r.body || '{}');
+      ghlSyncResult = r.statusCode === 200
+        ? 'synced ' + d.synced + '/' + d.total + ' contacts' + (d.failed ? ', ' + d.failed + ' failed' : '')
+        : 'failed: ' + (d.error || r.statusCode);
+      stamp('Phase 4: ' + ghlSyncResult);
+    } catch(e) { ghlSyncResult = 'error: ' + e.message; stamp('Phase 4 error: ' + e.message); }
+  } else {
+    stamp('Phase 4: GHL sync skipped — ' + (enrichOnly ? 'enrich-only run' : 'global deadline reached'));
+  }
+
   // ── Final summary ─────────────────────────────────────────────────────────
   const summary = {
     run_at: new Date().toISOString(),
@@ -1355,6 +1374,7 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
     phase1_by_installer: pullSummary.filter(s => s.new > 0),
     phase2_owners_added: enriched,
     phase3_tracerfy: tracerfyResult,
+    phase4_ghl_sync: ghlSyncResult,
     log
   };
 
@@ -1370,6 +1390,7 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
       phase1_by_installer: summary.phase1_by_installer,
       phase2_owners_added: summary.phase2_owners_added,
       phase3_tracerfy: summary.phase3_tracerfy,
+      phase4_ghl_sync: summary.phase4_ghl_sync,
       log: (summary.log || []).slice(-80)
     });
     await Promise.all([
