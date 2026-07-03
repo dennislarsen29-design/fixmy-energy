@@ -1,30 +1,25 @@
 // Instagram Insights sync — pulls follower/reach/profile stats + per-post
-// performance from the Instagram Graph API into Supabase (social_metrics, social_posts).
+// performance from the Meta Graph API into Supabase (social_metrics, social_posts).
 // Powers the Team tab → Social Growth sub-tab in portal.html.
 //
-// Uses the "Instagram API with Instagram Login" product (graph.instagram.com).
-// The token is an Instagram User access token scoped to the account directly —
-// no Facebook Page hop, no /me/accounts lookup.
-//
-// Env vars required: IG_ACCESS_TOKEN (long-lived IG user token), SUPA_SERVICE_KEY
-// Optional: IG_USER_ID (numeric IG user id — informational only; /me works from
-//   the token alone, so this is not needed but is stored for reference).
+// Env vars required: IG_ACCESS_TOKEN (long-lived user token), SUPA_SERVICE_KEY
+// Optional: IG_USER_ID (Instagram Business account ID — auto-discovered via
+// /me/accounts if not set, but setting it saves one API call and avoids
+// ambiguity if the token can see multiple Pages).
 //
 // Setup (one-time, in Meta developer console — app stays in Development Mode,
 // no App Review needed because the token owner is the app admin):
-//   1. IG account = Professional (Business/Creator), added to a business portfolio
-//   2. developers.facebook.com → Create App → use case
-//      "Manage messaging & content on Instagram"
-//   3. App Dashboard → Instagram → API setup with Instagram business login →
-//      Generate token for the account you own (one click) → it's already long-lived
-//      (~60 days). Ensure the token includes instagram_business_manage_insights.
-//   4. Set that token as IG_ACCESS_TOKEN in Netlify.
+//   1. IG account must be Professional (Business/Creator) linked to a FB Page
+//   2. developers.facebook.com → Create App (Business type)
+//   3. Graph API Explorer → token with: instagram_basic,
+//      instagram_manage_insights, pages_show_list, pages_read_engagement
+//   4. Exchange for a long-lived token (~60 days), set as IG_ACCESS_TOKEN
 //
 // Runs daily via netlify.toml schedule + on demand from the portal's
 // "Sync from Instagram" button. Safe to call with no token — returns
 // { configured: false } so the portal can show setup instructions.
 
-const GRAPH = 'https://graph.instagram.com/v21.0';
+const GRAPH = 'https://graph.facebook.com/v21.0';
 const SUPA_URL = 'https://kbtobyoumvbcxfbugsid.supabase.co';
 const SUPA_REST = SUPA_URL + '/rest/v1';
 
@@ -63,12 +58,12 @@ async function supaUpsert(table, rows, onConflict, key) {
 // Account-level insight totals over the trailing 7 days. Each metric is fetched
 // independently because Meta rejects the whole call if any one metric is
 // unsupported for the account — partial data beats no data.
-async function fetchAccountInsight(metric, token) {
+async function fetchAccountInsight(igId, metric, extraParams, token) {
   const since = Math.floor((Date.now() - 7 * 24 * 3600 * 1000) / 1000);
   const until = Math.floor(Date.now() / 1000);
   try {
-    const data = await graphGet('/me/insights',
-      { metric: metric, period: 'day', metric_type: 'total_value', since: since, until: until }, token);
+    const data = await graphGet('/' + igId + '/insights',
+      Object.assign({ metric: metric, period: 'day', since: since, until: until }, extraParams || {}), token);
     const series = (data.data && data.data[0]) || {};
     if (series.total_value && typeof series.total_value.value === 'number') return series.total_value.value;
     if (Array.isArray(series.values)) {
@@ -82,16 +77,15 @@ async function fetchAccountInsight(metric, token) {
 }
 
 // Per-media insights. Metric availability varies by media type and API version;
-// fetch what we can, tolerate the rest. likes/comments come from the media node
-// itself, so here we only chase views/reach/saved/shares.
+// fetch what we can, tolerate the rest.
 async function fetchMediaInsights(mediaId, token) {
   const out = {};
   const attempts = [
-    'views,reach,saved,shares',
-    'reach,saved',
-    'reach'
+    ['views,reach,saved,shares'],
+    ['reach,saved'],
+    ['reach']
   ];
-  for (const metrics of attempts) {
+  for (const [metrics] of attempts) {
     try {
       const data = await graphGet('/' + mediaId + '/insights', { metric: metrics }, token);
       (data.data || []).forEach(function (m) {
@@ -118,7 +112,7 @@ exports.handler = async function (event) {
       statusCode: 200, headers: CORS,
       body: JSON.stringify({
         configured: false,
-        message: 'IG_ACCESS_TOKEN not set. In your Meta app: Instagram → API setup with Instagram business login → generate a token for your account (include instagram_business_manage_insights), then add it as a Netlify env var.'
+        message: 'IG_ACCESS_TOKEN not set. Create a Meta developer app (Development Mode is fine), generate a long-lived token with instagram_basic + instagram_manage_insights + pages_show_list + pages_read_engagement, and add it as a Netlify env var.'
       })
     };
   }
@@ -127,14 +121,28 @@ exports.handler = async function (event) {
   }
 
   try {
-    // 1. Profile snapshot — /me resolves from the Instagram user token directly
-    const profile = await graphGet('/me', { fields: 'user_id,username,followers_count,follows_count,media_count' }, token);
+    // 1. Resolve the Instagram Business account ID
+    let igId = process.env.IG_USER_ID;
+    if (!igId) {
+      const pages = await graphGet('/me/accounts', { fields: 'name,instagram_business_account' }, token);
+      const page = (pages.data || []).find(function (p) { return p.instagram_business_account; });
+      if (!page) {
+        return {
+          statusCode: 200, headers: CORS,
+          body: JSON.stringify({ configured: false, message: 'Token is valid but no Facebook Page with a linked Instagram Business account was found. Link your IG account to a FB Page first.' })
+        };
+      }
+      igId = page.instagram_business_account.id;
+    }
 
-    // 2. Account insights (trailing 7 days) — each tolerated independently
+    // 2. Profile snapshot
+    const profile = await graphGet('/' + igId, { fields: 'username,followers_count,follows_count,media_count' }, token);
+
+    // 3. Account insights (trailing 7 days) — each tolerated independently
     const [reach7d, profileViews7d, websiteClicks7d] = await Promise.all([
-      fetchAccountInsight('reach', token),
-      fetchAccountInsight('profile_views', token),
-      fetchAccountInsight('website_clicks', token)
+      fetchAccountInsight(igId, 'reach', null, token),
+      fetchAccountInsight(igId, 'profile_views', { metric_type: 'total_value' }, token),
+      fetchAccountInsight(igId, 'website_clicks', { metric_type: 'total_value' }, token)
     ]);
 
     const today = new Date().toISOString().slice(0, 10);
@@ -150,8 +158,8 @@ exports.handler = async function (event) {
       source: 'api'
     }], 'captured_on,platform', SUPA_SERVICE_KEY);
 
-    // 3. Recent media + per-post insights (last 25 posts)
-    const media = await graphGet('/me/media', {
+    // 4. Recent media + per-post insights (last 25 posts)
+    const media = await graphGet('/' + igId + '/media', {
       fields: 'id,caption,media_type,media_product_type,permalink,timestamp,like_count,comments_count',
       limit: 25
     }, token);
@@ -190,14 +198,14 @@ exports.handler = async function (event) {
     };
   } catch (e) {
     console.error('ig-insights error:', e.message);
-    // Expired/invalid tokens are an expected operational state — surface an
+    // Expired/invalid tokens are an expected operational state — surface a
     // actionable message rather than a bare 500 so the portal can show it.
-    const tokenIssue = /token|OAuth|session|expired/i.test(e.message);
+    const tokenIssue = /token|OAuth|session/i.test(e.message);
     return {
       statusCode: tokenIssue ? 200 : 500,
       headers: CORS,
       body: JSON.stringify(tokenIssue
-        ? { configured: false, message: 'Instagram token rejected (likely expired — tokens last ~60 days). In your Meta app, regenerate the Instagram token and update IG_ACCESS_TOKEN. Instagram API said: ' + e.message }
+        ? { configured: false, message: 'Instagram token rejected (likely expired — long-lived tokens last ~60 days). Regenerate and update IG_ACCESS_TOKEN. Graph API said: ' + e.message }
         : { error: e.message })
     };
   }
