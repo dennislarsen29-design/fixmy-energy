@@ -89,11 +89,23 @@ exports.handler = async function(event) {
     agreement_user_agent: signingUserAgent,
   };
 
-  await fetch(SUPA_URL + '/rest/v1/customers?id=eq.' + customerId, {
+  // The payment is already captured in Stripe at this point. If this DB write
+  // fails we must NOT report success to the client (it would show a certificate
+  // claiming everything is recorded when invoice_status is still unpaid). Return
+  // an error so the client can retry; this handler is idempotent (it re-verifies
+  // the PaymentIntent every call), so retrying is safe.
+  const patchResp = await fetch(SUPA_URL + '/rest/v1/customers?id=eq.' + customerId, {
     method: 'PATCH',
     headers: { ...supaHeaders, 'Prefer': 'return=minimal' },
     body: JSON.stringify(updates)
   });
+  if (!patchResp.ok) {
+    const detail = await patchResp.text().catch(function(){ return ''; });
+    console.error('sign-complete: DB write FAILED after payment captured for', customerId, patchResp.status, detail.slice(0, 300));
+    return { statusCode: 502, headers: cors, body: JSON.stringify({
+      error: 'Payment captured but recording failed', paymentCaptured: true, customerId, detail: detail.slice(0, 200)
+    }) };
+  }
 
   console.log('sign-complete: paid+signed for', c.first_name, c.last_name, '(', customerId, ') from IP', signingIp);
 

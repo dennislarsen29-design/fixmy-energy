@@ -659,7 +659,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     catch(e) { showErr('Connection error. Please refresh.'); btn.textContent = 'Access My Portal'; btn.disabled = false; return; }
     try {
       // Use .limit(1) instead of .single() so duplicate records don't break login
-      var queryPromise = client.from('customers').select('*').eq('email', email).limit(1);
+      // Order newest-first so a customer with duplicate rows lands on the same
+      // (most-recently-updated) record every time, not an arbitrary one.
+      var queryPromise = client.from('customers').select('*').eq('email', email).order('updated_at',{ascending:false,nullsFirst:false}).limit(1);
       var timeoutPromise = new Promise(function(_, reject){
         setTimeout(function(){ reject(new Error('Request timed out. Check your connection and try again.')); }, 12000);
       });
@@ -2411,8 +2413,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       .reduce(function(s,c){ return s+(parseFloat(c.invoice_amount)||0); },0);
     var allZipRevTotal = matchedCust.filter(function(c){ return c.invoice_status==='paid'; })
       .reduce(function(s,c){ return s+(parseFloat(c.invoice_amount)||0); },0);
-    var roi = totalSpend>0 ? ((mailRevTotal-totalSpend)/totalSpend*100).toFixed(0) : 0;
-    var roiClr = roi>=0?'#8DC63F':'#ef4444';
+    var roi = totalSpend>0 ? ((mailRevTotal-totalSpend)/totalSpend*100).toFixed(0) : null;
+    var roiClr = (roi===null)?'#888':(roi>=0?'#8DC63F':'#ef4444');
 
     // ── Summary boxes ──
     function mBox(v,lbl,clr,sub) {
@@ -2427,7 +2429,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       mBox('$'+totalSpend.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}),'Total Spend (all)','#ffaa00')+
       mBox('$'+gadsTotalSpend.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}),'Google Ads Spend','#9b6de8')+
       mBox('$'+mailRevTotal.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}),'Mail Revenue (paid)','#8DC63F','from Direct Mail tagged jobs')+
-      mBox((roi>=0?'+':'')+roi+'%','ROI',roiClr,'mail rev vs spend')+
+      mBox((roi===null?'—':(roi>=0?'+':'')+roi+'%'),'ROI',roiClr,roi===null?'no spend yet':'mail rev vs spend')+
       '</div>';
 
     // ── Google Ads section ──
@@ -3595,7 +3597,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var assessmentNotes = c.assessment_notes||'';
     var fieldNotes = c.field_notes||'';
     var jobNotes = c.job_notes||'';
-    upgradeItems = c.upgrade_plan ? JSON.parse(c.upgrade_plan) : [];
+    upgradeItems = safeJson(c.upgrade_plan, []);
     var itemsHtml = '';
     upgradeItems.forEach(function(item,i){ itemsHtml += buildUpgradeItemRow(item,i); });
     var statusOpts = [
@@ -4465,16 +4467,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '</div>';
         var gpZip = extractZip(lead.address||'');
         var gpIsSDCP = gpZip && SDCP_ZIPS.has(gpZip);
-        h += '<div style="font-size:1.05rem;font-weight:700;margin-bottom:4px;">'+(lead.address||'No address')+(gpIsSDCP?'<span style="display:inline-block;margin-left:7px;padding:1px 7px;background:rgba(0,150,255,0.15);color:#4AABF7;border-radius:10px;font-size:0.58rem;font-weight:700;vertical-align:middle;">SDCP</span>':'')+(lead.lead_score != null ? leadScoreBadge(lead.lead_score) : '')+'</div>';
+        h += '<div style="font-size:1.05rem;font-weight:700;margin-bottom:4px;">'+esc(lead.address||'No address')+(gpIsSDCP?'<span style="display:inline-block;margin-left:7px;padding:1px 7px;background:rgba(0,150,255,0.15);color:#4AABF7;border-radius:10px;font-size:0.58rem;font-weight:700;vertical-align:middle;">SDCP</span>':'')+(lead.lead_score != null ? leadScoreBadge(lead.lead_score) : '')+'</div>';
         if (ownerName) {
-          h += '<div style="font-size:0.8rem;font-weight:600;color:#F3EDE3;margin-bottom:2px;">'+ownerName+'</div>';
+          h += '<div style="font-size:0.8rem;font-weight:600;color:#F3EDE3;margin-bottom:2px;">'+esc(ownerName)+'</div>';
         }
         if (lead.apn) h += '<div style="font-size:0.65rem;color:#555;margin-bottom:8px;">APN: '+lead.apn+'</div>';
         if (!ownerName) {
           h += '<button id="bbVerifyBtn_'+lead.id+'" onclick="adminCanvassVerifyOwner(\''+lead.id+'\')" title="Looks up the current property owner via Regrid parcel data (free). Confirms the homeowner name before you knock or call." style="width:auto;margin-top:0;display:inline-block;font-size:0.7rem;font-weight:700;color:#ffaa00;background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.3);border-radius:100px;padding:4px 12px;cursor:pointer;margin-bottom:10px;">&#128269; Verify Owner</button>';
         }
         var gpNoteTop = _parseNotes(lead.notes||'').slice(-1)[0];
-        if (gpNoteTop) h += '<div style="font-size:0.7rem;color:#666;margin-bottom:10px;font-style:italic;">'+gpNoteTop.by+': '+gpNoteTop.text.slice(0,60)+(gpNoteTop.text.length>60?'…':'')+'</div>';
+        if (gpNoteTop) h += '<div style="font-size:0.7rem;color:#666;margin-bottom:10px;font-style:italic;">'+esc(gpNoteTop.by)+': '+esc(gpNoteTop.text.slice(0,60))+(gpNoteTop.text.length>60?'…':'')+'</div>';
         h += '<a href="'+mapsUrl+'" target="_blank" style="display:inline-block;font-size:0.75rem;font-weight:700;color:#4a9eff;text-decoration:none;background:rgba(74,158,255,0.08);border:1px solid rgba(74,158,255,0.25);border-radius:100px;padding:6px 14px;margin-bottom:8px;">&#128506; Get Directions</a>';
         var gpPh = (lead.phone||'').replace(/\D/g,'');
         var gpRealEmail = (lead.email && !lead.email.endsWith('@pending.fixmy.energy')) ? lead.email : null;
@@ -4509,7 +4511,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '</div>';
         // Note preview + inline note input
         var gpNotePreview = _parseNotes(lead.notes||'').slice(-1)[0];
-        if (gpNotePreview) h += '<div style="font-size:0.7rem;color:#666;margin-top:10px;font-style:italic;border-top:1px solid rgba(255,255,255,0.06);padding-top:8px;">'+gpNotePreview.by+': '+gpNotePreview.text.slice(0,80)+(gpNotePreview.text.length>80?'…':'')+'</div>';
+        if (gpNotePreview) h += '<div style="font-size:0.7rem;color:#666;margin-top:10px;font-style:italic;border-top:1px solid rgba(255,255,255,0.06);padding-top:8px;">'+esc(gpNotePreview.by)+': '+esc(gpNotePreview.text.slice(0,80))+(gpNotePreview.text.length>80?'…':'')+'</div>';
         h += '<div style="margin-top:8px;">';
         h += '<button onclick="(function(w){var el=w.getElementById(\'gpNi_'+lead.id+'\');el.style.display=el.style.display===\'none\'?\'block\':\'none\';})(window)" style="width:auto;margin-top:0;background:none;border:none;color:#555;cursor:pointer;font-size:0.7rem;padding:0;text-decoration:underline;">&#128221; Add Note</button>';
         h += '<div id="gpNi_'+lead.id+'" style="display:none;margin-top:6px;">';
@@ -4527,8 +4529,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             var nlOwner = nl.title_owner || ((nl.first_name||'')+' '+(nl.last_name||'')).trim();
             h += '<button onclick="adminCanvassPrioritize(\''+nl.id+'\')" style="width:100%;display:flex;justify-content:space-between;align-items:center;padding:9px 10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:8px;margin-bottom:4px;cursor:pointer;text-align:left;">';
             h += '<div>';
-            h += '<div style="font-size:0.75rem;color:#aaa;font-weight:600;">'+(ni+2)+'. '+(nl.address||'&mdash;')+'</div>';
-            if (nlOwner) h += '<div style="font-size:0.65rem;color:#666;margin-top:1px;">'+nlOwner+'</div>';
+            h += '<div style="font-size:0.75rem;color:#aaa;font-weight:600;">'+(ni+2)+'. '+(esc(nl.address)||'&mdash;')+'</div>';
+            if (nlOwner) h += '<div style="font-size:0.65rem;color:#666;margin-top:1px;">'+esc(nlOwner)+'</div>';
             h += '</div>';
             h += '<div style="font-size:0.68rem;color:#555;flex-shrink:0;margin-left:8px;">'+(nd?nd+' &#8679;':'&#8679;')+'</div>';
             h += '</button>';
@@ -4607,10 +4609,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             h += '<div style="padding:10px 12px 8px;border-bottom:1px solid rgba(255,255,255,0.06);">';
             h += '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:5px;">';
             h += '<div style="flex:1;min-width:0;">';
-            h += '<div style="font-size:0.85rem;font-weight:700;color:#eee;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="'+name+'">'+name+'</div>';
+            h += '<div style="font-size:0.85rem;font-weight:700;color:#eee;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="'+esc(name)+'">'+esc(name)+'</div>';
             var bbZip = extractZip(lead.address||'');
             var bbIsSDCP = bbZip && SDCP_ZIPS.has(bbZip);
-            h += '<div style="font-size:0.68rem;color:#666;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+(lead.address||'—')+'</div>';
+            h += '<div style="font-size:0.68rem;color:#666;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+esc(lead.address||'—')+'</div>';
             h += '</div>';
             h += '<button onclick="activateBlackBoxLead(\''+lead.id+'\')" title="Promotes this lead out of Black Box quarantine into the main Leads pipeline (Step 1) and opens the lead editor." style="width:auto;margin-top:0;flex-shrink:0;padding:5px 12px;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:100px;font-size:0.68rem;font-weight:700;cursor:pointer;white-space:nowrap;">&#128275; Activate</button>';
             h += '</div>';
@@ -5656,10 +5658,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '</div>';
     var dialZip = extractZip(lead.address||'');
     var dialIsSDCP = dialZip && SDCP_ZIPS.has(dialZip);
-    h += '<div style="font-size:1.15rem;font-weight:800;margin-bottom:2px;">'+name+(dialIsSDCP?'<span style="display:inline-block;margin-left:7px;padding:1px 7px;background:rgba(0,150,255,0.15);color:#4AABF7;border-radius:10px;font-size:0.58rem;font-weight:700;vertical-align:middle;">SDCP</span>':'')+'</div>';
-    h += '<div style="font-size:0.78rem;color:#888;margin-bottom:6px;">'+(lead.address||'—')+'</div>';
+    h += '<div style="font-size:1.15rem;font-weight:800;margin-bottom:2px;">'+esc(name)+(dialIsSDCP?'<span style="display:inline-block;margin-left:7px;padding:1px 7px;background:rgba(0,150,255,0.15);color:#4AABF7;border-radius:10px;font-size:0.58rem;font-weight:700;vertical-align:middle;">SDCP</span>':'')+'</div>';
+    h += '<div style="font-size:0.78rem;color:#888;margin-bottom:6px;">'+esc(lead.address||'—')+'</div>';
     var badges = '';
-    if (lead.original_installer) badges += '<span style="display:inline-block;padding:2px 9px;background:rgba(255,170,0,0.12);color:#ffaa00;border-radius:100px;font-size:0.62rem;font-weight:700;margin-right:6px;">'+lead.original_installer+'</span>';
+    if (lead.original_installer) badges += '<span style="display:inline-block;padding:2px 9px;background:rgba(255,170,0,0.12);color:#ffaa00;border-radius:100px;font-size:0.62rem;font-weight:700;margin-right:6px;">'+esc(lead.original_installer)+'</span>';
     if (ksLabel) badges += '<span style="display:inline-block;padding:2px 9px;background:rgba(74,158,255,0.12);color:#4a9eff;border-radius:100px;font-size:0.62rem;font-weight:700;margin-right:6px;">'+ksLabel+'</span>';
     if (lead.dnc) badges += '<span style="display:inline-block;padding:2px 9px;background:rgba(239,68,68,0.12);color:#ef4444;border-radius:100px;font-size:0.62rem;font-weight:700;margin-right:6px;">&#9940; DNC</span>';
     if (cbDue) badges += '<span style="display:inline-block;padding:2px 9px;background:rgba(255,170,0,0.15);color:#ffaa00;border-radius:100px;font-size:0.62rem;font-weight:700;">&#128257; Callback '+cbDue.toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+'</span>';
@@ -5724,8 +5726,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var outColor = (BB_DIAL_OUTCOMES[nl.dial_status] && BB_DIAL_OUTCOMES[nl.dial_status].color) || '#666';
         var isCurrent = isPinned && lead.id === nl.id;
         h += '<button onclick="bbDialPinLead(\''+nl.id+'\')" style="width:100%;text-align:left;padding:9px 10px;background:'+(isCurrent?'rgba(74,158,255,0.1)':'rgba(255,255,255,0.03)')+';border:1px solid '+(isCurrent?'rgba(74,158,255,0.4)':'rgba(255,255,255,0.07)')+';border-radius:8px;margin-bottom:4px;cursor:pointer;">';
-        h += '<div style="font-size:0.75rem;color:#aaa;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+nm+'</div>';
-        h += '<div style="font-size:0.64rem;color:#555;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+(nl.address||'')+'</div>';
+        h += '<div style="font-size:0.75rem;color:#aaa;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+esc(nm)+'</div>';
+        h += '<div style="font-size:0.64rem;color:#555;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+esc(nl.address||'')+'</div>';
         h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:3px;">';
         if (outLbl) h += '<span style="font-size:0.6rem;font-weight:700;color:'+outColor+';">'+outLbl+'</span>';
         h += '<span style="font-size:0.6rem;color:#444;">'+new Date(nl.dialed_at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})+'</span>';
@@ -5739,8 +5741,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var nm = ((nl.first_name||'')+' '+(nl.last_name||'')).trim() || nl.title_owner || '—';
         var lastN = _parseNotes(nl.notes||'').slice(-1)[0];
         h += '<button onclick="bbDialJump(\''+nl.id+'\')" style="width:100%;text-align:left;padding:9px 10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:8px;margin-bottom:4px;cursor:pointer;">';
-        h += '<div style="font-size:0.75rem;color:#aaa;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+(i+upNextOffset)+'. '+nm+'</div>';
-        h += '<div style="font-size:0.64rem;color:#555;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+(nl.address||'')+'</div>';
+        h += '<div style="font-size:0.75rem;color:#aaa;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+(i+upNextOffset)+'. '+esc(nm)+'</div>';
+        h += '<div style="font-size:0.64rem;color:#555;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+esc(nl.address||'')+'</div>';
         if (nl.callback_at) h += '<div style="font-size:0.62rem;color:#ffaa00;margin-top:2px;">&#128257; '+new Date(nl.callback_at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+'</div>';
         else if (lastN) h += '<div style="font-size:0.62rem;color:#666;margin-top:2px;font-style:italic;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+String(lastN.text||'').slice(0,44)+'</div>';
         h += '</button>';
@@ -7421,7 +7423,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (!c) return;
 
     var catalog = await _loadCatalog();
-    var existing = c.proposal ? (typeof c.proposal==='string' ? JSON.parse(c.proposal) : c.proposal) : null;
+    var existing = safeJson(c.proposal, null);
     var serviceType = 'battery_retrofit'; // default; sendProposal() re-derives from selected items
 
     var acceptedBanner = '';
@@ -8694,7 +8696,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var _notesLogHtml = _renderNotesLog(_parseNotes(c.notes || ''));
     slot.innerHTML = '<div style="position:sticky;top:0;z-index:10;background:#0d0d0d;border-bottom:1px solid #2a2a2a;margin-bottom:12px;"><button onclick="closeLeadEditor()" style="display:block;width:100%;padding:12px;background:transparent;border:none;color:#aaa;cursor:pointer;font-size:0.85rem;font-weight:700;letter-spacing:0.5px;">&#10005;&nbsp;&nbsp;Close</button></div>'+
     '<div class="editor-panel" id="editorPanel">'+
-      '<div class="editor-header"><div style="font-weight:700;color:'+(isNSEdit?'#4a9eff':isTTEdit?'#9b6de8':'#8DC63F')+';">Editing: '+(c.first_name||'')+' '+(c.last_name||'')+
+      '<div class="editor-header"><div style="font-weight:700;color:'+(isNSEdit?'#4a9eff':isTTEdit?'#9b6de8':'#8DC63F')+';">Editing: '+esc(c.first_name||'')+' '+esc(c.last_name||'')+
         '<span style="font-size:0.7rem;margin-left:8px;padding:2px 8px;border-radius:20px;background:'+(isNSEdit?'rgba(74,158,255,0.15)':isTTEdit?'rgba(155,109,232,0.15)':'rgba(141,198,63,0.15)')+';color:'+(isNSEdit?'#4a9eff':isTTEdit?'#9b6de8':'#8DC63F')+';font-weight:600;">'+(isNSEdit?'New Solar':isTTEdit?'Top Tier':'FixMy.Energy')+'</span></div>'+
       '<button onclick="closeLeadEditor()" style="background:none;border:none;color:#666;cursor:pointer;font-size:1.1rem;">&#10005;</button></div>'+
       '<input type="hidden" id="edId" value="'+c.id+'"/>'+
@@ -8779,7 +8781,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             '<label class="ed-label" style="margin:0;">Owner on Title &amp; APN</label>'+
             '<button type="button" onclick="edTitleLookup()" style="padding:4px 12px;border:1px solid rgba(74,158,255,0.4);border-radius:100px;background:rgba(74,158,255,0.1);color:#4a9eff;font-size:0.7rem;font-weight:700;cursor:pointer;">&#128269; Run Lookup</button>'+
           '</div>'+
-          '<input type="hidden" id="edTitleOwner" value="'+(c.title_owner||'')+'"/>'+
+          '<input type="hidden" id="edTitleOwner" value="'+esc(c.title_owner||'')+'"/>'+
           '<input type="hidden" id="edApn" value="'+(c.apn||'')+'"/>'+
           '<input type="hidden" id="edTitleConfirmed" value="'+(c.title_confirmed===true?'true':c.title_confirmed===false?'false':'')+'"/>'+
           '<div id="edTitleBody" style="padding:10px 12px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;min-height:38px;">'+
@@ -8899,7 +8901,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     loadEditorPhotos(c.id);
   }
 
-  function edField(label,id,val,type){ return '<div><label class="ed-label">'+label+'</label><input type="'+type+'" id="'+id+'" class="ed-input" value="'+val+'"/></div>'; }
+  function edField(label,id,val,type){ return '<div><label class="ed-label">'+label+'</label><input type="'+type+'" id="'+id+'" class="ed-input" value="'+esc(val)+'"/></div>'; }
   function edSelect(label,id,val,options){ var opts=options.map(function(o){ return '<option value="'+o[0]+'"'+(o[0]==val?' selected':'')+'>'+o[1]+'</option>'; }).join(''); return '<div><label class="ed-label">'+label+'</label><select id="'+id+'" class="ed-input">'+opts+'</select></div>'; }
   function closeLeadEditor(){ var slot=document.getElementById('editorSlot'); if(slot) slot.innerHTML=''; }
 
@@ -9624,6 +9626,25 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
   };
 
+  // HTML-escape untrusted text (lead names, addresses, installer, etc. — sourced
+  // from the public /book form, GHL webhooks, QR capture and skip-trace CSV import).
+  // Safe for both text content and double-quoted attribute values. NOTE: this does
+  // NOT make a string safe inside a single-quoted JS string in an onclick handler —
+  // those sinks need JS-string escaping, handled separately.
+  function esc(s){
+    return String(s == null ? '' : s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+
+  // Parse a JSON column value without letting a malformed string throw and blank
+  // the whole view. Accepts already-parsed objects/arrays as-is.
+  function safeJson(val, fallback){
+    if (val == null) return fallback;
+    if (typeof val !== 'string') return val;
+    try { return JSON.parse(val); } catch(e){ console.warn('safeJson: bad JSON, using fallback', e.message); return fallback; }
+  }
+
   // ── Notes activity log helpers ───────────────────────────────────────────────────────────────
   function _parseNotes(raw) {
     if (!raw) return [];
@@ -10066,7 +10087,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var bm={paid:'badge-paid',pending:'badge-pending',sent:'badge-pending',draft:'badge-draft',overdue:'badge-overdue'};
       var lm={paid:'Paid &#10003;',pending:'Payment Due',sent:'Invoice Sent',draft:'Draft',overdue:'Overdue'};
       var items='';
-      if(c.invoice_items){var it=typeof c.invoice_items==='string'?JSON.parse(c.invoice_items):c.invoice_items;it.forEach(function(x){items+='<div class="inv-line"><span>'+x.name+'</span><span>$'+parseFloat(x.price).toFixed(2)+'</span></div>';});}
+      if(c.invoice_items){var it=safeJson(c.invoice_items,[]);if(Array.isArray(it))it.forEach(function(x){items+='<div class="inv-line"><span>'+esc(x.name)+'</span><span>$'+(parseFloat(x.price)||0).toFixed(2)+'</span></div>';});}
       var acts='';
       if(c.invoice_url&&c.invoice_status!=='paid') acts+='<a href="'+c.invoice_url+'" class="btn-lime" target="_blank">&#128179; Pay Now</a> ';
       if(c.invoice_url) acts+='<a href="'+c.invoice_url+'" class="btn-ghost" target="_blank">&#128196; View Invoice</a>';
@@ -10115,8 +10136,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // Proposal section
     var proposalHtml = '';
     if (c.proposal) {
-      var _prop = typeof c.proposal==='string' ? JSON.parse(c.proposal) : c.proposal;
-      if (_prop.status === 'accepted') {
+      var _prop = safeJson(c.proposal, null);
+      if (_prop && _prop.status === 'accepted') {
         var _accOpt = (_prop.options||[]).find(function(o){ return o.id===_prop.accepted_option; });
         var _accPrice = (_prop.accepted_option==='bundle' && _prop.financing==='participate' && _accOpt) ? _accOpt.participate_price : (_accOpt ? _accOpt.price : 0);
         proposalHtml = '<div id="proposalWrap"><div class="sect-label">Your Proposal</div>'+
@@ -10751,7 +10772,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           }
 
           // Use .limit(1) instead of .single() so duplicate records don't break magic-link login
-          var resp = await client.from('customers').select('*').eq('email', cleanEmail).limit(1);
+          // Order newest-first so duplicate rows resolve to the same record every time.
+          var resp = await client.from('customers').select('*').eq('email', cleanEmail).order('updated_at',{ascending:false,nullsFirst:false}).limit(1);
 
           var c = null;
           if(!resp.error && resp.data && resp.data.length) {
@@ -10760,7 +10782,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             // Email not found — fallback: look up by normalized access_code (handles phone-only records)
             var normCode = normalize(cleanUc);
             if(normCode) {
-              var codeResp = await client.from('customers').select('*').eq('access_code', normCode).limit(1);
+              var codeResp = await client.from('customers').select('*').eq('access_code', normCode).order('updated_at',{ascending:false,nullsFirst:false}).limit(1);
               if(!codeResp.error && codeResp.data && codeResp.data.length) {
                 c = codeResp.data[0];
                 // Backfill email on the record so future logins work by email
@@ -10779,11 +10801,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             return;
           }
 
-          // Code mismatch
-          var match = normalize(cleanUc)===normalize(c.phone)
+          // Verify the access code against THIS record's own credentials.
+          // Matching by email alone is NOT sufficient — the code (phone or
+          // access_code) is the actual credential. Never treat "found by email"
+          // as implicit code verification, or anyone who knows a customer's
+          // email could open their portal with any code.
+          var match = (normalize(cleanUc).length>=10 && normalize(cleanUc)===normalize(c.phone))
                    || cleanUc===c.access_code
-                   || normalize(cleanUc)===normalize(c.access_code)
-                   || (c.email && c.email === cleanEmail); // if we matched by email above, code already verified implicitly
+                   || (!!c.access_code && normalize(cleanUc)===normalize(c.access_code));
           if(!match) {
             showMagicLinkError(
               'Your access link has expired or is no longer valid.',
@@ -11718,11 +11743,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             h += '</div>';
             var tZip = extractZip(lead.address||'');
             var tIsSDCP = tZip && SDCP_ZIPS.has(tZip);
-            h += '<div style="font-size:1.05rem;font-weight:700;margin-bottom:4px;">'+(lead.address||'No address')+(tIsSDCP?'<span style="display:inline-block;margin-left:7px;padding:1px 7px;background:rgba(0,150,255,0.15);color:#4AABF7;border-radius:10px;font-size:0.58rem;font-weight:700;vertical-align:middle;">SDCP</span>':'')+(lead.lead_score != null ? leadScoreBadge(lead.lead_score) : '')+'</div>';
+            h += '<div style="font-size:1.05rem;font-weight:700;margin-bottom:4px;">'+esc(lead.address||'No address')+(tIsSDCP?'<span style="display:inline-block;margin-left:7px;padding:1px 7px;background:rgba(0,150,255,0.15);color:#4AABF7;border-radius:10px;font-size:0.58rem;font-weight:700;vertical-align:middle;">SDCP</span>':'')+(lead.lead_score != null ? leadScoreBadge(lead.lead_score) : '')+'</div>';
             if (lead.dnc) h += '<span style="display:inline-block;margin-bottom:6px;padding:2px 8px;background:rgba(239,68,68,0.15);color:#ef4444;border-radius:10px;font-size:0.62rem;font-weight:700;">DNC</span>';
-            if (fullName) h += '<div style="font-size:0.8rem;font-weight:600;color:#F3EDE3;margin-bottom:2px;">'+fullName+'</div>';
+            if (fullName) h += '<div style="font-size:0.8rem;font-weight:600;color:#F3EDE3;margin-bottom:2px;">'+esc(fullName)+'</div>';
             var tNotePreview = _parseNotes(lead.notes||'').slice(-1)[0];
-            if (tNotePreview) h += '<div style="font-size:0.7rem;color:#666;margin-bottom:10px;font-style:italic;">'+tNotePreview.by+': '+tNotePreview.text.slice(0,60)+(tNotePreview.text.length>60?'…':'')+'</div>';
+            if (tNotePreview) h += '<div style="font-size:0.7rem;color:#666;margin-bottom:10px;font-style:italic;">'+esc(tNotePreview.by)+': '+esc(tNotePreview.text.slice(0,60))+(tNotePreview.text.length>60?'…':'')+'</div>';
             h += '<a href="'+mapsUrl+'" target="_blank" style="display:inline-block;font-size:0.75rem;font-weight:700;color:#4a9eff;text-decoration:none;background:rgba(74,158,255,0.08);border:1px solid rgba(74,158,255,0.25);border-radius:100px;padding:6px 14px;margin-bottom:8px;">🗺 Get Directions</a>';
             var tPh = (lead.phone||'').replace(/\D/g,'');
             var tRealEmail = (lead.email && !lead.email.endsWith('@pending.fixmy.energy')) ? lead.email : null;
@@ -11987,14 +12012,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '</div>'+
         '<div class="editor-section-title">Contact Info</div>'+
         '<div class="ed-grid">'+
-          '<div><label class="ed-label">First Name</label><input type="text" id="seFirst" class="ed-input" value="'+(l.first_name||'')+'"/></div>'+
-          '<div><label class="ed-label">Last Name</label><input type="text" id="seLast" class="ed-input" value="'+(l.last_name||'')+'"/></div>'+
-          '<div><label class="ed-label">Phone</label><input type="tel" id="sePhone" class="ed-input" value="'+(l.phone||'')+'"/></div>'+
-          '<div><label class="ed-label">Email</label><input type="email" id="seEmail" class="ed-input" value="'+(l.email||'')+'"/></div>'+
+          '<div><label class="ed-label">First Name</label><input type="text" id="seFirst" class="ed-input" value="'+esc(l.first_name||'')+'"/></div>'+
+          '<div><label class="ed-label">Last Name</label><input type="text" id="seLast" class="ed-input" value="'+esc(l.last_name||'')+'"/></div>'+
+          '<div><label class="ed-label">Phone</label><input type="tel" id="sePhone" class="ed-input" value="'+esc(l.phone||'')+'"/></div>'+
+          '<div><label class="ed-label">Email</label><input type="email" id="seEmail" class="ed-input" value="'+esc(l.email||'')+'"/></div>'+
         '</div>'+
         '<div class="editor-section-title">Property</div>'+
         '<div class="ed-grid">'+
-          '<div><label class="ed-label">Service Address</label><input type="text" id="seAddr" class="ed-input" value="'+(l.address||'')+'"/></div>'+
+          '<div><label class="ed-label">Service Address</label><input type="text" id="seAddr" class="ed-input" value="'+esc(l.address||'')+'"/></div>'+
           '<div><label class="ed-label">Monthly Bill ($)</label>'+
             '<div style="display:flex;gap:5px;align-items:center;">'+
               '<input type="number" id="seBill" class="ed-input" value="'+(l.monthly_bill||'')+'" style="flex:1;min-width:0;"/>'+

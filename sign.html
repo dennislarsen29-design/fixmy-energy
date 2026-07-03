@@ -705,24 +705,58 @@ label[for="sig-input"] {
     }
 
     if (paymentIntent.status === 'succeeded') {
+      // Card is charged. Record the signature + mark paid via sign-complete, which
+      // is idempotent (re-verifies the PaymentIntent every call), so we can safely
+      // retry through cold starts / network blips. We must NOT show the "recorded"
+      // certificate unless this actually succeeds, or the customer would be charged
+      // with no record on our side and a false confirmation on theirs.
       var completeData = {};
-      try {
-        var signingLocation = (geoData.city && geoData.region) ? geoData.city + ', ' + geoData.region : (geoData.city || '');
-        var completeResp = await fetch('/.netlify/functions/sign-complete', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            token: token,
-            paymentIntentId: paymentIntent.id,
-            signature: sig,
-            repairAuthInitial: repair,
-            signingLocation: signingLocation,
-            signedAt: new Date().toISOString()
-          })
-        });
-        if (completeResp.ok) completeData = await completeResp.json();
-      } catch(e) {
-        console.warn('sign-complete error (payment already processed):', e.message);
+      var recorded = false;
+      var signingLocation = (geoData.city && geoData.region) ? geoData.city + ', ' + geoData.region : (geoData.city || '');
+      var signedAtISO = new Date().toISOString();
+      for (var attempt = 0; attempt < 4 && !recorded; attempt++) {
+        if (attempt > 0) await new Promise(function(r){ setTimeout(r, 1200 * attempt); });
+        try {
+          var completeResp = await fetch('/.netlify/functions/sign-complete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              token: token,
+              paymentIntentId: paymentIntent.id,
+              signature: sig,
+              repairAuthInitial: repair,
+              signingLocation: signingLocation,
+              signedAt: signedAtISO
+            })
+          });
+          if (completeResp.ok) { completeData = await completeResp.json(); recorded = true; }
+          else { try { completeData = await completeResp.json(); } catch(e){} }
+        } catch(e) {
+          console.warn('sign-complete attempt ' + (attempt+1) + ' failed:', e.message);
+        }
+      }
+
+      // Payment succeeded but we couldn't record it after retries. Do NOT tell the
+      // customer to pay again, and do NOT show the certificate claiming it's on
+      // file. Show a reassuring "received, finalizing" state — the payment is
+      // captured in Stripe and recoverable server-side by reference.
+      if (!recorded) {
+        var piRef = (paymentIntent.id || '').slice(-12).toUpperCase();
+        mainEl.style.display = 'none';
+        successEl.innerHTML =
+          '<div class="cert-card"><div class="cert-top">' +
+            '<div class="cert-check">✅</div>' +
+            '<div class="cert-title">Payment Received</div>' +
+            '<div class="cert-subtitle">Solar Review Corp · Diagnostic Service Agreement</div>' +
+            '<div class="cert-ref">Reference: ' + piRef + '</div>' +
+          '</div><div class="cert-body">' +
+            '<p style="font-size:15px;line-height:1.6;color:#1A1A1A;margin:0 0 12px;">Thank you, ' + (firstName || 'there') + '! Your payment went through and your agreement is signed.</p>' +
+            '<p style="font-size:14px;line-height:1.6;color:#4A443C;margin:0;">We\'re finalizing your booking now and will text you shortly to confirm your appointment. No further action is needed — please do not pay again. Questions? Call <a href="tel:6197776527">(619) 777-6527</a> and reference <strong>' + piRef + '</strong>.</p>' +
+          '</div>' +
+          '<div class="cert-footer">Solar Review Corp &nbsp;·&nbsp; License #: 117450 &nbsp;·&nbsp; (619) 777-6527 &nbsp;·&nbsp; fixmy.energy &nbsp;·&nbsp; San Diego, CA</div></div>';
+        successEl.style.display = 'block';
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        return;
       }
 
       // Build signature certificate
