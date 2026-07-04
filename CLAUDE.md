@@ -242,6 +242,8 @@ Dialer: `dial_status, dialed_at, dial_attempts, callback_at` (added by 20260702_
   - check-preview.html (all /sunpower /titan etc. routes) now has GTM + GA4 + Ads + Meta Pixel, per-installer title/meta/canonical, and generate_lead + fbq('Lead') on submit.
   - SEO penalty risks removed from index.html: hidden off-screen keyword div (now a visible footer Service Areas block) and unverifiable `aggregateRating` schema. Added robots.txt + sitemap.xml (submit in Search Console).
   - Still open: verify GHL workflows don't key off partial payloads; Meta retargeting campaigns; Google Ads offline conversion upload.
+- **Brand decision (2026-07-04, per Dennis):** The customer-facing brand on book.html / thank-you.html stays **Solar Review** (matches the logos). Do NOT rename these pages to FixMy.Energy. fixmy.energy remains the domain/site name on the homepage.
+- **/book page decision (per Dennis):** keep the preloaded appointment slots directly in the form — do not replace with a separate calendar step.
 - **Google Ads video creative (HIGH PRIORITY):** Current video ads are low quality. Need better video assets. (Not a dev task — Dennis action item.)
 
 ### Medium Priority / On Hold
