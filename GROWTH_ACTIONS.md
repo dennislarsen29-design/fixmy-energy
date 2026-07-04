@@ -4,6 +4,12 @@ Tracked by Claude's daily accountability check-in. Statuses: ☐ open · ⏳ in 
 Full audit: https://claude.ai/code/artifact/0c2828a2-6213-43cd-8afd-e13b19c8aff7
 
 ## Now — unblocks work already shipped
+- ☐ **Payments system go-live (recovers Janet Pompa & co):**
+  1. Supabase SQL Editor → run `supabase/migrations/20260704_payments_ledger.sql` (rerun-safe)
+  2. GHL → Settings → Private Integrations → confirm the API key has **Payments read** scope ticked
+  3. GHL → Automations → New workflow → Trigger **Payment Received** → Webhook POST to `https://fixmy.energy/.netlify/functions/ghl-payment-sync` (real-time booking of every future GHL payment)
+  4. GHL → Automations → New workflow → Trigger **Contact Tag Added = `send-ghl-invoice`** → Send Invoice (or notify staff) — this powers the Sign & Pay card-failure fallback
+  5. Portal → Admin → Finance → **Money Owed** → tap **📦 Backfill 12 months** — pulls a year of GHL transactions into the ledger; Janet's ~$1800 books itself, unmatched payments surface for assignment
 - ✅ **Attribution migration ran 2026-07-04** (part of the combined block — see below).
 - ☐ **Build the bb-followup GHL workflow** — Automations → New → Trigger: Contact Tag Added = `bb-followup` → Action: Send SMS (LC Phone), e.g. "Great meeting you today — here's the link to grab your free evaluation: https://fixmy.energy/book". The portal already fires the tag on every *Interested* / *Callback* knock or dial outcome.
 - ☐ **Check GHL partial handling** — confirm no workflow keys off webhook payloads with `status='partial'`; only completed homepage leads hit the webhook-trigger now.

@@ -109,6 +109,29 @@ exports.handler = async function(event) {
 
   console.log('sign-complete: paid+signed for', c.first_name, c.last_name, '(', customerId, ') from IP', signingIp);
 
+  // Record the transaction in the payments ledger (idempotent on the
+  // PaymentIntent id — safe across client retries). Non-fatal: the customer
+  // flags above are already set, and the nightly reconcile catches gaps.
+  try {
+    const chargedAmount = (pi.amount_received != null ? pi.amount_received : pi.amount) / 100;
+    const ledgerResp = await fetch(SUPA_URL + '/rest/v1/payments?on_conflict=stripe_payment_intent_id', {
+      method: 'POST',
+      headers: { ...supaHeaders, 'Prefer': 'resolution=ignore-duplicates,return=minimal' },
+      body: JSON.stringify({
+        customer_id: customerId,
+        amount: chargedAmount,
+        currency: pi.currency || 'usd',
+        paid_at: new Date((pi.created || Math.floor(Date.now() / 1000)) * 1000).toISOString(),
+        method: 'card',
+        source: 'stripe_sign_page',
+        stripe_payment_intent_id: paymentIntentId,
+        note: 'Sign & Pay — includes 3.9% card surcharge',
+        recorded_by: 'sign-complete'
+      })
+    });
+    if (!ledgerResp.ok) console.warn('sign-complete: ledger insert failed', ledgerResp.status, (await ledgerResp.text()).slice(0, 200));
+  } catch(e) { console.warn('sign-complete: ledger insert error —', e.message); }
+
   // Fire GHL webhook to notify agreement signed + invoice paid
   if (GHL_API_KEY) {
     const ghlHeaders = {
