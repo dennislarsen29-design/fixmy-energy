@@ -10,6 +10,13 @@ Full audit: https://claude.ai/code/artifact/0c2828a2-6213-43cd-8afd-e13b19c8aff7
 - ⏳ **Search Console** — ✅ verified + sitemap submitted 2026-07-04; ✅ Manual actions: none; ✅ Security issues: none (drop is algorithmic — recovery = fixes already shipped + content plan). Still open: (b) ☰ → *Performance* → stretch to 12–16 months, screenshot the traffic curve for Claude; (c) Settings → Users and permissions → add main Google account as Owner.
 
 ## This week
+- ☐ **Connect the SEO dashboard (one-time, ~15 min, desktop)** — powers the SEO Pulse panel + weekly AI SEO analysis in Admin → Agents:
+  1. console.cloud.google.com → create/select a project → enable **Google Search Console API** and **Google Analytics Data API**
+  2. IAM & Admin → Service Accounts → Create service account → Keys → Add key → **JSON** → download
+  3. Search Console → Settings → Users and permissions → Add user → the service account's `client_email` → Full
+  4. GA4 → Admin → Property access management → add the same email as Viewer; note the numeric Property ID (Admin → Property settings)
+  5. Netlify → Site → Environment variables → add `GSC_SERVICE_ACCOUNT` = the entire JSON file contents, and `GA4_PROPERTY_ID` = the number → redeploy
+  6. Data appears after the next nightly sync (~6:40am PT); tap "▶ seo" in Admin → Agents to run the first AI analysis on demand
 - ☐ **Google Business Profile pass** — name exactly "Solar Review", primary category *Solar energy system service*, add services incl. per-installer items ("SunPower system repair"), seed 8–10 Q&As, set website link to `https://fixmy.energy/?utm_source=gbp&utm_medium=organic`.
 - ☐ **Review-ask workflow in GHL** — SMS 3 days post-diagnostic with the direct Google review link. Reply to every review within 48h.
 - ☐ **Google Local Services Ads signup** — ads.google.com/localservices. Pay-per-lead, sits above regular ads for "solar repair near me". Start ~$500/mo.
