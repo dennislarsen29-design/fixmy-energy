@@ -3,22 +3,22 @@
 // configured) into Supabase seo_metrics + seo_queries for the portal's SEO Pulse
 // dashboard and the weekly seo-agent analysis.
 //
+// Credentials:
+//   The Google service-account key JSON lives in the Supabase app_config table
+//   (key = 'gsc_service_account') — NOT in a Netlify env var, because AWS
+//   Lambda caps all env vars at 4KB total and the key alone is ~2.5KB.
+//   Store it once in the Supabase SQL Editor:
+//     insert into app_config (key, value)
+//     values ('gsc_service_account', '<paste the whole JSON key file here>'::jsonb)
+//     on conflict (key) do update set value = excluded.value, updated_at = now();
+//   (A GSC_SERVICE_ACCOUNT env var still works as an override if it ever fits.)
+//
 // ENV vars:
-//   GSC_SERVICE_ACCOUNT  — full JSON of a Google Cloud service account key.
-//                          Setup (one time, ~15 min, desktop):
-//                          1. console.cloud.google.com → new project (or existing)
-//                          2. Enable "Google Search Console API" (+ "Google Analytics Data API" for GA4)
-//                          3. IAM → Service Accounts → Create → Keys → Add key (JSON) → download
-//                          4. Search Console → Settings → Users and permissions →
-//                             Add user → the service account's client_email → Full
-//                          5. (GA4) Analytics Admin → Property access management →
-//                             add the same email as Viewer
-//                          6. Netlify → env vars → GSC_SERVICE_ACCOUNT = paste the whole JSON
 //   GSC_SITE_URL         — optional, defaults to sc-domain:fixmy.energy
 //   GA4_PROPERTY_ID      — optional, numeric GA4 property id (Admin → Property settings)
-//   SUPA_SERVICE_KEY     — Supabase service role key
+//   SUPA_SERVICE_KEY     — Supabase service role key (also used to read app_config)
 //
-// Degrades gracefully: without GSC_SERVICE_ACCOUNT it logs and exits 200 (no-op).
+// Degrades gracefully: without a stored key it logs and exits 200 (no-op).
 
 const crypto = require('crypto');
 
@@ -75,19 +75,39 @@ async function supaUpsert(table, rows, onConflict) {
   if (!resp.ok) throw new Error('Supabase upsert ' + table + ' failed: ' + resp.status + ' ' + (await resp.text()).slice(0, 300));
 }
 
-exports.handler = async function() {
-  if (!process.env.GSC_SERVICE_ACCOUNT) {
-    console.log('seo-insights: GSC_SERVICE_ACCOUNT not set — skipping (see GROWTH_ACTIONS.md for setup)');
-    return { statusCode: 200, body: JSON.stringify({ skipped: 'GSC_SERVICE_ACCOUNT not set' }) };
+// Load the service-account key: env var override first, then app_config table.
+async function loadServiceAccount() {
+  if (process.env.GSC_SERVICE_ACCOUNT) {
+    try { return JSON.parse(process.env.GSC_SERVICE_ACCOUNT); }
+    catch (e) { throw new Error('GSC_SERVICE_ACCOUNT env var is not valid JSON'); }
   }
+  const key = process.env.SUPA_SERVICE_KEY;
+  const resp = await fetch(SUPA_REST + '/app_config?key=eq.gsc_service_account&select=value', {
+    headers: { apikey: key, Authorization: 'Bearer ' + key, Accept: 'application/json' }
+  });
+  if (!resp.ok) {
+    console.warn('seo-insights: app_config read failed', resp.status, (await resp.text()).slice(0, 200));
+    return null;
+  }
+  const rows = await resp.json();
+  if (!rows.length) return null;
+  const v = rows[0].value;
+  return typeof v === 'string' ? JSON.parse(v) : v;
+}
+
+exports.handler = async function() {
   if (!process.env.SUPA_SERVICE_KEY) {
     console.error('seo-insights: SUPA_SERVICE_KEY not set');
     return { statusCode: 500, body: JSON.stringify({ error: 'SUPA_SERVICE_KEY not set' }) };
   }
 
   let sa;
-  try { sa = JSON.parse(process.env.GSC_SERVICE_ACCOUNT); }
-  catch (e) { return { statusCode: 500, body: JSON.stringify({ error: 'GSC_SERVICE_ACCOUNT is not valid JSON' }) }; }
+  try { sa = await loadServiceAccount(); }
+  catch (e) { return { statusCode: 500, body: JSON.stringify({ error: e.message }) }; }
+  if (!sa || !sa.client_email || !sa.private_key) {
+    console.log('seo-insights: no service-account key found in app_config — skipping (see GROWTH_ACTIONS.md)');
+    return { statusCode: 200, body: JSON.stringify({ skipped: 'service account not configured — insert it into app_config (see function header)' }) };
+  }
 
   const site = process.env.GSC_SITE_URL || 'sc-domain:fixmy.energy';
   const summary = { site, daily: 0, queries: 0, pages: 0, ga4: false };
