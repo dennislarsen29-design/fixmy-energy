@@ -1,4 +1,6 @@
 // Receives GHL webhook on new booking/contact and upserts into Supabase customers table.
+// Also the canonical intake for website lead capture (book.html + index.html), including
+// partial captures (visitor started the form but never finished booking).
 // Wire this up in GHL: Automations → Webhook → POST https://<site>/.netlify/functions/ghl-inbound
 exports.handler = async function(event) {
   const corsHeaders = {
@@ -45,7 +47,6 @@ exports.handler = async function(event) {
   const rawPhone = contact.phone || contact.phone_raw || contact.phoneRaw || payload.phone || '';
 
   console.log('GHL inbound payload keys:', Object.keys(payload).join(','));
-  console.log('GHL contact keys:', Object.keys(contact).join(','));
   console.log('Parsed name:', firstName, lastName, '| email:', email, '| phone:', rawPhone);
 
   // Clean phone to 10 digits (used as access_code)
@@ -60,6 +61,16 @@ exports.handler = async function(event) {
     contact.postalCode || contact.postal_code || ''
   ].map(s => s.trim()).filter(Boolean);
   const address = addrParts.join(', ') || null;
+
+  // Ad attribution — captured client-side (UTM/gclid/fbclid), passed through in the payload.
+  // These columns are added by 20260704_attribution_columns.sql; writes retry without them
+  // if the migration hasn't been applied yet.
+  const ATTR_KEYS = ['utm_source','utm_medium','utm_campaign','utm_term','utm_content','gclid','fbclid','landing_page'];
+  const attribution = {};
+  ATTR_KEYS.forEach(k => {
+    const v = (payload[k] == null ? '' : String(payload[k])).trim();
+    if (v) attribution[k] = v.slice(0, 500);
+  });
 
   // Appointment date/time from booking event
   let diagnosticDate = null;
@@ -76,8 +87,10 @@ exports.handler = async function(event) {
     } catch(e) {}
   }
 
-  if (!email && !digits) {
-    return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ skipped: 'no email or phone' }) };
+  // The address alone is enough to keep a lead in this business — it can be canvassed,
+  // mailed, and matched to ad audiences even before a phone or email arrives.
+  if (!email && !digits && !address) {
+    return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ skipped: 'no email, phone, or address' }) };
   }
 
   // When name is still blank after all fallbacks, log the raw payload so it's diagnosable
@@ -88,41 +101,58 @@ exports.handler = async function(event) {
   }
 
   // ── Check for existing record ──────────────────────────────────────────────────────────────────────────────────────────
-  // Match on email first, then phone, to avoid duplicates
+  // Match on email first, then phone. Finally match on address, but only against partial
+  // records that have no contact info yet — this upgrades an address-only partial into the
+  // full booking instead of creating a duplicate household.
   const supaHeaders = {
     'Content-Type': 'application/json',
     'apikey': SUPA_KEY,
     'Authorization': 'Bearer ' + SUPA_KEY
   };
 
-  let existingId = null;
-  if (email) {
-    const checkResp = await fetch(
-      SUPA_URL + '/rest/v1/customers?email=eq.' + encodeURIComponent(email) + '&select=id&limit=1',
-      { headers: supaHeaders }
-    );
-    if (checkResp.ok) {
-      const rows = await checkResp.json();
-      if (rows && rows.length) existingId = rows[0].id;
-    }
-  }
-  if (!existingId && digits) {
-    const checkResp = await fetch(
-      SUPA_URL + '/rest/v1/customers?access_code=eq.' + digits + '&select=id&limit=1',
-      { headers: supaHeaders }
-    );
-    if (checkResp.ok) {
-      const rows = await checkResp.json();
-      if (rows && rows.length) existingId = rows[0].id;
-    }
+  async function findId(filter) {
+    const resp = await fetch(SUPA_URL + '/rest/v1/customers?' + filter + '&select=id&limit=1', { headers: supaHeaders });
+    if (!resp.ok) return null;
+    const rows = await resp.json();
+    return (rows && rows.length) ? rows[0].id : null;
   }
 
-  // Detect partial captures from the /book page form
-  const inboundSource  = payload.source || 'inbound_web';
-  const isPartial      = inboundSource === 'book_page_partial';
+  let existingId = null;
+  if (email)                 existingId = await findId('email=eq.' + encodeURIComponent(email));
+  if (!existingId && digits) existingId = await findId('access_code=eq.' + digits);
+  if (!existingId && address) {
+    existingId = await findId(
+      'address=eq.' + encodeURIComponent(address) +
+      '&partial_capture=eq.true&phone=is.null&email=is.null'
+    );
+  }
+
+  // Detect partial captures from the /book page or homepage forms
+  const inboundSource = payload.source || 'inbound_web';
+  const isPartial     = inboundSource === 'book_page_partial' || inboundSource === 'homepage_partial';
+
+  // Human-readable capture note by source
+  let noteText;
+  if (isPartial) {
+    noteText = 'Partial web capture (' + inboundSource + ') — visitor started the form but did not finish booking. Call back while it\'s warm.';
+  } else if (inboundSource === 'homepage_submit' || inboundSource === 'book_page_submit') {
+    noteText = 'Lead captured via website form (' + inboundSource + ').';
+  } else {
+    noteText = nameMissing
+      ? 'Lead captured via GHL booking — name not provided. Check GHL contact record.'
+      : 'Lead captured via GHL booking.';
+  }
+  // Extra context the customers table has no columns for
+  const yearsInstalled = (payload.years_installed == null ? '' : String(payload.years_installed)).trim();
+  const techNote       = (payload.tech_note       == null ? '' : String(payload.tech_note)).trim();
+  if (yearsInstalled) noteText += ' Years installed: ' + yearsInstalled + '.';
+  if (techNote)       noteText += ' Note for tech: ' + techNote;
+  if (Object.keys(attribution).length) {
+    noteText += ' [src: ' + (attribution.utm_source || (attribution.gclid ? 'google/gclid' : attribution.fbclid ? 'facebook/fbclid' : 'direct'))
+      + (attribution.utm_campaign ? ' · ' + attribution.utm_campaign : '') + ']';
+  }
 
   // ── Build the customer record ──────────────────────────────────────────────────────────────────────────────────────────────────
-  const now = new Date().toISOString();
   const record = {
     first_name:      firstName || null,
     last_name:       lastName  || null,
@@ -133,46 +163,72 @@ exports.handler = async function(event) {
     step:            1,
     lead_category:   'fixmy',
     lead_source:     'inbound_web',
-    lead_temp:       'cold',
+    // Someone who typed their name and address into a booking form is not a cold lead.
+    lead_temp:       isPartial ? 'warm' : 'cold',
     partial_capture: isPartial,
     diagnostic_date: diagnosticDate,
     arrival_end:     arrivalEnd,
-    notes:           JSON.stringify([{ts:new Date().toISOString(),by:'GHL Booking',text:nameMissing?'Lead captured via GHL booking — name not provided. Check GHL contact record.':'Lead captured via GHL booking.'}])
+    notes:           JSON.stringify([{ts:new Date().toISOString(),by:'Web Capture',text:noteText}]),
+    ...attribution
   };
+  // Optional solar-profile fields from the homepage form (columns exist on customers)
+  ['system_size','utility','monthly_bill'].forEach(k => {
+    const v = (payload[k] == null ? '' : String(payload[k])).trim();
+    if (v) record[k] = v;
+  });
 
-  let result, method, supaUrl;
+  // Write helper — retries without attribution columns when the migration hasn't run yet
+  // (PostgREST rejects the whole row on an unknown column).
+  async function supaWrite(method, url, bodyObj) {
+    let resp = await fetch(url, {
+      method,
+      headers: { ...supaHeaders, 'Prefer': 'return=representation' },
+      body: JSON.stringify(bodyObj)
+    });
+    let bodyText = await resp.text();
+    const columnMissing = !resp.ok && resp.status === 400 && /column|PGRST204/i.test(bodyText);
+    if (columnMissing && ATTR_KEYS.some(k => k in bodyObj)) {
+      console.warn('Attribution columns missing — retrying without them. Run 20260704_attribution_columns.sql.');
+      const stripped = { ...bodyObj };
+      ATTR_KEYS.forEach(k => delete stripped[k]);
+      resp = await fetch(url, {
+        method,
+        headers: { ...supaHeaders, 'Prefer': 'return=representation' },
+        body: JSON.stringify(stripped)
+      });
+      bodyText = await resp.text();
+    }
+    return { resp, bodyText };
+  }
+
+  let result, resultBody;
   if (existingId) {
-    // Update existing — stamp step/category, fill in any blanks
+    // Update existing — stamp step/category, fill in any blanks, upgrade partial → full
     const patch = {
       step:            1,
       lead_category:   'fixmy',
       lead_source:     'inbound_web',
       partial_capture: isPartial, // cleared to false when a full booking arrives
+      ...attribution
     };
     if (firstName)      patch.first_name = firstName;
     if (lastName)       patch.last_name  = lastName;
+    if (rawPhone)       patch.phone = rawPhone;
+    if (digits)         patch.access_code = digits;
+    if (email)          patch.email = email;
     if (diagnosticDate) patch.diagnostic_date = diagnosticDate;
     if (arrivalEnd)     patch.arrival_end = arrivalEnd;
     if (address)        patch.address = address;
-    method  = 'PATCH';
-    supaUrl = SUPA_URL + '/rest/v1/customers?id=eq.' + existingId;
-    result  = await fetch(supaUrl, {
-      method,
-      headers: { ...supaHeaders, 'Prefer': 'return=representation' },
-      body: JSON.stringify(patch)
-    });
+    ['system_size','utility','monthly_bill'].forEach(k => { if (record[k]) patch[k] = record[k]; });
+    ({ resp: result, bodyText: resultBody } = await supaWrite(
+      'PATCH', SUPA_URL + '/rest/v1/customers?id=eq.' + existingId, patch
+    ));
   } else {
-    // Insert new lead
-    method  = 'POST';
-    supaUrl = SUPA_URL + '/rest/v1/customers';
-    result  = await fetch(supaUrl, {
-      method,
-      headers: { ...supaHeaders, 'Prefer': 'return=representation' },
-      body: JSON.stringify(record)
-    });
+    ({ resp: result, bodyText: resultBody } = await supaWrite(
+      'POST', SUPA_URL + '/rest/v1/customers', record
+    ));
   }
 
-  const resultBody = await result.text();
   if (!result.ok) {
     console.error('Supabase error', result.status, resultBody);
     return {
@@ -192,7 +248,7 @@ exports.handler = async function(event) {
     };
   }
 
-  console.log(existingId ? 'Updated' : 'Created', 'customer:', email || digits);
+  console.log(existingId ? 'Updated' : 'Created', 'customer:', email || digits || address);
   return {
     statusCode: 200,
     headers: corsHeaders,
