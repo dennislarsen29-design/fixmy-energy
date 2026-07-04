@@ -700,6 +700,49 @@ label[for="sig-input"] {
         setTimeout(function(){ window.location.reload(); }, 1800);
       } else {
         errorMsg.textContent = error.message;
+        // Surface the failure to the admin inbox immediately (first failure only)
+        window._payFailCount = (window._payFailCount || 0) + 1;
+        if (window._payFailCount === 1) {
+          fetch('/.netlify/functions/sign-fallback', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'log_error', token: token, message: error.message || 'card error' })
+          }).catch(function(){});
+        }
+        // After 2 failures, offer the invoice fallback so the sale never stalls
+        if (window._payFailCount >= 2 && !document.getElementById('fallbackOffer')) {
+          errorMsg.insertAdjacentHTML('afterend',
+            '<div id="fallbackOffer" style="margin-top:14px;padding:14px 16px;background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.3);border-radius:12px;">' +
+              '<div style="font-size:0.85rem;font-weight:700;color:#8DC63F;margin-bottom:6px;">Card not going through?</div>' +
+              '<div style="font-size:0.78rem;color:#bbb;line-height:1.6;margin-bottom:10px;">No problem — we can lock in your signature now and text you a secure invoice to pay in a way that works for you.</div>' +
+              '<button id="fallbackBtn" style="width:100%;padding:13px;background:#8DC63F;color:#141414;border:none;border-radius:100px;font-weight:800;font-size:0.9rem;cursor:pointer;">Sign Now, Pay by Invoice →</button>' +
+            '</div>');
+          document.getElementById('fallbackBtn').addEventListener('click', async function() {
+            var fb = this;
+            fb.disabled = true; fb.textContent = 'Recording your signature…';
+            try {
+              var r = await fetch('/.netlify/functions/sign-fallback', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  action: 'agreement_only', token: token,
+                  signature: sigInput.value.trim(),
+                  repairAuthInitial: repairInput.value.trim(),
+                  signedAt: new Date().toISOString()
+                })
+              });
+              var d = await r.json();
+              if (!r.ok || !d.ok) throw new Error(d.error || 'Could not record signature');
+              document.body.innerHTML =
+                '<div style="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:32px;text-align:center;background:#141414;color:#F3EDE3;font-family:-apple-system,sans-serif;">' +
+                  '<div style="font-size:3rem;margin-bottom:16px;">&#9989;</div>' +
+                  '<h1 style="font-size:1.5rem;font-weight:800;margin-bottom:12px;">Agreement Signed!</h1>' +
+                  '<p style="font-size:0.9rem;color:#999;max-width:420px;line-height:1.7;">Your signature is recorded. We\'re sending a secure invoice to your phone and email &mdash; pay it whenever works for you today. Questions? Call <a href="tel:6197776527" style="color:#8DC63F;">(619) 777-6527</a>.</p>' +
+                '</div>';
+            } catch(e2) {
+              fb.disabled = false; fb.textContent = 'Sign Now, Pay by Invoice →';
+              errorMsg.textContent = e2.message + ' — or call us at (619) 777-6527.';
+            }
+          });
+        }
       }
       return;
     }
