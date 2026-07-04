@@ -4,14 +4,14 @@ Tracked by Claude's daily accountability check-in. Statuses: ☐ open · ⏳ in 
 Full audit: https://claude.ai/code/artifact/0c2828a2-6213-43cd-8afd-e13b19c8aff7
 
 ## Now — unblocks work already shipped
-- ☐ **Run the attribution migration** — Supabase Dashboard → SQL Editor → paste `supabase/migrations/20260704_attribution_columns.sql` → Run. Until then, ad attribution only lands in lead notes, not columns.
+- ✅ **Attribution migration ran 2026-07-04** (part of the combined block — see below).
 - ☐ **Build the bb-followup GHL workflow** — Automations → New → Trigger: Contact Tag Added = `bb-followup` → Action: Send SMS (LC Phone), e.g. "Great meeting you today — here's the link to grab your free evaluation: https://fixmy.energy/book". The portal already fires the tag on every *Interested* / *Callback* knock or dial outcome.
 - ☐ **Check GHL partial handling** — confirm no workflow keys off webhook payloads with `status='partial'`; only completed homepage leads hit the webhook-trigger now.
 - ⏳ **Search Console** — ✅ verified + sitemap submitted 2026-07-04; ✅ Manual actions: none; ✅ Security issues: none (drop is algorithmic — recovery = fixes already shipped + content plan). Still open: (b) ☰ → *Performance* → stretch to 12–16 months, screenshot the traffic curve for Claude; (c) Settings → Users and permissions → add main Google account as Owner.
 
 ## This week
 - ✅ **SEO dashboard connected 2026-07-04** — service account created (org key-creation policy overridden then re-locked), granted GSC Full + GA4 Viewer, key stored in Supabase `app_config` (Netlify env var hit AWS's 4KB limit and broke deploys — resolved), test pull returned `ok:true, ga4:true`. GSC data rows start flowing ~1–2 days after property verification; SEO Pulse fills automatically. First "▶ seo" agent run makes sense once a few days of data exist (~Tuesday).
-- ⏳ **Confirm the big migration block ran** — the combined SQL (attribution columns + `seo_metrics`/`seo_queries` tables) needs a "Success. No rows returned." in the Supabase SQL Editor. The `app_config` block succeeded, but an earlier run errored — re-paste and Run the combined block if unsure (it's rerun-safe). Without it, tomorrow's nightly sync has nowhere to write.
+- ✅ **All migrations confirmed 2026-07-04** — attribution columns + `seo_metrics`/`seo_queries` + `app_config` all ran with "Success. No rows returned." Attribution now lands in columns; nightly SEO sync has its tables.
 - ☐ **Google Business Profile pass** — name exactly "Solar Review", primary category *Solar energy system service*, add services incl. per-installer items ("SunPower system repair"), seed 8–10 Q&As, set website link to `https://fixmy.energy/?utm_source=gbp&utm_medium=organic`.
 - ☐ **Review-ask workflow in GHL** — SMS 3 days post-diagnostic with the direct Google review link. Reply to every review within 48h.
 - ☐ **Google Local Services Ads signup** — ads.google.com/localservices. Pay-per-lead, sits above regular ads for "solar repair near me". Start ~$500/mo.
