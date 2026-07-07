@@ -6934,9 +6934,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
     var paysByCust = {}, unmatched = [], ledgerOk = true;
     try {
-      var { data: allPays, error } = await pc.from('payments').select('customer_id,amount,paid_at,source,note').order('paid_at', {ascending:false});
+      var { data: allPays, error } = await pc.from('payments').select('id,customer_id,amount,paid_at,source,note,category').order('paid_at', {ascending:false});
       if (error) throw error;
       (allPays||[]).forEach(function(p){
+        if ((p.category||'revenue') !== 'revenue') return; // test/refund never counts, never alarms
         if (!p.customer_id) { unmatched.push(p); return; }
         paysByCust[p.customer_id] = (paysByCust[p.customer_id]||0) + (parseFloat(p.amount)||0);
       });
@@ -7008,13 +7009,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (unmatched.length) {
       h += '<div style="margin-top:18px;"><div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#ef4444;margin-bottom:8px;">&#9888; Unmatched payments ('+unmatched.length+') — money received, no customer matched</div>';
       unmatched.slice(0, 30).forEach(function(p){
-        h += '<div style="display:flex;gap:10px;align-items:center;padding:8px 12px;background:rgba(239,68,68,0.05);border:1px solid rgba(239,68,68,0.15);border-radius:10px;margin-bottom:6px;font-size:0.75rem;color:#ccc;">';
+        h += '<div style="display:flex;gap:10px;align-items:center;padding:8px 12px;background:rgba(239,68,68,0.05);border:1px solid rgba(239,68,68,0.15);border-radius:10px;margin-bottom:6px;font-size:0.75rem;color:#ccc;flex-wrap:wrap;">';
         h += '<span style="font-weight:800;color:#ef9b9b;">$'+(parseFloat(p.amount)||0).toLocaleString()+'</span>';
         h += '<span style="color:#888;">'+new Date(p.paid_at).toLocaleDateString()+'</span>';
         h += '<span style="color:#999;overflow:hidden;text-overflow:ellipsis;">'+esc(p.note||'')+'</span>';
+        h += '<button onclick="setPaymentCategory(\''+p.id+'\',\'revenue\')" style="margin-left:auto;padding:4px 12px;background:rgba(148,163,184,0.1);border:1px solid rgba(148,163,184,0.35);border-radius:100px;color:#94a3b8;font-size:0.66rem;font-weight:700;cursor:pointer;">Mark Test</button>';
         h += '</div>';
       });
-      h += '<div style="font-size:0.68rem;color:#666;">To assign one: open the right customer &rarr; Payments &rarr; + Record Payment with a note referencing it.</div></div>';
+      h += '<div style="font-size:0.68rem;color:#666;">To assign one to a customer: open their record &rarr; Payments &rarr; + Record Payment with a note referencing it. Test charges: tap Mark Test — they stay in the ledger (so Stripe/GHL totals reconcile) but never count as revenue.</div></div>';
     }
 
     h += '</div>';
@@ -9263,7 +9265,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var [costsRes, commRes, paysRes] = await Promise.all([
         isFixmy ? pc.from('job_costs').select('*').eq('customer_id', cid).order('created_at') : Promise.resolve({data:[]}),
         pc.from('commissions').select('*').eq('customer_id', cid).order('created_at'),
-        isFixmy ? pc.from('payments').select('amount').eq('customer_id', cid) : Promise.resolve({data:[]})
+        isFixmy ? pc.from('payments').select('amount,category').eq('customer_id', cid) : Promise.resolve({data:[]})
       ]);
       if (costsRes.error) throw costsRes.error;
       if (commRes.error) throw commRes.error;
@@ -9290,7 +9292,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '</div>';
 
         // ── FixMy commission: 40% of (collected − costs), never for Dennis ──
-        var collected = pays.reduce(function(t,x){ return t + (parseFloat(x.amount)||0); }, 0);
+        // Revenue-category payments only — test/refund rows never feed commissions.
+        var collected = pays.reduce(function(t,x){ return t + ((x.category||'revenue')==='revenue' ? (parseFloat(x.amount)||0) : 0); }, 0);
         var net = collected - costSum;
         var commRow = comms.find(function(x){ return x.kind === 'rep_commission'; });
         var isDennis = rep === 'tech4' || !rep;
@@ -9408,7 +9411,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (error) throw error;
       var rec = adminCustomers.find(function(x){ return x.id === cid; }) || {};
       var target = parseFloat(rec.invoice_amount) || 0;
-      var paidSum = (pays||[]).reduce(function(t,p){ return t + (parseFloat(p.amount)||0); }, 0);
+      // Only 'revenue' rows count toward balances — test/refund rows stay
+      // visible so the ledger reconciles 1:1 with Stripe/GHL totals.
+      var paidSum = (pays||[]).reduce(function(t,p){ return t + ((p.category||'revenue')==='revenue' ? (parseFloat(p.amount)||0) : 0); }, 0);
       var balance = Math.max(0, target - paidSum);
       var srcLabel = { stripe_sign_page:'Sign & Pay', ghl:'GHL', manual:'Manual' };
       var h = '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 12px;">';
@@ -9419,11 +9424,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       h += '<button onclick="edRecordPayment(\''+cid+'\')" style="margin-left:auto;padding:4px 10px;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.3);border-radius:100px;color:#8DC63F;font-size:0.68rem;font-weight:700;cursor:pointer;white-space:nowrap;">+ Record Payment</button>';
       h += '</div>';
       (pays||[]).forEach(function(p){
-        h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.72rem;color:#aaa;padding:3px 0;border-top:1px solid rgba(255,255,255,0.05);">';
-        h += '<span style="color:#ddd;font-weight:700;">$'+(parseFloat(p.amount)||0).toLocaleString(undefined,{maximumFractionDigits:2})+'</span>';
+        var cat = p.category || 'revenue';
+        h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.72rem;color:#aaa;padding:3px 0;border-top:1px solid rgba(255,255,255,0.05);'+(cat!=='revenue'?'opacity:0.6;':'')+'">';
+        h += '<span style="color:#ddd;font-weight:700;'+(cat!=='revenue'?'text-decoration:line-through;':'')+'">$'+(parseFloat(p.amount)||0).toLocaleString(undefined,{maximumFractionDigits:2})+'</span>';
         h += '<span>'+new Date(p.paid_at).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})+'</span>';
         h += '<span style="color:#777;">'+(srcLabel[p.source]||p.source||'')+(p.method?' &middot; '+p.method:'')+'</span>';
-        if (p.note) h += '<span style="color:#666;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:180px;">'+esc(p.note)+'</span>';
+        if (p.note) h += '<span style="color:#666;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:150px;">'+esc(p.note)+'</span>';
+        h += '<button onclick="setPaymentCategory(\''+p.id+'\',\''+cat+'\')" title="Tap to cycle: revenue &rarr; test &rarr; refund" style="margin-left:auto;padding:2px 9px;border-radius:100px;font-size:0.6rem;font-weight:700;text-transform:uppercase;cursor:pointer;border:1px solid '+(cat==='revenue'?'rgba(141,198,63,0.35);background:rgba(141,198,63,0.08);color:#8DC63F':(cat==='test'?'rgba(148,163,184,0.35);background:rgba(148,163,184,0.08);color:#94a3b8':'rgba(239,68,68,0.35);background:rgba(239,68,68,0.08);color:#ef9b9b'))+';">'+cat+'</button>';
         h += '</div>';
       });
       h += '</div>';
@@ -9432,6 +9439,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       panel.innerHTML = '<div style="font-size:0.68rem;color:#555;">Payments ledger unavailable — run 20260704_payments_ledger.sql in Supabase.</div>';
     }
   }
+
+  // Cycle a ledger row's category: revenue → test → refund → revenue.
+  // Rows are never deleted — the ledger reconciles 1:1 with Stripe/GHL totals;
+  // only 'revenue' rows count toward balances and commissions.
+  window.setPaymentCategory = async function(id, cur) {
+    var next = { revenue:'test', test:'refund', refund:'revenue' }[cur] || 'test';
+    try {
+      var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var { error } = await pc.from('payments').update({ category: next }).eq('id', id);
+      if (error) throw error;
+      edLoadPayments(); edLoadAccounting();
+      if (typeof financeSubTab !== 'undefined' && financeSubTab === 'owed') renderFinanceView();
+    } catch(e) { alert('Could not update category (run 20260707_payment_categories.sql?): ' + e.message); }
+  };
 
   window.edRecordPayment = async function(cid) {
     var amt = parseFloat(prompt('Payment amount received ($):') || '');
