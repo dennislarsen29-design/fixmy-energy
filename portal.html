@@ -6842,6 +6842,91 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   }
 
   // ── Finance View — Commission Ledger + Ops Payouts ─────────────────────────
+  // ── Payroll — commissions & reimbursements per the 2026-07-07 SOPs ────────
+  async function renderPayrollView(portalNav, subTabRow) {
+    var body = document.getElementById('dashBody');
+    body.innerHTML = portalNav + '<div style="padding:4px 0 24px;">' + subTabRow + '<div style="text-align:center;padding:20px;color:#555;font-size:0.8rem;">Loading payroll&hellip;</div></div>';
+    var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var comms = [];
+    try {
+      var { data, error } = await pc.from('commissions').select('*').order('sold_at', {ascending:false}).limit(1000);
+      if (error) throw error;
+      comms = data || [];
+    } catch(e) {
+      body.innerHTML = portalNav + '<div style="padding:4px 0 24px;">' + subTabRow +
+        '<div style="padding:14px 16px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.2);border-radius:12px;font-size:0.78rem;color:#ef9b9b;">Accounting tables not found — run <code>20260707_accounting.sql</code> in the Supabase SQL Editor, then reload.</div></div>';
+      return;
+    }
+    function custName(id){ var r = (adminCustomers||[]).find(function(x){return x.id===id;}); return r ? (((r.first_name||'')+' '+(r.last_name||'')).trim() || r.address || '—') : '—'; }
+    function money(n){ return '$'+(parseFloat(n)||0).toLocaleString(undefined,{maximumFractionDigits:2}); }
+    var lineLbl = { fixmy:'FixMy', top_tier:'Top Tier', new_solar:'New Solar' };
+
+    var owedReps = comms.filter(function(x){ return x.status==='sold' && x.payee!=='solar_review_corp'; });
+    var owedSRC  = comms.filter(function(x){ return x.status==='sold' && x.payee==='solar_review_corp'; });
+    var paidRecent = comms.filter(function(x){ return x.status==='paid'; }).slice(0, 40);
+
+    var h = portalNav + '<div style="padding:4px 0 24px;">' + subTabRow;
+
+    // Owed to reps, grouped by payee
+    var byPayee = {};
+    owedReps.forEach(function(x){ (byPayee[x.payee] = byPayee[x.payee]||[]).push(x); });
+    var totalOwedReps = owedReps.reduce(function(t,x){ return t+(parseFloat(x.amount)||0); },0);
+    var totalOwedSRC  = owedSRC.reduce(function(t,x){ return t+(parseFloat(x.amount)||0); },0);
+    h += '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;">';
+    h += '<div style="background:rgba(155,109,232,0.08);border:1px solid rgba(155,109,232,0.3);border-radius:12px;padding:12px 18px;"><div style="font-size:1.3rem;font-weight:800;color:#9b6de8;">'+money(totalOwedReps)+'</div><div style="font-size:0.62rem;color:#888;text-transform:uppercase;letter-spacing:0.05em;">Owed to reps</div></div>';
+    h += '<div style="background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.3);border-radius:12px;padding:12px 18px;"><div style="font-size:1.3rem;font-weight:800;color:#8DC63F;">'+money(totalOwedSRC)+'</div><div style="font-size:0.62rem;color:#888;text-transform:uppercase;letter-spacing:0.05em;">Override income due to Solar Review Corp</div></div>';
+    h += '</div>';
+
+    h += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#9b6de8;margin-bottom:8px;">&#129297; Unpaid — by rep</div>';
+    if (!Object.keys(byPayee).length) h += '<div style="font-size:0.75rem;color:#666;margin-bottom:14px;">Nothing unpaid. Commissions appear here when locked in from a job (FixMy) or entered on Top Tier / New Solar leads.</div>';
+    Object.keys(byPayee).forEach(function(p){
+      var rows = byPayee[p];
+      var sub = rows.reduce(function(t,x){ return t+(parseFloat(x.amount)||0); },0);
+      h += '<div style="background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.07);border-radius:12px;padding:10px 14px;margin-bottom:10px;">';
+      h += '<div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;"><span style="font-size:0.85rem;font-weight:800;color:#eee;">'+esc(rows[0].payee_name||repName(p))+'</span><span style="font-size:0.8rem;font-weight:800;color:#9b6de8;">'+money(sub)+'</span></div>';
+      rows.forEach(function(x){
+        h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.73rem;color:#aaa;padding:4px 0;border-top:1px solid rgba(255,255,255,0.05);flex-wrap:wrap;">';
+        h += '<span style="color:#777;">'+(lineLbl[x.line]||x.line)+'</span>';
+        h += '<span style="color:#ddd;">'+esc(custName(x.customer_id))+'</span>';
+        h += '<span style="color:#888;">'+(x.kind==='travel_reimbursement'?'travel':'commission')+'</span>';
+        h += '<span style="color:#ddd;font-weight:700;">'+money(x.amount)+'</span>';
+        h += '<span style="color:#666;font-size:0.65rem;">sold '+new Date(x.sold_at).toLocaleDateString()+'</span>';
+        h += '<button onclick="edToggleCommission(\''+x.id+'\',\'sold\')" style="margin-left:auto;padding:4px 12px;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.35);border-radius:100px;color:#8DC63F;font-size:0.66rem;font-weight:700;cursor:pointer;">Mark Paid</button>';
+        h += '</div>';
+      });
+      h += '</div>';
+    });
+
+    if (owedSRC.length) {
+      h += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#8DC63F;margin:16px 0 8px;">&#127974; Override income due to Solar Review Corp (1099)</div>';
+      owedSRC.forEach(function(x){
+        h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.73rem;color:#aaa;padding:7px 12px;background:rgba(141,198,63,0.04);border:1px solid rgba(141,198,63,0.15);border-radius:10px;margin-bottom:6px;flex-wrap:wrap;">';
+        h += '<span style="color:#777;">'+(lineLbl[x.line]||x.line)+'</span>';
+        h += '<span style="color:#ddd;">'+esc(custName(x.customer_id))+'</span>';
+        h += '<span style="color:#ddd;font-weight:700;">'+money(x.amount)+'</span>';
+        h += '<span style="color:#666;font-size:0.65rem;">sold '+new Date(x.sold_at).toLocaleDateString()+'</span>';
+        h += '<button onclick="edToggleCommission(\''+x.id+'\',\'sold\')" style="margin-left:auto;padding:4px 12px;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.35);border-radius:100px;color:#8DC63F;font-size:0.66rem;font-weight:700;cursor:pointer;">Mark Received</button>';
+        h += '</div>';
+      });
+    }
+
+    if (paidRecent.length) {
+      h += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#555;margin:16px 0 8px;">Paid / received — recent</div>';
+      paidRecent.forEach(function(x){
+        h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.7rem;color:#777;padding:4px 2px;border-bottom:1px solid rgba(255,255,255,0.04);flex-wrap:wrap;">';
+        h += '<span>'+(x.paid_at?new Date(x.paid_at).toLocaleDateString():'')+'</span>';
+        h += '<span style="color:#999;">'+esc(x.payee_name||repName(x.payee))+'</span>';
+        h += '<span>'+(lineLbl[x.line]||x.line)+' &middot; '+(x.kind==='override'?'override':x.kind==='travel_reimbursement'?'travel':'commission')+'</span>';
+        h += '<span style="color:#aaa;">'+esc(custName(x.customer_id))+'</span>';
+        h += '<span style="color:#bbb;font-weight:700;margin-left:auto;">'+money(x.amount)+'</span>';
+        h += '</div>';
+      });
+    }
+
+    h += '</div>';
+    body.innerHTML = h;
+  }
+
   // ── Money Owed — collections view from the payments ledger ────────────────
   async function renderMoneyOwedView(portalNav, subTabRow) {
     var body = document.getElementById('dashBody');
@@ -7016,6 +7101,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var subTabRow = '<div style="display:flex;gap:8px;margin-bottom:18px;">'+
       '<button onclick="financeSubTab=\'commissions\';renderFinanceView()" style="'+stStyle+'background:'+(financeSubTab!=='marketing'&&financeSubTab!=='owed'?'#8DC63F':'rgba(255,255,255,0.07)')+';color:'+(financeSubTab!=='marketing'&&financeSubTab!=='owed'?'#1A1A1A':'#888')+';">&#128176; Commissions</button>'+
       '<button onclick="financeSubTab=\'owed\';renderFinanceView()" style="'+stStyle+'background:'+(financeSubTab==='owed'?'#8DC63F':'rgba(255,255,255,0.07)')+';color:'+(financeSubTab==='owed'?'#1A1A1A':'#888')+';">&#128181; Money Owed</button>'+
+      '<button onclick="financeSubTab=\'payroll\';renderFinanceView()" style="'+stStyle+'background:'+(financeSubTab==='payroll'?'#8DC63F':'rgba(255,255,255,0.07)')+';color:'+(financeSubTab==='payroll'?'#1A1A1A':'#888')+';">&#129297; Payroll</button>'+
       '<button onclick="financeSubTab=\'marketing\';renderFinanceView()" style="'+stStyle+'background:'+(financeSubTab==='marketing'?'#8DC63F':'rgba(255,255,255,0.07)')+';color:'+(financeSubTab==='marketing'?'#1A1A1A':'#888')+';">&#128200; Marketing</button>'+
     '</div>';
 
@@ -7025,6 +7111,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
     if (financeSubTab === 'owed') {
       renderMoneyOwedView(portalNav, subTabRow);
+      return;
+    }
+    if (financeSubTab === 'payroll') {
+      renderPayrollView(portalNav, subTabRow);
       return;
     }
 
@@ -9067,6 +9157,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '</div>'+
         '<div id="edPaymentsPanel" data-cid="'+c.id+'" style="margin:4px 0 10px;"><div style="font-size:0.7rem;color:#555;">Loading payments&hellip;</div></div>'
       : '')+
+      '<div id="edAcctPanel" data-cid="'+c.id+'" data-cat="'+(c.lead_category||'fixmy')+'" data-rep="'+(c.rep_id||'')+'" style="margin:4px 0 10px;"></div>'+
       (!isNSEdit && !isTTEdit ?
         '<div class="editor-section-title">Deposit &amp; Milestones</div>'+
         '<div class="ed-grid">'+
@@ -9155,7 +9246,156 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
     loadEditorPhotos(c.id);
     edLoadPayments();
+    edLoadAccounting();
   }
+
+  // ── Accounting panel: Sub Sheet costs + commissions per SOP ────────────────
+  var REP_NAMES = { tech4:'Dennis Larsen', tech2:'Ranie', tech3:'Michael Smith', tech5:'Cristina Huang', rep1:'Ronda', setter1:'Setter' };
+  function repName(id){ return REP_NAMES[id] || id || 'Unassigned'; }
+
+  async function edLoadAccounting() {
+    var panel = document.getElementById('edAcctPanel');
+    if (!panel) return;
+    var cid = panel.dataset.cid, cat = panel.dataset.cat || 'fixmy', rep = panel.dataset.rep || '';
+    try {
+      var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var isFixmy = cat !== 'new_solar' && cat !== 'top_tier';
+      var [costsRes, commRes, paysRes] = await Promise.all([
+        isFixmy ? pc.from('job_costs').select('*').eq('customer_id', cid).order('created_at') : Promise.resolve({data:[]}),
+        pc.from('commissions').select('*').eq('customer_id', cid).order('created_at'),
+        isFixmy ? pc.from('payments').select('amount').eq('customer_id', cid) : Promise.resolve({data:[]})
+      ]);
+      if (costsRes.error) throw costsRes.error;
+      if (commRes.error) throw commRes.error;
+      var costs = costsRes.data || [], comms = commRes.data || [], pays = paysRes.data || [];
+      var h = '';
+
+      if (isFixmy) {
+        // ── Sub Sheet: per-job cost line items ──
+        var costSum = costs.reduce(function(t,x){ return t + (parseFloat(x.amount)||0); }, 0);
+        h += '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 12px;margin-bottom:8px;">';
+        h += '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">';
+        h += '<span style="font-size:0.66rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#f97316;">&#128203; Sub Sheet — Job Costs</span>';
+        h += '<span style="font-size:0.75rem;color:#ddd;font-weight:700;">$'+costSum.toLocaleString(undefined,{maximumFractionDigits:2})+' total</span>';
+        h += '<button onclick="edAddCost(\''+cid+'\')" style="margin-left:auto;padding:4px 10px;background:rgba(249,115,22,0.1);border:1px solid rgba(249,115,22,0.3);border-radius:100px;color:#f97316;font-size:0.68rem;font-weight:700;cursor:pointer;">+ Add Cost</button>';
+        h += '</div>';
+        costs.forEach(function(x){
+          h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.72rem;color:#aaa;padding:4px 0;border-top:1px solid rgba(255,255,255,0.05);">';
+          h += '<span style="color:#ddd;flex:1;">'+esc(x.label)+'</span>';
+          h += '<span style="color:#ddd;font-weight:700;">$'+(parseFloat(x.amount)||0).toLocaleString(undefined,{maximumFractionDigits:2})+'</span>';
+          h += '<button onclick="edToggleCost(\''+x.id+'\',\''+x.status+'\')" style="padding:2px 9px;border-radius:100px;border:1px solid '+(x.status==='paid'?'rgba(141,198,63,0.4);background:rgba(141,198,63,0.1);color:#8DC63F':'rgba(255,170,0,0.4);background:rgba(255,170,0,0.08);color:#ffaa00')+';font-size:0.62rem;font-weight:700;cursor:pointer;text-transform:uppercase;">'+x.status+'</button>';
+          h += '<button onclick="edDelCost(\''+x.id+'\')" style="background:none;border:none;color:#555;cursor:pointer;font-size:0.8rem;">&times;</button>';
+          h += '</div>';
+        });
+        h += '</div>';
+
+        // ── FixMy commission: 40% of (collected − costs), never for Dennis ──
+        var collected = pays.reduce(function(t,x){ return t + (parseFloat(x.amount)||0); }, 0);
+        var net = collected - costSum;
+        var commRow = comms.find(function(x){ return x.kind === 'rep_commission'; });
+        var isDennis = rep === 'tech4' || !rep;
+        h += '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 12px;">';
+        h += '<div style="font-size:0.66rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#9b6de8;margin-bottom:6px;">&#129297; Rep Commission — 40% of Net</div>';
+        h += '<div style="font-size:0.74rem;color:#aaa;line-height:1.8;">Collected <b style="color:#ddd;">$'+collected.toLocaleString(undefined,{maximumFractionDigits:2})+'</b> &minus; Costs <b style="color:#ddd;">$'+costSum.toLocaleString(undefined,{maximumFractionDigits:2})+'</b> = Net <b style="color:#8DC63F;">$'+net.toLocaleString(undefined,{maximumFractionDigits:2})+'</b></div>';
+        if (isDennis) {
+          h += '<div style="font-size:0.72rem;color:#777;margin-top:4px;">'+(rep==='tech4'?'Dennis-sold — no commission (SOP).':'No rep assigned — no commission.')+'</div>';
+        } else if (commRow) {
+          h += '<div style="font-size:0.74rem;color:#ddd;margin-top:4px;">'+esc(repName(rep))+': <b>$'+(parseFloat(commRow.amount)||0).toLocaleString(undefined,{maximumFractionDigits:2})+'</b> <span style="padding:2px 9px;border-radius:100px;font-size:0.62rem;font-weight:700;text-transform:uppercase;'+(commRow.status==='paid'?'background:rgba(141,198,63,0.1);color:#8DC63F;border:1px solid rgba(141,198,63,0.4);':'background:rgba(255,170,0,0.08);color:#ffaa00;border:1px solid rgba(255,170,0,0.4);')+'">'+(commRow.status==='paid'?'PAID':'SOLD — unpaid')+'</span></div>';
+        } else {
+          var estComm = Math.max(0, net) * 0.4;
+          h += '<div style="font-size:0.74rem;color:#ddd;margin-top:4px;">'+esc(repName(rep))+' @ 40%: <b style="color:#9b6de8;">$'+estComm.toLocaleString(undefined,{maximumFractionDigits:2})+'</b> <span style="color:#666;font-size:0.68rem;">(accruing — finalize once all costs are entered)</span></div>';
+          if (estComm > 0) h += '<button onclick="edRecordFixmyCommission(\''+cid+'\',\''+rep+'\','+estComm.toFixed(2)+')" style="margin-top:7px;padding:6px 13px;background:rgba(155,109,232,0.1);border:1px solid rgba(155,109,232,0.35);border-radius:100px;color:#9b6de8;font-size:0.7rem;font-weight:700;cursor:pointer;">Lock in as Sold &#8594; Payroll</button>';
+        }
+        h += '</div>';
+      } else {
+        // ── Top Tier / New Solar: manual commissions + overrides (income to SRC) ──
+        var isTT = cat === 'top_tier';
+        h += '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 12px;">';
+        h += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;">';
+        h += '<span style="font-size:0.66rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#9b6de8;">&#129297; Commissions'+(isTT?' & Travel':'')+'</span>';
+        h += '<button onclick="edAddCommission(\''+cid+'\',\''+cat+'\',\''+rep+'\',\'rep_commission\')" style="margin-left:auto;padding:4px 10px;background:rgba(155,109,232,0.1);border:1px solid rgba(155,109,232,0.3);border-radius:100px;color:#9b6de8;font-size:0.66rem;font-weight:700;cursor:pointer;">+ Rep Comm</button>';
+        h += '<button onclick="edAddCommission(\''+cid+'\',\''+cat+'\',\''+rep+'\',\'override\')" style="padding:4px 10px;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.3);border-radius:100px;color:#8DC63F;font-size:0.66rem;font-weight:700;cursor:pointer;">+ Override &#8594; SRC</button>';
+        if (isTT) h += '<button onclick="edAddCommission(\''+cid+'\',\''+cat+'\',\''+rep+'\',\'travel_reimbursement\')" style="padding:4px 10px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);border-radius:100px;color:#4a9eff;font-size:0.66rem;font-weight:700;cursor:pointer;">+ Travel</button>';
+        h += '</div>';
+        if (!comms.length) h += '<div style="font-size:0.7rem;color:#666;">No commission entries yet. Overrides are income to Solar Review Corp; rep commissions and travel are owed to the rep.</div>';
+        comms.forEach(function(x){
+          var kindLbl = x.kind==='override'?'Override &#8594; SRC':(x.kind==='travel_reimbursement'?'Travel':'Rep Comm');
+          h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.72rem;color:#aaa;padding:4px 0;border-top:1px solid rgba(255,255,255,0.05);flex-wrap:wrap;">';
+          h += '<span style="color:#ddd;">'+kindLbl+'</span>';
+          h += '<span style="color:#888;">'+esc(x.payee==='solar_review_corp'?'Solar Review Corp':repName(x.payee))+'</span>';
+          h += '<span style="color:#ddd;font-weight:700;">$'+(parseFloat(x.amount)||0).toLocaleString(undefined,{maximumFractionDigits:2})+'</span>';
+          h += '<button onclick="edToggleCommission(\''+x.id+'\',\''+x.status+'\')" style="margin-left:auto;padding:2px 9px;border-radius:100px;border:1px solid '+(x.status==='paid'?'rgba(141,198,63,0.4);background:rgba(141,198,63,0.1);color:#8DC63F':'rgba(255,170,0,0.4);background:rgba(255,170,0,0.08);color:#ffaa00')+';font-size:0.62rem;font-weight:700;cursor:pointer;text-transform:uppercase;">'+(x.status==='paid'?(x.kind==='override'?'received':'paid'):'sold')+'</button>';
+          h += '<button onclick="edDelCommission(\''+x.id+'\')" style="background:none;border:none;color:#555;cursor:pointer;font-size:0.8rem;">&times;</button>';
+          h += '</div>';
+        });
+        h += '</div>';
+      }
+      panel.innerHTML = h;
+    } catch(e) {
+      panel.innerHTML = '<div style="font-size:0.68rem;color:#555;">Accounting tables unavailable — run 20260707_accounting.sql in Supabase.</div>';
+    }
+  }
+
+  window.edAddCost = async function(cid) {
+    var label = prompt('Cost description (e.g. "Cosmic payout", "Equipment", "Permit"):');
+    if (!label) return;
+    var amt = parseFloat(prompt('Amount ($):') || '');
+    if (!amt || amt <= 0) return;
+    var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var { error } = await pc.from('job_costs').insert({ customer_id: cid, label: label, amount: amt, status: 'pending', created_by: 'admin' });
+    if (error) { alert('Could not add cost: ' + error.message); return; }
+    edLoadAccounting();
+  };
+  window.edToggleCost = async function(id, cur) {
+    var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var next = cur === 'paid' ? 'pending' : 'paid';
+    await pc.from('job_costs').update({ status: next, paid_at: next==='paid' ? new Date().toISOString() : null }).eq('id', id);
+    edLoadAccounting();
+  };
+  window.edDelCost = async function(id) {
+    if (!confirm('Delete this cost line?')) return;
+    var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+    await pc.from('job_costs').delete().eq('id', id);
+    edLoadAccounting();
+  };
+  window.edRecordFixmyCommission = async function(cid, rep, amount) {
+    if (!confirm('Lock in $' + amount + ' commission for ' + repName(rep) + '? It moves to Payroll as SOLD (unpaid).')) return;
+    var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var { error } = await pc.from('commissions').insert({
+      customer_id: cid, line: 'fixmy', kind: 'rep_commission',
+      payee: rep, payee_name: repName(rep), amount: amount, status: 'sold'
+    });
+    if (error) { alert('Could not record: ' + error.message); return; }
+    edLoadAccounting();
+  };
+  window.edAddCommission = async function(cid, cat, rep, kind) {
+    var isOverride = kind === 'override';
+    var payee = isOverride ? 'solar_review_corp' : rep;
+    if (!payee) { alert('No rep assigned to this lead — set the rep first.'); return; }
+    var amt = parseFloat(prompt((isOverride?'Override amount owed to Solar Review Corp':kind==='travel_reimbursement'?'Travel reimbursement for '+repName(rep):'Sold commission for '+repName(rep)) + ' ($):') || '');
+    if (!amt || amt <= 0) return;
+    var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var { error } = await pc.from('commissions').insert({
+      customer_id: cid, line: cat, kind: kind,
+      payee: payee, payee_name: isOverride ? 'Solar Review Corp' : repName(rep),
+      amount: amt, status: 'sold'
+    });
+    if (error) { alert('Could not add: ' + error.message); return; }
+    edLoadAccounting();
+  };
+  window.edToggleCommission = async function(id, cur) {
+    var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var next = cur === 'paid' ? 'sold' : 'paid';
+    await pc.from('commissions').update({ status: next, paid_at: next==='paid' ? new Date().toISOString() : null }).eq('id', id);
+    edLoadAccounting();
+    if (typeof financeSubTab !== 'undefined' && financeSubTab === 'payroll') renderFinanceView();
+  };
+  window.edDelCommission = async function(id) {
+    if (!confirm('Delete this commission entry?')) return;
+    var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+    await pc.from('commissions').delete().eq('id', id);
+    edLoadAccounting();
+  };
 
   // ── Payments ledger panel in the lead editor ──────────────────────────────
   async function edLoadPayments() {
