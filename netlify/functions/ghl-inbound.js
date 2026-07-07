@@ -135,8 +135,10 @@ exports.handler = async function(event) {
   let noteText;
   if (isPartial) {
     noteText = 'Partial web capture (' + inboundSource + ') — visitor started the form but did not finish booking. Call back while it\'s warm.';
-  } else if (inboundSource === 'homepage_submit' || inboundSource === 'book_page_submit') {
-    noteText = 'Lead captured via website form (' + inboundSource + ').';
+  } else if (inboundSource === 'homepage_submit' || inboundSource === 'book_page_submit' || inboundSource === 'book_page_confirmed') {
+    noteText = inboundSource === 'book_page_confirmed'
+      ? 'Evaluation booked on /book — appointment time recorded.'
+      : 'Lead captured via website form (' + inboundSource + ').';
   } else {
     noteText = nameMissing
       ? 'Lead captured via GHL booking — name not provided. Check GHL contact record.'
