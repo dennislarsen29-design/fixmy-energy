@@ -49,6 +49,13 @@ These are Standard Operating Procedures. Do not re-ask how the business lines wo
   - Future: monthly net must break out into equity distributions (design for it; don't block on it).
   - Reports must be real, easy to follow for accounting + payroll. Automate as much as possible.
 
+### Commission math (2026-07-07, per Dennis — AUTHORITATIVE)
+- **FixMy rep commission:** `Revenue − Sub-Sheet Costs = Net Revenue`; rep earns **40% of Net Revenue**. Dennis-sold jobs (rep_id `tech4`) = no commission. Commission finalizes only after job costs are entered — costs first, then commission.
+- **Top Tier / New Solar sold commissions:** entered MANUALLY per deal when the provider confirms.
+- **Manager overrides (TT + NS):** paid TO Dennis — they are 1099 income to **Solar Review Corp**, not payouts. Track as receivables: override sold (owed to SRC) vs received.
+- **Travel reimbursements:** Top Tier only, manual entries, owed to the rep.
+- Data model: `job_costs` (per-job pending/paid cost line items) + `commissions` (kind: rep_commission | override | travel_reimbursement; status: sold | paid) tables — migration `20260707_accounting.sql`.
+
 ### 2. Top Tier
 - **Model:** sales rep + manager override payscale ONLY. Solar Review does NOT charge the customer — Top Tier charges the customer.
 - **Accounting requirements:** track sold commissions, paid commissions, and travel reimbursements. Nothing else.
