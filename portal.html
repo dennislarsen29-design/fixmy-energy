@@ -6854,18 +6854,24 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       });
     } catch(e) { ledgerOk = false; }
 
-    // Candidates: any customer with an invoice amount or a non-settled invoice status
-    var owed = [];
+    // Candidates: any customer with an invoice amount or a non-settled invoice status.
+    // Split honestly: 'owed' = portal says money is due; 'ghost' = the old paid
+    // flag is set but the ledger has no payment rows backing it up (needs the
+    // backfill to find it, or a manual Record Payment entry).
+    var owed = [], ghost = [];
     (adminCustomers||[]).forEach(function(c){
       var target = parseFloat(c.invoice_amount) || 0;
       var relevant = target > 0 || ['sent','pending','partial','overdue'].indexOf(c.invoice_status||'') >= 0;
       if (!relevant) return;
       var paid = paysByCust[c.id] || 0;
-      var balance = target > 0 ? (target - paid) : (c.invoice_status === 'paid' ? 0 : null);
-      if (balance !== null && balance <= 0.005) return; // settled
-      owed.push({ c: c, target: target, paid: paid, balance: balance });
+      var balance = target > 0 ? (target - paid) : null;
+      if (balance !== null && balance <= 0.005) return; // settled in the ledger
+      var entry = { c: c, target: target, paid: paid, balance: balance };
+      if (c.invoice_status === 'paid') ghost.push(entry);   // flag says paid, ledger says no
+      else if (balance !== null || ['sent','pending','partial','overdue'].indexOf(c.invoice_status||'') >= 0) owed.push(entry);
     });
     owed.sort(function(a,b){ return (b.balance||0) - (a.balance||0); });
+    ghost.sort(function(a,b){ return (b.target||0) - (a.target||0); });
     var totalOwed = owed.reduce(function(t,o){ return t + (o.balance||0); }, 0);
 
     var h = portalNav + '<div style="padding:4px 0 24px;">' + subTabRow;
@@ -6875,6 +6881,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '<button onclick="runPaymentsSync(365)" style="padding:10px 18px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:100px;color:#999;font-size:0.75rem;font-weight:700;cursor:pointer;" title="One-time historical backfill — pulls 12 months of GHL transactions">&#128230; Backfill 12 months</button>';
     h += '<span id="paySyncStatus" style="font-size:0.72rem;color:#777;"></span>';
     h += '</div>';
+    h += '<div id="paySyncReport" style="margin-bottom:16px;font-size:0.74rem;color:#888;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.07);border-radius:10px;padding:9px 14px;">Checking last sync&hellip;</div>';
 
     if (!ledgerOk) {
       h += '<div style="padding:14px 16px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.2);border-radius:12px;font-size:0.78rem;color:#ef9b9b;">Payments ledger not found — run <code>20260704_payments_ledger.sql</code> in the Supabase SQL Editor, then reload.</div>';
@@ -6896,6 +6903,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       h += '<div style="text-align:center;padding:30px;color:#555;font-size:0.82rem;">No outstanding balances &#127881;</div>';
     }
 
+    if (ghost.length) {
+      h += '<div style="margin-top:18px;"><div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#4a9eff;margin-bottom:8px;">&#128269; Marked paid, no payment on record ('+ghost.length+') — not counted in Outstanding</div>';
+      h += '<div style="font-size:0.7rem;color:#777;margin-bottom:8px;">The old "paid" checkbox is set but the ledger has no matching payment. The backfill fills these in when the money went through GHL; payments taken through the old Sign &amp; Pay page or outside GHL need a manual <b>+ Record Payment</b> on the customer.</div>';
+      ghost.slice(0, 30).forEach(function(o){
+        var name = ((o.c.first_name||'')+' '+(o.c.last_name||'')).trim() || o.c.address || 'Unknown';
+        h += '<div style="display:flex;gap:10px;align-items:center;padding:8px 12px;background:rgba(74,158,255,0.05);border:1px solid rgba(74,158,255,0.15);border-radius:10px;margin-bottom:6px;font-size:0.75rem;color:#ccc;flex-wrap:wrap;">';
+        h += '<span style="font-weight:700;color:#eee;">'+esc(name)+'</span>';
+        h += '<span style="color:#4a9eff;font-weight:700;">$'+o.target.toLocaleString(undefined,{maximumFractionDigits:2})+' flagged paid &middot; $'+o.paid.toLocaleString(undefined,{maximumFractionDigits:2})+' on record</span>';
+        h += '<button onclick="renderAdminView(\'dashboard\');setTimeout(function(){openLeadEditor(\''+o.c.id+'\');},150);" style="margin-left:auto;padding:5px 12px;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.3);border-radius:100px;color:#8DC63F;font-size:0.68rem;font-weight:700;cursor:pointer;">Open &#8594;</button>';
+        h += '</div>';
+      });
+      h += '</div>';
+    }
+
     if (unmatched.length) {
       h += '<div style="margin-top:18px;"><div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#ef4444;margin-bottom:8px;">&#9888; Unmatched payments ('+unmatched.length+') — money received, no customer matched</div>';
       unmatched.slice(0, 30).forEach(function(p){
@@ -6910,20 +6931,69 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
     h += '</div>';
     body.innerHTML = h;
+    loadPaySyncReport();
+  }
+
+  // Render the last sweep's result summary (written by the background function)
+  async function loadPaySyncReport(prevAt) {
+    var el = document.getElementById('paySyncReport');
+    if (!el) return null;
+    try {
+      var r = await fetch('/.netlify/functions/payments-sync-status');
+      var d = await r.json();
+      if (d.never) { el.innerHTML = 'No GHL sweep has completed yet. Tap <b>&#8635; Sync GHL Payments</b> (or Backfill) to run one — results will appear here.'; return null; }
+      var when = d.at ? new Date(d.at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : '?';
+      var line = '<b style="color:#8DC63F;">Last GHL sweep:</b> ' + when + ' &middot; window ' + (d.days||'?') + ' days &middot; ' +
+        '<b style="color:#ddd;">' + (d.fetched||0) + '</b> transactions found &middot; ' +
+        '<b style="color:#8DC63F;">' + (d.recorded||0) + '</b> newly booked &middot; ' +
+        (d.duplicates||0) + ' already on record &middot; ' +
+        '<b style="color:'+((d.unmatched||0)>0?'#ef4444':'#777')+';">' + (d.unmatched||0) + '</b> unmatched';
+      if (d.errors && d.errors.length) {
+        line += '<div style="margin-top:6px;color:#ef9b9b;">&#9888; ' + esc(String(d.errors[0])).slice(0,220) + (d.errors.length>1 ? ' (+' + (d.errors.length-1) + ' more — see Netlify function logs)' : '') + '</div>';
+        if (String(d.errors[0]).indexOf('401') >= 0 || String(d.errors[0]).indexOf('403') >= 0) {
+          line += '<div style="margin-top:4px;color:#ffaa00;">Looks like a GHL permissions problem — check the Payments scopes on the Private Integration and that the new token is saved in Netlify (GHL_API_KEY) with a redeploy.</div>';
+        }
+      }
+      if ((d.fetched||0) === 0 && (!d.errors || !d.errors.length)) {
+        line += '<div style="margin-top:6px;color:#999;">GHL returned zero transactions for this window. If you know payments exist there, the likely causes are: payments were taken via text2pay/invoices under a different GHL product area, or the transactions API scope isn\'t active on the token.</div>';
+      }
+      el.innerHTML = line;
+      return d.at || null;
+    } catch(e) { el.innerHTML = 'Could not load sync status: ' + esc(e.message); return null; }
   }
 
   window.runPaymentsSync = async function(days) {
     var btn = document.getElementById('paySyncBtn');
     var st  = document.getElementById('paySyncStatus');
     if (btn) { btn.disabled = true; btn.style.opacity = '0.6'; }
-    if (st) st.textContent = days ? 'Backfilling ' + days + ' days — takes a few minutes, refresh this tab later…' : 'Syncing…';
+    if (st) st.textContent = days ? 'Backfilling ' + days + ' days…' : 'Syncing…';
+    var beforeAt = null;
+    try {
+      var pre = await fetch('/.netlify/functions/payments-sync-status'); var preD = await pre.json();
+      beforeAt = preD.at || null;
+    } catch(e) {}
     try {
       await fetch('/.netlify/functions/ghl-payments-reconcile-background' + (days ? '?days=' + days : ''), { method: 'POST' });
-      if (st) st.textContent = 'Sweep started in the background — refresh this view in a couple of minutes.';
+      if (st) st.textContent = 'Sweep running — watching for results…';
+      // Poll the status endpoint until a NEW run summary lands (up to ~3 min)
+      var tries = 0;
+      var poll = setInterval(async function() {
+        tries++;
+        var at = await loadPaySyncReport();
+        if ((at && at !== beforeAt) || tries >= 18) {
+          clearInterval(poll);
+          if (at && at !== beforeAt) {
+            if (st) st.textContent = '&#10003; Sweep finished — reloading…', st.innerHTML = '&#10003; Sweep finished — reloading…';
+            setTimeout(function(){ renderFinanceView(); }, 1500);
+          } else if (st) {
+            st.textContent = 'Still running — refresh this tab in a minute.';
+          }
+        }
+      }, 10000);
     } catch(e) {
       if (st) st.textContent = 'Could not start sync: ' + e.message;
     }
-    if (btn) setTimeout(function(){ btn.disabled = false; btn.style.opacity = '1'; }, 4000);
+    if (btn) setTimeout(function(){ btn.disabled = false; btn.style.opacity = '1'; }, 6000);
   };
 
   async function renderFinanceView() {

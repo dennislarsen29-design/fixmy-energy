@@ -189,5 +189,20 @@ exports.handler = async function(event) {
   }
 
   console.log('ghl-payments-reconcile done:', JSON.stringify(stats));
+
+  // Persist the run summary so the portal's Money Owed view can display it
+  // (read back via payments-sync-status.js).
+  try {
+    await fetch(SUPA_REST + '/app_config?on_conflict=key', {
+      method: 'POST',
+      headers: { ...H, Prefer: 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify({
+        key: 'payments_last_sync',
+        value: { at: new Date().toISOString(), ...stats, errors: stats.errors.slice(0, 5) },
+        updated_at: new Date().toISOString()
+      })
+    });
+  } catch (e) { console.warn('ghl-payments-reconcile: could not persist stats —', e.message); }
+
   return { statusCode: 200, body: JSON.stringify(stats) };
 };
