@@ -36,6 +36,27 @@ Deployed on Netlify from the `main` branch. Active feature branch: `claude/fixmy
 - `sold_type` field: `null` = lead, `'diagnostic'` | `'battery_retrofit'` | `'monitoring'` | `'new_solar'` = job
 - `isNSEdit` / `isNSSave` flags gate New Solar-specific fields in editor/save
 
+## Business Lines & Accounting SOPs (2026-07-07, per Dennis — AUTHORITATIVE)
+These are Standard Operating Procedures. Do not re-ask how the business lines work.
+
+### 1. FixMy.Energy (internal line name; customer-facing brand is Solar Review)
+- **Services:** Diagnostics, Inverter Swaps, Warranty Replacements, Batteries.
+- **Revenue:** Solar Review charges the CUSTOMER directly for diagnostics, inverter swaps, warranty replacements, and battery sales **when batteries are sold in-house**. Going forward, **Cosmic charges the customer for battery sales** (battery revenue shifts out of Solar Review's books when Cosmic sells/charges).
+- **Accounting requirements:**
+  - Track revenue (payments ledger — `payments` table).
+  - Track operations costs of doing business per job ("sub sheet"): pending vs completed payments to ops/partners.
+  - Rep commissions on sold jobs for ALL sales reps EXCEPT Dennis (Dennis-sold = no commission).
+  - Future: monthly net must break out into equity distributions (design for it; don't block on it).
+  - Reports must be real, easy to follow for accounting + payroll. Automate as much as possible.
+
+### 2. Top Tier
+- **Model:** sales rep + manager override payscale ONLY. Solar Review does NOT charge the customer — Top Tier charges the customer.
+- **Accounting requirements:** track sold commissions, paid commissions, and travel reimbursements. Nothing else.
+
+### 3. New Solar
+- **Model:** installs currently through **Trio and Axia** as the installers. Sales rep + manager override payscale ONLY. Solar Review does NOT charge the customer — the solar provider charges the customer.
+- **Accounting requirements:** track sold commissions and paid commissions. Nothing else.
+
 ## Business Lines
 ### FixMy.Energy (diagnostic / battery retrofit)
 9-step pipeline via `step` field:
