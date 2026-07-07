@@ -203,14 +203,19 @@ exports.handler = async function(event) {
 
   let result, resultBody;
   if (existingId) {
-    // Update existing — stamp step/category, fill in any blanks, upgrade partial → full
+    // Update existing — stamp step/category, fill in any blanks, upgrade partial → full.
+    // partial_capture only ever moves one way on an existing record: a full
+    // submission clears it, but a PARTIAL never sets it. On /book, tapping a
+    // time slot blurs the last field, firing a partial save and the booking
+    // save nearly simultaneously — if the partial landed second it used to
+    // re-flag a fully-booked customer as a "hot lead". Never downgrade.
     const patch = {
       step:            1,
       lead_category:   'fixmy',
       lead_source:     'inbound_web',
-      partial_capture: isPartial, // cleared to false when a full booking arrives
       ...attribution
     };
+    if (!isPartial) patch.partial_capture = false;
     if (firstName)      patch.first_name = firstName;
     if (lastName)       patch.last_name  = lastName;
     if (rawPhone)       patch.phone = rawPhone;
