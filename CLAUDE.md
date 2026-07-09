@@ -296,6 +296,7 @@ Rebuilt Finance tab (`renderFinanceView()` in portal.html) into a full financial
 - **Google Ads video creative (HIGH PRIORITY):** Current video ads are low quality. Need better video assets. (Not a dev task — Dennis action item.)
 
 ### Medium Priority / On Hold
+- **Plaid auto-sync for statements (decided 2026-07-09 — "good upgrade when it's time"):** nightly Plaid pull of GWCU business checking + Citi business CC + AmEx business CC into `expense_transactions` via the existing import pipeline. Roadmap card + full build prompt live in business-model.html → Action Roadmap → "💰 Finance & Accounting Automation" → 📋 Prompt (`plaid-sync`). ~$1–2/account/mo pay-as-you-go. ⚠️ Verify Citi BUSINESS card support in Plaid Link early — historically flaky. Dennis prereq: plaid.com account + production access + PLAID_CLIENT_ID/PLAID_SECRET in Netlify.
 - **GHL AppointmentCreate webhook → portal:** When a customer books through the `/book` calendar (ID `ZGOdyYdMUh07V1Ujav9R`), GHL needs to fire a webhook back so `diagnostic_date` populates in the portal. In GHL: Automations → "FixMy Energy Solar Appointment Confirmation" → add a Webhook action posting to `https://fixmy.energy/.netlify/functions/ghl-inbound`. `ghl-inbound.js` already parses `selectedSlot`/`startTime` from the payload. GHL config only — no code change needed.
 - Add `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `SUPA_SERVICE_KEY` to Netlify env vars (sign+pay won't work until these are set)
 - Add Netlify PAT to `.claude/settings.local.json` to enable Netlify MCP
