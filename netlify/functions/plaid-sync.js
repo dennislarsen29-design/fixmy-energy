@@ -4,6 +4,12 @@
 //   GET  ?status=1   → sanitized connection status for the portal (no tokens)
 //   POST / scheduled → run the sync for every connected item
 //
+// Expenses only — deposits/credits (customer payments, transfers in) are always
+// skipped. Revenue is tracked exclusively through the payments table (GHL sweep +
+// Sign & Pay), which already ties each payment to a customer/job; guessing revenue
+// from a bank deposit line would be worse data and risks double-booking income
+// that's already recorded there.
+//
 // Dedupe, three layers:
 //   1. per-item start_date cutoff (set at connect time = day after newest CSV txn)
 //   2. dedupe_hash unique column — re-syncs and Plaid retries land exactly once
@@ -83,8 +89,9 @@ async function syncItem(item, rules) {
     if (t.pending) continue;                                   // book only settled txns
     const desc = (t.merchant_name ? t.merchant_name + ' — ' : '') + (t.original_description || t.name || '');
     const pfc = (t.personal_finance_category && t.personal_finance_category.primary) || '';
-    const amount = Math.round((parseFloat(t.amount) || 0) * 100) / 100;  // Plaid: positive = money out
+    const amount = Math.round((parseFloat(t.amount) || 0) * 100) / 100;  // Plaid: positive = money out, negative = deposit/credit
     if (!t.date || !amount) continue;
+    if (amount < 0) continue;  // deposits/credits are never expenses — revenue is tracked separately via the payments table (GHL sweep + Sign & Pay), never guessed from bank deposits
     if (item.start_date && t.date < item.start_date) continue; // CSV history owns everything before the cutoff
     if (SKIP_PFC.has(pfc) || isIssuerPayment(desc)) continue;  // card payments/transfers are not expenses
     txns.push({ date: t.date, description: desc.replace(/\s+/g, ' ').trim().slice(0, 300), amount: amount, plaid_id: t.transaction_id });
