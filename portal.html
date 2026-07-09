@@ -7748,7 +7748,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '</div>';
     h += '<div id="finStmtStatus" style="font-size:0.72rem;color:#888;margin-top:8px;"></div>';
     h += '<div style="font-size:0.64rem;color:#555;margin-top:6px;">CSV exports from AmEx/your bank import instantly and exactly. PDFs are read by AI (double-check the review queue after). Excel files: use the bank\'s "Download CSV" option instead. Re-uploading the same statement never duplicates — matching lines are skipped.</div>';
+    h += '<div style="border-top:1px solid rgba(255,255,255,0.07);margin-top:10px;padding-top:10px;">';
+    h += '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">';
+    h += '<span style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#4a9eff;">&#128279; Auto-sync (Plaid)</span>';
+    h += '<button class="fin-btn" style="border-color:rgba(74,158,255,0.35);background:rgba(74,158,255,0.1);color:#4a9eff;" onclick="finPlaidConnect()">+ Connect Bank / Card</button>';
+    h += '<button class="fin-btn ghost" onclick="finPlaidSyncNow()">&#8635; Sync Now</button>';
+    h += '<span id="finPlaidMsg" style="font-size:0.7rem;color:#888;"></span>';
     h += '</div>';
+    h += '<div id="finPlaidBox" style="font-size:0.7rem;color:#777;margin-top:6px;">Checking connected accounts&hellip;</div>';
+    h += '</div>';
+    h += '</div>';
+    setTimeout(finPlaidLoadStatus, 50);
 
     // Rules panel (hidden)
     h += '<div id="finRulesPanel" class="fin-card no-print" style="display:none;">';
@@ -7823,6 +7833,88 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<button class="no-print" onclick="finDelTxn(\''+e.id+'\')" title="Delete" style="background:none;border:none;color:#444;cursor:pointer;font-size:0.85rem;">&times;</button>'+
     '</div>';
   }
+
+  // ── Plaid auto-sync (Connect + status + manual sync) ────────────────────────
+  async function finPlaidLoadStatus(){
+    var box = document.getElementById('finPlaidBox');
+    if (!box) return;
+    try {
+      var r = await fetch('/.netlify/functions/plaid-sync?status=1');
+      var d = await r.json();
+      if (!d.configured) {
+        box.innerHTML = 'Not configured yet — add <code>PLAID_CLIENT_ID</code> + <code>PLAID_SECRET</code> (and <code>PLAID_ENV=production</code>) in Netlify, redeploy, then connect GWCU + Citi + AmEx here. Until then, CSV upload above works as always.';
+        return;
+      }
+      if (!d.items || !d.items.length) {
+        box.innerHTML = 'Plaid is configured ('+esc(d.env||'')+') — no accounts connected yet. Tap <b>+ Connect Bank / Card</b> and log into each of the three accounts once.';
+        return;
+      }
+      box.innerHTML = d.items.map(function(i){
+        var when = i.last_synced ? new Date(i.last_synced).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}) : 'never';
+        return '<div style="display:flex;gap:10px;align-items:center;padding:3px 0;flex-wrap:wrap;">'+
+          '<span style="color:#ddd;font-weight:700;">'+esc(i.institution)+'</span>'+
+          '<span style="color:#555;">syncs from '+esc(i.start_date||'—')+'</span>'+
+          '<span style="color:'+(i.last_error?'#ef9b9b':'#8DC63F')+';">'+(i.last_error?('&#9888; '+esc(String(i.last_error).slice(0,80))):('last sync '+when+(i.last_synced?' &middot; '+(i.last_added||0)+' new, '+(i.last_dupes||0)+' dupes skipped':'')))+'</span>'+
+        '</div>';
+      }).join('') + '<div style="color:#555;margin-top:4px;">Runs nightly ~4:30am PT, before the AI advisor. Duplicates are impossible: each account only syncs from after your last uploaded statement, plus hash + date/amount guards.</div>';
+    } catch(e) { box.textContent = 'Could not load Plaid status: '+e.message; }
+  }
+  window.finPlaidLoadStatus = finPlaidLoadStatus;
+
+  function finLoadPlaidLink(){
+    return new Promise(function(resolve){
+      if (window.Plaid) return resolve(true);
+      var s = document.createElement('script');
+      s.src = 'https://cdn.plaid.com/link/v2/stable/link-initialize.js';
+      s.onload = function(){ resolve(true); };
+      s.onerror = function(){ resolve(false); };
+      document.head.appendChild(s);
+    });
+  }
+  window.finPlaidConnect = async function(){
+    var msg = document.getElementById('finPlaidMsg');
+    function say(t){ if (msg) msg.innerHTML = t; }
+    try {
+      say('Preparing secure connection&hellip;');
+      var r = await fetch('/.netlify/functions/plaid-link-token', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' });
+      var d = await r.json();
+      if (!r.ok) throw new Error(d.error || 'Could not create link token');
+      var ok = await finLoadPlaidLink();
+      if (!ok || !window.Plaid) throw new Error('Plaid Link script failed to load');
+      say('');
+      var handler = Plaid.create({
+        token: d.link_token,
+        onSuccess: async function(public_token, metadata){
+          say('&#9203; Finishing connection&hellip;');
+          try {
+            var inst = (metadata && metadata.institution && metadata.institution.name) || 'Unknown institution';
+            var r2 = await fetch('/.netlify/functions/plaid-exchange', { method:'POST', headers:{'Content-Type':'application/json'},
+              body: JSON.stringify({ public_token: public_token, institution: inst }) });
+            var d2 = await r2.json();
+            if (!r2.ok) throw new Error(d2.error || 'exchange failed');
+            say('&#10003; '+esc(d2.institution)+' connected — will sync from '+esc(d2.start_date)+'. Tap <b>Sync Now</b> to pull it immediately.');
+            finPlaidLoadStatus();
+          } catch(e) { say('&#10060; '+esc(e.message)); }
+        },
+        onExit: function(err){ if (err) say('&#9888; '+esc(err.display_message || err.error_message || 'Connection canceled')); }
+      });
+      handler.open();
+    } catch(e) { say('&#10060; '+esc(e.message)); }
+  };
+  window.finPlaidSyncNow = async function(){
+    var msg = document.getElementById('finPlaidMsg');
+    function say(t){ if (msg) msg.innerHTML = t; }
+    say('&#9203; Syncing all connected accounts&hellip;');
+    try {
+      var r = await fetch('/.netlify/functions/plaid-sync', { method:'POST' });
+      var d = await r.json();
+      if (d.ok === false) throw new Error(d.error || 'sync failed');
+      say('&#10003; '+(d.message || ('Imported '+(d.imported||0)+' new transactions from '+(d.accounts||0)+' account(s).')));
+      finCache = null;
+      await finLoadData();
+      setTimeout(function(){ renderFinanceView(); }, 1200);
+    } catch(e) { say('&#10060; '+esc(e.message)); }
+  };
 
   // ── Statement parsing + import pipeline ─────────────────────────────────────
   function finHashStr(s){
