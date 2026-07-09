@@ -8,12 +8,13 @@ const AGENTS = {
   bizdev:    require('./bizdev-agent'),
   'crm-dev': require('./crm-dev-agent'),
   seo:       require('./seo-agent'),
+  finance:   require('./finance-agent'),
 };
 
 exports.handler = async function(event) {
   const agent = (event.queryStringParameters || {}).agent;
   if (!AGENTS[agent]) {
-    return { statusCode: 400, body: 'Unknown agent: ' + agent + '. Use: marketing, socials, bizdev, crm-dev, seo' };
+    return { statusCode: 400, body: 'Unknown agent: ' + agent + '. Use: marketing, socials, bizdev, crm-dev, seo, finance' };
   }
   console.log('[run-agent-background] Manually triggering:', agent);
   try {

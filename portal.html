@@ -433,7 +433,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   var upgradeItems = [];
   var jobPhotos = {};
   var adminLeadCat = 'fixmy';   // 'fixmy' | 'new_solar' | 'top_tier'
-  var financeSubTab = 'commissions';   // 'commissions' | 'marketing'
+  var financeSubTab = 'dashboard';     // dashboard | revenue | subsheet | commissions | expenses | statements | ai | owed | payroll | marketing
+  var financeRange = { mode:'lifetime', year:(new Date()).getFullYear(), month:(new Date()).getMonth()+1 };
+  var finCache = null;      // shared finance data cache (payments, costs, commissions, expenses, coa, rules, mileage)
+  var finCharts = {};       // live Chart.js instances, destroyed on every re-render
+  var finChartPrefs = {};   // per-chart type toggles (bar/line, bar/doughnut)
   var adminJobCat  = 'fixmy';
   var schedCalView   = 'week';  // 'week' | 'month'
   var schedCalOffset = 0;       // weeks or months from current
@@ -7086,6 +7090,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (btn) setTimeout(function(){ btn.disabled = false; btn.style.opacity = '1'; }, 6000);
   };
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // SOLAR REVIEW FINANCE — dashboard, revenue, sub sheet, commissions, expenses,
+  // statements (P&L), AI advisor. Account names mirror the CPA's QuickBooks books
+  // (see 20260708_solar_review_finance.sql). Money Owed / Payroll / Marketing are
+  // the pre-existing views, kept as sub-tabs.
+  // ═══════════════════════════════════════════════════════════════════════════
+
   async function renderFinanceView() {
     adminView = 'finance';
     var portalNav = '<div class="portal-tab-nav">'+
@@ -7099,174 +7110,1262 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a>'+
     '</div>';
 
-    var stStyle = 'padding:6px 16px;border:none;border-radius:100px;font-size:0.75rem;font-weight:700;cursor:pointer;transition:all 0.15s;';
-    var subTabRow = '<div style="display:flex;gap:8px;margin-bottom:18px;">'+
-      '<button onclick="financeSubTab=\'commissions\';renderFinanceView()" style="'+stStyle+'background:'+(financeSubTab!=='marketing'&&financeSubTab!=='owed'?'#8DC63F':'rgba(255,255,255,0.07)')+';color:'+(financeSubTab!=='marketing'&&financeSubTab!=='owed'?'#1A1A1A':'#888')+';">&#128176; Commissions</button>'+
-      '<button onclick="financeSubTab=\'owed\';renderFinanceView()" style="'+stStyle+'background:'+(financeSubTab==='owed'?'#8DC63F':'rgba(255,255,255,0.07)')+';color:'+(financeSubTab==='owed'?'#1A1A1A':'#888')+';">&#128181; Money Owed</button>'+
-      '<button onclick="financeSubTab=\'payroll\';renderFinanceView()" style="'+stStyle+'background:'+(financeSubTab==='payroll'?'#8DC63F':'rgba(255,255,255,0.07)')+';color:'+(financeSubTab==='payroll'?'#1A1A1A':'#888')+';">&#129297; Payroll</button>'+
-      '<button onclick="financeSubTab=\'marketing\';renderFinanceView()" style="'+stStyle+'background:'+(financeSubTab==='marketing'?'#8DC63F':'rgba(255,255,255,0.07)')+';color:'+(financeSubTab==='marketing'?'#1A1A1A':'#888')+';">&#128200; Marketing</button>'+
-    '</div>';
+    var stStyle = 'width:auto;margin:0;padding:6px 14px;border:none;border-radius:100px;font-size:0.73rem;font-weight:700;cursor:pointer;transition:all 0.15s;white-space:nowrap;';
+    var tabs = [
+      ['dashboard','&#128202; Dashboard'], ['revenue','&#128181; Revenue'], ['subsheet','&#128203; Sub Sheet'],
+      ['commissions','&#129297; Commissions'], ['expenses','&#128179; Expenses'], ['statements','&#128196; Statements'],
+      ['ai','&#129302; AI Advisor'], ['owed','&#128176; Money Owed'], ['payroll','&#129534; Payroll'], ['marketing','&#128200; Marketing']
+    ];
+    var subTabRow = '<div style="display:flex;gap:7px;margin-bottom:16px;flex-wrap:wrap;">'+tabs.map(function(t){
+      var active = financeSubTab === t[0];
+      return '<button onclick="finGoTab(\''+t[0]+'\')" style="'+stStyle+'background:'+(active?'#8DC63F':'rgba(255,255,255,0.07)')+';color:'+(active?'#1A1A1A':'#888')+';">'+t[1]+'</button>';
+    }).join('')+'</div>';
 
-    if (financeSubTab === 'marketing') {
-      renderMarketingView();
-      return;
-    }
-    if (financeSubTab === 'owed') {
-      renderMoneyOwedView(portalNav, subTabRow);
-      return;
-    }
-    if (financeSubTab === 'payroll') {
-      renderPayrollView(portalNav, subTabRow);
-      return;
-    }
-
-    document.getElementById('dashBody').innerHTML = portalNav + '<div style="padding:4px 0 24px;">' + subTabRow + '<div style="text-align:center;padding:20px;color:#555;font-size:0.8rem;">Loading finance data&hellip;</div></div>';
-
-    var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
-    var { data: jobs } = await c2
-      .from('customers')
-      .select('id,first_name,last_name,address,sold_type,rep_id,setter_name,rep_commission,commission_estimate,commission_paid,commission_paid_at,invoice_amount,invoice_status,project_costs,ops_payout_amount,ops_payout_status,assigned_ops,gross_revenue,milestone2_amount,milestone2_status,milestone3_amount,milestone3_status,notes_internal')
-      .not('sold_type', 'is', null)
-      .order('created_at', {ascending: false});
-
-    jobs = jobs || [];
-
-    // ── Rep map
-    var repMap = {tech4:'Dennis Larsen',tech2:'Ranie',tech3:'Michael Smith',rep1:'Ronda',tech5:'Cristina Huang',setter1:'Setter'};
-    var opsMap = {ops1:'Jon Klos',ops2:'John Espinoza',ops3:'Cosmic Solar',ops4:'Axia'};
-
-    // ── Commission section
-    var commJobs = jobs.filter(function(j){ return j.rep_commission > 0; });
-    var byRep = {};
-    commJobs.forEach(function(j) {
-      var key = j.rep_id || 'unknown';
-      if (!byRep[key]) byRep[key] = [];
-      byRep[key].push(j);
-    });
-
-    var totalOwed = 0, totalPaid = 0;
-    commJobs.forEach(function(j){
-      var amt = parseFloat(j.rep_commission)||0;
-      if (j.commission_paid) totalPaid += amt; else totalOwed += amt;
-    });
-    var totalPipeline = jobs.reduce(function(s,j){ return s+(parseFloat(j.commission_estimate)||0); },0);
-
-    var h = portalNav + '<div style="padding:4px 0 24px;">' + subTabRow;
-
-    // Summary strip
-    h += '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:8px;">';
-    h += '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:12px;text-align:center;"><div style="font-size:1.15rem;font-weight:800;color:#ef4444;">$'+totalOwed.toLocaleString()+'</div><div style="font-size:0.65rem;color:#888;">Commissions Owed</div></div>';
-    h += '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:12px;text-align:center;"><div style="font-size:1.15rem;font-weight:800;color:#8DC63F;">$'+totalPaid.toLocaleString()+'</div><div style="font-size:0.65rem;color:#888;">Commissions Paid</div></div>';
-    h += '</div>';
-    h += '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:20px;">';
-    var opsOwed = jobs.filter(function(j){ return j.ops_payout_status==='pending' && j.ops_payout_amount>0; }).reduce(function(s,j){ return s+(parseFloat(j.ops_payout_amount)||0); },0);
-    h += '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:12px;text-align:center;"><div style="font-size:1.15rem;font-weight:800;color:#ffaa00;">$'+opsOwed.toLocaleString()+'</div><div style="font-size:0.65rem;color:#888;">Ops Payouts Pending</div></div>';
-    h += '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(74,158,255,0.2);border-radius:10px;padding:12px;text-align:center;"><div style="font-size:1.15rem;font-weight:800;color:#4a9eff;">$'+totalPipeline.toLocaleString()+'</div><div style="font-size:0.65rem;color:#888;">Pipeline (Est.)</div></div>';
-    h += '</div>';
-
-    // ── Commission Ledger
-    h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;margin-bottom:10px;">&#128176; Rep Commission Ledger</div>';
-
-    Object.keys(byRep).forEach(function(repId) {
-      var repJobs = byRep[repId];
-      var repName = repMap[repId] || repId;
-      var repOwed = repJobs.filter(function(j){ return !j.commission_paid; }).reduce(function(s,j){ return s+(parseFloat(j.rep_commission)||0); },0);
-      var repPaid = repJobs.filter(function(j){ return j.commission_paid; }).reduce(function(s,j){ return s+(parseFloat(j.rep_commission)||0); },0);
-
-      h += '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:14px;padding:16px;margin-bottom:12px;">';
-      h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">';
-      h += '<div style="font-size:0.9rem;font-weight:700;">'+repName+'</div>';
-      h += '<div style="display:flex;gap:10px;font-size:0.75rem;">';
-      if (repOwed > 0) h += '<span style="color:#ef4444;font-weight:700;">$'+repOwed.toFixed(2)+' owed</span>';
-      if (repPaid > 0) h += '<span style="color:#8DC63F;">$'+repPaid.toFixed(2)+' paid</span>';
-      h += '</div></div>';
-
-      repJobs.forEach(function(j) {
-        var amt = parseFloat(j.rep_commission)||0;
-        var paid = !!j.commission_paid;
-        var name = ((j.first_name||'')+' '+(j.last_name||'')).trim();
-        h += '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:10px;margin-bottom:6px;">';
-        h += '<div>';
-        h += '<div style="font-size:0.82rem;font-weight:600;">'+name+'</div>';
-        h += '<div style="font-size:0.68rem;color:#555;">'+(j.address||'—').split(',')[0]+'</div>';
-        if (j.notes_internal) h += '<div style="font-size:0.65rem;color:#444;margin-top:2px;font-style:italic;">'+j.notes_internal.slice(0,60)+'</div>';
-        h += '</div>';
-        h += '<div style="display:flex;align-items:center;gap:8px;">';
-        h += '<div style="font-size:0.9rem;font-weight:800;color:'+(paid?'#8DC63F':'#ffaa00')+';">$'+amt.toFixed(2)+'</div>';
-        if (paid) {
-          h += '<span style="font-size:0.65rem;background:rgba(141,198,63,0.12);color:#8DC63F;border:1px solid rgba(141,198,63,0.3);border-radius:100px;padding:3px 8px;">&#10003; Paid</span>';
-        } else {
-          h += '<button onclick="markCommissionPaid(\''+j.id+'\')" style="font-size:0.68rem;padding:5px 12px;background:rgba(141,198,63,0.12);color:#8DC63F;border:1px solid rgba(141,198,63,0.3);border-radius:100px;cursor:pointer;font-weight:700;">Mark Paid</button>';
-        }
-        h += '</div></div>';
-      });
-      h += '</div>';
-    });
-
-    if (!commJobs.length) h += '<div style="text-align:center;padding:24px;color:#555;font-size:0.8rem;">No commission records yet.</div>';
-
-    // ── Pipeline Estimates
-    var pipelineJobs = jobs.filter(function(j){ return parseFloat(j.commission_estimate) > 0; });
-    if (pipelineJobs.length) {
-      h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#4a9eff;margin:20px 0 10px;">&#128640; Commission Pipeline</div>';
-      pipelineJobs.forEach(function(j) {
-        var est = parseFloat(j.commission_estimate)||0;
-        var name = ((j.first_name||'')+' '+(j.last_name||'')).trim();
-        var repName = repMap[j.rep_id] || j.rep_id || '—';
-        h += '<div style="display:flex;justify-content:space-between;align-items:center;padding:12px 14px;background:rgba(74,158,255,0.04);border:1px solid rgba(74,158,255,0.15);border-radius:10px;margin-bottom:6px;">';
-        h += '<div>';
-        h += '<div style="font-size:0.82rem;font-weight:600;">'+name+'</div>';
-        h += '<div style="font-size:0.68rem;color:#555;">'+(j.address||'—').split(',')[0]+' &middot; '+repName+'</div>';
-        if (j.notes_internal) h += '<div style="font-size:0.65rem;color:#4a9eff;margin-top:2px;font-style:italic;">'+j.notes_internal.slice(0,80)+'</div>';
-        h += '</div>';
-        h += '<div style="font-size:0.9rem;font-weight:800;color:#4a9eff;">~$'+est.toLocaleString()+'</div>';
-        h += '</div>';
-      });
-    }
-
-    // ── Ops Payouts
-    h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;margin:20px 0 10px;">&#128295; Ops Partner Payouts</div>';
-
-    var opsPending = jobs.filter(function(j){ return j.ops_payout_status === 'pending'; });
-    var byOps = {};
-    opsPending.forEach(function(j) {
-      var key = j.assigned_ops || 'unassigned';
-      if (!byOps[key]) byOps[key] = [];
-      byOps[key].push(j);
-    });
-
-    Object.keys(byOps).forEach(function(opsId) {
-      var opsJobs = byOps[opsId];
-      var opsName = opsMap[opsId] || opsId;
-      var opsTotalOwed = opsJobs.reduce(function(s,j){ return s+(parseFloat(j.ops_payout_amount)||0); },0);
-
-      h += '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:14px;padding:16px;margin-bottom:12px;">';
-      h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">';
-      h += '<div style="font-size:0.9rem;font-weight:700;">'+opsName+'</div>';
-      h += '<span style="font-size:0.75rem;color:#ffaa00;font-weight:700;">$'+opsTotalOwed.toLocaleString()+' pending</span>';
-      h += '</div>';
-
-      opsJobs.forEach(function(j) {
-        var amt = parseFloat(j.ops_payout_amount)||0;
-        var name = ((j.first_name||'')+' '+(j.last_name||'')).trim();
-        h += '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:10px;margin-bottom:6px;">';
-        h += '<div>';
-        h += '<div style="font-size:0.82rem;font-weight:600;">'+name+'</div>';
-        h += '<div style="font-size:0.68rem;color:#555;">'+(j.address||'—').split(',')[0]+'</div>';
-        h += '</div>';
-        h += '<div style="display:flex;align-items:center;gap:8px;">';
-        if (amt > 0) h += '<div style="font-size:0.9rem;font-weight:800;color:#ffaa00;">$'+amt.toLocaleString()+'</div>';
-        h += '<button onclick="markOpsPaid(\''+j.id+'\')" style="font-size:0.68rem;padding:5px 12px;background:rgba(255,170,0,0.1);color:#ffaa00;border:1px solid rgba(255,170,0,0.3);border-radius:100px;cursor:pointer;font-weight:700;">Mark Paid</button>';
-        h += '</div></div>';
-      });
-      h += '</div>';
-    });
-
-    if (!opsPending.length) h += '<div style="text-align:center;padding:24px;color:#555;font-size:0.8rem;">No ops payouts pending.</div>';
-
-    h += '</div>';
-    document.getElementById('dashBody').innerHTML = h;
+    if (financeSubTab === 'marketing') { renderMarketingView(); return; }
+    if (financeSubTab === 'owed')      { renderMoneyOwedView(portalNav, subTabRow); return; }
+    if (financeSubTab === 'payroll')   { renderPayrollView(portalNav, subTabRow); return; }
+    renderSolarReviewFinance(portalNav, subTabRow);
   }
+  window.finGoTab = function(k){ financeSubTab = k; renderFinanceView(); };
+
+  // ── Shared plumbing ─────────────────────────────────────────────────────────
+  var FIN_MIGRATION_MSG = 'Finance tables not found — run <code>20260708_solar_review_finance.sql</code> in the Supabase SQL Editor (or via MCP), then reload.';
+  // Chart palette: dataviz reference dark-mode categorical slots (fixed order, never cycled)
+  var FIN_SERIES = ['#3987e5','#199e70','#c98500','#008300','#9085e9','#e66767','#d55181','#d95926'];
+  var FIN_GRID = '#2c2c2a', FIN_MUTED = '#898781';
+
+  function finMoney(n, dec){
+    var v = parseFloat(n)||0;
+    var d = (dec === undefined) ? 2 : dec;
+    var s = '$' + Math.abs(v).toLocaleString(undefined,{minimumFractionDigits:d,maximumFractionDigits:d});
+    return v < 0 ? '-'+s : s;
+  }
+  function finMonthKey(s){ return String(s||'').slice(0,7); }
+  function finInRange(dateStr){
+    var mk = finMonthKey(dateStr);
+    if (mk.length < 7) return false;
+    if (financeRange.mode === 'lifetime') return true;
+    if (mk.slice(0,4) !== String(financeRange.year)) return false;
+    if (financeRange.mode === 'month') return parseInt(mk.slice(5,7),10) === financeRange.month;
+    return true;
+  }
+  function finRangeLabel(){
+    var MO = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    if (financeRange.mode === 'lifetime') return 'Lifetime';
+    if (financeRange.mode === 'year') return 'Year ' + financeRange.year;
+    return MO[financeRange.month-1] + ' ' + financeRange.year;
+  }
+  function finRangeBar(){
+    var years = [];
+    var y0 = 2024, y1 = (new Date()).getFullYear();
+    for (var y = y1; y >= y0; y--) years.push(y);
+    var seg = function(mode,label){
+      var a = financeRange.mode === mode;
+      return '<button onclick="finSetRange(\''+mode+'\')" style="width:auto;margin:0;padding:6px 14px;border:none;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;background:'+(a?'rgba(141,198,63,0.18)':'transparent')+';color:'+(a?'#8DC63F':'#777')+';">'+label+'</button>';
+    };
+    var h = '<div class="no-print" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:16px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:100px;padding:4px 6px;width:fit-content;max-width:100%;">';
+    h += seg('lifetime','Lifetime') + seg('year','Year') + seg('month','Month');
+    if (financeRange.mode !== 'lifetime') {
+      h += '<select onchange="financeRange.year=parseInt(this.value,10);finRerender()" style="background:#1f1f1f;color:#ccc;border:1px solid #333;border-radius:8px;padding:4px 8px;font-size:0.72rem;">'+years.map(function(y){ return '<option value="'+y+'"'+(y===financeRange.year?' selected':'')+'>'+y+'</option>'; }).join('')+'</select>';
+    }
+    if (financeRange.mode === 'month') {
+      var MO = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      h += '<select onchange="financeRange.month=parseInt(this.value,10);finRerender()" style="background:#1f1f1f;color:#ccc;border:1px solid #333;border-radius:8px;padding:4px 8px;font-size:0.72rem;">'+MO.map(function(m,i){ return '<option value="'+(i+1)+'"'+(i+1===financeRange.month?' selected':'')+'>'+m+'</option>'; }).join('')+'</select>';
+    }
+    h += '<button onclick="finCache=null;finRerender()" title="Reload finance data" style="background:none;border:none;color:#555;cursor:pointer;font-size:0.8rem;padding:2px 8px;">&#8635;</button>';
+    h += '</div>';
+    return h;
+  }
+  window.finSetRange = function(mode){ financeRange.mode = mode; finRerender(); };
+  window.finRerender = function(){ renderFinanceView(); };
+
+  async function finLoadData(){
+    if (finCache && (Date.now() - finCache.at < 60000)) return finCache;
+    var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+    function q(p){ return p.then(function(r){ return r; }).catch(function(e){ return { data:null, error:e }; }); }
+    var res = await Promise.all([
+      q(pc.from('payments').select('id,customer_id,amount,paid_at,source,method,category,note').order('paid_at',{ascending:false}).limit(5000)),
+      q(pc.from('job_costs').select('*').order('created_at',{ascending:false}).limit(5000)),
+      q(pc.from('commissions').select('*').order('sold_at',{ascending:false}).limit(5000)),
+      q(pc.from('expense_transactions').select('*').order('txn_date',{ascending:false}).limit(10000)),
+      q(pc.from('coa_accounts').select('*').eq('active',true).order('sort')),
+      q(pc.from('categorization_rules').select('*').order('priority',{ascending:false}).limit(2000)),
+      q(pc.from('mileage_entries').select('*').order('trip_date',{ascending:false}).limit(2000))
+    ]);
+    finCache = {
+      pays:     res[0].data || [], paysOk:  !res[0].error,
+      costs:    res[1].data || [], costsOk: !res[1].error,
+      comms:    res[2].data || [], commsOk: !res[2].error,
+      expenses: res[3].data || [], expOk:   !res[3].error,
+      coa:      res[4].data || [], coaOk:   !res[4].error,
+      rules:    res[5].data || [],
+      mileage:  res[6].data || [], milesOk: !res[6].error,
+      marketing: (typeof adminMarketingExpenses !== 'undefined' && adminMarketingExpenses) ? adminMarketingExpenses : [],
+      at: Date.now()
+    };
+    return finCache;
+  }
+
+  function finLoadChartJs(){
+    return new Promise(function(resolve){
+      if (window.Chart) return resolve(true);
+      if (document.getElementById('finChartJs')) {
+        var t = setInterval(function(){ if (window.Chart) { clearInterval(t); resolve(true); } }, 150);
+        setTimeout(function(){ clearInterval(t); resolve(!!window.Chart); }, 6000);
+        return;
+      }
+      var s = document.createElement('script');
+      s.id = 'finChartJs';
+      s.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js';
+      s.onload = function(){ resolve(true); };
+      s.onerror = function(){ resolve(false); };
+      document.head.appendChild(s);
+    });
+  }
+
+  function finEnsureCss(){
+    if (document.getElementById('finCss')) return;
+    var st = document.createElement('style');
+    st.id = 'finCss';
+    st.textContent =
+      '.fin-table{width:100%;border-collapse:collapse;font-size:0.78rem;color:#ccc;}'+
+      '.fin-table th{text-align:left;font-size:0.62rem;text-transform:uppercase;letter-spacing:0.05em;color:#777;padding:7px 10px;border-bottom:1px solid rgba(255,255,255,0.1);font-weight:700;}'+
+      '.fin-table td{padding:7px 10px;border-bottom:1px solid rgba(255,255,255,0.05);}'+
+      '.fin-table .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;}'+
+      '.fin-pl td, .fin-pl th{padding:5px 10px;}'+
+      '.fin-pl .sec{font-weight:800;color:#eee;padding-top:12px;}'+
+      '.fin-pl .sub{padding-left:26px;color:#aaa;}'+
+      '.fin-pl .sub2{padding-left:44px;color:#999;}'+
+      '.fin-pl .tot{font-weight:700;color:#ddd;border-top:1px solid rgba(255,255,255,0.15);}'+
+      '.fin-pl .grand{font-weight:800;color:#8DC63F;border-top:2px solid rgba(141,198,63,0.5);}'+
+      '.fin-card{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:14px;padding:14px 16px;margin-bottom:14px;}'+
+      '.fin-tile{background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.09);border-radius:12px;padding:12px 16px;min-width:130px;flex:1;}'+
+      '.fin-tile .v{font-size:1.25rem;font-weight:800;font-variant-numeric:tabular-nums;}'+
+      '.fin-tile .l{font-size:0.6rem;color:#888;text-transform:uppercase;letter-spacing:0.05em;margin-top:2px;}'+
+      '.fin-wrap button{width:auto;margin:0;}'+   /* portal global button{width:100%} would stack every control */
+      '.fin-wrap select{width:auto;margin:0;}'+
+      '.fin-btn{width:auto;margin:0;padding:6px 14px;border-radius:100px;font-size:0.7rem;font-weight:700;cursor:pointer;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.35);color:#8DC63F;}'+
+      '.fin-btn.ghost{background:rgba(255,255,255,0.05);border-color:rgba(255,255,255,0.15);color:#999;}'+
+      '.fin-select{background:#1f1f1f;color:#ccc;border:1px solid #333;border-radius:8px;padding:4px 6px;font-size:0.7rem;max-width:210px;}'+
+      '@media print{'+
+        'body.fin-printing *{visibility:hidden;}'+
+        'body.fin-printing .fin-print-area, body.fin-printing .fin-print-area *{visibility:visible;}'+
+        'body.fin-printing .fin-print-area{position:absolute;left:0;top:0;width:100%;background:#fff!important;color:#000!important;border:none!important;}'+
+        'body.fin-printing .fin-print-area table, body.fin-printing .fin-print-area td, body.fin-printing .fin-print-area th, body.fin-printing .fin-print-area div, body.fin-printing .fin-print-area span{color:#000!important;background:transparent!important;border-color:#bbb!important;}'+
+        'body.fin-printing .fin-print-area .grand{color:#000!important;}'+
+        'body.fin-printing .no-print{display:none!important;}'+
+      '}';
+    document.head.appendChild(st);
+  }
+  window.finPrint = function(){
+    document.body.classList.add('fin-printing');
+    window.print();
+    setTimeout(function(){ document.body.classList.remove('fin-printing'); }, 800);
+  };
+
+  window.finExportCSV = function(filename, header, rows){
+    var lines = [header].concat(rows).map(function(r){
+      return r.map(function(v){ return '"'+String(v===null||v===undefined?'':v).replace(/"/g,'""')+'"'; }).join(',');
+    });
+    var blob = new Blob([lines.join('\n')], {type:'text/csv'});
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename + '_' + new Date().toISOString().slice(0,10) + '.csv';
+    a.click();
+  };
+  var finCsvStash = {};   // export payloads keyed by name (avoids giant onclick attrs)
+  window.finExportStashed = function(key){
+    var p = finCsvStash[key];
+    if (p) finExportCSV(p.name, p.header, p.rows);
+  };
+  function finCustName(id){
+    var r = (adminCustomers||[]).find(function(x){ return x.id === id; });
+    return r ? (((r.first_name||'')+' '+(r.last_name||'')).trim() || r.address || '—') : '—';
+  }
+
+  // ── P&L math — the single source of truth for Dashboard KPIs + Statements ──
+  // Income  = payments(category revenue) + overrides received (payee solar_review_corp, paid)
+  // COGS    = paid job_costs → Subcontracted Services; paid rep commissions → Incentives - Sales;
+  //           marketing_expenses (Direct Mail Print / USPS Charges) → Lead Generation
+  // Expense = expense_transactions by account (+ paid travel reimbursements → Travel Expense)
+  // Marketing Google/Digital Ads entries are EXCLUDED here — card statements book those
+  // to "Advertising and Promotion", so counting both would double-book ad spend.
+  function finComputePnl(){
+    var C = finCache;
+    var cells = {}, cols = {};
+    var colKey = function(mk){ return financeRange.mode === 'lifetime' ? mk.slice(0,4) : mk; };
+    function add(section, account, dateStr, amt){
+      amt = parseFloat(amt)||0;
+      if (!amt || !finInRange(dateStr)) return;
+      var ck = colKey(finMonthKey(dateStr)); cols[ck] = 1;
+      var k = section+'|'+account;
+      var row = cells[k] = cells[k] || { section:section, account:account, total:0, byCol:{} };
+      row.total += amt;
+      row.byCol[ck] = (row.byCol[ck]||0) + amt;
+    }
+    (C.pays||[]).forEach(function(p){ if ((p.category||'revenue')==='revenue') add('income','Commission Income', p.paid_at, p.amount); });
+    (C.comms||[]).forEach(function(c){
+      if (c.status !== 'paid') return;
+      var d = c.paid_at || c.sold_at;
+      if (c.payee === 'solar_review_corp') add('income','Commission Income', d, c.amount);
+      else if (c.kind === 'rep_commission') add('cogs','Incentives - Sales', d, c.amount);
+      else if (c.kind === 'travel_reimbursement') add('expense','Travel Expense', d, c.amount);
+    });
+    (C.costs||[]).forEach(function(c){ if (c.status === 'paid') add('cogs','Subcontracted Services', c.paid_at || c.created_at, c.amount); });
+    (C.marketing||[]).forEach(function(m){
+      if (m.category === 'Direct Mail Print' || m.category === 'USPS Charges') add('cogs','Lead Generation', m.expense_date, m.amount);
+    });
+    (C.expenses||[]).forEach(function(e){ add('expense', e.account_name || 'Uncategorized', e.txn_date, e.amount); });
+
+    var colList = Object.keys(cols).sort();
+    function secTotal(section){
+      var t = 0, by = {};
+      Object.keys(cells).forEach(function(k){
+        if (cells[k].section !== section) return;
+        t += cells[k].total;
+        colList.forEach(function(c){ by[c] = (by[c]||0) + (cells[k].byCol[c]||0); });
+      });
+      return { total:t, byCol:by };
+    }
+    var inc = secTotal('income'), cogs = secTotal('cogs'), exp = secTotal('expense');
+    return {
+      cells: cells, cols: colList,
+      income: inc, cogs: cogs, expense: exp,
+      gross: inc.total - cogs.total,
+      net: inc.total - cogs.total - exp.total
+    };
+  }
+
+  // Month-bucketed series for the dashboard charts (always by month, any range)
+  function finMonthlySeries(){
+    var C = finCache, buckets = {};
+    function b(mk){ return buckets[mk] = buckets[mk] || { pay:0, ovr:0, cogs:0, exp:0 }; }
+    (C.pays||[]).forEach(function(p){ if ((p.category||'revenue')==='revenue' && finInRange(p.paid_at)) b(finMonthKey(p.paid_at)).pay += parseFloat(p.amount)||0; });
+    (C.comms||[]).forEach(function(c){
+      if (c.status !== 'paid') return;
+      var d = c.paid_at || c.sold_at;
+      if (!finInRange(d)) return;
+      if (c.payee === 'solar_review_corp') b(finMonthKey(d)).ovr += parseFloat(c.amount)||0;
+      else if (c.kind === 'rep_commission') b(finMonthKey(d)).cogs += parseFloat(c.amount)||0;
+      else if (c.kind === 'travel_reimbursement') b(finMonthKey(d)).exp += parseFloat(c.amount)||0;
+    });
+    (C.costs||[]).forEach(function(c){ var d = c.paid_at || c.created_at; if (c.status==='paid' && finInRange(d)) b(finMonthKey(d)).cogs += parseFloat(c.amount)||0; });
+    (C.marketing||[]).forEach(function(m){
+      if ((m.category === 'Direct Mail Print' || m.category === 'USPS Charges') && finInRange(m.expense_date)) b(finMonthKey(m.expense_date)).cogs += parseFloat(m.amount)||0;
+    });
+    (C.expenses||[]).forEach(function(e){ if (finInRange(e.txn_date)) b(finMonthKey(e.txn_date)).exp += parseFloat(e.amount)||0; });
+    var months = Object.keys(buckets).sort();
+    return { months: months, buckets: buckets };
+  }
+
+  function finDestroyCharts(){
+    Object.keys(finCharts).forEach(function(k){ try { finCharts[k].destroy(); } catch(e){} });
+    finCharts = {};
+  }
+
+  // ── Main renderer for the new sub-tabs ──────────────────────────────────────
+  async function renderSolarReviewFinance(portalNav, subTabRow){
+    finEnsureCss();
+    finDestroyCharts();
+    var body = document.getElementById('dashBody');
+    body.innerHTML = portalNav + '<div style="padding:4px 0 24px;">' + subTabRow + '<div style="text-align:center;padding:24px;color:#555;font-size:0.8rem;">Loading Solar Review Finance&hellip;</div></div>';
+    await finLoadData();
+
+    var head = '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px;">'+
+      '<div style="font-size:1rem;font-weight:800;color:#eee;">&#128176; Solar Review Finance</div>'+
+      '<span style="font-size:0.68rem;color:#666;">'+finRangeLabel()+'</span></div>';
+
+    var inner = '';
+    if (financeSubTab === 'dashboard')       inner = finRenderDashboard();
+    else if (financeSubTab === 'revenue')    inner = finRenderRevenue();
+    else if (financeSubTab === 'subsheet')   inner = finRenderSubSheet();
+    else if (financeSubTab === 'commissions')inner = finRenderCommissions();
+    else if (financeSubTab === 'expenses')   inner = finRenderExpenses();
+    else if (financeSubTab === 'statements') inner = finRenderStatements();
+    else if (financeSubTab === 'ai')         inner = finRenderAiShell();
+
+    var rangeBar = (financeSubTab === 'ai') ? '' : finRangeBar();
+    body.innerHTML = portalNav + '<div class="fin-wrap" style="padding:4px 0 24px;">' + subTabRow + head + rangeBar + inner + '</div>';
+
+    if (financeSubTab === 'dashboard') {
+      var ok = await finLoadChartJs();
+      if (ok && window.Chart) finMountDashboardCharts();
+      else {
+        var cw = document.getElementById('finChartsWrap');
+        if (cw) cw.innerHTML = '<div style="font-size:0.72rem;color:#777;padding:10px;">Charts unavailable offline — totals above are live.</div>';
+      }
+    }
+    if (financeSubTab === 'ai') finLoadAiReports();
+  }
+
+  // ── Dashboard ───────────────────────────────────────────────────────────────
+  function finRenderDashboard(){
+    var pnl = finComputePnl();
+    var h = '';
+    if (!finCache.expOk) h += '<div class="fin-card" style="border-color:rgba(255,170,0,0.3);color:#ffaa00;font-size:0.74rem;">&#9888; '+FIN_MIGRATION_MSG+' Operating expenses are excluded until then.</div>';
+    h += '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;">';
+    h += '<div class="fin-tile"><div class="v" style="color:#8DC63F;">'+finMoney(pnl.income.total)+'</div><div class="l">Revenue</div></div>';
+    h += '<div class="fin-tile"><div class="v" style="color:#f97316;">'+finMoney(pnl.cogs.total)+'</div><div class="l">Cost of Goods (Sub Sheet)</div></div>';
+    h += '<div class="fin-tile"><div class="v" style="color:#ddd;">'+finMoney(pnl.gross)+'</div><div class="l">Gross Profit</div></div>';
+    h += '<div class="fin-tile"><div class="v" style="color:#e66767;">'+finMoney(pnl.expense.total)+'</div><div class="l">Operating Expenses</div></div>';
+    h += '<div class="fin-tile"><div class="v" style="color:'+(pnl.net>=0?'#8DC63F':'#e66767')+';">'+finMoney(pnl.net)+'</div><div class="l">Net Income</div></div>';
+    h += '</div>';
+
+    function typeBtns(chartId, types){
+      return '<span class="no-print" style="margin-left:auto;display:flex;gap:4px;">'+types.map(function(t){
+        var a = (finChartPrefs[chartId]||types[0]) === t;
+        return '<button onclick="finChartPrefs[\''+chartId+'\']=\''+t+'\';finRerender()" style="padding:2px 10px;border-radius:100px;font-size:0.62rem;font-weight:700;cursor:pointer;border:1px solid '+(a?'#8DC63F':'#333')+';background:'+(a?'rgba(141,198,63,0.15)':'transparent')+';color:'+(a?'#8DC63F':'#666')+';">'+t+'</button>';
+      }).join('')+'</span>';
+    }
+    h += '<div id="finChartsWrap">';
+    h += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;">';
+    h += '<div class="fin-card"><div style="display:flex;align-items:center;margin-bottom:8px;"><span style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#999;">Revenue by month</span>'+typeBtns('rev',['bar','line'])+'</div><div style="height:220px;"><canvas id="finChartRev"></canvas></div><div class="no-print" style="font-size:0.6rem;color:#555;margin-top:6px;">Tap a month to zoom the whole tab to it.</div></div>';
+    h += '<div class="fin-card"><div style="display:flex;align-items:center;margin-bottom:8px;"><span style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#999;">Net income trend</span>'+typeBtns('net',['line','bar'])+'</div><div style="height:220px;"><canvas id="finChartNet"></canvas></div></div>';
+    h += '<div class="fin-card"><div style="display:flex;align-items:center;margin-bottom:8px;"><span style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#999;">Operating expenses by category</span>'+typeBtns('exp',['bar','doughnut'])+'</div><div style="height:240px;"><canvas id="finChartExp"></canvas></div></div>';
+    h += '<div class="fin-card"><div style="display:flex;align-items:center;margin-bottom:8px;"><span style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#999;">Commissions — owed vs paid by rep</span></div><div style="height:240px;"><canvas id="finChartComm"></canvas></div></div>';
+    h += '</div></div>';
+    return h;
+  }
+
+  function finMountDashboardCharts(){
+    Chart.defaults.color = FIN_MUTED;
+    Chart.defaults.borderColor = FIN_GRID;
+    Chart.defaults.font.family = 'system-ui, -apple-system, "Segoe UI", sans-serif';
+    var S = finMonthlySeries();
+    var labels = S.months.map(function(m){ return new Date(m+'-15').toLocaleDateString('en-US',{month:'short',year:'2-digit'}); });
+    var money0 = function(v){ return '$'+Number(v).toLocaleString(); };
+    var baseOpts = {
+      responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{ labels:{ boxWidth:10, boxHeight:10, font:{size:10} } },
+        tooltip:{ callbacks:{ label:function(ctx){ return (ctx.dataset.label?ctx.dataset.label+': ':'') + finMoney(ctx.parsed.y!==undefined&&ctx.parsed.y!==null?ctx.parsed.y:ctx.parsed); } } } },
+      scales:{ x:{ grid:{display:false} }, y:{ grid:{color:FIN_GRID}, ticks:{ callback:money0 } } },
+      onClick:function(evt, els){
+        if (!els || !els.length) return;
+        var mk = S.months[els[0].index];
+        if (!mk) return;
+        financeRange = { mode:'month', year:parseInt(mk.slice(0,4),10), month:parseInt(mk.slice(5,7),10) };
+        finRerender();
+      }
+    };
+    var el;
+    if ((el = document.getElementById('finChartRev'))) {
+      var t = finChartPrefs.rev || 'bar';
+      finCharts.rev = new Chart(el, { type:t, data:{ labels:labels, datasets:[
+        { label:'Customer payments', data:S.months.map(function(m){ return Math.round(S.buckets[m].pay*100)/100; }), backgroundColor:FIN_SERIES[0], borderColor:FIN_SERIES[0], borderWidth:t==='line'?2:0, borderRadius:4, pointRadius:3, tension:0.25, fill:false },
+        { label:'Override income', data:S.months.map(function(m){ return Math.round(S.buckets[m].ovr*100)/100; }), backgroundColor:FIN_SERIES[1], borderColor:FIN_SERIES[1], borderWidth:t==='line'?2:0, borderRadius:4, pointRadius:3, tension:0.25, fill:false }
+      ]}, options: Object.assign({}, baseOpts, { scales:{ x:{ stacked:t==='bar', grid:{display:false} }, y:{ stacked:t==='bar', grid:{color:FIN_GRID}, ticks:{callback:money0} } } }) });
+    }
+    if ((el = document.getElementById('finChartNet'))) {
+      var t2 = finChartPrefs.net || 'line';
+      finCharts.net = new Chart(el, { type:t2, data:{ labels:labels, datasets:[
+        { label:'Net income', data:S.months.map(function(m){ var b=S.buckets[m]; return Math.round((b.pay+b.ovr-b.cogs-b.exp)*100)/100; }), backgroundColor:FIN_SERIES[0], borderColor:FIN_SERIES[0], borderWidth:2, borderRadius:4, pointRadius:3, tension:0.25, fill:false }
+      ]}, options: Object.assign({}, baseOpts, { plugins: Object.assign({}, baseOpts.plugins, { legend:{display:false} }) }) });
+    }
+    if ((el = document.getElementById('finChartExp'))) {
+      var byAcct = {};
+      (finCache.expenses||[]).forEach(function(e){ if (finInRange(e.txn_date)) { var a = e.account_name||'Uncategorized'; byAcct[a] = (byAcct[a]||0) + (parseFloat(e.amount)||0); } });
+      var entries = Object.keys(byAcct).map(function(k){ return [k, byAcct[k]]; }).sort(function(a,b){ return b[1]-a[1]; });
+      var top = entries.slice(0,8);
+      var rest = entries.slice(8).reduce(function(t,e){ return t+e[1]; },0);
+      if (rest > 0) top.push(['Other', rest]);
+      var t3 = finChartPrefs.exp || 'bar';
+      if (t3 === 'doughnut') {
+        finCharts.exp = new Chart(el, { type:'doughnut', data:{ labels: top.map(function(e){return e[0];}), datasets:[{ data: top.map(function(e){return Math.round(e[1]*100)/100;}), backgroundColor: FIN_SERIES.slice(0, top.length), borderColor:'#1A1A1A', borderWidth:2 }] },
+          options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{ position:'right', labels:{ boxWidth:10, font:{size:10} } }, tooltip:{ callbacks:{ label:function(ctx){ return ctx.label+': '+finMoney(ctx.parsed); } } } } } });
+      } else {
+        finCharts.exp = new Chart(el, { type:'bar', data:{ labels: top.map(function(e){return e[0];}), datasets:[{ label:'Spend', data: top.map(function(e){return Math.round(e[1]*100)/100;}), backgroundColor:FIN_SERIES[0], borderRadius:4 }] },
+          options:{ indexAxis:'y', responsive:true, maintainAspectRatio:false, plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label:function(ctx){ return finMoney(ctx.parsed.x); } } } }, scales:{ x:{ grid:{color:FIN_GRID}, ticks:{callback:money0} }, y:{ grid:{display:false}, ticks:{font:{size:10}} } } } });
+      }
+    }
+    if ((el = document.getElementById('finChartComm'))) {
+      var byRep = {};
+      (finCache.comms||[]).forEach(function(c){
+        if (c.payee === 'solar_review_corp') return;
+        var d = c.paid_at || c.sold_at;
+        if (!finInRange(d)) return;
+        var nm = c.payee_name || repName(c.payee) || c.payee;
+        byRep[nm] = byRep[nm] || { sold:0, paid:0 };
+        byRep[nm][c.status==='paid'?'paid':'sold'] += parseFloat(c.amount)||0;
+      });
+      (adminCustomers||[]).forEach(function(c){
+        if (!(parseFloat(c.rep_commission)>0)) return;
+        var d = c.commission_paid_at || c.created_at;
+        if (!finInRange(d)) return;
+        var nm = repName(c.rep_id) || c.rep_id || 'Unassigned';
+        byRep[nm] = byRep[nm] || { sold:0, paid:0 };
+        byRep[nm][c.commission_paid?'paid':'sold'] += parseFloat(c.rep_commission)||0;
+      });
+      var reps = Object.keys(byRep);
+      finCharts.comm = new Chart(el, { type:'bar', data:{ labels: reps, datasets:[
+        { label:'Owed (sold)', data: reps.map(function(r){ return Math.round(byRep[r].sold*100)/100; }), backgroundColor:FIN_SERIES[2], borderRadius:4 },
+        { label:'Paid', data: reps.map(function(r){ return Math.round(byRep[r].paid*100)/100; }), backgroundColor:FIN_SERIES[1], borderRadius:4 }
+      ]}, options:{ indexAxis:'y', responsive:true, maintainAspectRatio:false, plugins:{ legend:{ labels:{ boxWidth:10, font:{size:10} } }, tooltip:{ callbacks:{ label:function(ctx){ return ctx.dataset.label+': '+finMoney(ctx.parsed.x); } } } }, scales:{ x:{ stacked:true, grid:{color:FIN_GRID}, ticks:{callback:money0} }, y:{ stacked:true, grid:{display:false} } } } });
+    }
+  }
+
+  // ── Revenue ─────────────────────────────────────────────────────────────────
+  function finRenderRevenue(){
+    var rows = [];
+    (finCache.pays||[]).forEach(function(p){
+      if ((p.category||'revenue') !== 'revenue' || !finInRange(p.paid_at)) return;
+      rows.push({ d: p.paid_at, cust: p.customer_id, custName: finCustName(p.customer_id), src: ({stripe_sign_page:'Sign & Pay', ghl:'GHL', manual:'Manual'})[p.source]||p.source||'—', amt: parseFloat(p.amount)||0, note: p.note||'' });
+    });
+    (finCache.comms||[]).forEach(function(c){
+      if (c.payee !== 'solar_review_corp' || c.status !== 'paid') return;
+      var d = c.paid_at || c.sold_at;
+      if (!finInRange(d)) return;
+      rows.push({ d: d, cust: c.customer_id, custName: finCustName(c.customer_id), src: 'Override ('+(({fixmy:'FixMy',top_tier:'Top Tier',new_solar:'New Solar'})[c.line]||c.line)+')', amt: parseFloat(c.amount)||0, note: c.note||'' });
+    });
+    rows.sort(function(a,b){ return String(b.d).localeCompare(String(a.d)); });
+    var total = rows.reduce(function(t,r){ return t+r.amt; },0);
+    var bySrc = {};
+    rows.forEach(function(r){ bySrc[r.src] = (bySrc[r.src]||0) + r.amt; });
+
+    finCsvStash.revenue = { name:'solar_review_revenue', header:['Date','Customer','Source','Amount','Note'],
+      rows: rows.map(function(r){ return [String(r.d).slice(0,10), r.custName, r.src, r.amt.toFixed(2), r.note]; }) };
+
+    var h = '';
+    if (!finCache.paysOk) h += '<div class="fin-card" style="border-color:rgba(239,68,68,0.3);color:#ef9b9b;font-size:0.75rem;">Payments ledger not found — run <code>20260704_payments_ledger.sql</code>.</div>';
+    h += '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px;">';
+    h += '<div class="fin-tile" style="flex:0 1 auto;"><div class="v" style="color:#8DC63F;">'+finMoney(total)+'</div><div class="l">Total revenue &middot; '+rows.length+' transactions</div></div>';
+    Object.keys(bySrc).forEach(function(s){
+      h += '<div class="fin-tile" style="flex:0 1 auto;"><div class="v" style="color:#ddd;font-size:1rem;">'+finMoney(bySrc[s])+'</div><div class="l">'+esc(s)+'</div></div>';
+    });
+    h += '<button class="fin-btn no-print" style="margin-left:auto;" onclick="finExportStashed(\'revenue\')">&#8681; Export CSV</button>';
+    h += '</div>';
+
+    // grouped by month with running totals
+    var byMonth = {};
+    rows.forEach(function(r){ var mk = finMonthKey(r.d); (byMonth[mk] = byMonth[mk]||[]).push(r); });
+    var running = 0;
+    var monthKeys = Object.keys(byMonth).sort();
+    var monthBlocks = '';
+    monthKeys.forEach(function(mk){
+      var list = byMonth[mk];
+      var sub = list.reduce(function(t,r){ return t+r.amt; },0);
+      running += sub;
+      monthBlocks = '<div class="fin-card">'+
+        '<div style="display:flex;align-items:center;gap:12px;margin-bottom:6px;flex-wrap:wrap;">'+
+          '<span style="font-weight:800;color:#eee;font-size:0.85rem;">'+new Date(mk+'-15').toLocaleDateString('en-US',{month:'long',year:'numeric'})+'</span>'+
+          '<span style="color:#8DC63F;font-weight:700;font-size:0.8rem;">'+finMoney(sub)+'</span>'+
+          '<span style="color:#666;font-size:0.68rem;">running total '+finMoney(running)+'</span>'+
+        '</div>'+
+        '<div style="overflow-x:auto;"><table class="fin-table"><thead><tr><th>Date</th><th>Customer</th><th>Source</th><th class="num">Amount</th></tr></thead><tbody>'+
+        list.map(function(r){
+          return '<tr><td>'+String(r.d).slice(0,10)+'</td>'+
+            '<td>'+(r.cust?'<a href="javascript:void(0)" onclick="renderAdminView(\'dashboard\');setTimeout(function(){openLeadEditor(\''+r.cust+'\');},150);" style="color:#9fd45f;text-decoration:none;">'+esc(r.custName)+'</a>':esc(r.custName))+'</td>'+
+            '<td style="color:#999;">'+esc(r.src)+(r.note?' <span style="color:#555;font-size:0.65rem;">'+esc(r.note.slice(0,40))+'</span>':'')+'</td>'+
+            '<td class="num" style="font-weight:700;color:#ddd;">'+finMoney(r.amt)+'</td></tr>';
+        }).join('')+
+        '</tbody></table></div></div>' + monthBlocks;   // newest month first
+    });
+    h += monthBlocks || '<div style="text-align:center;padding:30px;color:#555;font-size:0.8rem;">No revenue in this range.</div>';
+    h += '<div style="font-size:0.66rem;color:#555;margin-top:4px;">Revenue = customer payments (payments ledger) + provider override income received by Solar Review Corp. Matches the P&amp;L "Commission Income" line.</div>';
+    return h;
+  }
+
+  // ── Sub Sheet (job costs across all jobs) ───────────────────────────────────
+  function finRenderSubSheet(){
+    var C = finCache;
+    var inRange = (C.costs||[]).filter(function(c){ return finInRange(c.paid_at || c.created_at); });
+    var pending = inRange.filter(function(c){ return c.status !== 'paid'; });
+    var paid = inRange.filter(function(c){ return c.status === 'paid'; });
+    var sum = function(l){ return l.reduce(function(t,c){ return t+(parseFloat(c.amount)||0); },0); };
+
+    finCsvStash.subsheet = { name:'solar_review_sub_sheet', header:['Date','Customer','Cost','Amount','Status','Paid At'],
+      rows: inRange.map(function(c){ return [String(c.created_at).slice(0,10), finCustName(c.customer_id), c.label, (parseFloat(c.amount)||0).toFixed(2), c.status, c.paid_at?String(c.paid_at).slice(0,10):'']; }) };
+
+    var h = '';
+    if (!C.costsOk) h += '<div class="fin-card" style="border-color:rgba(239,68,68,0.3);color:#ef9b9b;font-size:0.75rem;">Accounting tables not found — run <code>20260707_accounting.sql</code>.</div>';
+    h += '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px;">';
+    h += '<div class="fin-tile" style="flex:0 1 auto;"><div class="v" style="color:#f97316;">'+finMoney(sum(inRange))+'</div><div class="l">Total job costs</div></div>';
+    h += '<div class="fin-tile" style="flex:0 1 auto;"><div class="v" style="color:#ffaa00;">'+finMoney(sum(pending))+'</div><div class="l">Pending ('+pending.length+')</div></div>';
+    h += '<div class="fin-tile" style="flex:0 1 auto;"><div class="v" style="color:#8DC63F;">'+finMoney(sum(paid))+'</div><div class="l">Paid ('+paid.length+')</div></div>';
+    h += '<span class="no-print" style="margin-left:auto;display:flex;gap:8px;">'+
+      '<button class="fin-btn" onclick="finAddSubCost()">+ Add Cost</button>'+
+      '<button class="fin-btn ghost" onclick="finExportStashed(\'subsheet\')">&#8681; Export CSV</button></span>';
+    h += '</div>';
+
+    var byJob = {};
+    inRange.forEach(function(c){ (byJob[c.customer_id] = byJob[c.customer_id]||[]).push(c); });
+    var jobIds = Object.keys(byJob).sort(function(a,b){ return sum(byJob[b]) - sum(byJob[a]); });
+    if (!jobIds.length) h += '<div style="text-align:center;padding:30px;color:#555;font-size:0.8rem;">No job costs in this range. Costs are added here or in each job\'s editor (Sub Sheet panel).</div>';
+    jobIds.forEach(function(cid){
+      var list = byJob[cid];
+      h += '<div class="fin-card">';
+      h += '<div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap;">'+
+        '<a href="javascript:void(0)" onclick="renderAdminView(\'dashboard\');setTimeout(function(){openLeadEditor(\''+cid+'\');},150);" style="font-weight:800;color:#eee;font-size:0.85rem;text-decoration:none;">'+esc(finCustName(cid))+'</a>'+
+        '<span style="color:#f97316;font-weight:700;font-size:0.8rem;">'+finMoney(sum(list))+'</span></div>';
+      list.forEach(function(c){
+        h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.74rem;color:#aaa;padding:5px 0;border-top:1px solid rgba(255,255,255,0.05);flex-wrap:wrap;">'+
+          '<span style="color:#ddd;flex:1;min-width:120px;">'+esc(c.label)+'</span>'+
+          '<span style="color:#666;font-size:0.65rem;">'+String(c.created_at).slice(0,10)+'</span>'+
+          '<span style="color:#ddd;font-weight:700;">'+finMoney(c.amount)+'</span>'+
+          '<button class="no-print" onclick="finToggleSubCost(\''+c.id+'\',\''+c.status+'\')" style="padding:2px 9px;border-radius:100px;border:1px solid '+(c.status==='paid'?'rgba(141,198,63,0.4);background:rgba(141,198,63,0.1);color:#8DC63F':'rgba(255,170,0,0.4);background:rgba(255,170,0,0.08);color:#ffaa00')+';font-size:0.6rem;font-weight:700;cursor:pointer;text-transform:uppercase;">'+c.status+'</button>'+
+        '</div>';
+      });
+      h += '</div>';
+    });
+    h += '<div style="font-size:0.66rem;color:#555;margin-top:4px;">Paid sub-sheet costs book to the P&amp;L as COGS &rarr; "Subcontracted Services". Pending costs are excluded until marked paid (cash basis).</div>';
+    return h;
+  }
+  window.finAddSubCost = async function(){
+    var jobs = (adminCustomers||[]).filter(function(c){ return c.sold_type; });
+    if (!jobs.length) { alert('No jobs found — sub sheet costs attach to sold jobs.'); return; }
+    var listing = jobs.slice(0,40).map(function(c,i){ return (i+1)+'. '+(((c.first_name||'')+' '+(c.last_name||'')).trim()||c.address||c.id); }).join('\n');
+    var pick = parseInt(prompt('Add cost to which job?\n\n'+listing+'\n\nEnter number:')||'',10);
+    if (!pick || pick < 1 || pick > Math.min(jobs.length,40)) return;
+    var cid = jobs[pick-1].id;
+    var label = prompt('Cost description (e.g. "Cosmic payout", "Equipment", "Permit"):');
+    if (!label) return;
+    var amt = parseFloat(prompt('Amount ($):')||'');
+    if (!amt || amt <= 0) return;
+    var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var { error } = await pc.from('job_costs').insert({ customer_id: cid, label: label, amount: amt, status:'pending', created_by:'admin-finance' });
+    if (error) { alert('Could not add cost: '+error.message); return; }
+    finCache = null; renderFinanceView();
+  };
+  window.finToggleSubCost = async function(id, cur){
+    var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var next = cur === 'paid' ? 'pending' : 'paid';
+    await pc.from('job_costs').update({ status: next, paid_at: next==='paid' ? new Date().toISOString() : null }).eq('id', id);
+    finCache = null; renderFinanceView();
+  };
+
+  // ── Commissions (new system + legacy job-level ledger, one view) ────────────
+  function finRenderCommissions(){
+    var C = finCache;
+    var comms = (C.comms||[]).filter(function(c){ return finInRange(c.paid_at || c.sold_at); });
+    var legacy = (adminCustomers||[]).filter(function(c){ return parseFloat(c.rep_commission) > 0 && finInRange(c.commission_paid_at || c.created_at); });
+
+    var owedNew = comms.filter(function(c){ return c.status==='sold' && c.payee!=='solar_review_corp'; });
+    var owedSRC = comms.filter(function(c){ return c.status==='sold' && c.payee==='solar_review_corp'; });
+    var paidNew = comms.filter(function(c){ return c.status==='paid' && c.payee!=='solar_review_corp'; });
+    var owedLegacy = legacy.filter(function(c){ return !c.commission_paid; });
+    var paidLegacy = legacy.filter(function(c){ return c.commission_paid; });
+    var sumC = function(l,f){ return l.reduce(function(t,x){ return t+(parseFloat(f?x[f]:x.amount)||0); },0); };
+    var totOwed = sumC(owedNew) + sumC(owedLegacy,'rep_commission');
+    var totPaid = sumC(paidNew) + sumC(paidLegacy,'rep_commission');
+
+    var lineLbl = { fixmy:'FixMy', top_tier:'Top Tier', new_solar:'New Solar' };
+    var kindLbl = { rep_commission:'commission', override:'override', travel_reimbursement:'travel' };
+    finCsvStash.commissions = { name:'solar_review_commissions', header:['Date','Payee','Line','Kind','Customer','Amount','Status'],
+      rows: comms.map(function(c){ return [String(c.paid_at||c.sold_at).slice(0,10), c.payee_name||repName(c.payee)||c.payee, lineLbl[c.line]||c.line, kindLbl[c.kind]||c.kind, finCustName(c.customer_id), (parseFloat(c.amount)||0).toFixed(2), c.status]; })
+        .concat(legacy.map(function(c){ return [String(c.commission_paid_at||c.created_at).slice(0,10), repName(c.rep_id)||c.rep_id||'—', 'FixMy (legacy)', 'commission', ((c.first_name||'')+' '+(c.last_name||'')).trim(), (parseFloat(c.rep_commission)||0).toFixed(2), c.commission_paid?'paid':'sold']; })) };
+
+    var h = '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px;">';
+    h += '<div class="fin-tile" style="flex:0 1 auto;"><div class="v" style="color:#ffaa00;">'+finMoney(totOwed)+'</div><div class="l">Owed to reps</div></div>';
+    h += '<div class="fin-tile" style="flex:0 1 auto;"><div class="v" style="color:#8DC63F;">'+finMoney(totPaid)+'</div><div class="l">Paid to reps</div></div>';
+    h += '<div class="fin-tile" style="flex:0 1 auto;"><div class="v" style="color:#9b6de8;">'+finMoney(sumC(owedSRC))+'</div><div class="l">Override income due to SRC</div></div>';
+    h += '<button class="fin-btn no-print" style="margin-left:auto;" onclick="finExportStashed(\'commissions\')">&#8681; Export CSV</button>';
+    h += '</div>';
+
+    // per-payee groups (new + legacy merged)
+    var byPayee = {};
+    comms.forEach(function(c){
+      if (c.payee === 'solar_review_corp') return;
+      var nm = c.payee_name || repName(c.payee) || c.payee;
+      (byPayee[nm] = byPayee[nm]||[]).push({ d:c.paid_at||c.sold_at, cust:finCustName(c.customer_id), lbl:(lineLbl[c.line]||c.line)+' &middot; '+(kindLbl[c.kind]||c.kind), amt:parseFloat(c.amount)||0, paid:c.status==='paid', id:c.id, legacy:false });
+    });
+    legacy.forEach(function(c){
+      var nm = repName(c.rep_id) || c.rep_id || 'Unassigned';
+      (byPayee[nm] = byPayee[nm]||[]).push({ d:c.commission_paid_at||c.created_at, cust:((c.first_name||'')+' '+(c.last_name||'')).trim()||c.address||'—', lbl:'FixMy &middot; commission (legacy)', amt:parseFloat(c.rep_commission)||0, paid:!!c.commission_paid, id:c.id, legacy:true });
+    });
+    var names = Object.keys(byPayee).sort();
+    if (!names.length && !owedSRC.length) h += '<div style="text-align:center;padding:30px;color:#555;font-size:0.8rem;">No commissions in this range. FixMy commissions lock in from the job editor once costs are entered; Top Tier / New Solar are entered per deal.</div>';
+    names.forEach(function(nm){
+      var list = byPayee[nm].sort(function(a,b){ return String(b.d).localeCompare(String(a.d)); });
+      var owed = list.filter(function(x){ return !x.paid; }).reduce(function(t,x){ return t+x.amt; },0);
+      var paid = list.filter(function(x){ return x.paid; }).reduce(function(t,x){ return t+x.amt; },0);
+      h += '<div class="fin-card">';
+      h += '<div style="display:flex;align-items:center;gap:12px;margin-bottom:6px;flex-wrap:wrap;"><span style="font-weight:800;color:#eee;font-size:0.88rem;">'+esc(nm)+'</span>'+
+        (owed>0?'<span style="color:#ffaa00;font-weight:700;font-size:0.76rem;">'+finMoney(owed)+' owed</span>':'')+
+        (paid>0?'<span style="color:#8DC63F;font-size:0.76rem;">'+finMoney(paid)+' paid</span>':'')+'</div>';
+      list.forEach(function(x){
+        h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.74rem;color:#aaa;padding:5px 0;border-top:1px solid rgba(255,255,255,0.05);flex-wrap:wrap;">'+
+          '<span style="color:#666;font-size:0.65rem;">'+String(x.d).slice(0,10)+'</span>'+
+          '<span style="color:#ddd;flex:1;min-width:110px;">'+esc(x.cust)+'</span>'+
+          '<span style="color:#777;font-size:0.68rem;">'+x.lbl+'</span>'+
+          '<span style="color:#ddd;font-weight:700;">'+finMoney(x.amt)+'</span>'+
+          (x.paid
+            ? '<span style="font-size:0.6rem;font-weight:700;color:#8DC63F;padding:2px 9px;border:1px solid rgba(141,198,63,0.4);border-radius:100px;text-transform:uppercase;">paid</span>'
+            : '<button class="no-print" onclick="'+(x.legacy?'markCommissionPaid(\''+x.id+'\')':'edToggleCommission(\''+x.id+'\',\'sold\')')+'" style="padding:2px 10px;border-radius:100px;border:1px solid rgba(141,198,63,0.35);background:rgba(141,198,63,0.1);color:#8DC63F;font-size:0.6rem;font-weight:700;cursor:pointer;">Mark Paid</button>')+
+        '</div>';
+      });
+      h += '</div>';
+    });
+
+    if (owedSRC.length) {
+      h += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#8DC63F;margin:14px 0 8px;">&#127974; Override income due to Solar Review Corp (1099 receivables)</div>';
+      owedSRC.forEach(function(x){
+        h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.74rem;color:#aaa;padding:7px 12px;background:rgba(141,198,63,0.04);border:1px solid rgba(141,198,63,0.15);border-radius:10px;margin-bottom:6px;flex-wrap:wrap;">'+
+          '<span style="color:#777;">'+(lineLbl[x.line]||x.line)+'</span>'+
+          '<span style="color:#ddd;">'+esc(finCustName(x.customer_id))+'</span>'+
+          '<span style="color:#ddd;font-weight:700;">'+finMoney(x.amount)+'</span>'+
+          '<span style="color:#666;font-size:0.65rem;">sold '+String(x.sold_at).slice(0,10)+'</span>'+
+          '<button class="no-print" onclick="edToggleCommission(\''+x.id+'\',\'sold\')" style="margin-left:auto;padding:4px 12px;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.35);border-radius:100px;color:#8DC63F;font-size:0.66rem;font-weight:700;cursor:pointer;">Mark Received</button></div>';
+      });
+    }
+    h += '<div style="font-size:0.66rem;color:#555;margin-top:4px;">Rep commissions paid book to the P&amp;L as COGS &rarr; "Incentives - Sales"; overrides received book to income. Dennis-sold FixMy jobs carry no commission (SOP).</div>';
+    return h;
+  }
+
+  // ── Expenses (statement upload + QuickBooks-style ledger) ───────────────────
+  function finAccountOptions(selected){
+    var accts = (finCache.coa||[]).filter(function(a){ return a.type === 'expense' || a.type === 'cogs'; });
+    var opts = '<option value=""'+(selected?'':' selected')+'>— uncategorized —</option>';
+    accts.forEach(function(a){
+      var hasKids = (finCache.coa||[]).some(function(x){ return x.parent === a.name; });
+      if (hasKids) return; // book to leaves; parents roll up on the P&L
+      opts += '<option value="'+esc(a.name)+'"'+(selected===a.name?' selected':'')+'>'+(a.parent?esc(a.parent)+' › ':'')+esc(a.name)+'</option>';
+    });
+    return opts;
+  }
+  function finRenderExpenses(){
+    var C = finCache;
+    var h = '';
+    if (!C.expOk || !C.coaOk) {
+      h += '<div class="fin-card" style="border-color:rgba(239,68,68,0.3);color:#ef9b9b;font-size:0.78rem;">'+FIN_MIGRATION_MSG+'</div>';
+      return h;
+    }
+    var inRange = (C.expenses||[]).filter(function(e){ return finInRange(e.txn_date); });
+    var review = inRange.filter(function(e){ return e.review_status === 'needs_review' || !e.account_name; });
+    var total = inRange.reduce(function(t,e){ return t+(parseFloat(e.amount)||0); },0);
+
+    finCsvStash.expenses = { name:'solar_review_expenses', header:['Date','Payee','Account','Amount','Memo','Source'],
+      rows: inRange.map(function(e){ return [e.txn_date, e.merchant||e.description, e.account_name||'Uncategorized', (parseFloat(e.amount)||0).toFixed(2), e.description, e.source]; }) };
+
+    // Upload card
+    h += '<div class="fin-card no-print">';
+    h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#8DC63F;margin-bottom:8px;">&#128228; Upload a statement</div>';
+    h += '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">';
+    h += '<select id="finStmtKind" class="fin-select"><option value="amex">American Express</option><option value="bank">Business bank</option></select>';
+    h += '<input type="file" id="finStmtFile" accept=".csv,.txt,.pdf" style="display:none;" onchange="finStatementFileChosen(this)"/>';
+    h += '<button class="fin-btn" onclick="document.getElementById(\'finStmtFile\').click()">Choose CSV or PDF&hellip;</button>';
+    h += '<button class="fin-btn ghost" onclick="finAddManualExpense()">+ Manual Expense</button>';
+    h += '<button class="fin-btn ghost" onclick="finExportStashed(\'expenses\')">&#8681; Export CSV (CPA handoff)</button>';
+    h += '<button class="fin-btn ghost" onclick="var el=document.getElementById(\'finRulesPanel\');el.style.display=el.style.display===\'none\'?\'block\':\'none\';">&#9881; Rules ('+(C.rules||[]).length+')</button>';
+    h += '</div>';
+    h += '<div id="finStmtStatus" style="font-size:0.72rem;color:#888;margin-top:8px;"></div>';
+    h += '<div style="font-size:0.64rem;color:#555;margin-top:6px;">CSV exports from AmEx/your bank import instantly and exactly. PDFs are read by AI (double-check the review queue after). Excel files: use the bank\'s "Download CSV" option instead. Re-uploading the same statement never duplicates — matching lines are skipped.</div>';
+    h += '</div>';
+
+    // Rules panel (hidden)
+    h += '<div id="finRulesPanel" class="fin-card no-print" style="display:none;">';
+    h += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#999;margin-bottom:6px;">Categorization rules — learned + seeded</div>';
+    var userRules = (C.rules||[]).filter(function(r){ return r.created_by !== 'seed'; });
+    var seedCount = (C.rules||[]).length - userRules.length;
+    if (!userRules.length) h += '<div style="font-size:0.7rem;color:#666;">No custom rules yet — recategorize any transaction below and choose "always" to teach the system. '+seedCount+' built-in merchant rules are active.</div>';
+    userRules.slice(0,60).forEach(function(r){
+      h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.72rem;color:#aaa;padding:4px 0;border-top:1px solid rgba(255,255,255,0.05);">'+
+        '<span style="color:#ddd;">&ldquo;'+esc(r.pattern)+'&rdquo;</span><span style="color:#666;">&rarr;</span><span style="color:#9fd45f;">'+esc(r.account_name)+'</span>'+
+        '<span style="color:#555;font-size:0.62rem;">'+(r.hit_count||0)+' hits</span>'+
+        '<button onclick="finDeleteRule(\''+r.id+'\')" style="margin-left:auto;background:none;border:none;color:#555;cursor:pointer;">&times;</button></div>';
+    });
+    if (userRules.length) h += '<div style="font-size:0.62rem;color:#555;margin-top:6px;">'+seedCount+' built-in merchant rules also active. Custom rules always win.</div>';
+    h += '</div>';
+
+    // Summary tiles
+    var byAcct = {};
+    inRange.forEach(function(e){ var a = e.account_name||'Uncategorized'; byAcct[a] = (byAcct[a]||0)+(parseFloat(e.amount)||0); });
+    var topA = Object.keys(byAcct).map(function(k){ return [k,byAcct[k]]; }).sort(function(a,b){ return b[1]-a[1]; }).slice(0,3);
+    h += '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">';
+    h += '<div class="fin-tile" style="flex:0 1 auto;"><div class="v" style="color:#e66767;">'+finMoney(total)+'</div><div class="l">Operating spend &middot; '+inRange.length+' txns</div></div>';
+    topA.forEach(function(e){ h += '<div class="fin-tile" style="flex:0 1 auto;"><div class="v" style="color:#ddd;font-size:1rem;">'+finMoney(e[1])+'</div><div class="l">'+esc(e[0])+'</div></div>'; });
+    if (review.length) h += '<div class="fin-tile" style="flex:0 1 auto;border-color:rgba(255,170,0,0.4);"><div class="v" style="color:#ffaa00;">'+review.length+'</div><div class="l">Need review</div></div>';
+    h += '</div>';
+
+    // Review queue
+    if (review.length) {
+      h += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#ffaa00;margin-bottom:8px;">&#9888; Review queue — confirm the category</div>';
+      review.slice(0,50).forEach(function(e){ h += finTxnRow(e, true); });
+    }
+
+    // Ledger
+    h += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#999;margin:14px 0 8px;">Ledger</div>';
+    var ledger = inRange.filter(function(e){ return !(e.review_status === 'needs_review' || !e.account_name); });
+    if (!ledger.length && !review.length) h += '<div style="text-align:center;padding:30px;color:#555;font-size:0.8rem;">No expenses in this range yet — upload an AmEx or bank statement above to get started.</div>';
+    ledger.slice(0,500).forEach(function(e){ h += finTxnRow(e, false); });
+    if (ledger.length > 500) h += '<div style="font-size:0.68rem;color:#666;padding:6px 0;">Showing 500 of '+ledger.length+' — use Export CSV for the full list.</div>';
+
+    // Mileage
+    var milesIn = (C.mileage||[]).filter(function(m){ return finInRange(m.trip_date); });
+    var deduction = milesIn.reduce(function(t,m){ return t+(parseFloat(m.miles)||0)*(parseFloat(m.rate)||0.70); },0);
+    var totMiles = milesIn.reduce(function(t,m){ return t+(parseFloat(m.miles)||0); },0);
+    h += '<div class="fin-card" style="margin-top:16px;">';
+    h += '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:6px;">'+
+      '<span style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#4a9eff;">&#128663; Mileage log</span>'+
+      '<span style="font-size:0.78rem;color:#ddd;font-weight:700;">'+totMiles.toLocaleString()+' mi &rarr; '+finMoney(deduction)+' deduction</span>'+
+      '<button class="fin-btn no-print" style="margin-left:auto;" onclick="finAddMileage()">+ Add Trip</button></div>';
+    milesIn.slice(0,50).forEach(function(m){
+      h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.72rem;color:#aaa;padding:4px 0;border-top:1px solid rgba(255,255,255,0.05);">'+
+        '<span style="color:#666;font-size:0.65rem;">'+m.trip_date+'</span>'+
+        '<span style="color:#ddd;">'+(parseFloat(m.miles)||0)+' mi</span>'+
+        '<span style="color:#888;flex:1;">'+esc(m.purpose||'')+'</span>'+
+        '<span style="color:#ddd;font-weight:700;">'+finMoney((parseFloat(m.miles)||0)*(parseFloat(m.rate)||0.70))+'</span>'+
+        '<button class="no-print" onclick="finDelMileage(\''+m.id+'\')" style="background:none;border:none;color:#555;cursor:pointer;">&times;</button></div>';
+    });
+    h += '<div style="font-size:0.62rem;color:#555;margin-top:6px;">Standard-rate deduction (IRS $0.70/mi, 2026) for tax prep — informational, not added to the P&amp;L since actual fuel already books to Automobile Expense.</div>';
+    h += '</div>';
+    return h;
+  }
+  function finTxnRow(e, isReview){
+    var amt = parseFloat(e.amount)||0;
+    var srcBadge = ({amex_csv:'AmEx CSV', bank_csv:'Bank CSV', pdf_ai:'PDF (AI)', manual:'Manual'})[e.source]||e.source;
+    return '<div style="display:flex;gap:8px;align-items:center;font-size:0.74rem;color:#aaa;padding:6px 10px;margin-bottom:4px;border-radius:10px;flex-wrap:wrap;'+
+      (isReview?'background:rgba(255,170,0,0.05);border:1px solid rgba(255,170,0,0.25);':'background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);')+'">'+
+      '<span style="color:#666;font-size:0.66rem;white-space:nowrap;">'+e.txn_date+'</span>'+
+      '<span style="color:#ddd;flex:1;min-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="'+esc(e.description)+'">'+esc(e.merchant||e.description)+'</span>'+
+      '<span style="color:'+(amt<0?'#8DC63F':'#ddd')+';font-weight:700;white-space:nowrap;">'+finMoney(amt)+'</span>'+
+      '<select class="fin-select no-print" onchange="finSetTxnAccount(\''+e.id+'\', this.value)">'+finAccountOptions(e.account_name)+'</select>'+
+      (isReview?'<button class="fin-btn no-print" style="padding:3px 12px;font-size:0.62rem;" onclick="finConfirmTxn(\''+e.id+'\')">&#10003; Confirm</button>':'')+
+      '<span style="font-size:0.58rem;color:#555;border:1px solid #333;border-radius:100px;padding:1px 7px;white-space:nowrap;">'+srcBadge+'</span>'+
+      '<button class="no-print" onclick="finDelTxn(\''+e.id+'\')" title="Delete" style="background:none;border:none;color:#444;cursor:pointer;font-size:0.85rem;">&times;</button>'+
+    '</div>';
+  }
+
+  // ── Statement parsing + import pipeline ─────────────────────────────────────
+  function finHashStr(s){
+    var h = 5381, i = s.length;
+    while (i) h = ((h * 33) ^ s.charCodeAt(--i)) >>> 0;
+    return h.toString(36) + '_' + s.length;
+  }
+  function finTxnHash(t, kind){
+    var desc = String(t.description||'').toUpperCase().replace(/\s+/g,' ').trim();
+    return finHashStr(t.date + '|' + (Math.round((parseFloat(t.amount)||0)*100)/100) + '|' + desc + '|' + kind);
+  }
+  function finNormMerchant(desc){
+    return String(desc||'').toUpperCase().replace(/[0-9#*]{3,}/g,'').replace(/\s+/g,' ').trim().slice(0,48);
+  }
+  function finParseCSVText(text){
+    var rows = [], row = [], cur = '', inQ = false;
+    for (var i = 0; i < text.length; i++) {
+      var ch = text[i];
+      if (inQ) {
+        if (ch === '"') { if (text[i+1] === '"') { cur += '"'; i++; } else inQ = false; }
+        else cur += ch;
+      } else if (ch === '"') inQ = true;
+      else if (ch === ',') { row.push(cur); cur = ''; }
+      else if (ch === '\n' || ch === '\r') {
+        if (ch === '\r' && text[i+1] === '\n') i++;
+        row.push(cur); cur = '';
+        if (row.length > 1 || (row[0]||'').trim() !== '') rows.push(row);
+        row = [];
+      } else cur += ch;
+    }
+    if (cur !== '' || row.length) { row.push(cur); if (row.length > 1 || (row[0]||'').trim() !== '') rows.push(row); }
+    return rows;
+  }
+  function finParseDate(s){
+    s = String(s||'').trim();
+    var m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (m) return m[1]+'-'+m[2]+'-'+m[3];
+    m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+    if (m) {
+      var y = m[3].length === 2 ? '20'+m[3] : m[3];
+      return y+'-'+('0'+m[1]).slice(-2)+'-'+('0'+m[2]).slice(-2);
+    }
+    return null;
+  }
+  function finParseAmount(s){
+    if (typeof s === 'number') return s;
+    s = String(s||'').replace(/[$,\s]/g,'');
+    if (!s) return NaN;
+    if (/^\(.*\)$/.test(s)) s = '-'+s.slice(1,-1);
+    return parseFloat(s);
+  }
+  // Detect header + columns; returns [{date, description, amount}] with
+  // positive = expense. Bank exports that print money-out as negative get flipped.
+  function finExtractTxnsFromCSV(rows, kind){
+    var headerIdx = -1, map = null;
+    for (var i = 0; i < Math.min(rows.length, 8); i++) {
+      var hdr = rows[i].map(function(c){ return String(c||'').toLowerCase().trim(); });
+      var di = hdr.findIndex(function(c){ return /(^|\s)date/.test(c); });
+      var ai = hdr.findIndex(function(c){ return c === 'amount' || /amount/.test(c); });
+      var deb = hdr.findIndex(function(c){ return /debit/.test(c); });
+      var cred = hdr.findIndex(function(c){ return /credit/.test(c); });
+      if (di >= 0 && (ai >= 0 || deb >= 0)) {
+        var desci = hdr.findIndex(function(c){ return /description/.test(c); });
+        if (desci < 0) desci = hdr.findIndex(function(c){ return /merchant|payee|memo|name/.test(c); });
+        if (desci < 0) desci = di === 0 ? 1 : 0;
+        headerIdx = i; map = { date: di, desc: desci, amount: ai, debit: deb, credit: cred };
+        break;
+      }
+    }
+    if (!map) { // headerless — assume Date,Description,Amount
+      headerIdx = -1; map = { date: 0, desc: 1, amount: 2, debit: -1, credit: -1 };
+    }
+    var out = [];
+    for (var r = headerIdx + 1; r < rows.length; r++) {
+      var row = rows[r];
+      var d = finParseDate(row[map.date]);
+      if (!d) continue;
+      var amt;
+      if (map.debit >= 0 && (map.amount < 0 || map.debit !== map.amount)) {
+        var deb2 = finParseAmount(row[map.debit]);
+        var cr2 = map.credit >= 0 ? finParseAmount(row[map.credit]) : NaN;
+        amt = (isNaN(deb2) ? 0 : Math.abs(deb2)) - (isNaN(cr2) ? 0 : Math.abs(cr2));
+      } else {
+        amt = finParseAmount(row[map.amount]);
+      }
+      if (isNaN(amt) || amt === 0) continue;
+      var desc = String(row[map.desc]||'').replace(/\s+/g,' ').trim();
+      if (!desc) continue;
+      out.push({ date: d, description: desc, amount: Math.round(amt*100)/100 });
+    }
+    // Bank CSVs usually print money-out negative — if most rows are negative, flip.
+    if (kind === 'bank' && out.length) {
+      var neg = out.filter(function(t){ return t.amount < 0; }).length;
+      if (neg / out.length > 0.6) out.forEach(function(t){ t.amount = -t.amount; });
+    }
+    return out;
+  }
+  function finIsIssuerPayment(desc){
+    return /(AUTOPAY|ONLINE PAYMENT|PAYMENT RECEIVED|PAYMENT[\s-]*THANK YOU|MOBILE PAYMENT|ACH PAYMENT RECEIVED)/i.test(desc);
+  }
+  function finApplyRules(desc){
+    var D = String(desc||'').toUpperCase();
+    var best = null;
+    (finCache.rules||[]).forEach(function(r){
+      if (D.indexOf(String(r.pattern).toUpperCase()) < 0) return;
+      if (!best || (r.priority||0) > (best.priority||0) || ((r.priority||0) === (best.priority||0) && String(r.pattern).length > String(best.pattern).length)) best = r;
+    });
+    return best;
+  }
+
+  window.finStatementFileChosen = async function(input){
+    var file = input.files && input.files[0];
+    input.value = '';
+    if (!file) return;
+    var kind = (document.getElementById('finStmtKind')||{}).value || 'amex';
+    var st = document.getElementById('finStmtStatus');
+    function say(msg){ if (st) st.innerHTML = msg; }
+    try {
+      var txns, source, period = {};
+      if (/\.pdf$/i.test(file.name)) {
+        say('&#9203; Reading PDF with AI&hellip; (10–30s)');
+        var b64 = await new Promise(function(res, rej){
+          var fr = new FileReader();
+          fr.onload = function(){ res(String(fr.result).split(',')[1]); };
+          fr.onerror = rej;
+          fr.readAsDataURL(file);
+        });
+        var resp = await fetch('/.netlify/functions/finance-extract', { method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ mode:'extract', pdf_base64: b64, kind: kind }) });
+        var data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || ('extract failed ('+resp.status+')'));
+        txns = data.transactions || [];
+        period = { start: data.period_start || null, end: data.period_end || null };
+        source = 'pdf_ai';
+      } else {
+        say('Parsing CSV&hellip;');
+        var text = await file.text();
+        txns = finExtractTxnsFromCSV(finParseCSVText(text), kind);
+        source = kind === 'amex' ? 'amex_csv' : 'bank_csv';
+      }
+      if (!txns.length) { say('&#9888; No transactions found in this file. If it\'s an Excel file, download the CSV version from your bank instead.'); return; }
+      await finImportTransactions(txns, source, kind, file.name, period, say);
+    } catch(e) {
+      say('&#10060; Import failed: '+esc(e.message));
+    }
+  };
+
+  async function finImportTransactions(txns, source, kind, filename, period, say){
+    var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var skippedPayments = 0;
+    txns = txns.filter(function(t){
+      if (finIsIssuerPayment(t.description) && t.amount < 0) { skippedPayments++; return false; }
+      return true;
+    });
+    say('Categorizing '+txns.length+' transactions&hellip;');
+
+    // 1) rules
+    var pending = [];
+    txns.forEach(function(t, i){
+      var rule = finApplyRules(t.description);
+      t._account = rule ? rule.account_name : null;
+      t._rule = rule || null;
+      t._review = rule ? 'auto' : 'needs_review';
+      if (!rule) pending.push(i);
+    });
+    // 2) AI pass for the leftovers (best-effort — failures just stay needs_review)
+    if (pending.length) {
+      try {
+        var accounts = [];
+        (finCache.coa||[]).forEach(function(a){
+          if (a.type !== 'expense' && a.type !== 'cogs') return;
+          var hasKids = (finCache.coa||[]).some(function(x){ return x.parent === a.name; });
+          if (!hasKids) accounts.push(a.name);
+        });
+        say('AI categorizing '+pending.length+' unrecognized merchants&hellip;');
+        var resp = await fetch('/.netlify/functions/finance-extract', { method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ mode:'categorize', accounts: accounts,
+            transactions: pending.slice(0,300).map(function(i){ return { description: txns[i].description, amount: txns[i].amount }; }) }) });
+        var data = await resp.json();
+        if (resp.ok && data.assignments) {
+          data.assignments.forEach(function(a){
+            var i = pending[a.index];
+            if (i === undefined) return;
+            txns[i]._account = a.account;
+            txns[i]._review = (a.confidence >= 0.7) ? 'auto' : 'needs_review';
+          });
+        }
+      } catch(e) { /* offline or function missing — leave as needs_review */ }
+    }
+
+    // 3) statement audit row, then idempotent upsert of the lines
+    var stmtId = null;
+    try {
+      var ins = await pc.from('statement_uploads').insert({
+        filename: filename, kind: kind, format: source === 'pdf_ai' ? 'pdf' : 'csv',
+        period_start: (period && period.start) || null, period_end: (period && period.end) || null,
+        txn_count: txns.length
+      }).select().single();
+      stmtId = ins.data ? ins.data.id : null;
+    } catch(e) {}
+
+    var rows = txns.map(function(t){
+      return {
+        txn_date: t.date, description: t.description, merchant: finNormMerchant(t.description),
+        amount: t.amount, account_name: t._account, source: source, statement_id: stmtId,
+        dedupe_hash: finTxnHash(t, kind), review_status: t._review
+      };
+    });
+    // dedupe within the file itself (same hash twice = same charge printed twice)
+    var seen = {};
+    rows = rows.filter(function(r){ if (seen[r.dedupe_hash]) return false; seen[r.dedupe_hash] = 1; return true; });
+
+    var imported = 0;
+    for (var i = 0; i < rows.length; i += 200) {
+      var chunk = rows.slice(i, i+200);
+      var res = await pc.from('expense_transactions').upsert(chunk, { onConflict:'dedupe_hash', ignoreDuplicates:true }).select('id');
+      if (res.error) throw res.error;
+      imported += (res.data||[]).length;
+    }
+    var dupes = rows.length - imported;
+    if (stmtId) { try { await pc.from('statement_uploads').update({ imported_count: imported, duplicate_count: dupes }).eq('id', stmtId); } catch(e) {} }
+
+    // bump hit counts on the rules that fired (fire-and-forget)
+    txns.forEach(function(t){ if (t._rule) { try { pc.from('categorization_rules').update({ hit_count: (t._rule.hit_count||0)+1 }).eq('id', t._rule.id).then(function(){}); } catch(e) {} } });
+
+    say('&#10003; Imported <b style="color:#8DC63F;">'+imported+'</b> new transactions'+
+      (dupes?' &middot; '+dupes+' already on the ledger (skipped)':'')+
+      (skippedPayments?' &middot; '+skippedPayments+' card-payment lines ignored':'')+
+      ' &middot; auto-categorized where recognized — anything amber below needs a quick review.');
+    finCache = null;
+    await finLoadData();
+    setTimeout(function(){ renderFinanceView(); }, 1200);
+  }
+
+  window.finSetTxnAccount = async function(id, account){
+    var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var txn = (finCache.expenses||[]).find(function(e){ return e.id === id; });
+    var { error } = await pc.from('expense_transactions').update({ account_name: account || null, review_status: account ? 'confirmed' : 'needs_review' }).eq('id', id);
+    if (error) { alert('Could not update: '+error.message); return; }
+    if (account && txn) {
+      var merchant = finNormMerchant(txn.merchant || txn.description);
+      if (merchant && confirm('Always categorize "'+merchant+'" as '+account+'?\n\n(OK = remember this rule for future statements)')) {
+        try { await pc.from('categorization_rules').upsert({ pattern: merchant, account_name: account, priority: 100, created_by: 'user' }, { onConflict: 'pattern,account_name', ignoreDuplicates: true }); } catch(e) {}
+      }
+    }
+    finCache = null; renderFinanceView();
+  };
+  window.finConfirmTxn = async function(id){
+    var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var txn = (finCache.expenses||[]).find(function(e){ return e.id === id; });
+    if (txn && !txn.account_name) { alert('Pick a category first.'); return; }
+    await pc.from('expense_transactions').update({ review_status: 'confirmed' }).eq('id', id);
+    finCache = null; renderFinanceView();
+  };
+  window.finDelTxn = async function(id){
+    if (!confirm('Delete this transaction from the ledger?')) return;
+    var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+    await pc.from('expense_transactions').delete().eq('id', id);
+    finCache = null; renderFinanceView();
+  };
+  window.finDeleteRule = async function(id){
+    if (!confirm('Delete this rule? Future imports won\'t use it.')) return;
+    var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+    await pc.from('categorization_rules').delete().eq('id', id);
+    finCache = null; renderFinanceView();
+  };
+  window.finAddManualExpense = async function(){
+    var date = prompt('Date (YYYY-MM-DD):', new Date().toISOString().slice(0,10));
+    var d = finParseDate(date);
+    if (!d) return;
+    var desc = prompt('Payee / description:');
+    if (!desc) return;
+    var amt = parseFloat(prompt('Amount ($, negative for a refund/credit):')||'');
+    if (!amt) return;
+    var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var { error } = await pc.from('expense_transactions').insert({
+      txn_date: d, description: desc, merchant: finNormMerchant(desc), amount: amt,
+      source:'manual', review_status:'needs_review',
+      dedupe_hash: finTxnHash({date:d, description:desc, amount:amt}, 'manual') + '_' + Date.now().toString(36)
+    });
+    if (error) { alert('Could not add: '+error.message); return; }
+    finCache = null; renderFinanceView();
+  };
+  window.finAddMileage = async function(){
+    var date = finParseDate(prompt('Trip date (YYYY-MM-DD):', new Date().toISOString().slice(0,10)));
+    if (!date) return;
+    var miles = parseFloat(prompt('Miles driven (round trip):')||'');
+    if (!miles || miles <= 0) return;
+    var purpose = prompt('Purpose (e.g. "Eval visit — Chula Vista"):')||'';
+    var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var { error } = await pc.from('mileage_entries').insert({ trip_date: date, miles: miles, purpose: purpose });
+    if (error) { alert('Could not add: '+error.message); return; }
+    finCache = null; renderFinanceView();
+  };
+  window.finDelMileage = async function(id){
+    var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+    await pc.from('mileage_entries').delete().eq('id', id);
+    finCache = null; renderFinanceView();
+  };
+
+  // ── Statements — P&L in the CPA's QuickBooks layout ─────────────────────────
+  function finRenderStatements(){
+    var pnl = finComputePnl();
+    var C = finCache;
+    var cols = pnl.cols;
+    var showTotal = cols.length !== 1;
+    function colLabel(c){
+      if (c.length === 4) return c;
+      return new Date(c+'-15').toLocaleDateString('en-US',{month:'short',year:'2-digit'});
+    }
+    function cellsRow(row){
+      var tds = '';
+      cols.forEach(function(c){ tds += '<td class="num">'+((row.byCol&&row.byCol[c])?finMoney(row.byCol[c]):'—')+'</td>'; });
+      if (showTotal) tds += '<td class="num" style="font-weight:700;">'+finMoney(row.total)+'</td>';
+      return tds;
+    }
+    function totalRow(by, total){
+      var tds = '';
+      cols.forEach(function(c){ tds += '<td class="num">'+finMoney(by[c]||0)+'</td>'; });
+      if (showTotal) tds += '<td class="num">'+finMoney(total)+'</td>';
+      return tds;
+    }
+    var colspan = cols.length + (showTotal?1:0) + 1;
+    var csvRows = [];
+    function csv(label, row){
+      var r = [label];
+      cols.forEach(function(c){ r.push(row && row.byCol ? (row.byCol[c]||0).toFixed(2) : (row && row[c] !== undefined ? (row[c]||0).toFixed(2) : '')); });
+      if (showTotal && row) r.push((row.total !== undefined ? row.total : 0).toFixed(2));
+      csvRows.push(r);
+    }
+
+    var h = '<div class="fin-card no-print" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">'+
+      '<span style="font-size:0.72rem;color:#999;">Export-ready statements &middot; cash basis &middot; account names match the CPA\'s QuickBooks books 1:1</span>'+
+      '<span style="margin-left:auto;display:flex;gap:8px;">'+
+      '<button class="fin-btn" onclick="finExportStashed(\'pnl\')">&#8681; P&amp;L CSV</button>'+
+      '<button class="fin-btn ghost" onclick="finPrint()">&#128424; Print / Save as PDF</button></span></div>';
+
+    // ── P&L ──
+    h += '<div class="fin-print-area fin-card" style="padding:22px;">';
+    h += '<div style="text-align:center;margin-bottom:4px;font-weight:800;font-size:1rem;color:#eee;">SOLAR REVIEW CORP.</div>';
+    h += '<div style="text-align:center;font-weight:700;font-size:0.85rem;color:#ccc;">Profit &amp; Loss</div>';
+    h += '<div style="text-align:center;font-size:0.68rem;color:#888;margin-bottom:14px;">Cash Basis &middot; '+finRangeLabel()+' &middot; generated '+new Date().toLocaleDateString()+'</div>';
+    h += '<div style="overflow-x:auto;"><table class="fin-table fin-pl"><thead><tr><th></th>';
+    cols.forEach(function(c){ h += '<th class="num">'+colLabel(c)+'</th>'; });
+    if (showTotal) h += '<th class="num">TOTAL</th>';
+    h += '</tr></thead><tbody>';
+
+    // Income
+    h += '<tr><td class="sec" colspan="'+colspan+'">Ordinary Income/Expense</td></tr>';
+    h += '<tr><td class="sec" style="padding-left:16px;">Income</td>'+cols.map(function(){return '<td></td>';}).join('')+(showTotal?'<td></td>':'')+'</tr>';
+    var incRow = pnl.cells['income|Commission Income'] || { byCol:{}, total:0 };
+    h += '<tr><td class="sub">Commission Income</td>'+cellsRow(incRow)+'</tr>';
+    csvRows.push(['SOLAR REVIEW CORP. — Profit & Loss (Cash Basis) — '+finRangeLabel()]);
+    csvRows.push([''].concat(cols.map(colLabel)).concat(showTotal?['TOTAL']:[]));
+    csv('Income: Commission Income', incRow);
+    h += '<tr><td class="tot" style="padding-left:16px;">Total Income</td>'+totalRow(pnl.income.byCol, pnl.income.total)+'</tr>';
+    csv('Total Income', { byCol: pnl.income.byCol, total: pnl.income.total });
+
+    // COGS
+    h += '<tr><td class="sec" style="padding-left:16px;">Cost of Goods Sold</td>'+cols.map(function(){return '<td></td>';}).join('')+(showTotal?'<td></td>':'')+'</tr>';
+    ['Incentives - Sales','Lead Generation','Subcontracted Services'].forEach(function(a){
+      var row = pnl.cells['cogs|'+a];
+      if (!row) return;
+      h += '<tr><td class="sub">'+a+'</td>'+cellsRow(row)+'</tr>';
+      csv('COGS: '+a, row);
+    });
+    h += '<tr><td class="tot" style="padding-left:16px;">Total COGS</td>'+totalRow(pnl.cogs.byCol, pnl.cogs.total)+'</tr>';
+    csv('Total COGS', { byCol: pnl.cogs.byCol, total: pnl.cogs.total });
+    var grossBy = {};
+    cols.forEach(function(c){ grossBy[c] = (pnl.income.byCol[c]||0) - (pnl.cogs.byCol[c]||0); });
+    h += '<tr><td class="tot" style="font-weight:800;">Gross Profit</td>'+totalRow(grossBy, pnl.gross)+'</tr>';
+    csv('Gross Profit', { byCol: grossBy, total: pnl.gross });
+
+    // Expenses — CPA account order with sub-account rollups
+    h += '<tr><td class="sec" style="padding-left:16px;">Expense</td>'+cols.map(function(){return '<td></td>';}).join('')+(showTotal?'<td></td>':'')+'</tr>';
+    var coaExp = (C.coa||[]).filter(function(a){ return a.type === 'expense'; });
+    var emitted = {};
+    var topLevel = coaExp.filter(function(a){ return !a.parent; });
+    topLevel.forEach(function(parent){
+      var kids = coaExp.filter(function(a){ return a.parent === parent.name; });
+      var ownRow = pnl.cells['expense|'+parent.name];
+      var kidRows = kids.map(function(k){ return { name:k.name, row: pnl.cells['expense|'+k.name] }; }).filter(function(k){ return k.row; });
+      emitted[parent.name] = 1;
+      kids.forEach(function(k){ emitted[k.name] = 1; });
+      if (!ownRow && !kidRows.length) return;
+      if (kidRows.length) {
+        h += '<tr><td class="sub">'+parent.name+'</td>'+cols.map(function(){return '<td></td>';}).join('')+(showTotal?'<td></td>':'')+'</tr>';
+        kidRows.forEach(function(k){ h += '<tr><td class="sub2">'+k.name+'</td>'+cellsRow(k.row)+'</tr>'; csv('  '+k.name, k.row); });
+        if (ownRow) { h += '<tr><td class="sub2">'+parent.name+' - Other</td>'+cellsRow(ownRow)+'</tr>'; csv('  '+parent.name+' - Other', ownRow); }
+        var totBy = {}, tot = 0;
+        kidRows.forEach(function(k){ tot += k.row.total; cols.forEach(function(c){ totBy[c] = (totBy[c]||0)+(k.row.byCol[c]||0); }); });
+        if (ownRow) { tot += ownRow.total; cols.forEach(function(c){ totBy[c] = (totBy[c]||0)+(ownRow.byCol[c]||0); }); }
+        h += '<tr><td class="tot sub">Total '+parent.name+'</td>'+totalRow(totBy, tot)+'</tr>';
+        csv('Total '+parent.name, { byCol: totBy, total: tot });
+      } else {
+        h += '<tr><td class="sub">'+parent.name+'</td>'+cellsRow(ownRow)+'</tr>';
+        csv(parent.name, ownRow);
+      }
+    });
+    // anything booked to an account not in the CoA (incl. Uncategorized)
+    Object.keys(pnl.cells).forEach(function(k){
+      var row = pnl.cells[k];
+      if (row.section !== 'expense' || emitted[row.account]) return;
+      h += '<tr><td class="sub" style="color:#ffaa00;">'+esc(row.account)+'</td>'+cellsRow(row)+'</tr>';
+      csv(row.account, row);
+    });
+    h += '<tr><td class="tot" style="padding-left:16px;">Total Expense</td>'+totalRow(pnl.expense.byCol, pnl.expense.total)+'</tr>';
+    csv('Total Expense', { byCol: pnl.expense.byCol, total: pnl.expense.total });
+    var netBy = {};
+    cols.forEach(function(c){ netBy[c] = (grossBy[c]||0) - (pnl.expense.byCol[c]||0); });
+    h += '<tr><td class="grand">Net Income</td>'+totalRow(netBy, pnl.net).replace(/class="num"/g,'class="num grand"')+'</tr>';
+    csv('Net Income', { byCol: netBy, total: pnl.net });
+    h += '</tbody></table></div>';
+    h += '<div style="font-size:0.6rem;color:#555;margin-top:10px;" class="no-print">Mapping: Income = customer payments + overrides received &middot; COGS: paid sub-sheet costs &rarr; Subcontracted Services, paid rep commissions &rarr; Incentives - Sales, direct-mail marketing &rarr; Lead Generation &middot; Expenses = statement/manual ledger by account. Card-paid ads (Google/Meta) come from statement uploads, not the Marketing tab, to avoid double-counting.</div>';
+    h += '</div>';
+    finCsvStash.pnl = { name:'solar_review_pnl', header: [], rows: csvRows };
+
+    // ── Expense by category ──
+    var byAcct = {};
+    (C.expenses||[]).forEach(function(e){ if (finInRange(e.txn_date)) { var a = e.account_name||'Uncategorized'; byAcct[a] = (byAcct[a]||0)+(parseFloat(e.amount)||0); } });
+    var entries = Object.keys(byAcct).map(function(k){ return [k, byAcct[k]]; }).sort(function(a,b){ return b[1]-a[1]; });
+    var expTotal = entries.reduce(function(t,e){ return t+e[1]; },0);
+    finCsvStash.expcat = { name:'solar_review_expense_by_category', header:['Account','Amount','% of spend'],
+      rows: entries.map(function(e){ return [e[0], e[1].toFixed(2), expTotal?((e[1]/expTotal*100).toFixed(1)+'%'):'']; }) };
+    h += '<div class="fin-card"><div style="display:flex;align-items:center;margin-bottom:8px;"><span style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#999;">Expense by category</span>'+
+      '<button class="fin-btn ghost no-print" style="margin-left:auto;" onclick="finExportStashed(\'expcat\')">&#8681; CSV</button></div>';
+    if (!entries.length) h += '<div style="font-size:0.72rem;color:#555;">No operating expenses in range.</div>';
+    else {
+      h += '<div style="overflow-x:auto;"><table class="fin-table"><thead><tr><th>Account</th><th class="num">Amount</th><th class="num">% of spend</th></tr></thead><tbody>';
+      entries.forEach(function(e){ h += '<tr><td>'+esc(e[0])+'</td><td class="num" style="font-weight:700;color:#ddd;">'+finMoney(e[1])+'</td><td class="num" style="color:#888;">'+(expTotal?(e[1]/expTotal*100).toFixed(1):'0')+'%</td></tr>'; });
+      h += '<tr><td class="tot">Total</td><td class="num tot">'+finMoney(expTotal)+'</td><td></td></tr></tbody></table></div>';
+    }
+    h += '</div>';
+
+    // ── Payroll / 1099 report ──
+    var payeeTot = {};
+    (C.comms||[]).forEach(function(c){
+      if (c.status !== 'paid' || c.payee === 'solar_review_corp') return;
+      var d = c.paid_at || c.sold_at;
+      if (!finInRange(d)) return;
+      var nm = c.payee_name || repName(c.payee) || c.payee;
+      payeeTot[nm] = payeeTot[nm] || { comm:0, travel:0 };
+      if (c.kind === 'travel_reimbursement') payeeTot[nm].travel += parseFloat(c.amount)||0;
+      else payeeTot[nm].comm += parseFloat(c.amount)||0;
+    });
+    (adminCustomers||[]).forEach(function(c){
+      if (!(parseFloat(c.rep_commission)>0) || !c.commission_paid) return;
+      if (!finInRange(c.commission_paid_at || c.created_at)) return;
+      var nm = repName(c.rep_id) || c.rep_id || 'Unassigned';
+      payeeTot[nm] = payeeTot[nm] || { comm:0, travel:0 };
+      payeeTot[nm].comm += parseFloat(c.rep_commission)||0;
+    });
+    var payees = Object.keys(payeeTot).sort();
+    finCsvStash.payroll1099 = { name:'solar_review_1099_payments', header:['Payee','Commissions Paid','Travel Reimbursed','Total'],
+      rows: payees.map(function(p){ var v = payeeTot[p]; return [p, v.comm.toFixed(2), v.travel.toFixed(2), (v.comm+v.travel).toFixed(2)]; }) };
+    h += '<div class="fin-card"><div style="display:flex;align-items:center;margin-bottom:8px;"><span style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#999;">Payments to reps (1099 prep)</span>'+
+      '<button class="fin-btn ghost no-print" style="margin-left:auto;" onclick="finExportStashed(\'payroll1099\')">&#8681; CSV</button></div>';
+    if (!payees.length) h += '<div style="font-size:0.72rem;color:#555;">No rep payments in range.</div>';
+    else {
+      h += '<div style="overflow-x:auto;"><table class="fin-table"><thead><tr><th>Payee</th><th class="num">Commissions</th><th class="num">Travel</th><th class="num">Total paid</th></tr></thead><tbody>';
+      payees.forEach(function(p){ var v = payeeTot[p]; h += '<tr><td>'+esc(p)+'</td><td class="num">'+finMoney(v.comm)+'</td><td class="num">'+finMoney(v.travel)+'</td><td class="num" style="font-weight:700;color:#ddd;">'+finMoney(v.comm+v.travel)+'</td></tr>'; });
+      h += '</tbody></table></div>';
+      h += '<div style="font-size:0.62rem;color:#555;margin-top:6px;">Reimbursed travel under an accountable plan is not 1099 income — confirm treatment with your tax preparer.</div>';
+    }
+    h += '</div>';
+    return h;
+  }
+
+  // ── AI Advisor ──────────────────────────────────────────────────────────────
+  function finRenderAiShell(){
+    var h = '<div class="fin-card">';
+    h += '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">';
+    h += '<div><div style="font-size:0.85rem;font-weight:800;color:#eee;">&#129302; AI Financial Advisor</div>';
+    h += '<div style="font-size:0.7rem;color:#888;margin-top:3px;">Runs nightly at ~5am PT — audits spend, hunts tax savings, flags waste, and watches cash. Reports also land in the Agents inbox.</div></div>';
+    h += '<button id="finAiRunBtn" class="fin-btn" style="margin-left:auto;" onclick="finRunAiNow()">&#9889; Run Analysis Now</button>';
+    h += '</div><div id="finAiRunStatus" style="font-size:0.7rem;color:#777;margin-top:6px;"></div></div>';
+    h += '<div id="finAiReports"><div style="text-align:center;padding:20px;color:#555;font-size:0.8rem;">Loading advisor reports&hellip;</div></div>';
+    h += '<div style="font-size:0.62rem;color:#555;margin-top:8px;">The advisor is an AI, not a licensed CPA or tax attorney — verify tax moves with a professional before filing.</div>';
+    return h;
+  }
+  async function finLoadAiReports(){
+    var el = document.getElementById('finAiReports');
+    if (!el) return;
+    try {
+      var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var { data, error } = await pc.from('agent_reports').select('*').eq('agent','finance').order('created_at',{ascending:false}).limit(40);
+      if (error) throw error;
+      var reports = data || [];
+      if (!reports.length) {
+        el.innerHTML = '<div style="text-align:center;padding:26px;color:#555;font-size:0.8rem;">No advisor reports yet — tap <b>Run Analysis Now</b> for the first one, or wait for tonight\'s run.</div>';
+        return;
+      }
+      var priorityColor = { urgent:'#ef4444', high:'#f97316', normal:'#888' };
+      el.innerHTML = reports.map(function(r){
+        var pc2 = priorityColor[r.priority]||'#888';
+        var ts = new Date(r.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+        return '<div class="fin-card" style="'+(r.reviewed?'opacity:0.55;':'')+'">'+
+          '<div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;flex-wrap:wrap;">'+
+            '<span style="padding:2px 9px;border-radius:100px;font-size:0.62rem;font-weight:800;color:'+pc2+';border:1px solid '+pc2+'55;text-transform:uppercase;">'+r.priority+'</span>'+
+            '<span style="font-size:0.66rem;color:#555;">'+ts+'</span>'+
+            (!r.reviewed?'<button class="fin-btn ghost" style="margin-left:auto;padding:3px 12px;font-size:0.62rem;" onclick="markAgentReportReviewed(\''+r.id+'\');setTimeout(finLoadAiReports,600);">&#10003; Reviewed</button>':'')+
+          '</div>'+
+          '<div style="font-weight:700;font-size:0.88rem;color:#fff;margin-bottom:5px;">'+esc(r.title||'')+'</div>'+
+          '<div style="font-size:0.78rem;color:#aaa;line-height:1.6;white-space:pre-wrap;">'+esc(r.body||'')+'</div>'+
+        '</div>';
+      }).join('');
+    } catch(e) {
+      el.innerHTML = '<div style="padding:14px;color:#ef9b9b;font-size:0.75rem;">Could not load reports: '+esc(e.message)+'</div>';
+    }
+  }
+  window.finLoadAiReports = finLoadAiReports;
+  window.finRunAiNow = async function(){
+    var btn = document.getElementById('finAiRunBtn');
+    var st = document.getElementById('finAiRunStatus');
+    if (btn) { btn.disabled = true; btn.style.opacity = '0.6'; btn.innerHTML = '&#9203; Running&hellip;'; }
+    if (st) st.textContent = 'Analysis started — usually finishes in 1–3 minutes. New reports appear below automatically.';
+    try {
+      await fetch('/.netlify/functions/run-agent-background?agent=finance');
+      var tries = 0, before = Date.now();
+      var poll = setInterval(async function(){
+        tries++;
+        try {
+          var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+          var { data } = await pc.from('agent_reports').select('created_at').eq('agent','finance').order('created_at',{ascending:false}).limit(1);
+          if (data && data[0] && new Date(data[0].created_at).getTime() > before) {
+            clearInterval(poll);
+            if (st) st.innerHTML = '&#10003; Analysis complete.';
+            if (btn) { btn.disabled = false; btn.style.opacity = '1'; btn.innerHTML = '&#9889; Run Analysis Now'; }
+            finLoadAiReports();
+            return;
+          }
+        } catch(e) {}
+        if (tries >= 24) {
+          clearInterval(poll);
+          if (st) st.textContent = 'Still running — check back in a minute (or see Netlify logs for finance-agent).';
+          if (btn) { btn.disabled = false; btn.style.opacity = '1'; btn.innerHTML = '&#9889; Run Analysis Now'; }
+        }
+      }, 10000);
+    } catch(e) {
+      if (st) st.textContent = 'Could not start: '+e.message;
+      if (btn) { btn.disabled = false; btn.style.opacity = '1'; btn.innerHTML = '&#9889; Run Analysis Now'; }
+    }
+  };
 
   window.markCommissionPaid = async function(id) {
     var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
