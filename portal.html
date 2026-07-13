@@ -7296,8 +7296,18 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // Expense = expense_transactions by account (+ paid travel reimbursements → Travel Expense)
   // Marketing Google/Digital Ads entries are EXCLUDED here — card statements book those
   // to "Advertising and Promotion", so counting both would double-book ad spend.
+  // Off-P&L account names (equity/liability/asset — e.g. Shareholder Distributions).
+  // These can appear in expense_transactions (owner distributions ride the same bank
+  // feed as real expenses) but must never reduce Net Income — they're a draw against
+  // after-tax profit / balance-sheet items, not a business expense.
+  function finOffPnlAccounts(){
+    var set = {};
+    (finCache.coa||[]).forEach(function(a){ if (a.type !== 'income' && a.type !== 'cogs' && a.type !== 'expense') set[a.name] = true; });
+    return set;
+  }
   function finComputePnl(){
     var C = finCache;
+    var offPnl = finOffPnlAccounts();
     var cells = {}, cols = {};
     var colKey = function(mk){ return financeRange.mode === 'lifetime' ? mk.slice(0,4) : mk; };
     function add(section, account, dateStr, amt){
@@ -7321,9 +7331,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     (C.marketing||[]).forEach(function(m){
       if (m.category === 'Direct Mail Print' || m.category === 'USPS Charges') add('cogs','Lead Generation', m.expense_date, m.amount);
     });
-    (C.expenses||[]).forEach(function(e){ add('expense', e.account_name || 'Uncategorized', e.txn_date, e.amount); });
+    (C.expenses||[]).forEach(function(e){ if (offPnl[e.account_name]) return; add('expense', e.account_name || 'Uncategorized', e.txn_date, e.amount); });
     // Prior-year CPA actuals (2025 GL) — source-isolated, keyed by account_name/type
     (C.ledgerHist||[]).forEach(function(e){
+      if (offPnl[e.account_name]) return;
       var sec = (e.type === 'income' || e.type === 'cogs') ? e.type : 'expense';
       add(sec, e.account_name || 'Uncategorized', e.period_month, e.amount);
     });
@@ -7349,7 +7360,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
   // Month-bucketed series for the dashboard charts (always by month, any range)
   function finMonthlySeries(){
-    var C = finCache, buckets = {};
+    var C = finCache, buckets = {}, offPnl = finOffPnlAccounts();
     function b(mk){ return buckets[mk] = buckets[mk] || { pay:0, ovr:0, cogs:0, exp:0 }; }
     (C.pays||[]).forEach(function(p){ if ((p.category||'revenue')==='revenue' && finInRange(p.paid_at)) b(finMonthKey(p.paid_at)).pay += parseFloat(p.amount)||0; });
     (C.comms||[]).forEach(function(c){
@@ -7364,9 +7375,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     (C.marketing||[]).forEach(function(m){
       if ((m.category === 'Direct Mail Print' || m.category === 'USPS Charges') && finInRange(m.expense_date)) b(finMonthKey(m.expense_date)).cogs += parseFloat(m.amount)||0;
     });
-    (C.expenses||[]).forEach(function(e){ if (finInRange(e.txn_date)) b(finMonthKey(e.txn_date)).exp += parseFloat(e.amount)||0; });
+    (C.expenses||[]).forEach(function(e){ if (!offPnl[e.account_name] && finInRange(e.txn_date)) b(finMonthKey(e.txn_date)).exp += parseFloat(e.amount)||0; });
     (C.ledgerHist||[]).forEach(function(e){
-      if (!finInRange(e.period_month)) return;
+      if (offPnl[e.account_name] || !finInRange(e.period_month)) return;
       var bk = b(finMonthKey(e.period_month)), amt = parseFloat(e.amount)||0;
       if (e.type === 'income') bk.ovr += amt;         // prior-year income (bucketed under override series)
       else if (e.type === 'cogs') bk.cogs += amt;
@@ -7548,7 +7559,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       h += '<button class="fin-btn" style="padding:3px 10px;font-size:0.64rem;background:rgba(155,109,232,0.1);border-color:rgba(155,109,232,0.35);color:#9b6de8;" onclick="finClassifyDeposit(\''+d.id+'\',\'commission_new_solar\')">New Solar</button>';
       h += '<button class="fin-btn ghost" style="padding:3px 10px;font-size:0.64rem;" onclick="finClassifyDeposit(\''+d.id+'\',\'other_income\')">Other</button>';
       h += '<span style="width:1px;background:rgba(255,255,255,0.1);margin:0 3px;"></span>';
-      h += '<button class="fin-btn ghost" style="padding:3px 10px;font-size:0.64rem;" onclick="finClassifyDeposit(\''+d.id+'\',\'owner_transfer\')" title="Transfer / distribution between your own accounts — not revenue">Owner Transfer</button>';
+      h += '<button class="fin-btn ghost" style="padding:3px 10px;font-size:0.64rem;" onclick="finClassifyDeposit(\''+d.id+'\',\'owner_transfer\')" title="Personal money moved back in (e.g. to cover a business card payment) — nets against Owner Distributions, not revenue">Owner Transfer</button>';
       h += '<button class="fin-btn ghost" style="padding:3px 10px;font-size:0.64rem;color:#888;" onclick="finClassifyDeposit(\''+d.id+'\',\'ignore\')">Ignore</button>';
       h += '</div></div>';
     });
@@ -7572,9 +7583,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var noteBase = 'Auto-detected via Plaid deposit: ' + (d.description||'').slice(0,110);
     try {
       var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
-      if (classification === 'ignore' || classification === 'owner_transfer') {
-        var { error: e1 } = await pc.from('plaid_deposits_review').update({ status: classification==='ignore'?'ignored':'confirmed', classification: classification }).eq('id', id);
+      if (classification === 'ignore') {
+        var { error: e1 } = await pc.from('plaid_deposits_review').update({ status:'ignored', classification: classification }).eq('id', id);
         if (e1) throw e1;
+      } else if (classification === 'owner_transfer') {
+        // Reverse-distribution — money moved back in to cover cash flow (e.g. a business
+        // credit card payment). Nets against Owner Distributions via a negative contra row
+        // on the same equity account; never touches Net Income.
+        var { error: e4 } = await pc.from('expense_transactions').insert({
+          txn_date: d.txn_date, description: d.description||'Owner transfer in', merchant: d.merchant||'Owner transfer in',
+          amount: -Math.abs(amt), account_name: 'Shareholder Distributions', source: 'plaid', review_status: 'confirmed',
+          dedupe_hash: 'depclass_'+id, note: noteBase
+        });
+        if (e4) throw e4;
+        await pc.from('plaid_deposits_review').update({ status:'confirmed', classification: classification }).eq('id', id);
       } else {
         // Commission income (Top Tier / New Solar / Other) → commissions override row
         var line = classification === 'commission_top_tier' ? 'top_tier'
@@ -7826,6 +7848,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (hasKids) return; // book to leaves; parents roll up on the P&L
       opts += '<option value="'+esc(a.name)+'"'+(selected===a.name?' selected':'')+'>'+(a.parent?esc(a.parent)+' › ':'')+esc(a.name)+'</option>';
     });
+    // Equity accounts (off P&L) — manual fallback in case an owner distribution isn't
+    // auto-detected (e.g. an unrecognized transfer descriptor); kept in their own group
+    // so they're not mistaken for a real business expense.
+    var equity = (finCache.coa||[]).filter(function(a){ return a.type === 'equity'; });
+    if (equity.length) {
+      opts += '<optgroup label="Equity (off P&amp;L)">';
+      equity.forEach(function(a){
+        var hasKids = (finCache.coa||[]).some(function(x){ return x.parent === a.name; });
+        if (hasKids) return;
+        opts += '<option value="'+esc(a.name)+'"'+(selected===a.name?' selected':'')+'>'+(a.parent?esc(a.parent)+' › ':'')+esc(a.name)+'</option>';
+      });
+      opts += '</optgroup>';
+    }
     return opts;
   }
   function finRenderExpenses(){
@@ -7837,7 +7872,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
     var inRange = (C.expenses||[]).filter(function(e){ return finInRange(e.txn_date); });
     var review = inRange.filter(function(e){ return e.review_status === 'needs_review' || !e.account_name; });
-    var total = inRange.reduce(function(t,e){ return t+(parseFloat(e.amount)||0); },0);
+    var offPnl = finOffPnlAccounts();
+    var operating = inRange.filter(function(e){ return !offPnl[e.account_name]; });
+    var total = operating.reduce(function(t,e){ return t+(parseFloat(e.amount)||0); },0);
 
     finCsvStash.expenses = { name:'solar_review_expenses', header:['Date','Payee','Account','Amount','Memo','Source'],
       rows: inRange.map(function(e){ return [e.txn_date, e.merchant||e.description, e.account_name||'Uncategorized', (parseFloat(e.amount)||0).toFixed(2), e.description, e.source]; }) };
@@ -7846,15 +7883,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '<div class="fin-card no-print" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">';
     h += '<button class="fin-btn ghost" onclick="finAddManualExpense()">+ Manual Expense</button>';
     h += '<button class="fin-btn ghost" onclick="finExportStashed(\'expenses\')">&#8681; Export CSV (CPA handoff)</button>';
-    h += '<span style="font-size:0.66rem;color:#777;">Upload statements &amp; connect accounts in the <a href="javascript:void(0)" onclick="finGoTab(\'sync\')" style="color:#4a9eff;text-decoration:none;">&#128260; Sync</a> tab.</span>';
+    h += '<span style="font-size:0.66rem;color:#777;">Upload statements &amp; connect accounts in the <a href="javascript:void(0)" onclick="finGoTab(\'sync\')" style="color:#4a9eff;text-decoration:none;">&#128260; Sync</a> tab. Owner distributions show in <a href="javascript:void(0)" onclick="finGoTab(\'statements\')" style="color:#4a9eff;text-decoration:none;">Statements</a>.</span>';
     h += '</div>';
 
-    // Summary tiles
+    // Summary tiles (owner distributions excluded — they're equity draws, not operating spend)
     var byAcct = {};
-    inRange.forEach(function(e){ var a = e.account_name||'Uncategorized'; byAcct[a] = (byAcct[a]||0)+(parseFloat(e.amount)||0); });
+    operating.forEach(function(e){ var a = e.account_name||'Uncategorized'; byAcct[a] = (byAcct[a]||0)+(parseFloat(e.amount)||0); });
     var topA = Object.keys(byAcct).map(function(k){ return [k,byAcct[k]]; }).sort(function(a,b){ return b[1]-a[1]; }).slice(0,3);
     h += '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">';
-    h += '<div class="fin-tile" style="flex:0 1 auto;"><div class="v" style="color:#e66767;">'+finMoney(total)+'</div><div class="l">Operating spend &middot; '+inRange.length+' txns</div></div>';
+    h += '<div class="fin-tile" style="flex:0 1 auto;"><div class="v" style="color:#e66767;">'+finMoney(total)+'</div><div class="l">Operating spend &middot; '+operating.length+' txns</div></div>';
     topA.forEach(function(e){ h += '<div class="fin-tile" style="flex:0 1 auto;"><div class="v" style="color:#ddd;font-size:1rem;">'+finMoney(e[1])+'</div><div class="l">'+esc(e[0])+'</div></div>'; });
     if (review.length) h += '<div class="fin-tile" style="flex:0 1 auto;border-color:rgba(255,170,0,0.4);"><div class="v" style="color:#ffaa00;">'+review.length+'</div><div class="l">Need review</div></div>';
     h += '</div>';
@@ -7896,10 +7933,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   function finTxnRow(e, isReview){
     var amt = parseFloat(e.amount)||0;
     var srcBadge = ({amex_csv:'AmEx CSV', bank_csv:'Bank CSV', pdf_ai:'PDF (AI)', manual:'Manual'})[e.source]||e.source;
+    var isEquity = !!finOffPnlAccounts()[e.account_name];
     return '<div style="display:flex;gap:8px;align-items:center;font-size:0.74rem;color:#aaa;padding:6px 10px;margin-bottom:4px;border-radius:10px;flex-wrap:wrap;'+
-      (isReview?'background:rgba(255,170,0,0.05);border:1px solid rgba(255,170,0,0.25);':'background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);')+'">'+
+      (isReview?'background:rgba(255,170,0,0.05);border:1px solid rgba(255,170,0,0.25);':isEquity?'background:rgba(155,109,232,0.05);border:1px solid rgba(155,109,232,0.2);':'background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);')+'">'+
       '<span style="color:#666;font-size:0.66rem;white-space:nowrap;">'+e.txn_date+'</span>'+
       '<span style="color:#ddd;flex:1;min-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="'+esc(e.description)+'">'+esc(e.merchant||e.description)+'</span>'+
+      (isEquity?'<span style="font-size:0.58rem;color:#9b6de8;border:1px solid rgba(155,109,232,0.35);border-radius:100px;padding:1px 7px;white-space:nowrap;">Equity</span>':'')+
       '<span style="color:'+(amt<0?'#8DC63F':'#ddd')+';font-weight:700;white-space:nowrap;">'+finMoney(amt)+'</span>'+
       '<select class="fin-select no-print" onchange="finSetTxnAccount(\''+e.id+'\', this.value)">'+finAccountOptions(e.account_name)+'</select>'+
       (isReview?'<button class="fin-btn no-print" style="padding:3px 12px;font-size:0.62rem;" onclick="finConfirmTxn(\''+e.id+'\')">&#10003; Confirm</button>':'')+
@@ -8497,9 +8536,71 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '</div>';
     finCsvStash.pnl = { name:'solar_review_pnl', header: [], rows: csvRows };
 
+    // ── Statement of Owner Distributions (off P&L — equity draws, not a business expense) ──
+    // Same table format as the P&L above, own totals. Outbound GWCU→personal transfers are
+    // auto-tagged "Shareholder Distributions" at sync time; reverse transfers (personal money
+    // moved back in, e.g. to cover a card payment) are a negative contra row on the same
+    // account, so Net = Distributions − Reverse Transfers, exactly how the CPA books it.
+    (function(){
+      var distColKey = function(mk){ return financeRange.mode === 'lifetime' ? mk.slice(0,4) : mk; };
+      var distCols = {}, distOutBy = {}, distInBy = {}, distOutTotal = 0, distInTotal = 0;
+      (C.expenses||[]).forEach(function(e){
+        if (e.account_name !== 'Shareholder Distributions' || !finInRange(e.txn_date)) return;
+        var ck = distColKey(finMonthKey(e.txn_date)); distCols[ck] = 1;
+        var amt = parseFloat(e.amount)||0;
+        if (amt >= 0) { distOutBy[ck] = (distOutBy[ck]||0)+amt; distOutTotal += amt; }
+        else { distInBy[ck] = (distInBy[ck]||0)+amt; distInTotal += amt; }
+      });
+      var distColList = Object.keys(distCols).sort();
+      var distShowTotal = distColList.length !== 1;
+      function distColLabel(c){ if (c.length===4) return c; return new Date(c+'-15').toLocaleDateString('en-US',{month:'short',year:'2-digit'}); }
+      function distCellsRow(by){
+        var tds = '';
+        distColList.forEach(function(c){ tds += '<td class="num">'+(by[c]?finMoney(by[c]):'—')+'</td>'; });
+        if (distShowTotal) tds += '<td class="num" style="font-weight:700;">'+finMoney(distColList.reduce(function(t,c){ return t+(by[c]||0); },0))+'</td>';
+        return tds;
+      }
+      var distNetBy = {};
+      distColList.forEach(function(c){ distNetBy[c] = (distOutBy[c]||0) + (distInBy[c]||0); });
+
+      var distCsvRows = [['SOLAR REVIEW CORP. — Statement of Owner Distributions — '+finRangeLabel()],
+        [''].concat(distColList.map(distColLabel)).concat(distShowTotal?['TOTAL']:[])];
+      function distCsv(label, by, total){
+        var r = [label];
+        distColList.forEach(function(c){ r.push((by[c]||0).toFixed(2)); });
+        if (distShowTotal) r.push(total.toFixed(2));
+        distCsvRows.push(r);
+      }
+      distCsv('Distributions (GWCU to Personal)', distOutBy, distOutTotal);
+      distCsv('Reverse Transfers (Personal to GWCU)', distInBy, distInTotal);
+      distCsv('Net Owner Distributions', distNetBy, distOutTotal+distInTotal);
+      finCsvStash.distributions = { name:'solar_review_owner_distributions', header: [], rows: distCsvRows };
+
+      h += '<div class="fin-print-area fin-card" style="padding:22px;margin-top:16px;">';
+      h += '<div style="text-align:center;margin-bottom:4px;font-weight:800;font-size:1rem;color:#eee;">SOLAR REVIEW CORP.</div>';
+      h += '<div style="text-align:center;font-weight:700;font-size:0.85rem;color:#ccc;">Statement of Owner Distributions</div>';
+      h += '<div style="text-align:center;font-size:0.68rem;color:#888;margin-bottom:14px;">Equity draws &middot; excluded from Net Income above &middot; '+finRangeLabel()+'</div>';
+      h += '<div class="no-print" style="text-align:right;margin-bottom:8px;"><button class="fin-btn ghost" onclick="finExportStashed(\'distributions\')">&#8681; CSV</button></div>';
+      if (!distColList.length) {
+        h += '<div style="font-size:0.72rem;color:#555;">No owner distributions or reverse transfers in range.</div>';
+      } else {
+        h += '<div style="overflow-x:auto;"><table class="fin-table fin-pl"><thead><tr><th></th>';
+        distColList.forEach(function(c){ h += '<th class="num">'+distColLabel(c)+'</th>'; });
+        if (distShowTotal) h += '<th class="num">TOTAL</th>';
+        h += '</tr></thead><tbody>';
+        h += '<tr><td class="sub">Distributions (GWCU &rarr; Personal)</td>'+distCellsRow(distOutBy)+'</tr>';
+        h += '<tr><td class="sub">Reverse Transfers (Personal &rarr; GWCU)</td>'+distCellsRow(distInBy)+'</tr>';
+        h += '<tr><td class="grand">Net Owner Distributions</td>'+distCellsRow(distNetBy).replace(/class="num"/g,'class="num grand"')+'</tr>';
+        h += '</tbody></table></div>';
+      }
+      h += '<div style="font-size:0.6rem;color:#555;margin-top:10px;" class="no-print">Owner distributions are a draw against after-tax equity, not a business expense &mdash; excluded from the P&amp;L above. Outbound transfers to Chase are auto-detected and booked here automatically; reverse transfers (money moved back in to cover cash flow) net against the total.</div>';
+      h += '</div>';
+    })();
+
     // ── Expense by category ──
     var byAcct = {};
-    (C.expenses||[]).forEach(function(e){ if (finInRange(e.txn_date)) { var a = e.account_name||'Uncategorized'; byAcct[a] = (byAcct[a]||0)+(parseFloat(e.amount)||0); } });
+    var offPnl = finOffPnlAccounts();
+    (C.expenses||[]).forEach(function(e){ if (!offPnl[e.account_name] && finInRange(e.txn_date)) { var a = e.account_name||'Uncategorized'; byAcct[a] = (byAcct[a]||0)+(parseFloat(e.amount)||0); } });
     var entries = Object.keys(byAcct).map(function(k){ return [k, byAcct[k]]; }).sort(function(a,b){ return b[1]-a[1]; });
     var expTotal = entries.reduce(function(t,e){ return t+e[1]; },0);
     finCsvStash.expcat = { name:'solar_review_expense_by_category', header:['Account','Amount','% of spend'],

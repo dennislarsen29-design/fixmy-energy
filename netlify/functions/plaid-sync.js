@@ -35,6 +35,14 @@ function isIssuerPayment(desc) {
 function isStripePayout(desc) {
   return /STRIPE/i.test(desc);
 }
+// Owner distributions (Solar Review Corp → Dennis's personal Chase account) —
+// Plaid tags self-transfers between a person's own accounts as personal_finance_category
+// TRANSFER_OUT; "CHASE" is a strong secondary signal since that's the named personal bank.
+// Auto-booked straight to the equity account "Shareholder Distributions" (never touches
+// Net Income — distributions are a draw against after-tax profit, not a business expense).
+function isOwnerDistribution(desc, pfc) {
+  return pfc === 'TRANSFER_OUT' || /\bCHASE\b/i.test(desc);
+}
 function depositFloorFor(item) {
   if (item.deposit_since) return item.deposit_since;
   const base = item.connected_at ? new Date(item.connected_at) : new Date();
@@ -68,8 +76,20 @@ function applyDepositRule(rules, desc) {
 // Applies a deposit classification server-side (mirrors the portal's
 // finClassifyDeposit) so a rule-matched deposit never sits in the review queue.
 async function applyDepositClassification(depRow, classification, noteBase) {
-  if (classification === 'ignore' || classification === 'owner_transfer') {
-    await supaPatch('/plaid_deposits_review?id=eq.' + depRow.id, { status: classification === 'ignore' ? 'ignored' : 'confirmed', classification: classification });
+  if (classification === 'ignore') {
+    await supaPatch('/plaid_deposits_review?id=eq.' + depRow.id, { status: 'ignored', classification: classification });
+    return;
+  }
+  if (classification === 'owner_transfer') {
+    // Reverse-distribution — Dennis moving personal money back in to cover cash flow
+    // (e.g. a business credit card payment). Nets against Owner Distributions via a
+    // negative contra row on the same equity account, never touches Net Income.
+    await supaPost('/expense_transactions', {
+      txn_date: depRow.txn_date, description: depRow.description || 'Owner transfer in', merchant: depRow.merchant || 'Owner transfer in',
+      amount: -Math.abs(parseFloat(depRow.amount) || 0), account_name: 'Shareholder Distributions', source: 'plaid', review_status: 'confirmed',
+      dedupe_hash: 'depclass_' + depRow.id, note: noteBase
+    }, { Prefer: 'return=minimal' });
+    await supaPatch('/plaid_deposits_review?id=eq.' + depRow.id, { status: 'confirmed', classification: classification });
     return;
   }
   const line = classification === 'commission_top_tier' ? 'top_tier'
@@ -160,7 +180,7 @@ async function syncItem(item, rules) {
     // Expense (money out). Internal transfers / card autopay are neither expense nor revenue.
     if (SKIP_PFC.has(pfc) || isIssuerPayment(desc)) continue;
     if (item.start_date && t.date < item.start_date) continue; // CSV history owns everything before the cutoff
-    txns.push({ date: t.date, description: cleanDesc, amount: amount, plaid_id: t.transaction_id });
+    txns.push({ date: t.date, description: cleanDesc, amount: amount, plaid_id: t.transaction_id, isDistribution: isOwnerDistribution(desc, pfc) });
   }
 
   // Cross-source guard: (date|amount) pairs already imported from CSV/PDF/manual
@@ -176,9 +196,11 @@ async function syncItem(item, rules) {
     } catch (e) { /* guard is best-effort */ }
   }
 
-  // Categorize: rules → AI batch for the rest
+  // Categorize: owner distributions bypass rules/AI entirely (always the same equity
+  // account) → rules → AI batch for the rest
   const pendingIdx = [];
   txns.forEach((t, i) => {
+    if (t.isDistribution) { t.account = 'Shareholder Distributions'; t.review = 'auto'; return; }
     const rule = applyRules(rules, t.description);
     t.account = rule ? rule.account_name : null;
     t.review = rule ? 'auto' : 'needs_review';
@@ -222,7 +244,7 @@ async function syncItem(item, rules) {
   let depositsInserted = 0, depositsAutoClassified = 0;
   const depositRules = await loadDepositRules();
   for (let i = 0; i < uniqueDeposits.length; i += 200) {
-    const out = await supaPost('/plaid_deposits_review?on_conflict=dedupe_hash&select=id,txn_date,description,amount', uniqueDeposits.slice(i, i + 200),
+    const out = await supaPost('/plaid_deposits_review?on_conflict=dedupe_hash&select=id,txn_date,description,merchant,amount', uniqueDeposits.slice(i, i + 200),
       { Prefer: 'resolution=ignore-duplicates,return=representation' });
     const newRows = out || [];
     depositsInserted += newRows.length;
