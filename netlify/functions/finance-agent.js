@@ -41,7 +41,10 @@ async function callClaude(messages, tools, system, toolChoice) {
   if (toolChoice) body.tool_choice = toolChoice;
   const resp = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
+    // anthropic-beta is required for the web_search server tool (see inverter-analysis.js) —
+    // without it every data-gathering call in phase 1 (which always includes web_search)
+    // fails outright with a 400, so the agent never produces a report, nightly or manual.
+    headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_KEY, 'anthropic-version': '2023-06-01', 'anthropic-beta': 'web-search-2025-03-05' },
     body: JSON.stringify(body)
   });
   if (!resp.ok) throw new Error('Claude API error: ' + resp.status + ' ' + await resp.text());
