@@ -58,6 +58,13 @@ async function supaPost(path, body, extraHeaders) {
   try { return JSON.parse(text); } catch (e) { return null; }
 }
 
+async function supaPatch(path, body, extraHeaders) {
+  const resp = await fetch(SUPA_REST + path, {
+    method: 'PATCH', headers: supaHeaders(Object.assign({ Prefer: 'return=minimal' }, extraHeaders)), body: JSON.stringify(body)
+  });
+  if (!resp.ok) throw new Error('Supabase PATCH failed: ' + resp.status + ' ' + await resp.text());
+}
+
 // app_config plaid_items shape:
 // { items: [{ item_id, access_token, institution, kind (amex|bank), start_date,
 //             cursor, last_synced, last_added, last_dupes, last_error }] }
@@ -106,4 +113,4 @@ function originAllowed(event) {
   } catch (e) { return false; }
 }
 
-module.exports = { plaid, plaidReady, supaGet, supaPost, getPlaidItems, savePlaidItems, txnHash, normMerchant, cors, reply, originAllowed };
+module.exports = { plaid, plaidReady, supaGet, supaPost, supaPatch, getPlaidItems, savePlaidItems, txnHash, normMerchant, cors, reply, originAllowed };

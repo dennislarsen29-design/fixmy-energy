@@ -21,7 +21,7 @@
 // Categorization mirrors the portal's CSV import: categorization_rules first,
 // then one Claude batch call for unknowns (confidence < 0.7 ⇒ review queue).
 
-const { plaid, plaidReady, supaGet, supaPost, getPlaidItems, savePlaidItems, txnHash, normMerchant, reply, originAllowed } = require('./lib/plaid');
+const { plaid, plaidReady, supaGet, supaPost, supaPatch, getPlaidItems, savePlaidItems, txnHash, normMerchant, reply, originAllowed } = require('./lib/plaid');
 
 const SKIP_PFC = new Set(['TRANSFER_IN', 'LOAN_PAYMENTS']);   // expense-side only — NEVER applied to bank deposits (commission ACH is often TRANSFER_IN)
 const DEPOSIT_LOOKBACK_DAYS = 180;  // bound how far back a full replay queues deposits, so the queue isn't flooded with years of history
@@ -46,6 +46,42 @@ async function loadRules() {
   try {
     return await supaGet('/categorization_rules?select=id,pattern,account_name,priority,hit_count&order=priority.desc&limit=2000');
   } catch (e) { return []; }
+}
+
+// Deposit classification rules — same idea as categorization_rules but for the
+// Revenue review queue (Top Tier / New Solar payroll descriptors repeat every
+// pay period, so a rule saved once auto-classifies every future match).
+async function loadDepositRules() {
+  try {
+    return await supaGet('/deposit_classification_rules?select=id,pattern,classification,hit_count&limit=2000');
+  } catch (e) { return []; }
+}
+function applyDepositRule(rules, desc) {
+  const D = String(desc || '').toUpperCase();
+  let best = null;
+  for (const r of rules) {
+    if (D.indexOf(String(r.pattern).toUpperCase()) < 0) continue;
+    if (!best || String(r.pattern).length > String(best.pattern).length) best = r;
+  }
+  return best;
+}
+// Applies a deposit classification server-side (mirrors the portal's
+// finClassifyDeposit) so a rule-matched deposit never sits in the review queue.
+async function applyDepositClassification(depRow, classification, noteBase) {
+  if (classification === 'ignore' || classification === 'owner_transfer') {
+    await supaPatch('/plaid_deposits_review?id=eq.' + depRow.id, { status: classification === 'ignore' ? 'ignored' : 'confirmed', classification: classification });
+    return;
+  }
+  const line = classification === 'commission_top_tier' ? 'top_tier'
+             : classification === 'commission_new_solar' ? 'new_solar' : 'other';
+  const payeeName = line === 'other' ? 'Other Income' : 'Solar Review Corp';
+  const comm = await supaPost('/commissions?select=id', {
+    line: line, kind: 'override', payee: 'solar_review_corp', payee_name: payeeName,
+    amount: Math.abs(parseFloat(depRow.amount) || 0), status: 'paid', sold_at: depRow.txn_date, paid_at: depRow.txn_date,
+    note: (line === 'other' ? '[Other Income] ' : '') + noteBase
+  }, { Prefer: 'return=representation' });
+  const commId = comm && comm[0] && comm[0].id;
+  await supaPatch('/plaid_deposits_review?id=eq.' + depRow.id, { status: 'confirmed', classification: classification, commission_id: commId });
 }
 function applyRules(rules, desc) {
   const D = String(desc || '').toUpperCase();
@@ -183,11 +219,22 @@ async function syncItem(item, rules) {
   }));
   const seenDepHash = {};
   const uniqueDeposits = depositRows.filter(r => { if (seenDepHash[r.dedupe_hash]) return false; seenDepHash[r.dedupe_hash] = 1; return true; });
-  let depositsInserted = 0;
+  let depositsInserted = 0, depositsAutoClassified = 0;
+  const depositRules = await loadDepositRules();
   for (let i = 0; i < uniqueDeposits.length; i += 200) {
-    const out = await supaPost('/plaid_deposits_review?on_conflict=dedupe_hash&select=id', uniqueDeposits.slice(i, i + 200),
+    const out = await supaPost('/plaid_deposits_review?on_conflict=dedupe_hash&select=id,txn_date,description,amount', uniqueDeposits.slice(i, i + 200),
       { Prefer: 'resolution=ignore-duplicates,return=representation' });
-    depositsInserted += (out || []).length;
+    const newRows = out || [];
+    depositsInserted += newRows.length;
+    for (const row of newRows) {
+      const rule = applyDepositRule(depositRules, row.description);
+      if (!rule) continue;
+      try {
+        await applyDepositClassification(row, rule.classification, 'Auto-classified via saved rule "' + rule.pattern + '": ' + String(row.description || '').slice(0, 110));
+        supaPatch('/deposit_classification_rules?id=eq.' + rule.id, { hit_count: (rule.hit_count || 0) + 1 }).catch(() => {});
+        depositsAutoClassified++;
+      } catch (e) { console.warn('[plaid-sync] auto-classify failed for', row.id, e.message); }
+    }
   }
 
   // Plaid-removed txns (reversals) — drop the matching plaid rows (expenses + unconfirmed deposits)
@@ -216,10 +263,11 @@ async function syncItem(item, rules) {
   item.last_synced = new Date().toISOString();
   item.last_added = inserted;
   item.last_dupes = (unique.length - inserted) + crossSkipped;
-  item.last_deposits_pending = depositsInserted;
+  item.last_deposits_pending = depositsInserted - depositsAutoClassified;
   item.last_error = null;
-  console.log('[plaid-sync]', item.institution, '→', inserted, 'expenses,', item.last_dupes, 'dupes skipped,', depositsInserted, 'deposits queued for review,', removedIds.length, 'removed');
-  return { expenses: inserted, deposits: depositsInserted };
+  console.log('[plaid-sync]', item.institution, '→', inserted, 'expenses,', item.last_dupes, 'dupes skipped,',
+    depositsAutoClassified, 'deposits auto-classified by rule,', item.last_deposits_pending, 'deposits queued for review,', removedIds.length, 'removed');
+  return { expenses: inserted, deposits: depositsInserted, depositsAutoClassified: depositsAutoClassified };
 }
 
 exports.handler = async function (event) {
@@ -260,19 +308,22 @@ exports.handler = async function (event) {
     if (!items.length) return reply(200, { ok: true, message: 'No accounts connected yet' });
     if (resync) { items.forEach(i => { i.cursor = null; }); console.log('[plaid-sync] full resync — cursors reset for', items.length, 'items'); }
     const rules = await loadRules();
-    let totalExpenses = 0, totalDeposits = 0;
+    let totalExpenses = 0, totalDeposits = 0, totalAutoClassified = 0;
     for (const item of items) {
       try {
         const r = await syncItem(item, rules);
-        totalExpenses += r.expenses; totalDeposits += r.deposits;
+        totalExpenses += r.expenses; totalDeposits += r.deposits; totalAutoClassified += (r.depositsAutoClassified || 0);
       } catch (e) {
         item.last_error = e.message;
         console.error('[plaid-sync]', item.institution, 'failed:', e.message);
       }
     }
     await savePlaidItems(items);
-    return reply(200, { ok: true, imported: totalExpenses, depositsQueued: totalDeposits, accounts: items.length,
-      message: totalDeposits > 0 ? ('Imported ' + totalExpenses + ' expenses. ' + totalDeposits + ' incoming deposit(s) need classification — see Finance → Revenue.') : undefined });
+    const pendingDeposits = totalDeposits - totalAutoClassified;
+    return reply(200, { ok: true, imported: totalExpenses, depositsQueued: pendingDeposits, depositsAutoClassified: totalAutoClassified, accounts: items.length,
+      message: (pendingDeposits > 0 || totalAutoClassified > 0) ? ('Imported ' + totalExpenses + ' expenses. ' +
+        (totalAutoClassified > 0 ? totalAutoClassified + ' deposit(s) auto-classified by rule. ' : '') +
+        (pendingDeposits > 0 ? pendingDeposits + ' incoming deposit(s) need classification — see Finance → Revenue.' : '')) : undefined });
   } catch (e) {
     console.error('[plaid-sync] fatal:', e.message);
     return reply(200, { ok: false, error: e.message });

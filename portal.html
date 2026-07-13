@@ -7192,7 +7192,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       q(pc.from('categorization_rules').select('*').order('priority',{ascending:false}).limit(2000)),
       q(pc.from('mileage_entries').select('*').order('trip_date',{ascending:false}).limit(2000)),
       q(pc.from('plaid_deposits_review').select('*').order('txn_date',{ascending:false}).limit(1000)),
-      q(pc.from('ledger_history').select('*').limit(2000))
+      q(pc.from('ledger_history').select('*').limit(2000)),
+      q(pc.from('deposit_classification_rules').select('*').order('hit_count',{ascending:false}).limit(2000))
     ]);
     finCache = {
       pays:     res[0].data || [], paysOk:  !res[0].error,
@@ -7204,6 +7205,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       mileage:  res[6].data || [], milesOk: !res[6].error,
       deposits: res[7].data || [], depositsOk: !res[7].error,
       ledgerHist: res[8].data || [], ledgerHistOk: !res[8].error,
+      depositRules: res[9].data || [],
       marketing: (typeof adminMarketingExpenses !== 'undefined' && adminMarketingExpenses) ? adminMarketingExpenses : [],
       at: Date.now()
     };
@@ -7586,6 +7588,18 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         if (e3) throw e3;
         await pc.from('plaid_deposits_review').update({ status:'confirmed', classification: classification, commission_id: comm.id }).eq('id', id);
       }
+      // Offer to remember this pattern so future syncs auto-classify it (mirrors the
+      // expense "always categorize X as Y" rule flow). Suggest a short, durable
+      // keyword (e.g. "TOP TIER") rather than the full descriptor, which can carry
+      // a per-transaction reference that won't repeat on the next deposit.
+      var depLabels = { commission_top_tier:'Top Tier', commission_new_solar:'New Solar', other_income:'Other', owner_transfer:'Owner Transfer', ignore:'Ignore' };
+      var upperDesc = String(d.description||'').toUpperCase();
+      var suggested = /TOP TIER/.test(upperDesc) ? 'TOP TIER' : /NEW SOLAR/.test(upperDesc) ? 'NEW SOLAR' : finNormMerchant(d.merchant || d.description);
+      var pattern = prompt('Always classify future deposits containing this text as '+(depLabels[classification]||classification)+'?\n\nEdit if needed — matches anywhere in the description, case-insensitive. Clear the field and cancel to skip.', suggested);
+      if (pattern && pattern.trim()) {
+        pattern = pattern.trim().toUpperCase();
+        try { await pc.from('deposit_classification_rules').upsert({ pattern: pattern, classification: classification, created_by: 'user' }, { onConflict: 'pattern,classification', ignoreDuplicates: true }); } catch(e2) {}
+      }
       finCache = null;
       await finLoadData();
       renderFinanceView();
@@ -7906,7 +7920,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '<select id="finStmtKind" class="fin-select"><option value="amex">American Express</option><option value="bank">Business bank</option></select>';
     h += '<input type="file" id="finStmtFile" accept=".csv,.txt,.pdf" style="display:none;" onchange="finStatementFileChosen(this)"/>';
     h += '<button class="fin-btn" onclick="document.getElementById(\'finStmtFile\').click()">Choose CSV or PDF&hellip;</button>';
-    h += '<button class="fin-btn ghost" onclick="var el=document.getElementById(\'finRulesPanel\');el.style.display=el.style.display===\'none\'?\'block\':\'none\';">&#9881; Rules ('+(C.rules||[]).length+')</button>';
+    h += '<button class="fin-btn ghost" onclick="var el=document.getElementById(\'finRulesPanel\');el.style.display=el.style.display===\'none\'?\'block\':\'none\';">&#9881; Rules ('+((C.rules||[]).length+(C.depositRules||[]).length)+')</button>';
     h += '</div>';
     h += '<div id="finStmtStatus" style="font-size:0.72rem;color:#888;margin-top:8px;"></div>';
     h += '<div style="font-size:0.64rem;color:#555;margin-top:6px;">CSV exports from AmEx/your bank import instantly and exactly. PDFs are read by AI (double-check the Expenses review queue after). Excel files: use the bank\'s "Download CSV" option. Re-uploading the same statement never duplicates.</div>';
@@ -7937,6 +7951,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<button onclick="finDeleteRule(\''+r.id+'\')" style="margin-left:auto;background:none;border:none;color:#555;cursor:pointer;">&times;</button></div>';
     });
     if (userRules.length) h += '<div style="font-size:0.62rem;color:#555;margin-top:6px;">'+seedCount+' built-in merchant rules also active. Custom rules always win.</div>';
+    var depRules = C.depositRules||[];
+    h += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#999;margin:14px 0 6px;">Deposit classification rules</div>';
+    var depLabelMap = { commission_top_tier:'Top Tier', commission_new_solar:'New Solar', other_income:'Other', owner_transfer:'Owner Transfer', ignore:'Ignore' };
+    if (!depRules.length) h += '<div style="font-size:0.7rem;color:#666;">No rules yet — classify a deposit in Revenue and choose "always" to auto-classify every future match by descriptor (e.g. "TOP TIER" always &rarr; Top Tier).</div>';
+    depRules.slice(0,60).forEach(function(r){
+      h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.72rem;color:#aaa;padding:4px 0;border-top:1px solid rgba(255,255,255,0.05);">'+
+        '<span style="color:#ddd;">&ldquo;'+esc(r.pattern)+'&rdquo;</span><span style="color:#666;">&rarr;</span><span style="color:#9fd45f;">'+esc(depLabelMap[r.classification]||r.classification)+'</span>'+
+        '<span style="color:#555;font-size:0.62rem;">'+(r.hit_count||0)+' hits</span>'+
+        '<button onclick="finDeleteDepositRule(\''+r.id+'\')" style="margin-left:auto;background:none;border:none;color:#555;cursor:pointer;">&times;</button></div>';
+    });
     h += '</div>';
     return h;
   }
@@ -8301,6 +8325,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (!confirm('Delete this rule? Future imports won\'t use it.')) return;
     var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
     await pc.from('categorization_rules').delete().eq('id', id);
+    finCache = null; renderFinanceView();
+  };
+  window.finDeleteDepositRule = async function(id){
+    if (!confirm('Delete this rule? Future deposit syncs won\'t auto-classify by it.')) return;
+    var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+    await pc.from('deposit_classification_rules').delete().eq('id', id);
     finCache = null; renderFinanceView();
   };
   window.finAddManualExpense = async function(){
