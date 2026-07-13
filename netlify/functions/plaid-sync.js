@@ -28,6 +28,13 @@ const DEPOSIT_LOOKBACK_DAYS = 180;  // bound how far back a full replay queues d
 function isIssuerPayment(desc) {
   return /(AUTOPAY|ONLINE PAYMENT|PAYMENT RECEIVED|PAYMENT[\s-]*THANK YOU|MOBILE PAYMENT|ACH PAYMENT RECEIVED)/i.test(desc);
 }
+// Stripe only powers Sign & Pay (sign-init.js/sign-complete.js) — every dollar in a
+// Stripe payout is already recorded in the `payments` table the moment the customer
+// pays. Never queue these for manual classification; doing so risks double-booking
+// the same revenue once from Sign & Pay and again from the bank deposit review.
+function isStripePayout(desc) {
+  return /STRIPE/i.test(desc);
+}
 function depositFloorFor(item) {
   if (item.deposit_since) return item.deposit_since;
   const base = item.connected_at ? new Date(item.connected_at) : new Date();
@@ -110,6 +117,7 @@ async function syncItem(item, rules) {
       // commission ACH deposit is frequently Plaid-categorized TRANSFER_IN.
       if (item.kind !== 'bank') continue;
       if (t.date < depositFloor) continue;
+      if (isStripePayout(desc)) continue;   // already recorded via the payments table — never queue for review
       deposits.push({ date: t.date, description: cleanDesc, amount: Math.abs(amount), plaid_id: t.transaction_id });
       continue;
     }

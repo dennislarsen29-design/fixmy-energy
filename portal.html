@@ -7546,7 +7546,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       h += '<button class="fin-btn" style="padding:3px 10px;font-size:0.64rem;background:rgba(155,109,232,0.1);border-color:rgba(155,109,232,0.35);color:#9b6de8;" onclick="finClassifyDeposit(\''+d.id+'\',\'commission_new_solar\')">New Solar</button>';
       h += '<button class="fin-btn ghost" style="padding:3px 10px;font-size:0.64rem;" onclick="finClassifyDeposit(\''+d.id+'\',\'other_income\')">Other</button>';
       h += '<span style="width:1px;background:rgba(255,255,255,0.1);margin:0 3px;"></span>';
-      h += '<button class="fin-btn ghost" style="padding:3px 10px;font-size:0.64rem;" onclick="finClassifyDeposit(\''+d.id+'\',\'travel_reimbursement\')" title="Contra to Travel Expense, how the CPA books Venmo reimbursements">Travel Reimb.</button>';
       h += '<button class="fin-btn ghost" style="padding:3px 10px;font-size:0.64rem;" onclick="finClassifyDeposit(\''+d.id+'\',\'owner_transfer\')" title="Transfer / distribution between your own accounts — not revenue">Owner Transfer</button>';
       h += '<button class="fin-btn ghost" style="padding:3px 10px;font-size:0.64rem;color:#888;" onclick="finClassifyDeposit(\''+d.id+'\',\'ignore\')">Ignore</button>';
       h += '</div></div>';
@@ -7554,9 +7553,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '</div>';
     return h;
   }
-  // Broadened deposit classification. Each category routes to how the CPA books it:
-  //  commission_* → commissions override row (feeds P&L Commission Income)
-  //  travel_reimbursement → expense_transactions NEGATIVE row on Travel Expense (contra-expense)
+  // Deposit classification. Each category routes to how the CPA books it:
+  //  commission_* → commissions override row (feeds P&L Commission Income). Travel
+  //                 reimbursements arrive bundled in the same TT/NS paycheck deposit —
+  //                 no separate line item, just classify the whole deposit as its provider.
   //  other_income → commissions row tagged line 'other' (small misc/consulting income; also
   //                 catches anything that isn't a Top Tier / New Solar override)
   //  owner_transfer → marked classified, NOT revenue (excluded from P&L)
@@ -7573,15 +7573,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (classification === 'ignore' || classification === 'owner_transfer') {
         var { error: e1 } = await pc.from('plaid_deposits_review').update({ status: classification==='ignore'?'ignored':'confirmed', classification: classification }).eq('id', id);
         if (e1) throw e1;
-      } else if (classification === 'travel_reimbursement') {
-        // Contra to Travel Expense — a received reimbursement reduces the expense.
-        var { error: e2 } = await pc.from('expense_transactions').insert({
-          txn_date: d.txn_date, description: d.description||'Travel reimbursement', merchant: d.merchant||'Travel reimbursement',
-          amount: -Math.abs(amt), account_name: 'Travel Expense', source: 'plaid', review_status: 'confirmed',
-          dedupe_hash: 'depclass_'+id, note: noteBase
-        });
-        if (e2) throw e2;
-        await pc.from('plaid_deposits_review').update({ status:'confirmed', classification: classification }).eq('id', id);
       } else {
         // Commission income (Top Tier / New Solar / Other) → commissions override row
         var line = classification === 'commission_top_tier' ? 'top_tier'
