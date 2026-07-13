@@ -23,9 +23,16 @@
 
 const { plaid, plaidReady, supaGet, supaPost, getPlaidItems, savePlaidItems, txnHash, normMerchant, reply, originAllowed } = require('./lib/plaid');
 
-const SKIP_PFC = new Set(['TRANSFER_IN', 'LOAN_PAYMENTS']);
+const SKIP_PFC = new Set(['TRANSFER_IN', 'LOAN_PAYMENTS']);   // expense-side only — NEVER applied to bank deposits (commission ACH is often TRANSFER_IN)
+const DEPOSIT_LOOKBACK_DAYS = 180;  // bound how far back a full replay queues deposits, so the queue isn't flooded with years of history
 function isIssuerPayment(desc) {
   return /(AUTOPAY|ONLINE PAYMENT|PAYMENT RECEIVED|PAYMENT[\s-]*THANK YOU|MOBILE PAYMENT|ACH PAYMENT RECEIVED)/i.test(desc);
+}
+function depositFloorFor(item) {
+  if (item.deposit_since) return item.deposit_since;
+  const base = item.connected_at ? new Date(item.connected_at) : new Date();
+  base.setUTCDate(base.getUTCDate() - DEPOSIT_LOOKBACK_DAYS);
+  return base.toISOString().slice(0, 10);
 }
 
 async function loadRules() {
@@ -87,6 +94,7 @@ async function syncItem(item, rules) {
   }
 
   // Map + filter — split into expenses (money out) and deposits (money in)
+  const depositFloor = depositFloorFor(item);
   const txns = [], deposits = [];
   for (const t of added) {
     if (t.pending) continue;                                   // book only settled txns
@@ -94,14 +102,19 @@ async function syncItem(item, rules) {
     const pfc = (t.personal_finance_category && t.personal_finance_category.primary) || '';
     const amount = Math.round((parseFloat(t.amount) || 0) * 100) / 100;  // Plaid: positive = money out, negative = deposit/credit
     if (!t.date || !amount) continue;
-    if (SKIP_PFC.has(pfc) || isIssuerPayment(desc)) continue;   // internal transfers / card autopay are neither expense nor revenue
     const cleanDesc = desc.replace(/\s+/g, ' ').trim().slice(0, 300);
     if (amount < 0) {
-      // Deposit/credit — route to the review queue, no start_date cutoff (there's
-      // no CSV history of TT/NS override deposits to cut over from).
+      // Money in / credit. Only CHECKING/bank deposits are revenue candidates —
+      // card credits (payments to the card, merchant refunds) are transfers, not
+      // income, and net out on the bank side. Do NOT apply SKIP_PFC here: a
+      // commission ACH deposit is frequently Plaid-categorized TRANSFER_IN.
+      if (item.kind !== 'bank') continue;
+      if (t.date < depositFloor) continue;
       deposits.push({ date: t.date, description: cleanDesc, amount: Math.abs(amount), plaid_id: t.transaction_id });
       continue;
     }
+    // Expense (money out). Internal transfers / card autopay are neither expense nor revenue.
+    if (SKIP_PFC.has(pfc) || isIssuerPayment(desc)) continue;
     if (item.start_date && t.date < item.start_date) continue; // CSV history owns everything before the cutoff
     txns.push({ date: t.date, description: cleanDesc, amount: amount, plaid_id: t.transaction_id });
   }
@@ -228,9 +241,16 @@ exports.handler = async function (event) {
     console.log('[plaid-sync] env vars not set — skipping');
     return reply(200, { ok: false, error: 'PLAID_CLIENT_ID / PLAID_SECRET / SUPA_SERVICE_KEY not set' });
   }
+  // Full Resync: reset every item's cursor so Plaid replays its available history
+  // (idempotent via dedupe_hash). Recovers deposits swept past by an earlier sync.
+  const qs = event.queryStringParameters || {};
+  let resync = qs.resync === '1' || qs.resync === 'true';
+  if (!resync && event.body) { try { resync = !!JSON.parse(event.body).resync; } catch (e) {} }
+
   try {
     const items = await getPlaidItems();
     if (!items.length) return reply(200, { ok: true, message: 'No accounts connected yet' });
+    if (resync) { items.forEach(i => { i.cursor = null; }); console.log('[plaid-sync] full resync — cursors reset for', items.length, 'items'); }
     const rules = await loadRules();
     let totalExpenses = 0, totalDeposits = 0;
     for (const item of items) {

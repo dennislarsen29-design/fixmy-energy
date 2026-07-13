@@ -36,11 +36,14 @@ exports.handler = async function (event) {
       }
     } catch (e) { /* table empty/missing — keep Jan 1 default */ }
 
+    // Deposit review queue looks back 180 days from connect (bounds a full replay)
+    const depSince = new Date(); depSince.setUTCDate(depSince.getUTCDate() - 180);
     const items = await getPlaidItems();
     const existing = items.findIndex(i => i.item_id === ex.item_id);
     const entry = {
       item_id: ex.item_id, access_token: ex.access_token,
       institution: institution, kind: kind, start_date: startDate,
+      deposit_since: depSince.toISOString().slice(0, 10),
       cursor: null, last_synced: null, last_added: 0, last_dupes: 0, last_error: null,
       connected_at: new Date().toISOString()
     };

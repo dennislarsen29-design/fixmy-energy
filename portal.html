@@ -7113,7 +7113,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var stStyle = 'width:auto;margin:0;padding:6px 14px;border:none;border-radius:100px;font-size:0.73rem;font-weight:700;cursor:pointer;transition:all 0.15s;white-space:nowrap;';
     var tabs = [
       ['dashboard','&#128202; Dashboard'], ['revenue','&#128181; Revenue'], ['subsheet','&#128203; Sub Sheet'],
-      ['commissions','&#129297; Commissions'], ['expenses','&#128179; Expenses'], ['statements','&#128196; Statements'],
+      ['commissions','&#129297; Commissions'], ['expenses','&#128179; Expenses'], ['sync','&#128260; Sync'], ['statements','&#128196; Statements'],
       ['ai','&#129302; AI Advisor'], ['owed','&#128176; Money Owed'], ['payroll','&#129534; Payroll'], ['marketing','&#128200; Marketing']
     ];
     var subTabRow = '<div style="display:flex;gap:7px;margin-bottom:16px;flex-wrap:wrap;">'+tabs.map(function(t){
@@ -7191,7 +7191,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       q(pc.from('coa_accounts').select('*').eq('active',true).order('sort')),
       q(pc.from('categorization_rules').select('*').order('priority',{ascending:false}).limit(2000)),
       q(pc.from('mileage_entries').select('*').order('trip_date',{ascending:false}).limit(2000)),
-      q(pc.from('plaid_deposits_review').select('*').order('txn_date',{ascending:false}).limit(1000))
+      q(pc.from('plaid_deposits_review').select('*').order('txn_date',{ascending:false}).limit(1000)),
+      q(pc.from('ledger_history').select('*').limit(2000))
     ]);
     finCache = {
       pays:     res[0].data || [], paysOk:  !res[0].error,
@@ -7202,6 +7203,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       rules:    res[5].data || [],
       mileage:  res[6].data || [], milesOk: !res[6].error,
       deposits: res[7].data || [], depositsOk: !res[7].error,
+      ledgerHist: res[8].data || [], ledgerHistOk: !res[8].error,
       marketing: (typeof adminMarketingExpenses !== 'undefined' && adminMarketingExpenses) ? adminMarketingExpenses : [],
       at: Date.now()
     };
@@ -7309,7 +7311,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     (C.comms||[]).forEach(function(c){
       if (c.status !== 'paid') return;
       var d = c.paid_at || c.sold_at;
-      if (c.payee === 'solar_review_corp') add('income','Commission Income', d, c.amount);
+      if (c.payee === 'solar_review_corp') add('income', c.line === 'other' ? 'Other Income' : 'Commission Income', d, c.amount);
       else if (c.kind === 'rep_commission') add('cogs','Incentives - Sales', d, c.amount);
       else if (c.kind === 'travel_reimbursement') add('expense','Travel Expense', d, c.amount);
     });
@@ -7318,6 +7320,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (m.category === 'Direct Mail Print' || m.category === 'USPS Charges') add('cogs','Lead Generation', m.expense_date, m.amount);
     });
     (C.expenses||[]).forEach(function(e){ add('expense', e.account_name || 'Uncategorized', e.txn_date, e.amount); });
+    // Prior-year CPA actuals (2025 GL) — source-isolated, keyed by account_name/type
+    (C.ledgerHist||[]).forEach(function(e){
+      var sec = (e.type === 'income' || e.type === 'cogs') ? e.type : 'expense';
+      add(sec, e.account_name || 'Uncategorized', e.period_month, e.amount);
+    });
 
     var colList = Object.keys(cols).sort();
     function secTotal(section){
@@ -7356,6 +7363,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if ((m.category === 'Direct Mail Print' || m.category === 'USPS Charges') && finInRange(m.expense_date)) b(finMonthKey(m.expense_date)).cogs += parseFloat(m.amount)||0;
     });
     (C.expenses||[]).forEach(function(e){ if (finInRange(e.txn_date)) b(finMonthKey(e.txn_date)).exp += parseFloat(e.amount)||0; });
+    (C.ledgerHist||[]).forEach(function(e){
+      if (!finInRange(e.period_month)) return;
+      var bk = b(finMonthKey(e.period_month)), amt = parseFloat(e.amount)||0;
+      if (e.type === 'income') bk.ovr += amt;         // prior-year income (bucketed under override series)
+      else if (e.type === 'cogs') bk.cogs += amt;
+      else bk.exp += amt;
+    });
     var months = Object.keys(buckets).sort();
     return { months: months, buckets: buckets };
   }
@@ -7383,12 +7397,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     else if (financeSubTab === 'subsheet')   inner = finRenderSubSheet();
     else if (financeSubTab === 'commissions')inner = finRenderCommissions();
     else if (financeSubTab === 'expenses')   inner = finRenderExpenses();
+    else if (financeSubTab === 'sync')       inner = finRenderSync();
     else if (financeSubTab === 'statements') inner = finRenderStatements();
     else if (financeSubTab === 'ai')         inner = finRenderAiShell();
 
-    var rangeBar = (financeSubTab === 'ai') ? '' : finRangeBar();
+    var rangeBar = (financeSubTab === 'ai' || financeSubTab === 'sync') ? '' : finRangeBar();
     body.innerHTML = portalNav + '<div class="fin-wrap" style="padding:4px 0 24px;">' + subTabRow + head + rangeBar + inner + '</div>';
 
+    if (financeSubTab === 'sync') setTimeout(finPlaidLoadStatus, 50);
     if (financeSubTab === 'dashboard') {
       var ok = await finLoadChartJs();
       if (ok && window.Chart) finMountDashboardCharts();
@@ -7517,39 +7533,69 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '<span style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#4a9eff;">&#128276; Incoming deposits to classify</span>';
     h += '<span style="font-size:0.78rem;color:#ddd;font-weight:700;">'+finMoney(total)+' &middot; '+pending.length+' deposit(s)</span>';
     h += '</div>';
-    h += '<div style="font-size:0.68rem;color:#888;margin-bottom:10px;">Detected in your connected bank account. Classify each as Top Tier or New Solar override revenue — or Ignore if it\'s already entered on a job, personal, or not revenue. Only classify deposits you haven\'t already logged manually, to avoid double counting.</div>';
+    h += '<div style="font-size:0.68rem;color:#888;margin-bottom:10px;">Detected in your connected checking account. Classify how the CPA books each one. <b>Only classify deposits you haven\'t already logged manually</b> (tap Ignore for those, or for owner transfers between your own accounts) to avoid double counting.</div>';
     pending.forEach(function(d){
-      h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.76rem;color:#aaa;padding:8px 10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:10px;margin-bottom:6px;flex-wrap:wrap;">';
+      h += '<div style="padding:8px 10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:10px;margin-bottom:6px;">';
+      h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.76rem;color:#aaa;flex-wrap:wrap;margin-bottom:6px;">';
       h += '<span style="color:#666;font-size:0.66rem;white-space:nowrap;">'+d.txn_date+'</span>';
       h += '<span style="color:#ddd;flex:1;min-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="'+esc(d.description)+'">'+esc(d.merchant||d.description)+'</span>';
       h += '<span style="color:#8DC63F;font-weight:700;white-space:nowrap;">'+finMoney(d.amount)+'</span>';
-      h += '<span style="display:flex;gap:6px;flex-wrap:wrap;">';
-      h += '<button class="fin-btn" style="padding:4px 11px;font-size:0.66rem;" onclick="finClassifyDeposit(\''+d.id+'\',\'top_tier_override\')">Top Tier</button>';
-      h += '<button class="fin-btn" style="padding:4px 11px;font-size:0.66rem;background:rgba(155,109,232,0.1);border-color:rgba(155,109,232,0.35);color:#9b6de8;" onclick="finClassifyDeposit(\''+d.id+'\',\'new_solar_override\')">New Solar</button>';
-      h += '<button class="fin-btn ghost" style="padding:4px 11px;font-size:0.66rem;" onclick="finClassifyDeposit(\''+d.id+'\',\'ignore\')">Ignore</button>';
-      h += '</span></div>';
+      h += '</div>';
+      h += '<div style="display:flex;gap:5px;flex-wrap:wrap;">';
+      h += '<span style="font-size:0.6rem;color:#666;align-self:center;text-transform:uppercase;letter-spacing:0.04em;">Commission&nbsp;Income:</span>';
+      h += '<button class="fin-btn" style="padding:3px 10px;font-size:0.64rem;" onclick="finClassifyDeposit(\''+d.id+'\',\'commission_top_tier\')">Top Tier</button>';
+      h += '<button class="fin-btn" style="padding:3px 10px;font-size:0.64rem;background:rgba(155,109,232,0.1);border-color:rgba(155,109,232,0.35);color:#9b6de8;" onclick="finClassifyDeposit(\''+d.id+'\',\'commission_new_solar\')">New Solar</button>';
+      h += '<button class="fin-btn" style="padding:3px 10px;font-size:0.64rem;background:rgba(74,158,255,0.1);border-color:rgba(74,158,255,0.35);color:#4a9eff;" onclick="finClassifyDeposit(\''+d.id+'\',\'commission_other\')">Other provider</button>';
+      h += '<span style="width:1px;background:rgba(255,255,255,0.1);margin:0 3px;"></span>';
+      h += '<button class="fin-btn ghost" style="padding:3px 10px;font-size:0.64rem;" onclick="finClassifyDeposit(\''+d.id+'\',\'travel_reimbursement\')" title="Contra to Travel Expense, how the CPA books Venmo reimbursements">Travel Reimb.</button>';
+      h += '<button class="fin-btn ghost" style="padding:3px 10px;font-size:0.64rem;" onclick="finClassifyDeposit(\''+d.id+'\',\'other_income\')">Other Income</button>';
+      h += '<button class="fin-btn ghost" style="padding:3px 10px;font-size:0.64rem;" onclick="finClassifyDeposit(\''+d.id+'\',\'owner_transfer\')" title="Transfer / distribution between your own accounts — not revenue">Owner Transfer</button>';
+      h += '<button class="fin-btn ghost" style="padding:3px 10px;font-size:0.64rem;color:#888;" onclick="finClassifyDeposit(\''+d.id+'\',\'ignore\')">Ignore</button>';
+      h += '</div></div>';
     });
     h += '</div>';
     return h;
   }
+  // Broadened deposit classification. Each category routes to how the CPA books it:
+  //  commission_* → commissions override row (feeds P&L Commission Income)
+  //  travel_reimbursement → expense_transactions NEGATIVE row on Travel Expense (contra-expense)
+  //  other_income → expense_transactions negative row on Other Income? No — Other Income is
+  //                 income; recorded as a commission override tagged line 'other' so it lands
+  //                 in income. (kept simple; distinct note)
+  //  owner_transfer → marked classified, NOT revenue (excluded from P&L)
+  //  ignore → status ignored
   window.finClassifyDeposit = async function(id, classification){
     var d = (finCache.deposits||[]).find(function(x){ return x.id === id; });
     if (!d) return;
+    var amt = parseFloat(d.amount)||0;
+    var noteBase = 'Auto-detected via Plaid deposit: ' + (d.description||'').slice(0,110);
     try {
       var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
-      if (classification === 'ignore') {
-        var { error: e1 } = await pc.from('plaid_deposits_review').update({ status:'ignored', classification:'other' }).eq('id', id);
+      if (classification === 'ignore' || classification === 'owner_transfer') {
+        var { error: e1 } = await pc.from('plaid_deposits_review').update({ status: classification==='ignore'?'ignored':'confirmed', classification: classification }).eq('id', id);
         if (e1) throw e1;
-      } else {
-        var line = classification === 'top_tier_override' ? 'top_tier' : 'new_solar';
-        var { data: comm, error: e2 } = await pc.from('commissions').insert({
-          line: line, kind: 'override', payee: 'solar_review_corp', payee_name: 'Solar Review Corp',
-          amount: d.amount, status: 'paid', sold_at: d.txn_date, paid_at: d.txn_date,
-          note: 'Auto-detected via Plaid deposit: ' + (d.description||'').slice(0,120)
-        }).select().single();
+      } else if (classification === 'travel_reimbursement') {
+        // Contra to Travel Expense — a received reimbursement reduces the expense.
+        var { error: e2 } = await pc.from('expense_transactions').insert({
+          txn_date: d.txn_date, description: d.description||'Travel reimbursement', merchant: d.merchant||'Travel reimbursement',
+          amount: -Math.abs(amt), account_name: 'Travel Expense', source: 'plaid', review_status: 'confirmed',
+          dedupe_hash: 'depclass_'+id, note: noteBase
+        });
         if (e2) throw e2;
-        var { error: e3 } = await pc.from('plaid_deposits_review').update({ status:'confirmed', classification: classification, commission_id: comm.id }).eq('id', id);
+        await pc.from('plaid_deposits_review').update({ status:'confirmed', classification: classification }).eq('id', id);
+      } else {
+        // Commission income (TT / NS / other) or Other Income → commissions override row
+        var line = classification === 'commission_top_tier' ? 'top_tier'
+                 : classification === 'commission_new_solar' ? 'new_solar'
+                 : classification === 'other_income' ? 'other' : 'fixmy';
+        var payeeName = classification === 'other_income' ? 'Other Income' : 'Solar Review Corp';
+        var { data: comm, error: e3 } = await pc.from('commissions').insert({
+          line: line, kind: 'override', payee: 'solar_review_corp', payee_name: payeeName,
+          amount: Math.abs(amt), status: 'paid', sold_at: d.txn_date, paid_at: d.txn_date,
+          note: (classification==='other_income'?'[Other Income] ':'') + noteBase
+        }).select().single();
         if (e3) throw e3;
+        await pc.from('plaid_deposits_review').update({ status:'confirmed', classification: classification, commission_id: comm.id }).eq('id', id);
       }
       finCache = null;
       await finLoadData();
@@ -7567,7 +7613,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (c.payee !== 'solar_review_corp' || c.status !== 'paid') return;
       var d = c.paid_at || c.sold_at;
       if (!finInRange(d)) return;
-      rows.push({ d: d, cust: c.customer_id, custName: finCustName(c.customer_id), src: 'Override ('+(({fixmy:'FixMy',top_tier:'Top Tier',new_solar:'New Solar'})[c.line]||c.line)+')', amt: parseFloat(c.amount)||0, note: c.note||'' });
+      var srcLbl = c.line === 'other' ? 'Other Income' : 'Override ('+(({fixmy:'FixMy',top_tier:'Top Tier',new_solar:'New Solar'})[c.line]||c.line)+')';
+      rows.push({ d: d, cust: c.customer_id, custName: finCustName(c.customer_id), src: srcLbl, amt: parseFloat(c.amount)||0, note: c.note||'' });
     });
     rows.sort(function(a,b){ return String(b.d).localeCompare(String(a.d)); });
     var total = rows.reduce(function(t,r){ return t+r.amt; },0);
@@ -7789,44 +7836,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     finCsvStash.expenses = { name:'solar_review_expenses', header:['Date','Payee','Account','Amount','Memo','Source'],
       rows: inRange.map(function(e){ return [e.txn_date, e.merchant||e.description, e.account_name||'Uncategorized', (parseFloat(e.amount)||0).toFixed(2), e.description, e.source]; }) };
 
-    // Upload card
-    h += '<div class="fin-card no-print">';
-    h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#8DC63F;margin-bottom:8px;">&#128228; Upload a statement</div>';
-    h += '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">';
-    h += '<select id="finStmtKind" class="fin-select"><option value="amex">American Express</option><option value="bank">Business bank</option></select>';
-    h += '<input type="file" id="finStmtFile" accept=".csv,.txt,.pdf" style="display:none;" onchange="finStatementFileChosen(this)"/>';
-    h += '<button class="fin-btn" onclick="document.getElementById(\'finStmtFile\').click()">Choose CSV or PDF&hellip;</button>';
+    // Toolbar — statement import + account connections now live in the 🔄 Sync tab
+    h += '<div class="fin-card no-print" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">';
     h += '<button class="fin-btn ghost" onclick="finAddManualExpense()">+ Manual Expense</button>';
     h += '<button class="fin-btn ghost" onclick="finExportStashed(\'expenses\')">&#8681; Export CSV (CPA handoff)</button>';
-    h += '<button class="fin-btn ghost" onclick="var el=document.getElementById(\'finRulesPanel\');el.style.display=el.style.display===\'none\'?\'block\':\'none\';">&#9881; Rules ('+(C.rules||[]).length+')</button>';
-    h += '</div>';
-    h += '<div id="finStmtStatus" style="font-size:0.72rem;color:#888;margin-top:8px;"></div>';
-    h += '<div style="font-size:0.64rem;color:#555;margin-top:6px;">CSV exports from AmEx/your bank import instantly and exactly. PDFs are read by AI (double-check the review queue after). Excel files: use the bank\'s "Download CSV" option instead. Re-uploading the same statement never duplicates — matching lines are skipped.</div>';
-    h += '<div style="border-top:1px solid rgba(255,255,255,0.07);margin-top:10px;padding-top:10px;">';
-    h += '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">';
-    h += '<span style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#4a9eff;">&#128279; Auto-sync (Plaid)</span>';
-    h += '<button class="fin-btn" style="border-color:rgba(74,158,255,0.35);background:rgba(74,158,255,0.1);color:#4a9eff;" onclick="finPlaidConnect()">+ Connect Bank / Card</button>';
-    h += '<button class="fin-btn ghost" onclick="finPlaidSyncNow()">&#8635; Sync Now</button>';
-    h += '<span id="finPlaidMsg" style="font-size:0.7rem;color:#888;"></span>';
-    h += '</div>';
-    h += '<div id="finPlaidBox" style="font-size:0.7rem;color:#777;margin-top:6px;">Checking connected accounts&hellip;</div>';
-    h += '</div>';
-    h += '</div>';
-    setTimeout(finPlaidLoadStatus, 50);
-
-    // Rules panel (hidden)
-    h += '<div id="finRulesPanel" class="fin-card no-print" style="display:none;">';
-    h += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#999;margin-bottom:6px;">Categorization rules — learned + seeded</div>';
-    var userRules = (C.rules||[]).filter(function(r){ return r.created_by !== 'seed'; });
-    var seedCount = (C.rules||[]).length - userRules.length;
-    if (!userRules.length) h += '<div style="font-size:0.7rem;color:#666;">No custom rules yet — recategorize any transaction below and choose "always" to teach the system. '+seedCount+' built-in merchant rules are active.</div>';
-    userRules.slice(0,60).forEach(function(r){
-      h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.72rem;color:#aaa;padding:4px 0;border-top:1px solid rgba(255,255,255,0.05);">'+
-        '<span style="color:#ddd;">&ldquo;'+esc(r.pattern)+'&rdquo;</span><span style="color:#666;">&rarr;</span><span style="color:#9fd45f;">'+esc(r.account_name)+'</span>'+
-        '<span style="color:#555;font-size:0.62rem;">'+(r.hit_count||0)+' hits</span>'+
-        '<button onclick="finDeleteRule(\''+r.id+'\')" style="margin-left:auto;background:none;border:none;color:#555;cursor:pointer;">&times;</button></div>';
-    });
-    if (userRules.length) h += '<div style="font-size:0.62rem;color:#555;margin-top:6px;">'+seedCount+' built-in merchant rules also active. Custom rules always win.</div>';
+    h += '<span style="font-size:0.66rem;color:#777;">Upload statements &amp; connect accounts in the <a href="javascript:void(0)" onclick="finGoTab(\'sync\')" style="color:#4a9eff;text-decoration:none;">&#128260; Sync</a> tab.</span>';
     h += '</div>';
 
     // Summary tiles
@@ -7887,6 +7901,67 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<button class="no-print" onclick="finDelTxn(\''+e.id+'\')" title="Delete" style="background:none;border:none;color:#444;cursor:pointer;font-size:0.85rem;">&times;</button>'+
     '</div>';
   }
+
+  // ── Sync tab — all data ingestion (statement upload + Plaid + rules) ────────
+  function finRenderSync(){
+    var C = finCache;
+    var h = '<div style="font-size:0.7rem;color:#888;margin-bottom:12px;">Everything that brings financial data in lives here — connect your bank/cards for nightly auto-sync, or drop in a statement. Categorization rules are managed here too. Categorized results show in Expenses; incoming deposits to classify show in Revenue.</div>';
+
+    // Statement upload
+    h += '<div class="fin-card">';
+    h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#8DC63F;margin-bottom:8px;">&#128228; Upload a statement</div>';
+    h += '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">';
+    h += '<select id="finStmtKind" class="fin-select"><option value="amex">American Express</option><option value="bank">Business bank</option></select>';
+    h += '<input type="file" id="finStmtFile" accept=".csv,.txt,.pdf" style="display:none;" onchange="finStatementFileChosen(this)"/>';
+    h += '<button class="fin-btn" onclick="document.getElementById(\'finStmtFile\').click()">Choose CSV or PDF&hellip;</button>';
+    h += '<button class="fin-btn ghost" onclick="var el=document.getElementById(\'finRulesPanel\');el.style.display=el.style.display===\'none\'?\'block\':\'none\';">&#9881; Rules ('+(C.rules||[]).length+')</button>';
+    h += '</div>';
+    h += '<div id="finStmtStatus" style="font-size:0.72rem;color:#888;margin-top:8px;"></div>';
+    h += '<div style="font-size:0.64rem;color:#555;margin-top:6px;">CSV exports from AmEx/your bank import instantly and exactly. PDFs are read by AI (double-check the Expenses review queue after). Excel files: use the bank\'s "Download CSV" option. Re-uploading the same statement never duplicates.</div>';
+    h += '</div>';
+
+    // Plaid auto-sync
+    h += '<div class="fin-card">';
+    h += '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px;">';
+    h += '<span style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#4a9eff;">&#128279; Auto-sync (Plaid)</span>';
+    h += '<button class="fin-btn" style="border-color:rgba(74,158,255,0.35);background:rgba(74,158,255,0.1);color:#4a9eff;" onclick="finPlaidConnect()">+ Connect Bank / Card</button>';
+    h += '<button class="fin-btn ghost" onclick="finPlaidSyncNow()">&#8635; Sync Now</button>';
+    h += '<button class="fin-btn ghost" onclick="finPlaidFullResync()" title="Re-pull full history from every connected account. Recovers deposits swept past by an earlier sync. Safe — never duplicates.">&#8635; Full Resync</button>';
+    h += '<span id="finPlaidMsg" style="font-size:0.7rem;color:#888;"></span>';
+    h += '</div>';
+    h += '<div id="finPlaidBox" style="font-size:0.7rem;color:#777;">Checking connected accounts&hellip;</div>';
+    h += '</div>';
+
+    // Rules panel (hidden by default)
+    h += '<div id="finRulesPanel" class="fin-card" style="display:none;">';
+    h += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#999;margin-bottom:6px;">Categorization rules — learned + seeded</div>';
+    var userRules = (C.rules||[]).filter(function(r){ return r.created_by !== 'seed'; });
+    var seedCount = (C.rules||[]).length - userRules.length;
+    if (!userRules.length) h += '<div style="font-size:0.7rem;color:#666;">No custom rules yet — recategorize any transaction in Expenses and choose "always" to teach the system. '+seedCount+' built-in merchant rules are active.</div>';
+    userRules.slice(0,60).forEach(function(r){
+      h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.72rem;color:#aaa;padding:4px 0;border-top:1px solid rgba(255,255,255,0.05);">'+
+        '<span style="color:#ddd;">&ldquo;'+esc(r.pattern)+'&rdquo;</span><span style="color:#666;">&rarr;</span><span style="color:#9fd45f;">'+esc(r.account_name)+'</span>'+
+        '<span style="color:#555;font-size:0.62rem;">'+(r.hit_count||0)+' hits</span>'+
+        '<button onclick="finDeleteRule(\''+r.id+'\')" style="margin-left:auto;background:none;border:none;color:#555;cursor:pointer;">&times;</button></div>';
+    });
+    if (userRules.length) h += '<div style="font-size:0.62rem;color:#555;margin-top:6px;">'+seedCount+' built-in merchant rules also active. Custom rules always win.</div>';
+    h += '</div>';
+    return h;
+  }
+  window.finPlaidFullResync = async function(){
+    if (!confirm('Full Resync re-pulls the complete history from every connected account. It never creates duplicates, and recovers deposits missed before recent fixes. Proceed?')) return;
+    var msg = document.getElementById('finPlaidMsg');
+    function say(t){ if (msg) msg.innerHTML = t; }
+    say('&#9203; Full resync running&hellip; (can take a minute)');
+    try {
+      var r = await fetch('/.netlify/functions/plaid-sync?resync=1', { method:'POST' });
+      var d = await r.json();
+      if (d.ok === false) throw new Error(d.error || 'resync failed');
+      say('&#10003; '+(d.message || ('Imported '+(d.imported||0)+' expenses, '+(d.depositsQueued||0)+' deposit(s) queued.')));
+      finCache = null; await finLoadData();
+      setTimeout(function(){ renderFinanceView(); }, 1200);
+    } catch(e) { say('&#10060; '+esc(e.message)); }
+  };
 
   // ── Plaid auto-sync (Connect + status + manual sync) ────────────────────────
   async function finPlaidLoadStatus(){
@@ -8320,11 +8395,24 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // Income
     h += '<tr><td class="sec" colspan="'+colspan+'">Ordinary Income/Expense</td></tr>';
     h += '<tr><td class="sec" style="padding-left:16px;">Income</td>'+cols.map(function(){return '<td></td>';}).join('')+(showTotal?'<td></td>':'')+'</tr>';
-    var incRow = pnl.cells['income|Commission Income'] || { byCol:{}, total:0 };
-    h += '<tr><td class="sub">Commission Income</td>'+cellsRow(incRow)+'</tr>';
     csvRows.push(['SOLAR REVIEW CORP. — Profit & Loss (Cash Basis) — '+finRangeLabel()]);
     csvRows.push([''].concat(cols.map(colLabel)).concat(showTotal?['TOTAL']:[]));
-    csv('Income: Commission Income', incRow);
+    // All income-type accounts with activity, CoA order first then any extras (e.g. Uncategorized)
+    var coaInc = (C.coa||[]).filter(function(a){ return a.type === 'income'; }).map(function(a){ return a.name; });
+    var incEmitted = {};
+    coaInc.forEach(function(name){
+      var row = pnl.cells['income|'+name];
+      if (!row) return;
+      incEmitted[name] = 1;
+      h += '<tr><td class="sub">'+name+'</td>'+cellsRow(row)+'</tr>';
+      csv('Income: '+name, row);
+    });
+    Object.keys(pnl.cells).forEach(function(k){
+      var row = pnl.cells[k];
+      if (row.section !== 'income' || incEmitted[row.account]) return;
+      h += '<tr><td class="sub">'+esc(row.account)+'</td>'+cellsRow(row)+'</tr>';
+      csv('Income: '+row.account, row);
+    });
     h += '<tr><td class="tot" style="padding-left:16px;">Total Income</td>'+totalRow(pnl.income.byCol, pnl.income.total)+'</tr>';
     csv('Total Income', { byCol: pnl.income.byCol, total: pnl.income.total });
 
