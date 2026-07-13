@@ -3748,8 +3748,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           // Field Notes subsection
           '<div style="margin-top:14px;">'+
             '<div class="job-subsection-title">&#128221; Ops Notes</div>'+
-            '<textarea class="job-notes-ta" id="fieldNotesTA" placeholder="Give the installer specific context for this job — gate codes, dog on property, panel location, customer concerns...">'+fieldNotes+'</textarea>'+
-            '<button class="job-save-btn" data-field="field_notes" data-src="fieldNotesTA" onclick="saveFromBtn(this)">Save Ops Notes</button>'+
+            '<div id="fieldNotesLog">'+_renderNotesLog(_parseNotes(fieldNotes))+'</div>'+
+            '<textarea class="job-notes-ta" id="fieldNotesInput" placeholder="Give the installer specific context for this job — gate codes, dog on property, panel location, customer concerns..."></textarea>'+
+            '<button class="job-save-btn" onclick="addJobNote(\'field_notes\',\'fieldNotesInput\',\'fieldNotesLog\')">+ Log Ops Note</button>'+
           '</div>'+
         '</div>'+
 
@@ -3760,8 +3761,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           // Notes sub-item
           '<div class="assessment-sub">'+
             '<div class="job-subsection-title">&#128221; Notes</div>'+
-            '<textarea class="job-notes-ta" id="assessmentNotesTA" placeholder="Detailed assessment findings, observations, measurements...">'+assessmentNotes+'</textarea>'+
-            '<button class="job-save-btn" data-field="assessment_notes" data-src="assessmentNotesTA" onclick="saveFromBtn(this)">Save Notes</button>'+
+            '<div id="assessmentNotesLog">'+_renderNotesLog(_parseNotes(assessmentNotes))+'</div>'+
+            '<textarea class="job-notes-ta" id="assessmentNotesInput" placeholder="Detailed assessment findings, observations, measurements..."></textarea>'+
+            '<button class="job-save-btn" onclick="addJobNote(\'assessment_notes\',\'assessmentNotesInput\',\'assessmentNotesLog\')">+ Log Note</button>'+
           '</div>'+
 
           // File upload sub-item
@@ -3789,8 +3791,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         // ── INSTALLER NOTES ──
         '<div class="job-section">'+
           '<div class="job-section-title">&#128203; Installer Notes</div>'+
-          '<textarea class="job-notes-ta" id="jobNotesTA" placeholder="General notes, follow-up reminders, next steps...">'+jobNotes+'</textarea>'+
-          '<button class="job-save-btn" data-field="job_notes" data-src="jobNotesTA" onclick="saveFromBtn(this)">Save Notes</button>'+
+          '<div id="jobNotesLog">'+_renderNotesLog(_parseNotes(jobNotes))+'</div>'+
+          '<textarea class="job-notes-ta" id="jobNotesInput" placeholder="General notes, follow-up reminders, next steps..."></textarea>'+
+          '<button class="job-save-btn" onclick="addJobNote(\'job_notes\',\'jobNotesInput\',\'jobNotesLog\')">+ Log Note</button>'+
         '</div>'+
 
       '</div>';
@@ -3799,11 +3802,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (typeof loadAssessmentFile === 'function') loadAssessmentFile(id);
   }
 
-  function saveFromBtn(btn) {
-    var field = btn.dataset.field;
-    var srcId = btn.dataset.src;
-    var el = document.getElementById(srcId);
-    if (el && field && currentJobId) saveJobField(currentJobId, field, el.value);
+  async function addJobNote(field, inputId, logId) {
+    var inputEl = document.getElementById(inputId);
+    var logEl = document.getElementById(logId);
+    if (!inputEl || !currentJobId) return;
+    var text = inputEl.value.trim();
+    if (!text) return;
+    var c = adminCustomers.find(function(x){ return x.id === currentJobId; }) || {};
+    var newVal = _appendNote(c[field] || null, 'Admin', text);
+    try {
+      var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var { error } = await client.from('customers').update({ [field]: newVal }).eq('id', currentJobId);
+      if (error) throw error;
+      c[field] = newVal;
+      inputEl.value = '';
+      if (logEl) logEl.innerHTML = _renderNotesLog(_parseNotes(newVal));
+    } catch(e) { alert('Failed to save note: ' + e.message); }
   }
 
   function showStoragePolicyWarning() {
@@ -5129,10 +5143,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     resultEl.innerHTML = '<div style="color:#94a3b8;font-size:0.75rem;line-height:1.6;">&#128269; Scanning photos &amp; searching web for warranty, recalls, and known issues&hellip; (15&ndash;30 seconds)</div>';
 
     var rec = adminCustomers.find(function(c) { return String(c.id) === String(currentJobId); });
+    function _flattenNotes(raw) { return _parseNotes(raw||'').map(function(e){ return e.text; }).join('\n'); }
     var notes = [
-      rec && rec.notes,
-      document.getElementById('fieldNotesTA') && document.getElementById('fieldNotesTA').value,
-      document.getElementById('assessmentNotesTA') && document.getElementById('assessmentNotesTA').value,
+      rec && _flattenNotes(rec.notes),
+      rec && _flattenNotes(rec.field_notes),
+      rec && _flattenNotes(rec.assessment_notes),
     ].filter(Boolean).join('\n').trim();
 
     try {
@@ -11924,8 +11939,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     entries.push({ ts: new Date().toISOString(), by: by, text: text });
     return JSON.stringify(entries);
   }
-  function _renderNotesLog(entries) {
+  function _renderNotesLog(entries, light) {
     if (!entries || !entries.length) return '<div style="font-size:0.8rem;color:#555;padding:12px 14px;">No notes yet.</div>';
+    var borderBtm = light ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.07)';
+    var textColor = light ? '#1A1A1A' : '#e0e0e0';
     return entries.slice().reverse().map(function(e) {
       var dateStr = e.ts ? new Date(e.ts).toLocaleString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'}) : 'Prior to log';
       var by = e.by || 'Unknown';
@@ -11933,14 +11950,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var isKnock = by.indexOf('Knock') > -1;
       var isAdmin = by.toLowerCase().indexOf('admin') > -1;
       var isSetter = by.toLowerCase().indexOf('setter') > -1;
-      var badgeColor = isDialer ? '#E8793A' : isKnock ? '#ffaa00' : isAdmin ? '#4a9eff' : isSetter ? '#8DC63F' : '#aaa';
-      var borderColor = isDialer ? 'rgba(232,121,58,0.3)' : isKnock ? 'rgba(255,170,0,0.3)' : isAdmin ? 'rgba(74,158,255,0.25)' : isSetter ? 'rgba(141,198,63,0.25)' : 'rgba(255,255,255,0.1)';
-      return '<div style="padding:14px 16px;border-bottom:1px solid rgba(255,255,255,0.07);border-left:3px solid '+borderColor+';">'+
+      var badgeColor = isDialer ? '#E8793A' : isKnock ? '#ffaa00' : isAdmin ? '#4a9eff' : isSetter ? '#8DC63F' : (light ? '#666' : '#aaa');
+      var borderColor = isDialer ? 'rgba(232,121,58,0.3)' : isKnock ? 'rgba(255,170,0,0.3)' : isAdmin ? 'rgba(74,158,255,0.25)' : isSetter ? 'rgba(141,198,63,0.25)' : (light ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.1)');
+      return '<div style="padding:14px 16px;border-bottom:1px solid '+borderBtm+';border-left:3px solid '+borderColor+';">'+
         '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">'+
           '<span style="font-size:0.72rem;font-weight:700;color:'+badgeColor+';">'+by+'</span>'+
           '<span style="color:#444;font-size:0.68rem;">'+dateStr+'</span>'+
         '</div>'+
-        '<div style="color:#e0e0e0;font-size:0.82rem;line-height:1.65;white-space:pre-wrap;">'+e.text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/ \| /g,'\n')+'</div>'+
+        '<div style="color:'+textColor+';font-size:0.82rem;line-height:1.65;white-space:pre-wrap;">'+e.text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/ \| /g,'\n')+'</div>'+
       '</div>';
     }).join('');
   }
@@ -12860,12 +12877,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }
 
     }catch(e){if(el) el.textContent='Failed: '+(e.message||'Unknown error');}
-  }
-
-  async function saveNotes(){
-    if(!currentUser||!currentUser.id) return;
-    var notes=document.getElementById('notesArea').value;
-    try{ var client=supabase.createClient(SUPA_URL,SUPA_KEY); await client.from('customers').update({notes:notes}).eq('id',currentUser.id); var el=document.getElementById('notesSaved'); if(el){el.style.display='inline';setTimeout(function(){el.style.display='none';},3000);} }catch(e){}
   }
 
   async function saveQualification(){
@@ -14317,7 +14328,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '</div>'+
         '</div>'+
         '<div class="editor-section-title">Notes</div>'+
-        '<textarea id="seNotes" class="ed-input" rows="2" style="margin-bottom:14px;">'+(l.notes||'')+'</textarea>'+
+        '<div id="seNotesLog" style="margin-bottom:8px;">'+_renderNotesLog(_parseNotes(l.notes||''))+'</div>'+
+        '<textarea id="seNoteInput" class="ed-input" rows="2" placeholder="Add a note…" style="margin-bottom:6px;"></textarea>'+
+        '<button type="button" onclick="addSalesEditNote(\''+l.id+'\')" style="width:auto;margin-bottom:14px;padding:7px 16px;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.4);border-radius:8px;color:#8DC63F;font-size:0.75rem;font-weight:700;cursor:pointer;">+ Log Note</button>'+
         (!isNS ?
           '<div class="editor-section-title">Pipeline Status</div>'+
           '<select onchange="setLeadStep(\''+l.id+'\',this.value)" class="ed-input" style="margin-bottom:14px;">'+stepOpts+'</select>'
@@ -14409,7 +14422,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           email: document.getElementById('seEmail').value || null,
           address: document.getElementById('seAddr').value || null,
           monthly_bill: billRaw ? parseFloat(billRaw) : null,
-          notes: document.getElementById('seNotes').value || null,
           lead_source: (document.getElementById('seLeadSource')||{}).value || null,
         };
         var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
@@ -14420,6 +14432,24 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var sv = document.getElementById('seSaved'); if (sv) sv.style.display = 'inline';
         setTimeout(function() { if (typeof window.salesRefresh === 'function') window.salesRefresh(); }, 1200);
       } catch(e) { alert('Save error: ' + e.message); }
+    };
+
+    window.addSalesEditNote = async function(id) {
+      var inputEl = document.getElementById('seNoteInput');
+      var logEl = document.getElementById('seNotesLog');
+      if (!inputEl || !id) return;
+      var text = inputEl.value.trim();
+      if (!text) return;
+      var rec = allRecords.find(function(r){ return r.id === id; }) || {};
+      var newVal = _appendNote(rec.notes || null, 'Setter: ' + (person.name || person.id), text);
+      try {
+        var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+        var res = await c2.from('customers').update({ notes: newVal }).eq('id', id);
+        if (res.error) throw res.error;
+        rec.notes = newVal;
+        inputEl.value = '';
+        if (logEl) logEl.innerHTML = _renderNotesLog(_parseNotes(newVal));
+      } catch(e) { alert('Failed to save note: ' + e.message); }
     };
 
     window.salesNewLead = function() {
@@ -15183,17 +15213,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             '<div style="background:#eeeee8;border:1px solid rgba(0,0,0,0.09);border-radius:10px;padding:14px;text-align:center;font-size:0.72rem;color:#777;">🛰 Loading rooftop data...</div>' +
             '</div>';
 
-          // Admin briefing notes
+          // Admin briefing notes (read-only here — only Admin writes field_notes)
           if (job.field_notes) {
             h += '<div style="background:rgba(255,165,0,0.1);border:1px solid rgba(200,120,0,0.25);border-radius:8px;padding:12px;margin-bottom:8px;font-size:0.82rem;line-height:1.6;color:#1A1A1A;">' +
-              '<span style="color:#b06a00;font-weight:700;font-size:0.68rem;text-transform:uppercase;letter-spacing:0.08em;">📋 Admin Notes</span><br/>' +
-              job.field_notes + '</div>';
-          }
-          // Ops field notes (saved by ops partner)
-          if (job.assessment_notes) {
-            h += '<div style="background:rgba(141,198,63,0.1);border:1px solid rgba(100,160,30,0.3);border-radius:8px;padding:12px;margin-bottom:12px;font-size:0.82rem;line-height:1.6;color:#1A1A1A;">' +
-              '<span style="color:#3d6b12;font-weight:700;font-size:0.68rem;text-transform:uppercase;letter-spacing:0.08em;">📝 Ops Notes</span><br/>' +
-              job.assessment_notes + '</div>';
+              '<span style="color:#b06a00;font-weight:700;font-size:0.68rem;text-transform:uppercase;letter-spacing:0.08em;">📋 Admin Notes</span>' +
+              _renderNotesLog(_parseNotes(job.field_notes), true) + '</div>';
           }
 
           // System info
@@ -15237,8 +15261,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             (photoThumbsHtml ? '<div class="tech-photo-grid">' + photoThumbsHtml + '</div>' : '');
 
           h += '<div class="tech-section-title">📝 Ops Notes</div>' +
-            '<textarea class="tech-notes-area" data-notes-jid="' + jid + '" placeholder="Observations, issues found, materials used...">' + (job.assessment_notes||'') + '</textarea>' +
-            '<button class="tech-save-btn" onclick="saveOpsNotes(this.previousElementSibling.dataset.notesJid)">💾 Save Ops Notes</button>';
+            '<div id="opsNotesLog_' + jid + '">' + _renderNotesLog(_parseNotes(job.assessment_notes), true) + '</div>' +
+            '<textarea class="tech-notes-area" data-notes-jid="' + jid + '" placeholder="Observations, issues found, materials used..."></textarea>' +
+            '<button class="tech-save-btn" onclick="saveOpsNotes(this.previousElementSibling.dataset.notesJid)">💾 Log Note</button>';
         }
         h += '</div>'; // end tech-job-card
       });
@@ -15298,11 +15323,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     };
     window.saveOpsNotes = async function(jid) {
       var ta = document.querySelector('[data-notes-jid="' + jid + '"]');
-      var notes = ta ? ta.value : '';
+      var text = ta ? ta.value.trim() : '';
+      if (!text) return;
+      var job = jobs.find(function(j){ return j.id === jid; }) || {};
+      var newVal = _appendNote(job.assessment_notes || null, ops.name || 'Ops', text);
       var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
-      await c2.from('customers').update({assessment_notes: notes}).eq('id', jid);
+      var res = await c2.from('customers').update({assessment_notes: newVal}).eq('id', jid);
       var btn = document.querySelector('[data-notes-jid="' + jid + '"]').nextElementSibling;
-      if (btn) { btn.textContent = '✓ Saved'; setTimeout(function(){ btn.textContent = '💾 Save Notes'; }, 2000); }
+      if (res.error) { if (btn) { btn.textContent = '✗ Failed'; setTimeout(function(){ btn.textContent = '💾 Log Note'; }, 2000); } return; }
+      job.assessment_notes = newVal;
+      ta.value = '';
+      var logEl = document.getElementById('opsNotesLog_' + jid);
+      if (logEl) logEl.innerHTML = _renderNotesLog(_parseNotes(newVal), true);
+      if (btn) { btn.textContent = '✓ Saved'; setTimeout(function(){ btn.textContent = '💾 Log Note'; }, 2000); }
     };
 
     async function loadOpsSolarPanel(address, jid) {
