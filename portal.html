@@ -7535,20 +7535,18 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '</div>';
     h += '<div style="font-size:0.68rem;color:#888;margin-bottom:10px;">Detected in your connected checking account. Classify how the CPA books each one. <b>Only classify deposits you haven\'t already logged manually</b> (tap Ignore for those, or for owner transfers between your own accounts) to avoid double counting.</div>';
     pending.forEach(function(d){
-      h += '<div style="padding:8px 10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:10px;margin-bottom:6px;">';
+      h += '<div id="depcard-'+d.id+'" style="padding:8px 10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:10px;margin-bottom:6px;">';
       h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.76rem;color:#aaa;flex-wrap:wrap;margin-bottom:6px;">';
       h += '<span style="color:#666;font-size:0.66rem;white-space:nowrap;">'+d.txn_date+'</span>';
       h += '<span style="color:#ddd;flex:1;min-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="'+esc(d.description)+'">'+esc(d.merchant||d.description)+'</span>';
       h += '<span style="color:#8DC63F;font-weight:700;white-space:nowrap;">'+finMoney(d.amount)+'</span>';
       h += '</div>';
-      h += '<div style="display:flex;gap:5px;flex-wrap:wrap;">';
-      h += '<span style="font-size:0.6rem;color:#666;align-self:center;text-transform:uppercase;letter-spacing:0.04em;">Commission&nbsp;Income:</span>';
+      h += '<div id="depbtns-'+d.id+'" style="display:flex;gap:5px;flex-wrap:wrap;">';
       h += '<button class="fin-btn" style="padding:3px 10px;font-size:0.64rem;" onclick="finClassifyDeposit(\''+d.id+'\',\'commission_top_tier\')">Top Tier</button>';
       h += '<button class="fin-btn" style="padding:3px 10px;font-size:0.64rem;background:rgba(155,109,232,0.1);border-color:rgba(155,109,232,0.35);color:#9b6de8;" onclick="finClassifyDeposit(\''+d.id+'\',\'commission_new_solar\')">New Solar</button>';
-      h += '<button class="fin-btn" style="padding:3px 10px;font-size:0.64rem;background:rgba(74,158,255,0.1);border-color:rgba(74,158,255,0.35);color:#4a9eff;" onclick="finClassifyDeposit(\''+d.id+'\',\'commission_other\')">Other provider</button>';
+      h += '<button class="fin-btn ghost" style="padding:3px 10px;font-size:0.64rem;" onclick="finClassifyDeposit(\''+d.id+'\',\'other_income\')">Other</button>';
       h += '<span style="width:1px;background:rgba(255,255,255,0.1);margin:0 3px;"></span>';
       h += '<button class="fin-btn ghost" style="padding:3px 10px;font-size:0.64rem;" onclick="finClassifyDeposit(\''+d.id+'\',\'travel_reimbursement\')" title="Contra to Travel Expense, how the CPA books Venmo reimbursements">Travel Reimb.</button>';
-      h += '<button class="fin-btn ghost" style="padding:3px 10px;font-size:0.64rem;" onclick="finClassifyDeposit(\''+d.id+'\',\'other_income\')">Other Income</button>';
       h += '<button class="fin-btn ghost" style="padding:3px 10px;font-size:0.64rem;" onclick="finClassifyDeposit(\''+d.id+'\',\'owner_transfer\')" title="Transfer / distribution between your own accounts — not revenue">Owner Transfer</button>';
       h += '<button class="fin-btn ghost" style="padding:3px 10px;font-size:0.64rem;color:#888;" onclick="finClassifyDeposit(\''+d.id+'\',\'ignore\')">Ignore</button>';
       h += '</div></div>';
@@ -7559,14 +7557,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // Broadened deposit classification. Each category routes to how the CPA books it:
   //  commission_* → commissions override row (feeds P&L Commission Income)
   //  travel_reimbursement → expense_transactions NEGATIVE row on Travel Expense (contra-expense)
-  //  other_income → expense_transactions negative row on Other Income? No — Other Income is
-  //                 income; recorded as a commission override tagged line 'other' so it lands
-  //                 in income. (kept simple; distinct note)
+  //  other_income → commissions row tagged line 'other' (small misc/consulting income; also
+  //                 catches anything that isn't a Top Tier / New Solar override)
   //  owner_transfer → marked classified, NOT revenue (excluded from P&L)
   //  ignore → status ignored
   window.finClassifyDeposit = async function(id, classification){
     var d = (finCache.deposits||[]).find(function(x){ return x.id === id; });
     if (!d) return;
+    var btnRow = document.getElementById('depbtns-'+id);
+    if (btnRow) { btnRow.style.opacity = '0.4'; btnRow.style.pointerEvents = 'none'; btnRow.insertAdjacentHTML('beforeend', '<span style="font-size:0.64rem;color:#888;align-self:center;">Saving&hellip;</span>'); }
     var amt = parseFloat(d.amount)||0;
     var noteBase = 'Auto-detected via Plaid deposit: ' + (d.description||'').slice(0,110);
     try {
@@ -7584,15 +7583,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         if (e2) throw e2;
         await pc.from('plaid_deposits_review').update({ status:'confirmed', classification: classification }).eq('id', id);
       } else {
-        // Commission income (TT / NS / other) or Other Income → commissions override row
+        // Commission income (Top Tier / New Solar / Other) → commissions override row
         var line = classification === 'commission_top_tier' ? 'top_tier'
-                 : classification === 'commission_new_solar' ? 'new_solar'
-                 : classification === 'other_income' ? 'other' : 'fixmy';
-        var payeeName = classification === 'other_income' ? 'Other Income' : 'Solar Review Corp';
+                 : classification === 'commission_new_solar' ? 'new_solar' : 'other';
+        var payeeName = line === 'other' ? 'Other Income' : 'Solar Review Corp';
         var { data: comm, error: e3 } = await pc.from('commissions').insert({
           line: line, kind: 'override', payee: 'solar_review_corp', payee_name: payeeName,
           amount: Math.abs(amt), status: 'paid', sold_at: d.txn_date, paid_at: d.txn_date,
-          note: (classification==='other_income'?'[Other Income] ':'') + noteBase
+          note: (line==='other'?'[Other Income] ':'') + noteBase
         }).select().single();
         if (e3) throw e3;
         await pc.from('plaid_deposits_review').update({ status:'confirmed', classification: classification, commission_id: comm.id }).eq('id', id);
@@ -7600,7 +7598,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       finCache = null;
       await finLoadData();
       renderFinanceView();
-    } catch(e) { alert('Could not classify deposit: '+e.message); }
+    } catch(e) {
+      if (btnRow) { btnRow.style.opacity = '1'; btnRow.style.pointerEvents = 'auto'; }
+      alert('Could not classify deposit: '+e.message);
+    }
   };
 
   function finRenderRevenue(){
