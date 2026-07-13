@@ -7190,7 +7190,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       q(pc.from('expense_transactions').select('*').order('txn_date',{ascending:false}).limit(10000)),
       q(pc.from('coa_accounts').select('*').eq('active',true).order('sort')),
       q(pc.from('categorization_rules').select('*').order('priority',{ascending:false}).limit(2000)),
-      q(pc.from('mileage_entries').select('*').order('trip_date',{ascending:false}).limit(2000))
+      q(pc.from('mileage_entries').select('*').order('trip_date',{ascending:false}).limit(2000)),
+      q(pc.from('plaid_deposits_review').select('*').order('txn_date',{ascending:false}).limit(1000))
     ]);
     finCache = {
       pays:     res[0].data || [], paysOk:  !res[0].error,
@@ -7200,6 +7201,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       coa:      res[4].data || [], coaOk:   !res[4].error,
       rules:    res[5].data || [],
       mileage:  res[6].data || [], milesOk: !res[6].error,
+      deposits: res[7].data || [], depositsOk: !res[7].error,
       marketing: (typeof adminMarketingExpenses !== 'undefined' && adminMarketingExpenses) ? adminMarketingExpenses : [],
       at: Date.now()
     };
@@ -7504,6 +7506,57 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   }
 
   // ── Revenue ─────────────────────────────────────────────────────────────────
+  // ── Incoming deposits awaiting classification (Plaid) — Top Tier / New Solar overrides ──
+  // Shown regardless of the active date range: these need action, not filtering.
+  function finRenderDepositReviewQueue(){
+    var pending = (finCache.deposits||[]).filter(function(d){ return d.status === 'needs_review'; });
+    if (!pending.length) return '';
+    var total = pending.reduce(function(t,d){ return t+(parseFloat(d.amount)||0); },0);
+    var h = '<div class="fin-card" style="border-color:rgba(74,158,255,0.35);background:rgba(74,158,255,0.05);">';
+    h += '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px;">';
+    h += '<span style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#4a9eff;">&#128276; Incoming deposits to classify</span>';
+    h += '<span style="font-size:0.78rem;color:#ddd;font-weight:700;">'+finMoney(total)+' &middot; '+pending.length+' deposit(s)</span>';
+    h += '</div>';
+    h += '<div style="font-size:0.68rem;color:#888;margin-bottom:10px;">Detected in your connected bank account. Classify each as Top Tier or New Solar override revenue — or Ignore if it\'s already entered on a job, personal, or not revenue. Only classify deposits you haven\'t already logged manually, to avoid double counting.</div>';
+    pending.forEach(function(d){
+      h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.76rem;color:#aaa;padding:8px 10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:10px;margin-bottom:6px;flex-wrap:wrap;">';
+      h += '<span style="color:#666;font-size:0.66rem;white-space:nowrap;">'+d.txn_date+'</span>';
+      h += '<span style="color:#ddd;flex:1;min-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="'+esc(d.description)+'">'+esc(d.merchant||d.description)+'</span>';
+      h += '<span style="color:#8DC63F;font-weight:700;white-space:nowrap;">'+finMoney(d.amount)+'</span>';
+      h += '<span style="display:flex;gap:6px;flex-wrap:wrap;">';
+      h += '<button class="fin-btn" style="padding:4px 11px;font-size:0.66rem;" onclick="finClassifyDeposit(\''+d.id+'\',\'top_tier_override\')">Top Tier</button>';
+      h += '<button class="fin-btn" style="padding:4px 11px;font-size:0.66rem;background:rgba(155,109,232,0.1);border-color:rgba(155,109,232,0.35);color:#9b6de8;" onclick="finClassifyDeposit(\''+d.id+'\',\'new_solar_override\')">New Solar</button>';
+      h += '<button class="fin-btn ghost" style="padding:4px 11px;font-size:0.66rem;" onclick="finClassifyDeposit(\''+d.id+'\',\'ignore\')">Ignore</button>';
+      h += '</span></div>';
+    });
+    h += '</div>';
+    return h;
+  }
+  window.finClassifyDeposit = async function(id, classification){
+    var d = (finCache.deposits||[]).find(function(x){ return x.id === id; });
+    if (!d) return;
+    try {
+      var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+      if (classification === 'ignore') {
+        var { error: e1 } = await pc.from('plaid_deposits_review').update({ status:'ignored', classification:'other' }).eq('id', id);
+        if (e1) throw e1;
+      } else {
+        var line = classification === 'top_tier_override' ? 'top_tier' : 'new_solar';
+        var { data: comm, error: e2 } = await pc.from('commissions').insert({
+          line: line, kind: 'override', payee: 'solar_review_corp', payee_name: 'Solar Review Corp',
+          amount: d.amount, status: 'paid', sold_at: d.txn_date, paid_at: d.txn_date,
+          note: 'Auto-detected via Plaid deposit: ' + (d.description||'').slice(0,120)
+        }).select().single();
+        if (e2) throw e2;
+        var { error: e3 } = await pc.from('plaid_deposits_review').update({ status:'confirmed', classification: classification, commission_id: comm.id }).eq('id', id);
+        if (e3) throw e3;
+      }
+      finCache = null;
+      await finLoadData();
+      renderFinanceView();
+    } catch(e) { alert('Could not classify deposit: '+e.message); }
+  };
+
   function finRenderRevenue(){
     var rows = [];
     (finCache.pays||[]).forEach(function(p){
@@ -7526,6 +7579,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
     var h = '';
     if (!finCache.paysOk) h += '<div class="fin-card" style="border-color:rgba(239,68,68,0.3);color:#ef9b9b;font-size:0.75rem;">Payments ledger not found — run <code>20260704_payments_ledger.sql</code>.</div>';
+    h += finRenderDepositReviewQueue();
     h += '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px;">';
     h += '<div class="fin-tile" style="flex:0 1 auto;"><div class="v" style="color:#8DC63F;">'+finMoney(total)+'</div><div class="l">Total revenue &middot; '+rows.length+' transactions</div></div>';
     Object.keys(bySrc).forEach(function(s){
@@ -7856,7 +7910,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '<span style="color:#555;">syncs from '+esc(i.start_date||'—')+'</span>'+
           '<span style="color:'+(i.last_error?'#ef9b9b':'#8DC63F')+';">'+(i.last_error?('&#9888; '+esc(String(i.last_error).slice(0,80))):('last sync '+when+(i.last_synced?' &middot; '+(i.last_added||0)+' new, '+(i.last_dupes||0)+' dupes skipped':'')))+'</span>'+
         '</div>';
-      }).join('') + '<div style="color:#555;margin-top:4px;">Runs nightly ~4:30am PT, before the AI advisor. Duplicates are impossible: each account only syncs from after your last uploaded statement, plus hash + date/amount guards.</div>';
+      }).join('') + '<div style="color:#555;margin-top:4px;">Runs nightly ~4:30am PT, before the AI advisor. Duplicates are impossible: each account only syncs from after your last uploaded statement, plus hash + date/amount guards.</div>'+
+      (d.pendingDeposits ? '<div style="margin-top:6px;padding:6px 10px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);border-radius:8px;color:#4a9eff;font-weight:700;">&#128276; '+d.pendingDeposits+' incoming deposit(s) need classification — see the <a href="javascript:void(0)" onclick="finGoTab(\'revenue\')" style="color:#4a9eff;">Revenue tab</a>.</div>' : '');
     } catch(e) { box.textContent = 'Could not load Plaid status: '+e.message; }
   }
   window.finPlaidLoadStatus = finPlaidLoadStatus;

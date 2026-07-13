@@ -4,13 +4,16 @@
 //   GET  ?status=1   → sanitized connection status for the portal (no tokens)
 //   POST / scheduled → run the sync for every connected item
 //
-// Expenses only — deposits/credits (customer payments, transfers in) are always
-// skipped. Revenue is tracked exclusively through the payments table (GHL sweep +
-// Sign & Pay), which already ties each payment to a customer/job; guessing revenue
-// from a bank deposit line would be worse data and risks double-booking income
-// that's already recorded there.
+// Expenses are auto-booked (categorization_rules → AI → review queue, same as
+// CSV import). Deposits/credits are NEVER auto-booked as revenue — FixMy/Solar
+// Review customer payments already flow through the payments table (GHL sweep +
+// Sign & Pay), so re-detecting those here would risk double-booking. Instead every
+// deposit lands in plaid_deposits_review for a human to classify once: Top Tier
+// override, New Solar override (both have no other automatic source now that they
+// direct-deposit), or ignore. Confirming inserts a `commissions` row — the existing
+// mechanism that already feeds the Revenue tab and P&L.
 //
-// Dedupe, three layers:
+// Dedupe, three layers (expenses) / dedupe_hash only (deposits — no CSV history to cut over from):
 //   1. per-item start_date cutoff (set at connect time = day after newest CSV txn)
 //   2. dedupe_hash unique column — re-syncs and Plaid retries land exactly once
 //   3. cross-source guard — skip any Plaid txn whose (date, amount) already exists
@@ -83,18 +86,24 @@ async function syncItem(item, rules) {
     hasMore = page.has_more;
   }
 
-  // Map + filter
-  const txns = [];
+  // Map + filter — split into expenses (money out) and deposits (money in)
+  const txns = [], deposits = [];
   for (const t of added) {
     if (t.pending) continue;                                   // book only settled txns
     const desc = (t.merchant_name ? t.merchant_name + ' — ' : '') + (t.original_description || t.name || '');
     const pfc = (t.personal_finance_category && t.personal_finance_category.primary) || '';
     const amount = Math.round((parseFloat(t.amount) || 0) * 100) / 100;  // Plaid: positive = money out, negative = deposit/credit
     if (!t.date || !amount) continue;
-    if (amount < 0) continue;  // deposits/credits are never expenses — revenue is tracked separately via the payments table (GHL sweep + Sign & Pay), never guessed from bank deposits
+    if (SKIP_PFC.has(pfc) || isIssuerPayment(desc)) continue;   // internal transfers / card autopay are neither expense nor revenue
+    const cleanDesc = desc.replace(/\s+/g, ' ').trim().slice(0, 300);
+    if (amount < 0) {
+      // Deposit/credit — route to the review queue, no start_date cutoff (there's
+      // no CSV history of TT/NS override deposits to cut over from).
+      deposits.push({ date: t.date, description: cleanDesc, amount: Math.abs(amount), plaid_id: t.transaction_id });
+      continue;
+    }
     if (item.start_date && t.date < item.start_date) continue; // CSV history owns everything before the cutoff
-    if (SKIP_PFC.has(pfc) || isIssuerPayment(desc)) continue;  // card payments/transfers are not expenses
-    txns.push({ date: t.date, description: desc.replace(/\s+/g, ' ').trim().slice(0, 300), amount: amount, plaid_id: t.transaction_id });
+    txns.push({ date: t.date, description: cleanDesc, amount: amount, plaid_id: t.transaction_id });
   }
 
   // Cross-source guard: (date|amount) pairs already imported from CSV/PDF/manual
@@ -145,13 +154,31 @@ async function syncItem(item, rules) {
     inserted += (out || []).length;
   }
 
-  // Plaid-removed txns (reversals) — drop the matching plaid rows
+  // Deposits → review queue (idempotent on dedupe_hash, kind 'plaid_deposit')
+  const depositRows = deposits.map(d => ({
+    txn_date: d.date, description: d.description, merchant: normMerchant(d.description),
+    amount: d.amount, institution: item.institution, plaid_item_id: item.item_id,
+    dedupe_hash: txnHash(d, 'plaid_deposit'), status: 'needs_review', note: 'plaid:' + d.plaid_id
+  }));
+  const seenDepHash = {};
+  const uniqueDeposits = depositRows.filter(r => { if (seenDepHash[r.dedupe_hash]) return false; seenDepHash[r.dedupe_hash] = 1; return true; });
+  let depositsInserted = 0;
+  for (let i = 0; i < uniqueDeposits.length; i += 200) {
+    const out = await supaPost('/plaid_deposits_review?on_conflict=dedupe_hash&select=id', uniqueDeposits.slice(i, i + 200),
+      { Prefer: 'resolution=ignore-duplicates,return=representation' });
+    depositsInserted += (out || []).length;
+  }
+
+  // Plaid-removed txns (reversals) — drop the matching plaid rows (expenses + unconfirmed deposits)
   if (removedIds.length) {
     try {
       const chunk = removedIds.slice(0, 100).map(id => '"plaid:' + id + '"').join(',');
-      await fetch('https://kbtobyoumvbcxfbugsid.supabase.co/rest/v1/expense_transactions?source=eq.plaid&note=in.(' + encodeURIComponent(chunk) + ')', {
-        method: 'DELETE',
-        headers: { apikey: process.env.SUPA_SERVICE_KEY, Authorization: 'Bearer ' + process.env.SUPA_SERVICE_KEY }
+      const removedFilter = 'note=in.(' + encodeURIComponent(chunk) + ')';
+      await fetch('https://kbtobyoumvbcxfbugsid.supabase.co/rest/v1/expense_transactions?source=eq.plaid&' + removedFilter, {
+        method: 'DELETE', headers: { apikey: process.env.SUPA_SERVICE_KEY, Authorization: 'Bearer ' + process.env.SUPA_SERVICE_KEY }
+      });
+      await fetch('https://kbtobyoumvbcxfbugsid.supabase.co/rest/v1/plaid_deposits_review?status=eq.needs_review&' + removedFilter, {
+        method: 'DELETE', headers: { apikey: process.env.SUPA_SERVICE_KEY, Authorization: 'Bearer ' + process.env.SUPA_SERVICE_KEY }
       });
     } catch (e) { console.warn('[plaid-sync] removed-cleanup skipped:', e.message); }
   }
@@ -168,9 +195,10 @@ async function syncItem(item, rules) {
   item.last_synced = new Date().toISOString();
   item.last_added = inserted;
   item.last_dupes = (unique.length - inserted) + crossSkipped;
+  item.last_deposits_pending = depositsInserted;
   item.last_error = null;
-  console.log('[plaid-sync]', item.institution, '→', inserted, 'new,', item.last_dupes, 'dupes skipped,', removedIds.length, 'removed');
-  return inserted;
+  console.log('[plaid-sync]', item.institution, '→', inserted, 'expenses,', item.last_dupes, 'dupes skipped,', depositsInserted, 'deposits queued for review,', removedIds.length, 'removed');
+  return { expenses: inserted, deposits: depositsInserted };
 }
 
 exports.handler = async function (event) {
@@ -183,9 +211,14 @@ exports.handler = async function (event) {
     if (!process.env.SUPA_SERVICE_KEY) return reply(200, { configured: false, items: [] });
     try {
       const items = await getPlaidItems();
+      let pendingDeposits = 0;
+      try {
+        const rows = await supaGet('/plaid_deposits_review?select=id&status=eq.needs_review&limit=1000');
+        pendingDeposits = (rows || []).length;
+      } catch (e) {}
       return reply(200, {
-        configured: plaidReady(), env: process.env.PLAID_ENV || 'sandbox',
-        items: items.map(i => ({ institution: i.institution, kind: i.kind, start_date: i.start_date, last_synced: i.last_synced, last_added: i.last_added, last_dupes: i.last_dupes, last_error: i.last_error }))
+        configured: plaidReady(), env: process.env.PLAID_ENV || 'sandbox', pendingDeposits: pendingDeposits,
+        items: items.map(i => ({ institution: i.institution, kind: i.kind, start_date: i.start_date, last_synced: i.last_synced, last_added: i.last_added, last_dupes: i.last_dupes, last_deposits_pending: i.last_deposits_pending, last_error: i.last_error }))
       });
     } catch (e) { return reply(200, { configured: plaidReady(), items: [], error: e.message }); }
   }
@@ -199,16 +232,19 @@ exports.handler = async function (event) {
     const items = await getPlaidItems();
     if (!items.length) return reply(200, { ok: true, message: 'No accounts connected yet' });
     const rules = await loadRules();
-    let total = 0;
+    let totalExpenses = 0, totalDeposits = 0;
     for (const item of items) {
-      try { total += await syncItem(item, rules); }
-      catch (e) {
+      try {
+        const r = await syncItem(item, rules);
+        totalExpenses += r.expenses; totalDeposits += r.deposits;
+      } catch (e) {
         item.last_error = e.message;
         console.error('[plaid-sync]', item.institution, 'failed:', e.message);
       }
     }
     await savePlaidItems(items);
-    return reply(200, { ok: true, imported: total, accounts: items.length });
+    return reply(200, { ok: true, imported: totalExpenses, depositsQueued: totalDeposits, accounts: items.length,
+      message: totalDeposits > 0 ? ('Imported ' + totalExpenses + ' expenses. ' + totalDeposits + ' incoming deposit(s) need classification — see Finance → Revenue.') : undefined });
   } catch (e) {
     console.error('[plaid-sync] fatal:', e.message);
     return reply(200, { ok: false, error: e.message });
