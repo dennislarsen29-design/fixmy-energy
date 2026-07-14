@@ -84,6 +84,13 @@ exports.handler = async function (event) {
       return P.reply(200, { ok: true });
     }
 
+    if (action === 'patch') {
+      if (!WRITABLE.has(req.table)) return P.reply(400, { error: 'table not writable' });
+      if (!req.id || !req.patch) return P.reply(400, { error: 'id and patch required' });
+      await P.supaPatch('/' + req.table + '?id=eq.' + encodeURIComponent(req.id), req.patch);
+      return P.reply(200, { ok: true });
+    }
+
     if (action === 'recategorize') {
       await P.supaPatch('/personal_transactions?id=eq.' + encodeURIComponent(req.id),
         { category: req.category, review_status: 'confirmed' });
