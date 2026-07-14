@@ -48,7 +48,7 @@ exports.handler = async function (event) {
 
   try {
     if (action === 'snapshot') {
-      const [accounts, txns, debts, holdings, budgets, rules, nw, profile] = await Promise.all([
+      const [accounts, txns, debts, holdings, budgets, rules, nw, profile, vision] = await Promise.all([
         P.supaGet('/personal_accounts?select=*&order=type').catch(() => []),
         P.supaGet('/personal_transactions?select=*&order=txn_date.desc&limit=' + (parseInt(req.txnLimit, 10) || 1500)).catch(() => []),
         P.supaGet('/personal_debts?select=*&order=balance.desc').catch(() => []),
@@ -56,13 +56,14 @@ exports.handler = async function (event) {
         P.supaGet('/personal_budgets?select=*').catch(() => []),
         P.supaGet('/personal_categorization_rules?select=*&limit=2000').catch(() => []),
         P.supaGet('/personal_net_worth_snapshots?select=*&order=snap_date.asc&limit=1000').catch(() => []),
-        P.supaGet('/personal_profile?id=eq.default&select=*').catch(() => [])
+        P.supaGet('/personal_profile?id=eq.default&select=*').catch(() => []),
+        P.supaGet('/personal_vision_board?select=*&order=sort').catch(() => [])
       ]);
       return P.reply(200, {
         ok: true, unlocked: gate.unlocked, keyConfigured: !!process.env.PERSONAL_ACCESS_KEY, plaidConfigured: P.plaidReady(),
         categories: P.PERSONAL_CATEGORIES,
         accounts, transactions: txns, debts, holdings, budgets, rules,
-        netWorthHistory: nw, profile: (profile && profile[0]) || null,
+        netWorthHistory: nw, profile: (profile && profile[0]) || null, visionBoard: vision || [],
         computed: computeNetWorth(accounts, debts, holdings)
       });
     }
@@ -111,6 +112,15 @@ exports.handler = async function (event) {
         snap_date: today, total_assets: c.assets, total_liabilities: c.liabilities, net_worth: c.net_worth, breakdown: c.byType
       }, { Prefer: 'resolution=merge-duplicates,return=minimal' });
       return P.reply(200, { ok: true, computed: c });
+    }
+
+    if (action === 'coach_reports') {
+      const rows = await P.supaGet('/personal_coach_reports?select=*&order=created_at.desc&limit=60').catch(function(){ return []; });
+      return P.reply(200, { ok: true, reports: rows || [] });
+    }
+    if (action === 'mark_report_reviewed') {
+      await P.supaPatch('/personal_coach_reports?id=eq.' + encodeURIComponent(req.id), { reviewed: true });
+      return P.reply(200, { ok: true });
     }
 
     return P.reply(400, { error: 'unknown action' });

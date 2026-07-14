@@ -8806,10 +8806,200 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<div style="font-size:0.82rem;color:#888;max-width:420px;margin:0 auto;line-height:1.6;">'+blurb+'</div>'+
     '</div>';
   }
-  function renderCoachView() {
+  // ══ FINANCIAL COACH (AI advisor) ═════════════════════════════════════════════
+  var coachSubTab = 'dashboard';           // dashboard | advisor | vision | consultant
+  var coachProj = { growth:7, monthly:1000 };
+  var coachChat = [];
+  async function renderCoachView(){
     document.getElementById('dashBody').innerHTML = privacyNav() + personalSubBar('coach') +
-      _personalPlaceholder('Financial Coach — setting up', 'Your AI financial advisor: net-worth dashboard with 1/5/10-year projections, strategy engine, accountability check-ins, vision board, and a consultant chat to pressure-test ideas. Landing after the Bookkeeper foundation.');
+      '<div style="text-align:center;padding:40px;color:#666;font-size:0.85rem;">Loading your coach&hellip;</div>';
+    var snap, reps;
+    try { snap = await personalApi('snapshot'); reps = await personalApi('coach_reports'); }
+    catch(e){ document.getElementById('dashBody').innerHTML = privacyNav()+personalSubBar('coach')+'<div style="padding:20px;color:#ef4444;">Could not reach the personal data service: '+esc(e.message)+'</div>'; return; }
+    if (!snap || snap.error) {
+      var msg=(snap&&/relation|does not exist|personal_/i.test(snap.error||''))?PERSONAL_MIGRATION_MSG:('Error: '+esc((snap&&snap.error)||'unknown'));
+      document.getElementById('dashBody').innerHTML = privacyNav()+personalSubBar('coach')+'<div style="padding:18px;color:#ffaa00;background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.3);border-radius:12px;">'+msg+'</div>'; return;
+    }
+    personalCache = snap;
+    var profile = snap.profile || {};
+    var h = privacyNav() + personalSubBar('coach');
+
+    // Onboarding gate
+    if (!profile.onboarded) { document.getElementById('dashBody').innerHTML = h + coachOnboardingForm(profile, snap); return; }
+
+    // Sub-nav
+    var st='width:auto;margin:0;padding:6px 14px;border:none;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;white-space:nowrap;';
+    var subs=[['dashboard','&#128200; Net Worth'],['advisor','&#129302; AI Advisor'],['vision','&#10024; Vision Board'],['consultant','&#128172; Consultant']];
+    h+='<div style="display:flex;gap:7px;margin-bottom:16px;flex-wrap:wrap;">'+subs.map(function(t){ var on=coachSubTab===t[0];
+      return '<button onclick="coachSubTab=\''+t[0]+'\';renderCoachView()" style="'+st+'background:'+(on?'#8DC63F':'rgba(255,255,255,0.07)')+';color:'+(on?'#1A1A1A':'#888')+';">'+t[1]+'</button>'; }).join('')
+      +'<button onclick="coachEditProfile()" style="'+st+'background:rgba(255,255,255,0.05);color:#666;margin-left:auto;">&#9998; Profile</button></div>';
+
+    h+='<div id="coachBody">';
+    if (coachSubTab==='advisor') h+=coachRenderAdvisor(reps);
+    else if (coachSubTab==='vision') h+=coachRenderVision(snap);
+    else if (coachSubTab==='consultant') h+=coachRenderConsultant();
+    else h+=coachRenderDashboard(snap);
+    h+='</div>';
+    document.getElementById('dashBody').innerHTML = h;
+    if (coachSubTab==='dashboard') coachMountCharts(snap);
+    if (coachSubTab==='consultant') coachScrollChat();
   }
+
+  function coachOnboardingForm(profile, snap){
+    var nw = (snap.computed&&snap.computed.net_worth)||0;
+    var f=[['ob_income','Take-home income per month ($)',profile.monthly_income||'','number'],
+      ['ob_savings','What you save/invest per month ($)',profile.monthly_savings||'','number'],
+      ['ob_skills','Your strengths & skills (what you\'re genuinely good at)',profile.skills||'','area'],
+      ['ob_life','Life context (what\'s shifted — divorce, hours, career — and what matters now)',profile.life_context||'','area'],
+      ['ob_past','Past investment strategies that worked, and what changed',profile.past_strategies||'','area'],
+      ['ob_avoid','Financial decisions you\'ve been avoiding — and honestly, why',profile.avoided_decisions||'','area']];
+    var h='<div style="max-width:640px;margin:0 auto;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:22px;">';
+    h+='<div style="font-size:1.1rem;font-weight:800;color:#eee;margin-bottom:4px;">Let&#39;s set up your Coach</div>';
+    h+='<div style="font-size:0.8rem;color:#888;margin-bottom:18px;line-height:1.6;">A few honest answers so the advice is grounded in your actual life — not generic. Your current net worth ('+finMoneyP(nw)+') comes straight from your Bookkeeper. Nothing here is shared anywhere.</div>';
+    h+='<div style="margin-bottom:14px;"><label style="font-size:0.7rem;color:#888;display:block;margin-bottom:5px;">Risk tolerance right now</label>'+
+      '<select id="ob_risk" style="width:100%;padding:9px 12px;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#eee;font-size:0.85rem;">'+
+      ['Conservative','Moderate','Aggressive'].map(function(r){return '<option'+(profile.risk_tolerance===r?' selected':'')+'>'+r+'</option>';}).join('')+'</select></div>';
+    f.forEach(function(x){
+      h+='<div style="margin-bottom:14px;"><label style="font-size:0.7rem;color:#888;display:block;margin-bottom:5px;">'+x[1]+'</label>';
+      if(x[3]==='area') h+='<textarea id="'+x[0]+'" rows="2" style="width:100%;padding:9px 12px;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#eee;font-size:0.85rem;resize:vertical;box-sizing:border-box;">'+esc(String(x[2]||''))+'</textarea>';
+      else h+='<input id="'+x[0]+'" type="'+x[3]+'" value="'+esc(String(x[2]||''))+'" style="width:100%;padding:9px 12px;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#eee;font-size:0.85rem;box-sizing:border-box;"/>';
+      h+='</div>';
+    });
+    h+='<button onclick="coachSaveOnboarding('+nw+')" style="width:auto;padding:11px 26px;background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;font-size:0.9rem;font-weight:800;cursor:pointer;">Save &amp; Start</button>';
+    h+='<span id="obMsg" style="font-size:0.75rem;color:#8DC63F;margin-left:10px;"></span></div>';
+    return h;
+  }
+  window.coachEditProfile = function(){ if(personalCache&&personalCache.profile) personalCache.profile.onboarded=false; document.getElementById('dashBody').innerHTML = privacyNav()+personalSubBar('coach')+coachOnboardingForm((personalCache&&personalCache.profile)||{}, personalCache||{computed:{}}); };
+  window.coachSaveOnboarding = async function(nw){
+    var g=function(id){ var el=document.getElementById(id); return el?el.value:''; };
+    var row={ id:'default', monthly_income:parseFloat(g('ob_income'))||null, monthly_savings:parseFloat(g('ob_savings'))||null,
+      risk_tolerance:g('ob_risk'), skills:g('ob_skills'), life_context:g('ob_life'), past_strategies:g('ob_past'), avoided_decisions:g('ob_avoid'),
+      net_worth_baseline:nw, onboarded:true, updated_at:new Date().toISOString() };
+    var m=document.getElementById('obMsg'); if(m)m.textContent='Saving…';
+    var r=await personalApi('upsert',{table:'personal_profile',row:row});
+    if(r&&r.ok){ coachSubTab='dashboard'; renderCoachView(); } else if(m){ m.style.color='#ef4444'; m.textContent='Error saving'; }
+  };
+
+  // ── Dashboard + projections ──
+  function coachRenderDashboard(snap){
+    var c=snap.computed||{net_worth:0,assets:0,liabilities:0};
+    var h='<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px;">';
+    h+=bkTile('Net Worth',finMoneyP(c.net_worth),c.net_worth>=0?'#8DC63F':'#ef4444')+bkTile('Assets',finMoneyP(c.assets),'#4a9eff')+bkTile('Liabilities',finMoneyP(c.liabilities),'#ffaa00');
+    h+='</div>';
+    h+='<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;margin-bottom:8px;">Net Worth Trend</div>';
+    h+='<div style="background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:12px;height:220px;margin-bottom:8px;"><canvas id="coachTrend"></canvas></div>';
+    if((snap.netWorthHistory||[]).length<2) h+='<div style="font-size:0.7rem;color:#666;margin-bottom:16px;">Tap &#128190; Snapshot Net Worth in the Bookkeeper over time to grow this line.</div>';
+    // Projection
+    h+='<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;margin:18px 0 8px;">Where this goes &mdash; projection</div>';
+    h+='<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:10px;">';
+    h+='<div style="flex:1;min-width:180px;"><label style="font-size:0.7rem;color:#888;">Annual growth: <b id="cpGval" style="color:#8DC63F;">'+coachProj.growth+'%</b></label><input type="range" min="0" max="15" step="0.5" value="'+coachProj.growth+'" oninput="coachProj.growth=parseFloat(this.value);document.getElementById(\'cpGval\').textContent=this.value+\'%\';coachMountProjection();" style="width:100%;"/></div>';
+    h+='<div style="flex:1;min-width:180px;"><label style="font-size:0.7rem;color:#888;">Monthly contribution: <b id="cpMval" style="color:#8DC63F;">'+finMoneyP(coachProj.monthly)+'</b></label><input type="range" min="0" max="10000" step="100" value="'+coachProj.monthly+'" oninput="coachProj.monthly=parseFloat(this.value);document.getElementById(\'cpMval\').textContent=(typeof finMoney===\'function\'?finMoney(this.value):this.value);coachMountProjection();" style="width:100%;"/></div>';
+    h+='</div>';
+    h+='<div style="background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:12px;height:240px;"><canvas id="coachProj"></canvas></div>';
+    h+='<div id="coachProjTiles" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:10px;"></div>';
+    return h;
+  }
+  function coachProjectSeries(snap){
+    var nw=(snap.computed&&snap.computed.net_worth)||0; var g=coachProj.growth/100, m=coachProj.monthly*12;
+    var pts=[nw]; for(var y=1;y<=10;y++){ pts.push(Math.round(pts[y-1]*(1+g)+m)); } return pts;
+  }
+  function coachMountCharts(snap){
+    finLoadChartJs().then(function(ok){ if(!ok||!window.Chart) return;
+      var el=document.getElementById('coachTrend');
+      if(el){ var hist=(snap.netWorthHistory||[]);
+        new Chart(el,{ type:'line', data:{ labels:hist.map(function(x){return x.snap_date;}), datasets:[{ data:hist.map(function(x){return Math.round(parseFloat(x.net_worth)||0);}), borderColor:'#8DC63F', backgroundColor:'rgba(141,198,63,0.12)', fill:true, tension:0.25, pointRadius:2 }] },
+          options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{ticks:{color:'#898781',font:{size:9}},grid:{color:'#2c2c2a'}},y:{ticks:{color:'#898781',font:{size:9},callback:function(v){return '$'+Math.round(v/1000)+'k';}},grid:{color:'#2c2c2a'}}}} }); }
+      coachMountProjection();
+    });
+  }
+  window.coachMountProjection = function(){
+    if(!window.Chart||!personalCache) return;
+    var el=document.getElementById('coachProj'); if(!el) return;
+    var series=coachProjectSeries(personalCache); var labels=[]; for(var y=0;y<=10;y++) labels.push('Yr '+y);
+    if(window._coachProjChart) window._coachProjChart.destroy();
+    window._coachProjChart=new Chart(el,{ type:'line', data:{ labels:labels, datasets:[{ data:series, borderColor:'#4a9eff', backgroundColor:'rgba(74,158,255,0.12)', fill:true, tension:0.2, pointRadius:function(ctx){return [1,5,10].indexOf(ctx.dataIndex)>=0?5:0;}, pointBackgroundColor:'#4a9eff' }] },
+      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{ticks:{color:'#898781',font:{size:9}},grid:{color:'#2c2c2a'}},y:{ticks:{color:'#898781',font:{size:9},callback:function(v){return '$'+Math.round(v/1000)+'k';}},grid:{color:'#2c2c2a'}}}} });
+    var t=document.getElementById('coachProjTiles');
+    if(t) t.innerHTML=[[1,'1 Year'],[5,'5 Years'],[10,'10 Years']].map(function(x){ return bkTile(x[1],finMoneyP(series[x[0]]),'#4a9eff'); }).join('');
+  };
+
+  // ── AI Advisor ──
+  function coachRenderAdvisor(reps){
+    var reports=(reps&&reps.reports)||[];
+    var h='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;"><div style="font-size:0.85rem;font-weight:800;color:#eee;">&#129302; Coach Recommendations</div>'+
+      '<button onclick="coachRunNow()" style="width:auto;padding:7px 16px;background:rgba(141,198,63,0.14);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;">&#9889; Run Analysis Now</button></div>';
+    h+='<div id="coachRunMsg" style="font-size:0.72rem;color:#888;margin-bottom:10px;"></div>';
+    if(!reports.length) h+='<div style="text-align:center;padding:40px;color:#666;font-size:0.82rem;background:rgba(255,255,255,0.02);border:1px dashed rgba(255,255,255,0.1);border-radius:14px;">No recommendations yet. Tap <b>Run Analysis Now</b> (or the coach runs automatically each morning) once your accounts are connected.</div>';
+    reports.forEach(function(r){
+      var pc=r.priority==='urgent'?'#ef4444':r.priority==='high'?'#ffaa00':'#4a9eff';
+      h+='<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-left:3px solid '+pc+';border-radius:10px;padding:14px;margin-bottom:10px;opacity:'+(r.reviewed?'0.55':'1')+';">'+
+        '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;"><div style="font-size:0.86rem;font-weight:700;color:#eee;">'+esc(r.title)+'</div>'+
+        '<span style="font-size:0.58rem;font-weight:700;color:'+pc+';text-transform:uppercase;white-space:nowrap;">'+esc(r.priority||'normal')+'</span></div>'+
+        '<div style="font-size:0.8rem;color:#bbb;line-height:1.6;margin-top:8px;white-space:pre-wrap;">'+esc(r.body||'')+'</div>'+
+        '<div style="text-align:right;margin-top:8px;">'+(r.reviewed?'<span style="font-size:0.66rem;color:#555;">&#10003; reviewed</span>':'<button onclick="coachMarkReviewed(\''+r.id+'\')" style="width:auto;font-size:0.66rem;padding:3px 12px;background:none;border:1px solid rgba(255,255,255,0.15);color:#888;border-radius:100px;cursor:pointer;">Mark reviewed</button>')+'</div>'+
+      '</div>';
+    });
+    return h;
+  }
+  window.coachRunNow = async function(){ var m=document.getElementById('coachRunMsg'); if(m)m.textContent='Running your coach — this takes ~30-60s…'; try{ await fetch('/.netlify/functions/run-agent-background?agent=personal_coach'); if(m)m.textContent='Analysis started. Refresh in a minute for new recommendations.'; }catch(e){ if(m)m.textContent='Could not start: '+e.message; } };
+  window.coachMarkReviewed = async function(id){ await personalApi('mark_report_reviewed',{id:id}); renderCoachView(); };
+
+  // ── Vision Board ──
+  function coachRenderVision(snap){
+    var nw=(snap.computed&&snap.computed.net_worth)||0;
+    var vb=(snap.visionBoard)||[];
+    var h='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;"><div style="font-size:0.85rem;font-weight:800;color:#eee;">&#10024; Vision Board</div>'+
+      '<button onclick="coachAddVision()" style="width:auto;padding:7px 16px;background:rgba(155,109,232,0.14);border:1px solid rgba(155,109,232,0.4);color:#9b6de8;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;">+ Milestone</button></div>';
+    if(!vb.length) h+='<div style="text-align:center;padding:36px;color:#666;font-size:0.82rem;background:rgba(255,255,255,0.02);border:1px dashed rgba(255,255,255,0.1);border-radius:14px;">Add the things you\'re building toward — a number, a date, an image, a line that keeps you honest. Progress fills in from your net worth.</div>';
+    h+='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;">';
+    vb.forEach(function(v){
+      var pct=v.target_amount>0?Math.min(100,Math.round(nw/parseFloat(v.target_amount)*100)):0;
+      h+='<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:14px;overflow:hidden;">';
+      if(v.image_url) h+='<div style="height:120px;background:url(\''+esc(v.image_url)+'\') center/cover;"></div>';
+      h+='<div style="padding:14px;">';
+      h+='<div style="font-size:0.9rem;font-weight:800;color:#eee;">'+esc(v.title)+'</div>';
+      if(v.target_amount) h+='<div style="font-size:0.72rem;color:#9b6de8;margin-top:2px;">'+finMoneyP(v.target_amount)+(v.target_date?' by '+v.target_date:'')+'</div>';
+      if(v.target_amount) h+='<div style="height:6px;background:rgba(255,255,255,0.07);border-radius:100px;overflow:hidden;margin:8px 0;"><div style="height:100%;width:'+pct+'%;background:#9b6de8;"></div></div><div style="font-size:0.64rem;color:#888;">'+pct+'% there</div>';
+      if(v.quote) h+='<div style="font-size:0.74rem;color:#aaa;font-style:italic;line-height:1.5;margin-top:8px;border-left:2px solid rgba(155,109,232,0.4);padding-left:8px;">&ldquo;'+esc(v.quote)+'&rdquo;</div>';
+      h+='<button onclick="bkDel(\'personal_vision_board\',\''+v.id+'\');renderCoachViewSoon()" style="width:auto;margin-top:10px;font-size:0.64rem;padding:2px 10px;background:none;border:none;color:#555;cursor:pointer;">remove</button>';
+      h+='</div></div>';
+    });
+    h+='</div>';
+    return h;
+  }
+  window.renderCoachViewSoon = function(){ setTimeout(renderCoachView, 400); };
+  window.coachAddVision = async function(){
+    var d=bkPrompt([['title','Milestone (e.g. "Emergency fund", "Kids\' college", "Paid-off truck")'],['target_amount','Target amount $ (optional)'],['target_date','Target date YYYY-MM-DD (optional)'],['quote','A line that keeps you honest (optional)'],['image_url','Image URL (optional)']]);
+    if(!d)return; d.target_amount=parseFloat(d.target_amount)||null; if(!d.target_date)d.target_date=null;
+    var r=await personalApi('upsert',{table:'personal_vision_board',row:d}); if(r&&r.ok) renderCoachView();
+  };
+
+  // ── Consultant chat ──
+  function coachRenderConsultant(){
+    var h='<div style="font-size:0.8rem;color:#888;margin-bottom:12px;line-height:1.6;">Bring an idea — a purchase, a job change, an investment, a what-if. I&#39;ll pressure-test it against your real numbers before you act. Not licensed advice.</div>';
+    h+='<div id="coachChatLog" style="background:rgba(0,0,0,0.2);border:1px solid rgba(255,255,255,0.07);border-radius:12px;padding:12px;height:340px;overflow-y:auto;margin-bottom:10px;">';
+    if(!coachChat.length) h+='<div style="color:#555;font-size:0.8rem;padding:10px;">e.g. &ldquo;Should I pay off the truck or invest the $12k?&rdquo; · &ldquo;I&#39;m thinking about dropping to 30 hrs — can I afford it?&rdquo;</div>';
+    coachChat.forEach(function(m){ h+=coachBubble(m.role,m.content); });
+    h+='</div>';
+    h+='<div style="display:flex;gap:8px;"><input id="coachChatInput" onkeypress="if(event.key===\'Enter\')coachSend()" placeholder="Bring an idea…" style="flex:1;min-width:0;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:100px;color:#fff;padding:11px 18px;font-size:0.85rem;"/>'+
+      '<button onclick="coachSend()" style="width:auto;padding:11px 22px;background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;font-size:0.82rem;font-weight:700;cursor:pointer;">Send</button></div>';
+    return h;
+  }
+  function coachBubble(role,text){ var me=role==='user';
+    return '<div style="display:flex;justify-content:'+(me?'flex-end':'flex-start')+';margin-bottom:8px;"><div style="max-width:82%;padding:10px 14px;border-radius:14px;font-size:0.82rem;line-height:1.55;white-space:pre-wrap;'+(me?'background:#2a3b18;color:#eaf5d8;':'background:rgba(255,255,255,0.06);color:#ddd;')+'">'+esc(text)+'</div></div>';
+  }
+  function coachScrollChat(){ var el=document.getElementById('coachChatLog'); if(el) el.scrollTop=el.scrollHeight; }
+  window.coachSend = async function(){
+    var inp=document.getElementById('coachChatInput'); if(!inp)return; var msg=inp.value.trim(); if(!msg)return;
+    coachChat.push({role:'user',content:msg}); inp.value='';
+    document.getElementById('coachBody').innerHTML=coachRenderConsultant(); coachScrollChat();
+    coachChat.push({role:'assistant',content:'…thinking…'}); document.getElementById('coachBody').innerHTML=coachRenderConsultant(); coachScrollChat();
+    try{
+      var r=await fetch('/.netlify/functions/personal-consultant',{method:'POST',headers:{'Content-Type':'application/json','x-personal-key':personalKey()},body:JSON.stringify({message:msg,history:coachChat.slice(0,-2)})});
+      var d=await r.json(); coachChat.pop(); coachChat.push({role:'assistant',content:d.reply||'No response.'});
+    }catch(e){ coachChat.pop(); coachChat.push({role:'assistant',content:'Error: '+e.message}); }
+    document.getElementById('coachBody').innerHTML=coachRenderConsultant(); coachScrollChat();
+  };
 
   // ══ BOOKKEEPER (personal finances) ═══════════════════════════════════════════
   // All data lives in personal_* tables behind the service-role gateway
