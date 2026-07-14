@@ -17,7 +17,8 @@ exports.handler = async function (event) {
     const data = await P.plaid('/link/token/create', {
       client_name: 'Solar Review — Personal',
       user: { client_user_id: 'personal-owner' },
-      products: ['transactions', 'investments'],
+      products: ['transactions'],
+      optional_products: ['investments'],
       country_codes: ['US'],
       language: 'en',
       transactions: { days_requested: 730 }
