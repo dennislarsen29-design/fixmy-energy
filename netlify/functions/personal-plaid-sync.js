@@ -120,13 +120,39 @@ async function syncItem(item, rules) {
       const bump = (row.type === 'credit' || row.type === 'loan') ? Math.abs(cur) : cur;
       await P.supaPatch('/personal_accounts?id=eq.' + row.id, { current_balance: bump, as_of: new Date().toISOString() });
       if (row.type === 'credit' || row.type === 'loan') {
+        const sub = String(a.subtype || '').toLowerCase();
+        const debtType = row.type === 'credit' ? 'credit_card' : (sub === 'mortgage' ? 'mortgage' : sub === 'student' ? 'student' : 'auto');
         const existing = await P.supaGet('/personal_debts?select=id&linked_account_id=eq.' + row.id).catch(() => []);
-        const debtRow = { name: (a.name || item.institution) + (a.mask ? ' ••' + a.mask : ''), type: row.type === 'credit' ? 'credit_card' : 'auto', balance: Math.abs(cur), apr: (a.balances && a.balances.apr) || null, min_payment: (a.balances && a.balances.minimum_payment_amount) || null, institution: item.institution, linked_account_id: row.id };
+        const debtRow = { name: (a.name || item.institution) + (a.mask ? ' ••' + a.mask : ''), type: debtType, balance: Math.abs(cur), institution: item.institution, linked_account_id: row.id };
         if (existing && existing[0]) await P.supaPatch('/personal_debts?id=eq.' + existing[0].id, { balance: Math.abs(cur) });
         else await P.supaPost('/personal_debts', debtRow, { Prefer: 'return=minimal' });
       }
     }
   } catch (e) { console.warn('[personal-sync] balance skip:', e.message); }
+
+  // ── 2b. Liabilities (real APR / minimum payment) — only if this item has the
+  // product attached (Rocket-Mortgage-style loan servicers, or a bank reconnected
+  // after PLAID_LIABILITIES_ENABLED went live). Never overwrites a manual edit
+  // with a null when the item doesn't support Liabilities — just skips silently.
+  try {
+    const liab = await P.plaid('/liabilities/get', { access_token: item.access_token });
+    const terms = {};
+    ((liab.liabilities && liab.liabilities.credit) || []).forEach(c => {
+      const apr = (c.aprs || []).find(x => x.apr_type === 'purchase_apr') || (c.aprs || [])[0];
+      terms[c.account_id] = { apr: apr ? apr.apr_percentage : null, min_payment: c.minimum_payment_amount != null ? c.minimum_payment_amount : null };
+    });
+    ((liab.liabilities && liab.liabilities.mortgage) || []).forEach(m => {
+      terms[m.account_id] = { apr: (m.interest_rate && m.interest_rate.percentage) != null ? m.interest_rate.percentage : null, min_payment: m.next_monthly_payment != null ? m.next_monthly_payment : null };
+    });
+    ((liab.liabilities && liab.liabilities.student) || []).forEach(s => {
+      terms[s.account_id] = { apr: s.interest_rate_percentage != null ? s.interest_rate_percentage : null, min_payment: s.minimum_payment_amount != null ? s.minimum_payment_amount : null };
+    });
+    for (const accId in terms) {
+      const row = acctByPlaid[accId]; if (!row) continue;
+      const existing = await P.supaGet('/personal_debts?select=id&linked_account_id=eq.' + row.id).catch(() => []);
+      if (existing && existing[0]) await P.supaPatch('/personal_debts?id=eq.' + existing[0].id, { apr: terms[accId].apr, min_payment: terms[accId].min_payment });
+    }
+  } catch (e) { /* item's access token doesn't have Liabilities attached — fine, balance-only */ }
 
   // ── 3. Investment holdings (Schwab etc.) → personal_holdings ─────────────────
   let holdingsCount = 0;
