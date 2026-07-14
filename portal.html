@@ -8806,15 +8806,259 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<div style="font-size:0.82rem;color:#888;max-width:420px;margin:0 auto;line-height:1.6;">'+blurb+'</div>'+
     '</div>';
   }
-  // Phase 1 stubs — replaced by the full modules in Phases 2 (Bookkeeper) and 3 (Coach).
-  function renderBookkeeperView() {
-    document.getElementById('dashBody').innerHTML = privacyNav() + personalSubBar('bookkeeper') +
-      _personalPlaceholder('Bookkeeper — setting up', 'Personal budgeting, assets, debt tracking and live P&amp;L / net-worth reports, linked automatically through Plaid. Landing in the next update.');
-  }
   function renderCoachView() {
     document.getElementById('dashBody').innerHTML = privacyNav() + personalSubBar('coach') +
       _personalPlaceholder('Financial Coach — setting up', 'Your AI financial advisor: net-worth dashboard with 1/5/10-year projections, strategy engine, accountability check-ins, vision board, and a consultant chat to pressure-test ideas. Landing after the Bookkeeper foundation.');
   }
+
+  // ══ BOOKKEEPER (personal finances) ═══════════════════════════════════════════
+  // All data lives in personal_* tables behind the service-role gateway
+  // (personal-api.js). The client never touches those tables with the anon key.
+  var personalCache = null;
+  var bkSubTab = 'budget';                 // budget | assets | debt | reports
+  var bkRange = { mode:'month', year:(new Date()).getFullYear(), month:(new Date()).getMonth()+1 };
+  var PERSONAL_MIGRATION_MSG = 'Personal tables not found — run <code>supabase/migrations/20260714_personal_finance.sql</code> in the Supabase SQL Editor, then reload.';
+
+  function personalKey(){ try { return sessionStorage.getItem('personalKey') || ''; } catch(e){ return ''; } }
+  async function personalApi(action, payload){
+    var body = Object.assign({ action: action }, payload || {});
+    async function call(){
+      return fetch('/.netlify/functions/personal-api', { method:'POST',
+        headers:{ 'Content-Type':'application/json', 'x-personal-key': personalKey() }, body: JSON.stringify(body) });
+    }
+    var r = await call();
+    if (r.status === 401) {
+      var d = await r.json().catch(function(){ return {}; });
+      if (d.error === 'personal_key_required') {
+        var k = prompt('Enter your Personal access key (set as PERSONAL_ACCESS_KEY in Netlify):');
+        if (k) { try { sessionStorage.setItem('personalKey', k); } catch(e){} r = await call(); }
+      }
+    }
+    return r.json();
+  }
+  window.finMoneyP = function(n){ return (typeof finMoney==='function') ? finMoney(n) : ('$'+(parseFloat(n)||0).toFixed(2)); };
+
+  async function renderBookkeeperView(){
+    document.getElementById('dashBody').innerHTML = privacyNav() + personalSubBar('bookkeeper') +
+      '<div style="text-align:center;padding:40px;color:#666;font-size:0.85rem;">Loading your books&hellip;</div>';
+    var snap;
+    try { snap = await personalApi('snapshot'); }
+    catch(e){ document.getElementById('dashBody').innerHTML = privacyNav()+personalSubBar('bookkeeper')+'<div style="padding:20px;color:#ef4444;font-size:0.85rem;">Could not reach the personal data service: '+esc(e.message)+'</div>'; return; }
+    if (!snap || snap.error) {
+      var msg = (snap && /relation|does not exist|personal_/i.test(snap.error||'')) ? PERSONAL_MIGRATION_MSG : ('Error: '+esc((snap&&snap.error)||'unknown'));
+      document.getElementById('dashBody').innerHTML = privacyNav()+personalSubBar('bookkeeper')+'<div style="padding:18px;color:#ffaa00;font-size:0.82rem;background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.3);border-radius:12px;">'+msg+'</div>';
+      return;
+    }
+    personalCache = snap;
+
+    var h = privacyNav() + personalSubBar('bookkeeper');
+    // Lock-down nudge
+    if (!snap.keyConfigured) {
+      h += '<div style="background:rgba(74,158,255,0.07);border:1px solid rgba(74,158,255,0.25);border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:0.72rem;color:#4a9eff;">&#128274; Tip: set <code>PERSONAL_ACCESS_KEY</code> in Netlify to require a key before this personal data can be read. Until then it&#39;s protected only by the portal login.</div>';
+    }
+
+    // Net-worth headline
+    var c = snap.computed || {net_worth:0,assets:0,liabilities:0};
+    h += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px;">';
+    h += bkTile('Net Worth', finMoneyP(c.net_worth), c.net_worth>=0?'#8DC63F':'#ef4444');
+    h += bkTile('Assets', finMoneyP(c.assets), '#4a9eff');
+    h += bkTile('Liabilities', finMoneyP(c.liabilities), '#ffaa00');
+    h += '</div>';
+
+    // Plaid connect / sync bar
+    h += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px;">';
+    h += '<button onclick="bkConnectPlaid()" style="width:auto;padding:8px 16px;background:rgba(74,158,255,0.12);border:1px solid rgba(74,158,255,0.35);color:#4a9eff;border-radius:100px;font-size:0.75rem;font-weight:700;cursor:pointer;">&#128179; Connect Bank / Schwab</button>';
+    h += '<button onclick="bkSyncNow()" style="width:auto;padding:8px 16px;background:rgba(141,198,63,0.12);border:1px solid rgba(141,198,63,0.35);color:#8DC63F;border-radius:100px;font-size:0.75rem;font-weight:700;cursor:pointer;">&#8635; Sync Now</button>';
+    h += '<button onclick="bkSaveSnapshot()" title="Record today\'s net worth so the trend chart and Coach projections have a datapoint." style="width:auto;padding:8px 16px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);color:#aaa;border-radius:100px;font-size:0.75rem;cursor:pointer;">&#128190; Snapshot Net Worth</button>';
+    h += '<span id="bkMsg" style="font-size:0.72rem;color:#888;"></span>';
+    h += '</div>';
+
+    // Sub-nav
+    var st='width:auto;margin:0;padding:6px 14px;border:none;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;white-space:nowrap;';
+    var subs=[['budget','&#128202; Budget'],['assets','&#127974; Assets'],['debt','&#128181; Debt'],['reports','&#128196; Reports']];
+    h += '<div style="display:flex;gap:7px;margin-bottom:16px;flex-wrap:wrap;">'+subs.map(function(t){ var on=bkSubTab===t[0];
+      return '<button onclick="bkSubTab=\''+t[0]+'\';renderBookkeeperView()" style="'+st+'background:'+(on?'#8DC63F':'rgba(255,255,255,0.07)')+';color:'+(on?'#1A1A1A':'#888')+';">'+t[1]+'</button>'; }).join('')+'</div>';
+
+    h += '<div id="bkBody">';
+    if (bkSubTab==='budget') h += bkRenderBudget(snap);
+    else if (bkSubTab==='assets') h += bkRenderAssets(snap);
+    else if (bkSubTab==='debt') h += bkRenderDebt(snap);
+    else h += bkRenderReports(snap);
+    h += '</div>';
+
+    document.getElementById('dashBody').innerHTML = h;
+    if (bkSubTab==='reports') bkMountReportCharts(snap);
+  }
+
+  function bkTile(label,val,color){ return '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:14px;text-align:center;"><div style="font-size:1.3rem;font-weight:800;color:'+color+';">'+val+'</div><div style="font-size:0.66rem;color:#888;margin-top:3px;">'+label+'</div></div>'; }
+  function bkMonthTxns(snap){ var y=bkRange.year, m=String(bkRange.month).padStart(2,'0'), pre=y+'-'+m; return (snap.transactions||[]).filter(function(t){ return String(t.txn_date||'').slice(0,7)===pre; }); }
+
+  function bkRangeBar(){
+    var MO=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    var years=[]; for(var y=(new Date()).getFullYear(); y>=2023; y--) years.push(y);
+    var h='<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:14px;">';
+    [['month','Month'],['year','Year'],['lifetime','Lifetime']].forEach(function(m){ var on=bkRange.mode===m[0];
+      h+='<button onclick="bkRange.mode=\''+m[0]+'\';renderBookkeeperView()" style="width:auto;padding:4px 12px;border-radius:100px;font-size:0.68rem;font-weight:700;cursor:pointer;border:none;background:'+(on?'#8DC63F':'rgba(255,255,255,0.07)')+';color:'+(on?'#1A1A1A':'#888')+';">'+m[1]+'</button>'; });
+    if (bkRange.mode!=='lifetime') h+='<select onchange="bkRange.year=parseInt(this.value,10);renderBookkeeperView()" style="background:#1f1f1f;color:#ccc;border:1px solid #333;border-radius:8px;padding:4px 8px;font-size:0.7rem;">'+years.map(function(y){return '<option value="'+y+'"'+(y===bkRange.year?' selected':'')+'>'+y+'</option>';}).join('')+'</select>';
+    if (bkRange.mode==='month') h+='<select onchange="bkRange.month=parseInt(this.value,10);renderBookkeeperView()" style="background:#1f1f1f;color:#ccc;border:1px solid #333;border-radius:8px;padding:4px 8px;font-size:0.7rem;">'+MO.map(function(mm,i){return '<option value="'+(i+1)+'"'+(i+1===bkRange.month?' selected':'')+'>'+mm+'</option>';}).join('')+'</select>';
+    h+='</div>'; return h;
+  }
+  function bkRangeTxns(snap){
+    if (bkRange.mode==='month') return bkMonthTxns(snap);
+    if (bkRange.mode==='year') return (snap.transactions||[]).filter(function(t){ return String(t.txn_date||'').slice(0,4)===String(bkRange.year); });
+    return (snap.transactions||[]);
+  }
+
+  // ── Budget ──
+  function bkRenderBudget(snap){
+    var h='';
+    var review=(snap.transactions||[]).filter(function(t){ return t.review_status==='needs_review'; });
+    if (review.length){
+      h+='<div style="background:rgba(255,170,0,0.06);border:1px solid rgba(255,170,0,0.25);border-radius:12px;padding:14px;margin-bottom:16px;">';
+      h+='<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#ffaa00;margin-bottom:10px;">&#9888; '+review.length+' to categorize</div>';
+      review.slice(0,15).forEach(function(t){ h+=bkTxnRow(t, snap.categories, true); });
+      h+='</div>';
+    }
+    h+=bkRangeBar();
+    // Budget vs actual (expenses only, current range)
+    var txns=bkRangeTxns(snap), byCat={};
+    txns.forEach(function(t){ if(t.flow==='expense'){ byCat[t.category||'Uncategorized']=(byCat[t.category||'Uncategorized']||0)+(parseFloat(t.amount)||0); } });
+    var budgets={}; (snap.budgets||[]).forEach(function(b){ budgets[b.category]=parseFloat(b.monthly_limit)||0; });
+    var income=txns.filter(function(t){return t.flow==='income';}).reduce(function(s,t){return s+(parseFloat(t.amount)||0);},0);
+    var expense=Object.keys(byCat).reduce(function(s,k){return s+byCat[k];},0);
+    h+='<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px;">';
+    h+=bkTile('Income',finMoneyP(income),'#8DC63F')+bkTile('Spending',finMoneyP(expense),'#ffaa00')+bkTile('Net',finMoneyP(income-expense),(income-expense)>=0?'#8DC63F':'#ef4444');
+    h+='</div>';
+    h+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;"><div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;">Budget vs. Actual</div><button onclick="bkAddTxnForm()" style="width:auto;padding:5px 12px;background:rgba(141,198,63,0.12);border:1px solid rgba(141,198,63,0.3);color:#8DC63F;border-radius:100px;font-size:0.68rem;font-weight:700;cursor:pointer;">+ Manual Transaction</button></div>';
+    var cats=snap.categories.filter(function(c){return c!=='Income'&&c!=='Transfers';});
+    cats.forEach(function(cat){
+      var spent=byCat[cat]||0, lim=budgets[cat]||0; if(!spent&&!lim) return;
+      var pct=lim>0?Math.min(100,Math.round(spent/lim*100)):0; var over=lim>0&&spent>lim;
+      h+='<div style="margin-bottom:10px;">';
+      h+='<div style="display:flex;justify-content:space-between;font-size:0.74rem;margin-bottom:4px;"><span style="color:#ccc;">'+cat+'</span><span style="color:'+(over?'#ef4444':'#888')+';">'+finMoneyP(spent)+(lim>0?' / '+finMoneyP(lim):'')+' <a href="#" onclick="bkSetBudgetPrompt(\''+cat+'\','+lim+');return false;" style="color:#4a9eff;text-decoration:none;font-size:0.66rem;margin-left:4px;">set</a></span></div>';
+      if(lim>0){ h+='<div style="height:6px;background:rgba(255,255,255,0.07);border-radius:100px;overflow:hidden;"><div style="height:100%;width:'+pct+'%;background:'+(over?'#ef4444':'#8DC63F')+';"></div></div>'; }
+      h+='</div>';
+    });
+    // Ledger
+    h+='<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;margin:18px 0 8px;">Transactions</div>';
+    var led=txns.slice(0,120); if(!led.length) h+='<div style="color:#555;font-size:0.8rem;padding:14px;">No transactions in this range yet — connect an account or add one manually.</div>';
+    led.forEach(function(t){ h+=bkTxnRow(t, snap.categories, false); });
+    return h;
+  }
+  function bkTxnRow(t, cats, review){
+    var amt=parseFloat(t.amount)||0; var col=t.flow==='income'?'#8DC63F':t.flow==='transfer'?'#888':'#ddd';
+    var opts=cats.map(function(c){return '<option value="'+c+'"'+(t.category===c?' selected':'')+'>'+c+'</option>';}).join('');
+    return '<div style="display:flex;gap:8px;align-items:center;font-size:0.74rem;padding:7px 10px;margin-bottom:4px;border-radius:9px;background:'+(review?'rgba(255,170,0,0.05)':'rgba(255,255,255,0.02)')+';border:1px solid '+(review?'rgba(255,170,0,0.2)':'rgba(255,255,255,0.06)')+';flex-wrap:wrap;">'+
+      '<span style="color:#666;font-size:0.66rem;white-space:nowrap;">'+String(t.txn_date||'').slice(5)+'</span>'+
+      '<span style="color:#ddd;flex:1;min-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="'+esc(t.description||'')+'">'+esc(t.merchant||t.description||'—')+'</span>'+
+      '<span style="color:'+col+';font-weight:700;white-space:nowrap;">'+(t.flow==='income'?'+':t.flow==='expense'?'−':'')+finMoneyP(amt)+'</span>'+
+      '<select onchange="bkRecat(\''+t.id+'\',this.value)" style="width:auto;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:7px;color:#ccc;font-size:0.66rem;padding:3px 6px;">'+opts+'</select>'+
+      '<button onclick="bkDel(\'personal_transactions\',\''+t.id+'\')" title="Delete" style="width:auto;background:none;border:none;color:#444;cursor:pointer;font-size:0.85rem;">&times;</button>'+
+    '</div>';
+  }
+
+  // ── Assets ──
+  function bkRenderAssets(snap){
+    var h='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;"><div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;">Accounts</div><button onclick="bkAddAccountForm()" style="width:auto;padding:5px 12px;background:rgba(74,158,255,0.12);border:1px solid rgba(74,158,255,0.3);color:#4a9eff;border-radius:100px;font-size:0.68rem;font-weight:700;cursor:pointer;">+ Account</button></div>';
+    var accts=snap.accounts||[]; if(!accts.length) h+='<div style="color:#555;font-size:0.8rem;padding:12px;">No accounts yet.</div>';
+    accts.forEach(function(a){ var lia=(a.type==='credit'||a.type==='loan');
+      h+='<div style="display:flex;gap:8px;align-items:center;justify-content:space-between;padding:10px 12px;margin-bottom:6px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:10px;">'+
+        '<div style="min-width:0;"><div style="font-size:0.82rem;font-weight:700;color:#eee;">'+esc(a.name||'—')+'</div><div style="font-size:0.64rem;color:#666;">'+esc(a.type)+(a.institution?' · '+esc(a.institution):'')+(a.plaid_item_id?' · &#128279; Plaid':'')+'</div></div>'+
+        '<div style="display:flex;align-items:center;gap:8px;"><span style="font-size:0.9rem;font-weight:800;color:'+(lia?'#ffaa00':'#8DC63F')+';">'+finMoneyP(a.current_balance)+'</span>'+
+        '<button onclick="bkDel(\'personal_accounts\',\''+a.id+'\')" style="width:auto;background:none;border:none;color:#444;cursor:pointer;">&times;</button></div>'+
+      '</div>';
+    });
+    // Holdings
+    h+='<div style="display:flex;justify-content:space-between;align-items:center;margin:18px 0 10px;"><div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;">Investment Holdings</div><button onclick="bkAddHoldingForm()" style="width:auto;padding:5px 12px;background:rgba(155,109,232,0.12);border:1px solid rgba(155,109,232,0.3);color:#9b6de8;border-radius:100px;font-size:0.68rem;font-weight:700;cursor:pointer;">+ Holding</button></div>';
+    var hold=snap.holdings||[]; if(!hold.length) h+='<div style="color:#555;font-size:0.8rem;padding:12px;">No holdings yet — connect Schwab via Plaid or add manually.</div>';
+    hold.forEach(function(g){
+      h+='<div style="display:flex;gap:8px;align-items:center;justify-content:space-between;padding:9px 12px;margin-bottom:5px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);border-radius:9px;">'+
+        '<div><span style="font-size:0.8rem;font-weight:700;color:#eee;">'+esc(g.symbol||g.name||'—')+'</span> <span style="font-size:0.66rem;color:#666;">'+esc(g.name||'')+(g.quantity?' · '+g.quantity+' sh':'')+'</span></div>'+
+        '<div style="display:flex;align-items:center;gap:8px;"><span style="font-size:0.85rem;font-weight:800;color:#9b6de8;">'+finMoneyP(g.market_value)+'</span>'+
+        '<button onclick="bkDel(\'personal_holdings\',\''+g.id+'\')" style="width:auto;background:none;border:none;color:#444;cursor:pointer;">&times;</button></div>'+
+      '</div>';
+    });
+    return h;
+  }
+
+  // ── Debt ──
+  function bkRenderDebt(snap){
+    var h='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;"><div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;">Liabilities</div><button onclick="bkAddDebtForm()" style="width:auto;padding:5px 12px;background:rgba(255,170,0,0.12);border:1px solid rgba(255,170,0,0.3);color:#ffaa00;border-radius:100px;font-size:0.68rem;font-weight:700;cursor:pointer;">+ Debt</button></div>';
+    var debts=snap.debts||[]; if(!debts.length) h+='<div style="color:#555;font-size:0.8rem;padding:12px;">No debts tracked. Nice.</div>';
+    var total=0;
+    debts.forEach(function(d){ total+=Math.abs(parseFloat(d.balance)||0);
+      var payoff=''; var bal=Math.abs(parseFloat(d.balance)||0), apr=parseFloat(d.apr)||0, mp=parseFloat(d.min_payment)||0;
+      if(mp>0&&bal>0){ var mo; if(apr>0){ var r=apr/100/12; var n=-Math.log(1-(bal*r)/mp)/Math.log(1+r); mo=(isFinite(n)&&n>0)?Math.ceil(n):null; } else { mo=Math.ceil(bal/mp); } if(mo) payoff=mo+' mo to payoff'; else payoff='payment too low to amortize'; }
+      h+='<div style="padding:12px;margin-bottom:8px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:11px;">'+
+        '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;"><div><div style="font-size:0.84rem;font-weight:700;color:#eee;">'+esc(d.name||'—')+'</div><div style="font-size:0.64rem;color:#666;">'+esc(d.type||'')+(d.apr?' · '+d.apr+'% APR':'')+(d.min_payment?' · min '+finMoneyP(d.min_payment):'')+'</div>'+(payoff?'<div style="font-size:0.64rem;color:#ffaa00;margin-top:2px;">&#9203; '+payoff+'</div>':'')+'</div>'+
+        '<div style="display:flex;align-items:center;gap:8px;"><span style="font-size:0.95rem;font-weight:800;color:#ffaa00;">'+finMoneyP(bal)+'</span><button onclick="bkDel(\'personal_debts\',\''+d.id+'\')" style="width:auto;background:none;border:none;color:#444;cursor:pointer;">&times;</button></div></div>'+
+      '</div>';
+    });
+    if(debts.length) h+='<div style="text-align:right;font-size:0.8rem;color:#888;margin-top:6px;">Total debt: <strong style="color:#ffaa00;">'+finMoneyP(total)+'</strong></div>';
+    return h;
+  }
+
+  // ── Reports ──
+  function bkRenderReports(snap){
+    var h=bkRangeBar();
+    var txns=bkRangeTxns(snap);
+    var income=txns.filter(function(t){return t.flow==='income';}).reduce(function(s,t){return s+(parseFloat(t.amount)||0);},0);
+    var byCat={}; txns.forEach(function(t){ if(t.flow==='expense') byCat[t.category||'Uncategorized']=(byCat[t.category||'Uncategorized']||0)+(parseFloat(t.amount)||0); });
+    var expense=Object.keys(byCat).reduce(function(s,k){return s+byCat[k];},0);
+    h+='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;"><div style="font-size:0.85rem;font-weight:800;color:#eee;">Personal P&amp;L &mdash; '+(bkRange.mode==='lifetime'?'Lifetime':bkRange.mode==='year'?bkRange.year:(['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][bkRange.month-1]+' '+bkRange.year))+'</div>'+
+      '<button onclick="bkExportPnl()" style="width:auto;padding:5px 12px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);color:#aaa;border-radius:100px;font-size:0.68rem;cursor:pointer;">Export CSV</button></div>';
+    h+='<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:12px;padding:14px;margin-bottom:16px;">';
+    h+='<div style="display:flex;justify-content:space-between;font-size:0.82rem;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.06);"><span style="color:#8DC63F;font-weight:700;">Income</span><span style="color:#8DC63F;font-weight:700;">'+finMoneyP(income)+'</span></div>';
+    Object.keys(byCat).sort(function(a,b){return byCat[b]-byCat[a];}).forEach(function(k){
+      h+='<div style="display:flex;justify-content:space-between;font-size:0.76rem;padding:4px 0;color:#bbb;"><span>'+esc(k)+'</span><span>'+finMoneyP(byCat[k])+'</span></div>'; });
+    h+='<div style="display:flex;justify-content:space-between;font-size:0.82rem;padding:6px 0;border-top:1px solid rgba(255,255,255,0.06);margin-top:4px;"><span style="color:#ffaa00;font-weight:700;">Total Spending</span><span style="color:#ffaa00;font-weight:700;">'+finMoneyP(expense)+'</span></div>';
+    h+='<div style="display:flex;justify-content:space-between;font-size:0.9rem;padding:8px 0 2px;"><span style="font-weight:800;">Net</span><span style="font-weight:800;color:'+((income-expense)>=0?'#8DC63F':'#ef4444')+';">'+finMoneyP(income-expense)+'</span></div>';
+    h+='</div>';
+    // Net worth trend
+    h+='<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;margin-bottom:8px;">Net Worth Trend</div>';
+    h+='<div style="background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);border-radius:12px;padding:12px;height:240px;"><canvas id="bkNetChart"></canvas></div>';
+    if((snap.netWorthHistory||[]).length<2) h+='<div style="font-size:0.7rem;color:#666;margin-top:8px;">Tap &#128190; Snapshot Net Worth over time to build this trend.</div>';
+    return h;
+  }
+  function bkMountReportCharts(snap){
+    finLoadChartJs().then(function(ok){ if(!ok||!window.Chart) return;
+      var el=document.getElementById('bkNetChart'); if(!el) return;
+      var hist=(snap.netWorthHistory||[]);
+      new Chart(el,{ type:'line', data:{ labels:hist.map(function(x){return x.snap_date;}), datasets:[{ label:'Net Worth', data:hist.map(function(x){return Math.round((parseFloat(x.net_worth)||0));}), borderColor:'#8DC63F', backgroundColor:'rgba(141,198,63,0.12)', fill:true, tension:0.25, pointRadius:2 }] },
+        options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}, scales:{ x:{ ticks:{color:'#898781',font:{size:9}}, grid:{color:'#2c2c2a'} }, y:{ ticks:{color:'#898781',font:{size:9}, callback:function(v){return '$'+(v/1000)+'k';}}, grid:{color:'#2c2c2a'} } } } });
+    });
+  }
+
+  // ── Bookkeeper actions ──
+  window.bkRecat = async function(id, cat){ var r=await personalApi('recategorize',{id:id, category:cat}); if(r&&r.ok&&personalCache){ var t=(personalCache.transactions||[]).find(function(x){return x.id===id;}); if(t){t.category=cat;t.review_status='confirmed';} } };
+  window.bkDel = async function(table,id){ if(!confirm('Delete this item?'))return; var r=await personalApi('delete',{table:table,id:id}); if(r&&r.ok) renderBookkeeperView(); };
+  window.bkSetBudgetPrompt = async function(cat, cur){ var v=prompt('Monthly budget for '+cat+' ($):', cur||''); if(v===null)return; var r=await personalApi('budget_set',{category:cat, monthly_limit:parseFloat(v)||0}); if(r&&r.ok) renderBookkeeperView(); };
+  window.bkSaveSnapshot = async function(){ var m=document.getElementById('bkMsg'); if(m)m.textContent='Saving…'; var r=await personalApi('save_networth'); if(m)m.textContent=r&&r.ok?'✓ Net worth snapshot saved':'Error'; setTimeout(function(){if(m)m.textContent='';},2500); };
+  function bkPrompt(fields){ var out={}; for(var i=0;i<fields.length;i++){ var v=prompt(fields[i][1]); if(v===null) return null; out[fields[i][0]]=v; } return out; }
+  window.bkAddAccountForm = async function(){ var d=bkPrompt([['name','Account name'],['type','Type: checking / savings / investment / asset / credit / loan'],['current_balance','Current balance ($)']]); if(!d)return; d.current_balance=parseFloat(d.current_balance)||0; var r=await personalApi('upsert',{table:'personal_accounts',row:d}); if(r&&r.ok) renderBookkeeperView(); };
+  window.bkAddTxnForm = async function(){ var d=bkPrompt([['txn_date','Date (YYYY-MM-DD)'],['description','Description'],['amount','Amount ($)'],['flow','Type: expense / income / transfer'],['category','Category (e.g. Groceries)']]); if(!d)return; d.amount=Math.abs(parseFloat(d.amount)||0); d.review_status='confirmed'; d.source='manual'; var r=await personalApi('upsert',{table:'personal_transactions',row:d}); if(r&&r.ok) renderBookkeeperView(); };
+  window.bkAddDebtForm = async function(){ var d=bkPrompt([['name','Debt name'],['type','Type: credit_card / auto / student / mortgage / personal'],['balance','Balance ($)'],['apr','APR % (optional)'],['min_payment','Min payment $ (optional)']]); if(!d)return; d.balance=parseFloat(d.balance)||0; d.apr=parseFloat(d.apr)||null; d.min_payment=parseFloat(d.min_payment)||null; var r=await personalApi('upsert',{table:'personal_debts',row:d}); if(r&&r.ok) renderBookkeeperView(); };
+  window.bkAddHoldingForm = async function(){ var d=bkPrompt([['symbol','Ticker (e.g. AAPL)'],['name','Name'],['quantity','Shares'],['current_price','Price per share ($)']]); if(!d)return; d.quantity=parseFloat(d.quantity)||0; d.current_price=parseFloat(d.current_price)||0; d.market_value=Math.round(d.quantity*d.current_price*100)/100; var r=await personalApi('upsert',{table:'personal_holdings',row:d}); if(r&&r.ok) renderBookkeeperView(); };
+  window.bkExportPnl = function(){ if(!personalCache)return; var txns=bkRangeTxns(personalCache); var rows=[['date','flow','category','description','amount']]; txns.forEach(function(t){ rows.push([t.txn_date,t.flow,t.category||'',(t.description||'').replace(/"/g,'""'),t.amount]); }); var csv=rows.map(function(r){return r.map(function(c){return '"'+String(c)+'"';}).join(',');}).join('\n'); var a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'})); a.download='personal_pnl.csv'; a.click(); };
+  window.bkConnectPlaid = async function(){
+    var m=document.getElementById('bkMsg'); function say(t){if(m)m.innerHTML=t;}
+    say('Preparing secure connection…');
+    try{
+      var r=await fetch('/.netlify/functions/personal-plaid-link',{method:'POST',headers:{'Content-Type':'application/json','x-personal-key':personalKey()},body:'{}'});
+      var d=await r.json(); if(!r.ok) throw new Error(d.error||'link token failed');
+      var ok=await (typeof finLoadPlaidLink==='function'?finLoadPlaidLink():new Promise(function(res){ if(window.Plaid)return res(true); var s=document.createElement('script'); s.src='https://cdn.plaid.com/link/v2/stable/link-initialize.js'; s.onload=function(){res(true);}; s.onerror=function(){res(false);}; document.head.appendChild(s); }));
+      if(!ok||!window.Plaid) throw new Error('Plaid Link failed to load');
+      say('');
+      var handler=Plaid.create({ token:d.link_token, onSuccess:async function(pt,meta){ say('&#9203; Finishing…');
+        try{ var inst=(meta&&meta.institution&&meta.institution.name)||'Unknown'; var r2=await fetch('/.netlify/functions/personal-plaid-exchange',{method:'POST',headers:{'Content-Type':'application/json','x-personal-key':personalKey()},body:JSON.stringify({public_token:pt,institution:inst})}); var d2=await r2.json(); if(!r2.ok)throw new Error(d2.error||'exchange failed'); say('&#10003; '+esc(d2.institution)+' connected — tap Sync Now.'); renderBookkeeperView(); }catch(e){ say('&#10060; '+esc(e.message)); } },
+        onExit:function(err){ if(err)say('&#9888; '+esc(err.display_message||err.error_message||'canceled')); } });
+      handler.open();
+    }catch(e){ say('&#10060; '+esc(e.message)); }
+  };
+  window.bkSyncNow = async function(){
+    var m=document.getElementById('bkMsg'); if(m)m.innerHTML='&#9203; Syncing…';
+    try{ var r=await fetch('/.netlify/functions/personal-plaid-sync',{method:'POST',headers:{'Content-Type':'application/json','x-personal-key':personalKey()},body:'{}'}); var d=await r.json(); if(d.ok===false)throw new Error(d.error||'sync failed'); if(m)m.innerHTML='&#10003; '+esc(d.message||'Synced'); setTimeout(function(){renderBookkeeperView();},900); }catch(e){ if(m)m.innerHTML='&#10060; '+esc(e.message); }
+  };
 
   async function renderPrivacyView() {
     adminView = 'personal';
