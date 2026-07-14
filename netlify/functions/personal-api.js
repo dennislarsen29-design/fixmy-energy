@@ -114,6 +114,16 @@ exports.handler = async function (event) {
       return P.reply(200, { ok: true, computed: c });
     }
 
+    if (action === 'disconnect_item') {
+      if (!req.item_id) return P.reply(400, { error: 'item_id required' });
+      const items = await P.getPersonalItems();
+      const item = items.find(i => i.item_id === req.item_id);
+      if (item) { try { await P.plaid('/item/remove', { access_token: item.access_token }); } catch (e) { /* revoke best-effort */ } }
+      await P.savePersonalItems(items.filter(i => i.item_id !== req.item_id));
+      await P.supaDelete('/personal_accounts?plaid_item_id=eq.' + encodeURIComponent(req.item_id));
+      return P.reply(200, { ok: true });
+    }
+
     if (action === 'coach_reports') {
       const rows = await P.supaGet('/personal_coach_reports?select=*&order=created_at.desc&limit=60').catch(function(){ return []; });
       return P.reply(200, { ok: true, reports: rows || [] });
