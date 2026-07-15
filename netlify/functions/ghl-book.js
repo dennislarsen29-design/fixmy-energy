@@ -132,7 +132,14 @@ exports.handler = async function(event) {
 
   try {
     if (existingId) {
-      const patch = { diagnostic_date: startISO, arrival_window: arrivalWindow, lead_source: 'inbound_web', step: 1, black_box: false };
+      // A caller-supplied customerId means the caller already owns/manages that
+      // row's pipeline state (step, lead_source, black_box) for its own context
+      // (Dialer activation, an existing lead's editor, etc.) — only stamp the
+      // appointment fields. The public /book.html flow (matched by email/phone
+      // guess, customerId absent) keeps the original full activation patch.
+      const patch = customerId
+        ? { diagnostic_date: startISO, arrival_window: arrivalWindow }
+        : { diagnostic_date: startISO, arrival_window: arrivalWindow, lead_source: 'inbound_web', step: 1, black_box: false };
       if (firstName) patch.first_name = firstName;
       if (lastName)  patch.last_name  = lastName;
       await fetch(`${SUPA_URL}/rest/v1/customers?id=eq.${existingId}`, {
