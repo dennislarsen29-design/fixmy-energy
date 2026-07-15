@@ -5785,7 +5785,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
     // Satellite roof view — quick visual reference while on the call
     if (lead.address) {
-      h += '<img src="https://maps.googleapis.com/maps/api/staticmap?center='+encodeURIComponent(lead.address)+'&zoom=20&size=640x260&scale=2&maptype=satellite&key='+GKEY+'" alt="Satellite view of roof" style="width:100%;max-height:180px;object-fit:cover;border-radius:10px;border:1px solid rgba(255,255,255,0.1);display:block;margin-bottom:12px;" onerror="this.style.display=\'none\';"/>';
+      h += '<img src="https://maps.googleapis.com/maps/api/staticmap?center='+encodeURIComponent(lead.address)+'&zoom=19&size=640x260&scale=2&maptype=satellite&key='+GKEY+'" alt="Satellite view of roof" style="width:100%;max-height:180px;object-fit:cover;border-radius:10px;border:1px solid rgba(255,255,255,0.1);display:block;margin-bottom:12px;" onerror="this.style.display=\'none\';"/>';
     }
 
     // Shared activity feed — shows knock outcomes + prior calls + admin notes
@@ -5810,8 +5810,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '<div style="font-size:0.7rem;font-weight:700;color:#ffaa00;margin-bottom:8px;">&#128257; Schedule the callback</div>';
     h += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">';
     h += '<input type="datetime-local" id="bbCbWhen" value="'+cbVal+'" style="background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:8px;font-size:0.8rem;">';
-    h += '<button onclick="bbDialCommitCallback()" style="padding:9px 18px;background:rgba(255,170,0,0.15);border:1px solid rgba(255,170,0,0.4);color:#ffaa00;border-radius:100px;font-size:0.75rem;font-weight:700;cursor:pointer;">Confirm Callback</button>';
+    h += '<button onclick="bbDialCommitCallback()" style="width:auto;flex-shrink:0;padding:9px 18px;background:rgba(255,170,0,0.15);border:1px solid rgba(255,170,0,0.4);color:#ffaa00;border-radius:100px;font-size:0.75rem;font-weight:700;cursor:pointer;">Confirm Callback</button>';
     h += '</div></div>';
+
+    // Booking panel (revealed by the Booked! button) — same GHL Evaluation calendar
+    // + confirmation automations as the public /book page, next-3-slots format with
+    // a manual override for times already agreed on the call but off-calendar.
+    h += '<div id="bbBookPanel" style="display:none;margin-top:10px;padding:12px;background:rgba(141,198,63,0.06);border:1px solid rgba(141,198,63,0.3);border-radius:10px;">';
+    h += '<div style="font-size:0.7rem;font-weight:700;color:#8DC63F;margin-bottom:8px;">&#9989; Book the appointment — next available times</div>';
+    h += '<div id="bbBookSlots"></div>';
+    h += '<button onclick="bbBookToggleManual()" style="width:auto;background:none;border:none;color:#888;font-size:0.72rem;cursor:pointer;text-decoration:underline;padding:4px 0;">Manually pick a date/time instead</button>';
+    h += '<div id="bbBookManual" style="display:none;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px;">';
+    h += '<input type="datetime-local" id="bbBookManualWhen" style="background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:8px;font-size:0.8rem;">';
+    h += '<button onclick="bbBookConfirmManual()" style="width:auto;flex-shrink:0;padding:9px 18px;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:100px;font-size:0.75rem;font-weight:700;cursor:pointer;">Confirm Booking</button>';
+    h += '</div>';
+    h += '<div id="bbBookStatus" style="font-size:0.72rem;color:#888;margin-top:6px;"></div>';
+    h += '</div>';
 
     h += '</div>'; // end card
 
@@ -5947,8 +5961,83 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (p) p.style.display = p.style.display === 'none' ? 'block' : 'none';
       return;
     }
+    if (outcome === 'booked') {
+      var bp = document.getElementById('bbBookPanel');
+      if (bp) { var show = bp.style.display === 'none'; bp.style.display = show ? 'block' : 'none'; if (show) bbDialLoadSlots(); }
+      return;
+    }
     if (outcome === 'dnc' && !confirm('Mark this lead Do Not Contact? They will be removed from the dial queue.')) return;
     bbDialCommit(outcome, null);
+  };
+
+  // Next-available-slots picker for the Booked! disposition — mirrors book.html's
+  // format exactly (next 3 blocks + "Show more times", same ghl-slots source) so
+  // reps see the identical calendar the public /book page shows.
+  var bbBookSlots = [];
+  window.bbDialLoadSlots = async function() {
+    var el = document.getElementById('bbBookSlots');
+    if (!el) return;
+    el.innerHTML = '<div style="color:#888;font-size:0.78rem;padding:6px 0;">Loading available times&hellip;</div>';
+    try {
+      var r = await fetch('/.netlify/functions/ghl-slots');
+      var d = await r.json();
+      bbBookSlots = d.slots || [];
+      if (!bbBookSlots.length) { el.innerHTML = '<div style="color:#ef9b9b;font-size:0.78rem;">No times available right now — use manual entry below.</div>'; return; }
+      var h = '';
+      bbBookSlots.forEach(function(s, i) {
+        h += '<button onclick="bbBookPickSlot('+i+')" class="'+(i>=3?'bb-slot-hidden':'')+'" style="width:auto;'+(i>=3?'display:none;':'display:flex;')+'align-items:center;justify-content:space-between;width:100%;padding:12px 14px;background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.3);border-radius:10px;color:#eee;font-size:0.8rem;font-weight:600;cursor:pointer;margin-bottom:7px;text-align:left;">'
+          + '<span>'+esc(s.label)+'</span><span style="color:#8DC63F;">&rarr;</span></button>';
+      });
+      if (bbBookSlots.length > 3) {
+        h += '<button onclick="bbBookShowMore()" id="bbBookMoreBtn" style="width:auto;background:none;border:none;color:#4a9eff;font-size:0.74rem;cursor:pointer;text-decoration:underline;padding:2px 0;">Show more times &rarr;</button>';
+      }
+      el.innerHTML = h;
+    } catch(e) { el.innerHTML = '<div style="color:#ef9b9b;font-size:0.78rem;">Could not load times — use manual entry below.</div>'; }
+  };
+  window.bbBookShowMore = function() {
+    document.querySelectorAll('.bb-slot-hidden').forEach(function(b){ b.style.display='flex'; b.classList.remove('bb-slot-hidden'); });
+    var mb = document.getElementById('bbBookMoreBtn'); if (mb) mb.style.display = 'none';
+  };
+  window.bbBookPickSlot = function(i) {
+    var s = bbBookSlots[i]; if (!s) return;
+    bbDialCommitBooking(s.startISO, s.endISO, s.label);
+  };
+  window.bbBookToggleManual = function() {
+    var p = document.getElementById('bbBookManual');
+    if (p) p.style.display = p.style.display === 'none' ? 'flex' : 'none';
+  };
+  window.bbBookConfirmManual = function() {
+    var el = document.getElementById('bbBookManualWhen');
+    if (!el || !el.value) { alert('Pick a date/time first.'); return; }
+    var start = new Date(el.value);
+    var end = new Date(start.getTime() + 2*3600*1000);
+    var label = start.toLocaleString('en-US', { weekday:'short', month:'short', day:'numeric', hour:'numeric', minute:'2-digit' });
+    bbDialCommitBooking(start.toISOString(), end.toISOString(), label);
+  };
+
+  // Books the REAL GHL Evaluation-calendar appointment (same contact upsert +
+  // calendar event + confirmation SMS/email automations as the public /book page)
+  // before finalizing the dialer disposition — so a phone-booked lead gets the
+  // identical customer experience as a self-service online booking.
+  window.bbDialCommitBooking = async function(startISO, endISO, label) {
+    var buckets = bbDialBuckets();
+    var lead = bbDialResolveCurrentLead(buckets);
+    if (!lead) return;
+    var statusEl = document.getElementById('bbBookStatus');
+    if (statusEl) statusEl.textContent = 'Booking appointment in GHL…';
+    try {
+      var r = await fetch('/.netlify/functions/ghl-book', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ firstName: lead.first_name||'', lastName: lead.last_name||'', phone: lead.phone||'', email: lead.email||null, address: lead.address||null, startISO: startISO, endISO: endISO, customerId: lead.id })
+      });
+      var result = await r.json();
+      if (!r.ok || !result.ok) throw new Error(result.error || 'Booking failed');
+      if (statusEl) statusEl.textContent = '';
+    } catch(e) {
+      if (statusEl) statusEl.textContent = '';
+      if (!confirm('Could not book the GHL calendar appointment (' + e.message + '). Mark this lead Booked anyway and set the date manually in the editor?')) return;
+    }
+    await bbDialCommit('booked', null, { startISO: startISO, endISO: endISO });
   };
 
   window.bbDialCommitCallback = function() {
@@ -5958,7 +6047,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     bbDialCommit('callback', iso);
   };
 
-  async function bbDialCommit(outcome, callbackIso) {
+  async function bbDialCommit(outcome, callbackIso, bookedSlot) {
     var buckets = bbDialBuckets();
     var lead = bbDialResolveCurrentLead(buckets);
     if (!lead) return;
@@ -5991,6 +6080,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
     if (outcome === 'booked') {
       var act = { black_box: false, step: lead.step || 1, lead_category: lead.lead_category || 'fixmy' };
+      if (bookedSlot && bookedSlot.startISO) {
+        var _sd = new Date(bookedSlot.startISO);
+        var _ed = bookedSlot.endISO ? new Date(bookedSlot.endISO) : new Date(_sd.getTime() + 2*3600*1000);
+        var _fmtT = function(d){ return d.toLocaleTimeString('en-US', { timeZone:'America/Los_Angeles', hour:'numeric', minute:'2-digit' }); };
+        act.diagnostic_date = bookedSlot.startISO;
+        act.arrival_window = _fmtT(_sd) + ' – ' + _fmtT(_ed);
+        lead.diagnostic_date = act.diagnostic_date; lead.arrival_window = act.arrival_window;
+      }
       if (CURRENT_ROLE !== 'admin' && window._bbDialerPersonId) act.rep_id = window._bbDialerPersonId; // booked by a rep — assign them the lead
       await client.from('customers').update(act).eq('id', lead.id);
       lead.black_box = false;

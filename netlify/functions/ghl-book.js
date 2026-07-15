@@ -29,7 +29,7 @@ exports.handler = async function(event) {
     return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Invalid JSON' }) };
   }
 
-  const { firstName, lastName, phone, email, address, startISO, endISO } = payload;
+  const { firstName, lastName, phone, email, address, startISO, endISO, customerId } = payload;
   if (!startISO || (!phone && !email))
     return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'startISO + phone or email required' }) };
 
@@ -110,9 +110,12 @@ exports.handler = async function(event) {
   let digits = (phone || '').replace(/[^0-9]/g, '');
   if (digits.length === 11 && digits[0] === '1') digits = digits.slice(1);
 
-  // Check for existing Supabase record
-  let existingId = null;
-  if (email) {
+  // Check for existing Supabase record — callers that already know the row
+  // (e.g. the portal's Black Box Dialer booking an existing lead) pass
+  // customerId directly, skipping the email/access_code guess entirely so an
+  // ambiguous match can't create a duplicate or patch the wrong customer.
+  let existingId = customerId || null;
+  if (!existingId && email) {
     const chk = await fetch(
       `${SUPA_URL}/rest/v1/customers?email=eq.${encodeURIComponent(email)}&select=id&limit=1`,
       { headers: supaHeaders }
