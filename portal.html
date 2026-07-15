@@ -11397,6 +11397,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<div><label class="ed-label">Arrival Window End</label><input type="time" id="edArrivalEnd" class="ed-input" value="'+(c.arrival_end||'')+'"/></div>'+
       '</div>'+
       (!isNSEdit && !isTTEdit ?
+        '<div style="margin:-4px 0 16px;">'+
+          '<button type="button" onclick="edOpenEvalBooking()" style="width:auto;padding:8px 16px;background:rgba(74,158,255,0.12);border:1px solid rgba(74,158,255,0.35);color:#4a9eff;border-radius:100px;font-size:0.75rem;font-weight:700;cursor:pointer;">&#128197; Book Evaluation (GHL)</button>'+
+          '<div id="edBookPanel" style="display:none;margin-top:10px;padding:12px;background:rgba(74,158,255,0.06);border:1px solid rgba(74,158,255,0.3);border-radius:10px;">'+
+            '<div style="font-size:0.7rem;font-weight:700;color:#4a9eff;margin-bottom:8px;">Next available times</div>'+
+            '<div id="edBookSlots"></div>'+
+            '<button type="button" onclick="edToggleEvalManual()" style="width:auto;background:none;border:none;color:#888;font-size:0.72rem;cursor:pointer;text-decoration:underline;padding:4px 0;">Manually pick a date/time instead</button>'+
+            '<div id="edBookManual" style="display:none;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px;">'+
+              '<input type="datetime-local" id="edBookManualWhen" style="background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:8px;font-size:0.8rem;">'+
+              '<button type="button" onclick="edConfirmEvalManual()" style="width:auto;flex-shrink:0;padding:9px 18px;background:rgba(74,158,255,0.15);border:1px solid rgba(74,158,255,0.4);color:#4a9eff;border-radius:100px;font-size:0.75rem;font-weight:700;cursor:pointer;">Confirm Booking</button>'+
+            '</div>'+
+            '<div id="edBookStatus" style="font-size:0.72rem;color:#888;margin-top:6px;"></div>'+
+          '</div>'+
+        '</div>'+
         '<div class="editor-section-title">Invoice</div>'+
         '<div class="ed-grid">'+
           edSelect('Invoice Status','edInvSt',c.invoice_status||'none',[['none','None'],['draft','Draft'],['sent','Sent'],['pending','Payment Due'],['paid','Paid'],['partial','Partially Paid'],['overdue','Overdue']])+
@@ -12760,6 +12773,88 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (lastEl)  lastEl.value  = parts.slice(1).join(' ') || '';
     var btn = document.getElementById('edUseOwnerNameBtn');
     if (btn) { var orig = btn.innerHTML; btn.innerHTML = '&#10003; Applied'; setTimeout(function(){ btn.innerHTML = orig; }, 1500); }
+  };
+
+  // Book Evaluation (Admin lead editor) — same GHL Evaluation calendar +
+  // confirmation automations as the public /book page and the Black Box Dialer's
+  // Booked! flow, so rebooking or first-booking an eval from an already-created
+  // lead gives the customer the identical experience as booking online.
+  var edBookSlotsCache = [];
+  window.edOpenEvalBooking = function() {
+    var p = document.getElementById('edBookPanel');
+    if (!p) return;
+    var show = p.style.display === 'none';
+    p.style.display = show ? 'block' : 'none';
+    if (show) edLoadEvalSlots();
+  };
+  window.edLoadEvalSlots = async function() {
+    var el = document.getElementById('edBookSlots');
+    if (!el) return;
+    el.innerHTML = '<div style="color:#888;font-size:0.78rem;padding:6px 0;">Loading available times&hellip;</div>';
+    try {
+      var r = await fetch('/.netlify/functions/ghl-slots');
+      var d = await r.json();
+      edBookSlotsCache = d.slots || [];
+      if (!edBookSlotsCache.length) { el.innerHTML = '<div style="color:#ef9b9b;font-size:0.78rem;">No times available right now — use manual entry below.</div>'; return; }
+      var h = '';
+      edBookSlotsCache.forEach(function(s, i) {
+        h += '<button type="button" onclick="edPickEvalSlot('+i+')" class="'+(i>=3?'ed-slot-hidden':'')+'" style="width:auto;'+(i>=3?'display:none;':'display:flex;')+'align-items:center;justify-content:space-between;width:100%;padding:12px 14px;background:rgba(74,158,255,0.08);border:1px solid rgba(74,158,255,0.3);border-radius:10px;color:#eee;font-size:0.8rem;font-weight:600;cursor:pointer;margin-bottom:7px;text-align:left;">'
+          + '<span>'+esc(s.label)+'</span><span style="color:#4a9eff;">&rarr;</span></button>';
+      });
+      if (edBookSlotsCache.length > 3) {
+        h += '<button type="button" onclick="edEvalShowMore()" id="edBookMoreBtn" style="width:auto;background:none;border:none;color:#4a9eff;font-size:0.74rem;cursor:pointer;text-decoration:underline;padding:2px 0;">Show more times &rarr;</button>';
+      }
+      el.innerHTML = h;
+    } catch(e) { el.innerHTML = '<div style="color:#ef9b9b;font-size:0.78rem;">Could not load times — use manual entry below.</div>'; }
+  };
+  window.edEvalShowMore = function() {
+    document.querySelectorAll('.ed-slot-hidden').forEach(function(b){ b.style.display='flex'; b.classList.remove('ed-slot-hidden'); });
+    var mb = document.getElementById('edBookMoreBtn'); if (mb) mb.style.display = 'none';
+  };
+  window.edPickEvalSlot = function(i) {
+    var s = edBookSlotsCache[i]; if (!s) return;
+    edCommitEvalBooking(s.startISO, s.endISO);
+  };
+  window.edToggleEvalManual = function() {
+    var p = document.getElementById('edBookManual');
+    if (p) p.style.display = p.style.display === 'none' ? 'flex' : 'none';
+  };
+  window.edConfirmEvalManual = function() {
+    var el = document.getElementById('edBookManualWhen');
+    if (!el || !el.value) { alert('Pick a date/time first.'); return; }
+    var start = new Date(el.value);
+    var end = new Date(start.getTime() + 2*3600*1000);
+    edCommitEvalBooking(start.toISOString(), end.toISOString());
+  };
+  window.edCommitEvalBooking = async function(startISO, endISO) {
+    var id = (document.getElementById('edId')||{}).value;
+    var c = adminCustomers.find(function(x){ return x.id === id; });
+    if (!c) return;
+    var statusEl = document.getElementById('edBookStatus');
+    if (statusEl) statusEl.textContent = 'Booking appointment in GHL…';
+    try {
+      var r = await fetch('/.netlify/functions/ghl-book', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ firstName: c.first_name||'', lastName: c.last_name||'', phone: c.phone||'', email: c.email||null, address: c.address||null, startISO: startISO, endISO: endISO, customerId: c.id })
+      });
+      var result = await r.json();
+      if (!r.ok || !result.ok) throw new Error(result.error || 'Booking failed');
+    } catch(e) {
+      if (statusEl) statusEl.textContent = '';
+      alert('Could not book the GHL calendar appointment: '+e.message+'. You can still set the date/time fields above manually and Save.');
+      return;
+    }
+    // Booked — reflect immediately in the visible fields + local cache, no reload needed
+    var sd = new Date(startISO), ed = endISO ? new Date(endISO) : new Date(sd.getTime() + 2*3600*1000);
+    var fmtT = function(d){ return d.toLocaleTimeString('en-US', { timeZone:'America/Los_Angeles', hour:'numeric', minute:'2-digit' }); };
+    c.diagnostic_date = startISO;
+    c.arrival_window = fmtT(sd) + ' – ' + fmtT(ed);
+    var dEl = document.getElementById('edApptDate'), tEl = document.getElementById('edApptTime'), eEl = document.getElementById('edArrivalEnd');
+    if (dEl) dEl.value = sd.toLocaleDateString('en-CA');
+    if (tEl) tEl.value = (sd.getHours()<10?'0':'')+sd.getHours()+':'+(sd.getMinutes()<10?'0':'')+sd.getMinutes();
+    if (eEl) eEl.value = (ed.getHours()<10?'0':'')+ed.getHours()+':'+(ed.getMinutes()<10?'0':'')+ed.getMinutes();
+    var p = document.getElementById('edBookPanel'); if (p) p.style.display = 'none';
+    if (statusEl) statusEl.textContent = '✓ Booked — confirmation sent to customer.';
   };
 
   async function createNewLead() {
