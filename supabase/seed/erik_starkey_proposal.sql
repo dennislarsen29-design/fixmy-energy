@@ -119,8 +119,10 @@ declare
 begin
   update customers set
     proposal = v_proposal,
-    system_size  = coalesce(system_size, 9.1),
-    monthly_bill = coalesce(monthly_bill, 344),
+    -- quoted literals stay untyped so they coerce to the column's type
+    -- (system_size / monthly_bill are text in some deployments, numeric in others)
+    system_size  = coalesce(system_size, '9.1'),
+    monthly_bill = coalesce(monthly_bill, '344'),
     nem_status   = coalesce(nem_status, 'nem1'),
     utility      = coalesce(utility, 'SDG&E'),
     diagnostic_findings = case
@@ -137,6 +139,6 @@ begin
        system_size, monthly_bill, nem_status, utility, diagnostic_findings, proposal)
     values
       ('Erik', 'Starkey', 'Calavo Dr (confirm full address)', 'fixmy', 4, 'tech4',
-       9.1, 344, 'nem1', 'SDG&E', v_findings, v_proposal);
+       '9.1', '344', 'nem1', 'SDG&E', v_findings, v_proposal);
   end if;
 end $$;
