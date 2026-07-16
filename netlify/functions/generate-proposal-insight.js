@@ -49,9 +49,21 @@ SAN DIEGO SOLAR PRODUCTION (NREL NSRDB / PVWatts):
 INVERTER DEGRADATION (NREL / PVEL research):
 - String inverters typically carry a 10-year manufacturer warranty — at/past 10 years,
   failure rates increase significantly; 10 years is effectively end-of-life
+- String inverters often fail PARTIALLY (one MPPT or string down, capacitor drift) —
+  measured output can be 40–65% of nameplate, not always 25%; when a measured output %
+  is provided, use it — the loss is (100 − output%) of expected generation
 - A system operating at 25% of rated inverter capacity loses 75% of its generation
 - A 7.83 kW system at 25% output generates only ~3,132 kWh/yr instead of ~12,528 kWh/yr
   — that's ~9,396 kWh/yr in lost generation, worth ~$4,247/yr or ~$354/month at SDG&E rates
+- Microinverter arrays (e.g. Enphase IQ) fail per-panel, not system-wide — on a mixed
+  system, a production drop usually isolates to the string-inverter side
+
+TESLA POWERWALL 3 INTEGRATED INVERTER (cost-reduction insight):
+- Powerwall 3 contains a built-in 11.5 kW solar inverter with 6 MPPTs (20 kW DC input)
+- Existing string arrays can usually land directly on the PW3's MPPTs — a dead string
+  inverter is replaced by the PW3 itself, with NO standalone inverter purchase needed
+- Per-MPPT tracking replaces the function of legacy per-string/per-panel optimizers
+- Powerwall Expansion Pack adds 13.5 kWh of DC-coupled storage (no additional inverter)
 - Zero NEM credits on a bill (no "Applied Credits" in NEM Summary) = system is effectively
   generating no exportable surplus; the solar is not offsetting grid consumption meaningfully
 - After inverter replacement: system recovers to 88–95% of nameplate (capped by panel age)
@@ -113,7 +125,8 @@ exports.handler = async function(event) {
     inverter_output_pct, monthly_loss_est, expected_bill_with_fix,
     new_system_size_kw, annual_kwh_with_bundle,
     annual_kwh_solar_api, calculated_monthly_savings, calculated_annual_savings,
-    savings_source, panel_kw_added, has_battery
+    savings_source, panel_kw_added, has_battery,
+    storage_kwh, annual_usage_kwh, surplus_kwh_trueup
   } = body;
 
   const svcType = service_type || 'inverter_swap';
@@ -132,7 +145,9 @@ exports.handler = async function(event) {
   if (new_system_size_kw)    parts.push(`New system size after adding panels: ${new_system_size_kw} kW`);
   if (annual_kwh_with_bundle)parts.push(`Expected annual production with full bundle: ~${Math.round(annual_kwh_with_bundle).toLocaleString()} kWh/yr`);
   if (panel_kw_added)        parts.push(`Additional panel capacity being added: ${panel_kw_added} kW DC`);
-  if (has_battery)           parts.push(`Proposal includes Tesla Powerwall 3: 13.5 kWh usable, stores midday solar for evening peak discharge`);
+  if (has_battery)           parts.push(`Proposal includes Tesla Powerwall 3: ${storage_kwh || 13.5} kWh usable storage total, stores midday solar for evening peak discharge; PW3's built-in 6-MPPT solar inverter can also absorb the existing string array (no standalone inverter needed)`);
+  if (annual_usage_kwh)      parts.push(`Annual household usage: ~${Math.round(annual_usage_kwh).toLocaleString()} kWh/yr`);
+  if (surplus_kwh_trueup)    parts.push(`Production beyond annual usage: ~${Math.round(surplus_kwh_trueup).toLocaleString()} kWh/yr — credited at only ~$0.04/kWh NEM true-up (already reflected in the calculated savings; frame surplus as headroom for EVs/electrification, not bill savings)`);
   // Production-based calculated savings (derived from actual kWh × verified SDG&E rate)
   if (annual_kwh_solar_api)  parts.push(`Google Solar API production estimate for this specific roof: ${Math.round(annual_kwh_solar_api).toLocaleString()} kWh/yr (address-specific, not a generic estimate)`);
   if (calculated_monthly_savings) parts.push(`Production-based monthly savings calculation: ~$${calculated_monthly_savings}/month (kWh production × $0.453/kWh SDG&E rate)`);

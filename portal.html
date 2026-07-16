@@ -5119,18 +5119,26 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var newPanelKw  = 4.2;
       // Production-based savings from _propCalcBaseProduction (same source as builder preview)
       var activeBuild = (_propBuilds && _propBuilds[0]) || null;
+      var annualUsageKwh = bill > 0 ? Math.round(bill * 12 / blendedRate) : 0;
       var prod = (typeof _propCalcBaseProduction === 'function')
-        ? _propCalcBaseProduction(activeBuild, _propSolarData, rec.system_size)
+        ? _propCalcBaseProduction(activeBuild, _propSolarData, rec.system_size, annualUsageKwh)
         : { panelKwh:0, inverterKwh:0, batteryArbitrageKwh:0, panelKw:0, panelSource:null, hasData:false };
+      var _insSplit = (typeof _propSplitByUsage === 'function')
+        ? _propSplitByUsage(prod.panelKwh + prod.inverterKwh, annualUsageKwh)
+        : { billable: prod.panelKwh + prod.inverterKwh, surplus: 0 };
       var calculatedAnnualSavings = prod.hasData
-        ? Math.round(prod.panelKwh * blendedRate + prod.inverterKwh * blendedRate + prod.batteryArbitrageKwh * 0.31)
+        ? Math.round(_insSplit.billable * blendedRate + _insSplit.surplus * 0.04 + prod.batteryArbitrageKwh * 0.31)
         : null;
       var calculatedMonthlySavings = calculatedAnnualSavings ? Math.round(calculatedAnnualSavings / 12) : null;
       var annualKwhSolarApi = (_propSolarData && _propSolarData.annualSunshineKwh) ? Math.round(_propSolarData.annualSunshineKwh) : null;
       // Build option totals from current _propBuilds for context
       var optionTotals = (_propBuilds||[]).map(function(b){ return b.price||0; }).filter(Boolean);
-      // Inverter-specific calculations
-      var monthlyLossEst  = (svcType==='inverter_swap' && sysKw>0) ? Math.round(sysKw*yield_kw*0.75*blendedRate/12) : null;
+      // Inverter-specific calculations — measured output % from the builder's
+      // Restore Existing Array card (falls back to the legacy 25% assumption)
+      var measuredPct = prod.hasInverter ? (prod.outputPct || 25) : (svcType==='inverter_swap' ? 25 : null);
+      var monthlyLossEst  = prod.inverterKwh > 0
+        ? Math.round(prod.inverterKwh*blendedRate/12)
+        : ((svcType==='inverter_swap' && sysKw>0) ? Math.round(sysKw*yield_kw*0.75*blendedRate/12) : null);
       var newSysKw        = (svcType==='inverter_swap' && sysKw>0) ? Math.round((sysKw+newPanelKw)*10)/10 : null;
       var annualKwhBundle = newSysKw ? Math.round(newSysKw*yield_kw) : null;
       var expectedBillWithFix = (svcType==='inverter_swap' && newSysKw && bill>0)
@@ -5152,7 +5160,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           installer:                   rec.installer    || '',
           option_totals:               optionTotals,
           issue:                       issueContext,
-          inverter_output_pct:         svcType==='inverter_swap' ? 25 : null,
+          inverter_output_pct:         measuredPct,
           monthly_loss_est:            monthlyLossEst,
           expected_bill_with_fix:      expectedBillWithFix,
           new_system_size_kw:          newSysKw,
@@ -5163,6 +5171,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           savings_source:              prod.panelSource || null,
           panel_kw_added:              prod.panelKw > 0 ? prod.panelKw : null,
           has_battery:                 prod.hasBattery || false,
+          storage_kwh:                 prod.storageKwh || null,
+          annual_usage_kwh:            annualUsageKwh || null,
+          surplus_kwh_trueup:          _insSplit.surplus > 0 ? _insSplit.surplus : null,
         })
       });
       var d = await r.json();
@@ -5291,7 +5302,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
   // Production-based savings helper — calculates kWh contributions by component
   // Used by propShowScenario (builder preview) and sendProposal (stored proposal)
-  function _propCalcBaseProduction(build, solarData, systemSize) {
+  function _propCalcBaseProduction(build, solarData, systemSize, annualUsageKwh) {
     var specificYield = 1600; // NREL NSRDB San Diego residential tilted array
     var sysKw = parseFloat(systemSize) || 0;
 
@@ -5317,26 +5328,59 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }
     }
 
-    // Inverter recovery: at 25% output, 75% of system production is being lost
-    // Real data: tech's diagnostic establishes 25% output (hardcoded for inverter swap items)
-    var hasInverter = !!(build && build.lineItems && build.lineItems.find(function(li){ return li.id && li.id.indexOf('inverter') !== -1; }));
+    // Inverter/array recovery — measured output % beats the legacy 25% assumption.
+    // String inverters often fail partially (one MPPT/string down), so measured output
+    // can be 40–65% of nameplate. Recovery counts when a new inverter is in the build
+    // OR the build is flagged restoreArray — a Powerwall 3's integrated 6-MPPT solar
+    // inverter (20 kW DC input) can absorb the existing strings and restore a dead
+    // string inverter without a standalone unit.
+    var hasInverter = !!(build && (build.restoreArray || (build.lineItems && build.lineItems.find(function(li){ return li.id && li.id.indexOf('inverter') !== -1; }))));
+    var outputPct = (build && build.arrayOutputPct > 0 && build.arrayOutputPct < 100) ? build.arrayOutputPct : 25;
     var inverterKwh = 0;
     if (hasInverter && sysKw > 0) {
-      inverterKwh = Math.round(sysKw * specificYield * 0.75);
+      inverterKwh = Math.round(sysKw * specificYield * (1 - outputPct / 100));
     }
 
-    // Battery TOU arbitrage: Powerwall 3 stores midday solar, discharges 4–9 PM peak
-    // 13.5 kWh × 1.5 cycles/day × $0.31/kWh arbitrage × 365 days
-    // ($0.31 = discharge at $0.749 on-peak × 89% efficiency − store at $0.360 super off-peak)
-    var hasBattery = !!(build && build.lineItems && build.lineItems.find(function(li){ return li.id === 'pw3_retrofit'; }));
-    var batteryArbitrageKwh = hasBattery ? Math.round(13.5 * 1.5 * 365) : 0;
+    // Battery TOU arbitrage: stores midday solar, discharges 4–9 PM peak
+    // ($0.31/kWh = discharge at $0.749 on-peak × 89% efficiency − store at $0.360 super off-peak)
+    // Scales with total storage: PW3 units + Expansion Packs, 13.5 kWh each.
+    // Daily cycled kWh = storage × 1.5 cycles, capped at 60% of the home's daily
+    // usage when known — a battery can't shift more than the evening load.
+    function _liCount(item) {
+      if (!item) return 0;
+      var m = item.name.match(/[×x]\s*(\d+)/i);
+      return m ? parseInt(m[1], 10) : 1;
+    }
+    var pw3Item = build && build.lineItems && build.lineItems.find(function(li){ return li.id === 'pw3_retrofit'; });
+    var expItem = build && build.lineItems && build.lineItems.find(function(li){ return li.id === 'pw3_expansion_pack'; });
+    var batteryUnits = _liCount(pw3Item) + _liCount(expItem);
+    var storageKwh = Math.round(batteryUnits * 13.5 * 10) / 10;
+    var hasBattery = batteryUnits > 0;
+    var batteryArbitrageKwh = 0, batteryCycledDaily = 0;
+    if (hasBattery) {
+      batteryCycledDaily = storageKwh * 1.5;
+      var _usage = parseFloat(annualUsageKwh) || 0;
+      if (_usage > 0) batteryCycledDaily = Math.min(batteryCycledDaily, _usage / 365 * 0.6);
+      batteryCycledDaily = Math.round(batteryCycledDaily * 10) / 10;
+      batteryArbitrageKwh = Math.round(batteryCycledDaily * 365);
+    }
 
     return {
       panelKwh: panelKwh, panelKw: panelKw, panelCount: panelCount, panelSource: panelSource,
-      inverterKwh: inverterKwh, hasInverter: hasInverter, sysKw: sysKw,
+      inverterKwh: inverterKwh, hasInverter: hasInverter, sysKw: sysKw, outputPct: outputPct,
       batteryArbitrageKwh: batteryArbitrageKwh, hasBattery: hasBattery,
+      storageKwh: storageKwh, batteryUnits: batteryUnits, batteryCycledDaily: batteryCycledDaily,
       hasData: (panelKwh > 0 || inverterKwh > 0 || batteryArbitrageKwh > 0)
     };
+  }
+
+  // NEM true-up split — production beyond the home's annual usage earns only the
+  // ~$0.04/kWh wholesale true-up rate, not the $0.453 retail credit (NEM 1.0/2.0
+  // annual netting). Callers value billable kWh at retail and surplus at true-up.
+  function _propSplitByUsage(totalKwh, annualUsageKwh) {
+    var usage = parseFloat(annualUsageKwh) || 0;
+    if (!usage || totalKwh <= usage) return { billable: totalKwh, surplus: 0 };
+    return { billable: usage, surplus: totalKwh - usage };
   }
 
   window.propShowScenario = function(type, bill, sysKw) {
@@ -5350,7 +5394,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
     // Get production from current build state (first option in builder)
     var activeBuild = (_propBuilds && _propBuilds[0]) || null;
-    var prod = _propCalcBaseProduction(activeBuild, _propSolarData, sysKw);
+    var annualUsageKwh = bill > 0 ? Math.round(bill * 12 / blendedRate) : 0;
+    var prod = _propCalcBaseProduction(activeBuild, _propSolarData, sysKw, annualUsageKwh);
 
     if (!prod.hasData) {
       detail.style.display = 'block';
@@ -5383,15 +5428,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var inverterKwh = Math.round(prod.inverterKwh * cfg.confidence);
     var battArbitrageKwh = prod.batteryArbitrageKwh;
 
-    var annualFromPanels   = panelKwh   * blendedRate;
-    var annualFromInverter = inverterKwh * blendedRate;
+    // Value production with NEM true-up honesty: kWh beyond annual usage earns
+    // ~$0.04 wholesale at true-up, not the $0.453 retail credit
+    var totalNewProdKwh = panelKwh + inverterKwh;
+    var split = _propSplitByUsage(totalNewProdKwh, annualUsageKwh);
+    var annualFromProduction = split.billable * blendedRate + split.surplus * 0.04;
     var annualFromBattery  = battArbitrageKwh * 0.31; // arbitrage rate, not full blended
-    var annualSaved = annualFromPanels + annualFromInverter + annualFromBattery;
+    var annualSaved = annualFromProduction + annualFromBattery;
     var monthlySaved = Math.round(annualSaved / 12);
 
     // Bill comparison: compare production to estimated annual usage
-    var annualUsageKwh = Math.round(bill * 12 / blendedRate);
-    var totalNewProdKwh = panelKwh + inverterKwh;
     var afterBill = (totalNewProdKwh > 0 && totalNewProdKwh >= annualUsageKwh) ? 24 : Math.max(24, Math.round(bill - monthlySaved));
 
     // 20-year geometric series: Year1 × [(1+r)^20 − 1] / r
@@ -5402,13 +5448,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // Methodology breakdown lines
     var bLines = [];
     if (prod.panelKw > 0) {
-      bLines.push(prod.panelCount+' panels ('+prod.panelKw+' kW) &rarr; '+panelKwh.toLocaleString()+' kWh/yr ['+prod.panelSource+'] &times; $0.453 = '+fmt(annualFromPanels)+'/yr');
+      bLines.push(prod.panelCount+' panels ('+prod.panelKw+' kW) &rarr; '+panelKwh.toLocaleString()+' kWh/yr ['+prod.panelSource+']');
     }
     if (prod.hasInverter && prod.sysKw > 0) {
-      bLines.push(prod.sysKw+' kW system at 25% output &rarr; '+inverterKwh.toLocaleString()+' kWh/yr recovered &times; $0.453 = '+fmt(annualFromInverter)+'/yr');
+      bLines.push(prod.sysKw+' kW system at '+prod.outputPct+'% measured output &rarr; '+inverterKwh.toLocaleString()+' kWh/yr recovered');
+    }
+    if (totalNewProdKwh > 0) {
+      bLines.push('Production value: '+split.billable.toLocaleString()+' kWh &times; $0.453'+(split.surplus>0 ? ' + '+split.surplus.toLocaleString()+' kWh surplus &times; $0.04 NEM true-up' : '')+' = '+fmt(annualFromProduction)+'/yr');
     }
     if (prod.hasBattery) {
-      bLines.push('Battery TOU arbitrage: 13.5 kWh &times; 1.5 cycles &times; $0.31/kWh &times; 365 = '+fmt(annualFromBattery)+'/yr');
+      bLines.push('Battery TOU arbitrage: '+prod.storageKwh+' kWh storage ('+prod.batteryUnits+' unit'+(prod.batteryUnits>1?'s':'')+') &rarr; '+prod.batteryCycledDaily+' kWh/day shifted &times; $0.31/kWh &times; 365 = '+fmt(annualFromBattery)+'/yr');
     }
     bLines.push('Rate: $0.453/kWh SDG&E verified blended (Tier 1: $0.41, Tier 2: $0.52)');
     bLines.push('Escalation '+cfg.rLabel+': '+cfg.rSrc);
@@ -10021,6 +10070,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       build.sdcpRebate = opt.sdcp_rebate  || 0;
       build.redline    = opt.redline || 0;
       build.nonExport  = !!opt.non_export;
+      build.restoreArray   = !!opt.restore_array;
+      build.arrayOutputPct = opt.array_output_pct || 25;
       build.auroraImg  = opt.aurora_image_url  || '';
       build.auroraPortal= opt.aurora_portal_url || '';
       if (opt.milestones) build.deposit = opt.milestones.deposit || 0;
@@ -10225,6 +10276,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       opt.aurora_image_url  = aImgEl  ? (aImgEl.value.trim()  || null) : null;
       opt.aurora_portal_url = aPortEl ? (aPortEl.value.trim() || null) : null;
       if (build.nonExport) opt.non_export = true;
+      if (build.restoreArray) { opt.restore_array = true; opt.array_output_pct = build.arrayOutputPct || 25; }
       var redlineEl = document.getElementById('propRedline_' + optIdx);
       var redline = redlineEl ? (parseFloat(redlineEl.value) || 0) : (build.redline || 0);
       if (redline > 0) {
@@ -10256,32 +10308,37 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     ];
     options.forEach(function(opt, oIdx) {
       var buildForOpt = _propBuilds[oIdx] || _propBuilds[0];
-      var prod = _propCalcBaseProduction(buildForOpt, _propSolarData, custRec ? custRec.system_size : null);
+      var annualUsageKwh = bill > 0 ? Math.round(bill * 12 / blendedRate) : 0;
+      var prod = _propCalcBaseProduction(buildForOpt, _propSolarData, custRec ? custRec.system_size : null, annualUsageKwh);
       if (!prod.hasData || !bill) return;
       // Non-export systems can't sell back excess — reduce panel+inverter production by 25%
       var exportFactor = opt.non_export ? 0.75 : 1.0;
-      var annualUsageKwh = Math.round(bill * 12 / blendedRate);
       var scen = {};
+      var _modSurplus = 0;
       _sendScenCfgs.forEach(function(s) {
         var panelKwh    = Math.round(prod.panelKwh    * s.confidence * exportFactor);
         var inverterKwh = Math.round(prod.inverterKwh * s.confidence * exportFactor);
         var battKwh     = prod.batteryArbitrageKwh;
-        var annualFromPanels   = panelKwh   * blendedRate;
-        var annualFromInverter = inverterKwh * blendedRate;
-        var annualFromBattery  = battKwh    * 0.31;
-        var annualSaved  = annualFromPanels + annualFromInverter + annualFromBattery;
+        var totalNewProd = panelKwh + inverterKwh;
+        // kWh beyond annual usage earns ~$0.04 NEM true-up, not $0.453 retail
+        var split = _propSplitByUsage(totalNewProd, annualUsageKwh);
+        var annualFromProduction = split.billable * blendedRate + split.surplus * 0.04;
+        var annualFromBattery  = battKwh * 0.31;
+        var annualSaved  = annualFromProduction + annualFromBattery;
         var monthly      = Math.round(annualSaved / 12);
         var total20yr    = Math.round(annualSaved * (Math.pow(1 + s.r, 20) - 1) / s.r);
-        var totalNewProd = panelKwh + inverterKwh;
         var afterBill    = (totalNewProd > 0 && totalNewProd >= annualUsageKwh) ? 24 : Math.max(24, Math.round(bill - monthly));
+        if (s.key === 'moderate') _modSurplus = split.surplus;
         scen[s.key] = { monthly: monthly, annual: Math.round(annualSaved), total20yr: total20yr, afterBill: afterBill };
       });
       opt.savings = scen;
       // Store production data so customer proposal can show methodology
       opt.prod_data = {
         panelKwh: prod.panelKwh, panelKw: prod.panelKw, panelCount: prod.panelCount, panelSource: prod.panelSource,
-        inverterKwh: prod.inverterKwh, hasInverter: prod.hasInverter, sysKw: prod.sysKw,
+        inverterKwh: prod.inverterKwh, hasInverter: prod.hasInverter, sysKw: prod.sysKw, outputPct: prod.outputPct,
         batteryArbitrageKwh: prod.batteryArbitrageKwh, hasBattery: prod.hasBattery,
+        storageKwh: prod.storageKwh, batteryUnits: prod.batteryUnits, batteryCycledDaily: prod.batteryCycledDaily,
+        surplusKwh: _modSurplus, annualUsageKwh: annualUsageKwh,
         billBaseline: bill
       };
     });
@@ -10319,7 +10376,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // ── PROPOSAL MENU BUILDER HELPERS ─────────────────────────────────────────
 
   function _propInitBuild() {
-    return { lineItems: [], price: 0, deposit: 0, participate: false, partPrice: null, teslaRebate: 0, sdcpRebate: 0, redline: 0, auroraImg: '', auroraPortal: '', nonExport: false };
+    return { lineItems: [], price: 0, deposit: 0, participate: false, partPrice: null, teslaRebate: 0, sdcpRebate: 0, redline: 0, auroraImg: '', auroraPortal: '', nonExport: false, restoreArray: false, arrayOutputPct: 25 };
   }
 
   window._propAddCatItem = function(catIdx, optIdx) {
@@ -10478,6 +10535,32 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '<div style="font-size:0.62rem;color:#666;margin-top:2px;">Component warranty swap · labor + coordination</div>';
         h += '<div style="font-size:0.78rem;color:'+(_rmaAdded?'rgba(141,198,63,0.7)':'#8DC63F')+';font-weight:700;margin-top:5px;">$450</div>';
         h += '<div style="font-size:0.6rem;color:#555;margin-top:2px;">Dealer cost</div>';
+        h += '</div>';
+        // Restore Existing Array card (full-width) — measured-output inverter recovery.
+        // A PW3's integrated 6-MPPT inverter can absorb existing strings, so recovery
+        // applies even when no standalone inverter line item is in the build.
+        var _restoreOn = !!build.restoreArray;
+        var _restorePct = build.arrayOutputPct || 25;
+        var _restoreSysKw = parseFloat(_propBuildCust.system_size) || 0;
+        h += '<div style="grid-column:1/-1;border:1px solid '+(_restoreOn?'rgba(74,158,255,0.5)':'rgba(255,255,255,0.1)')+';background:'+(_restoreOn?'rgba(74,158,255,0.07)':'rgba(255,255,255,0.03)')+';border-radius:8px;padding:10px;">';
+        h += '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">';
+        h += '<div onclick="_propToggleRestore('+optIdx+')" style="flex:1;min-width:0;cursor:pointer;user-select:none;">';
+        h += '<div style="font-size:0.74rem;font-weight:700;color:'+(_restoreOn?'#4a9eff':'#ddd')+';line-height:1.3;">Restore Existing Array'+(_restoreOn?' &#10003;':'')+'</div>';
+        h += '<div style="font-size:0.62rem;color:#666;margin-top:2px;">Dead/degraded inverter &middot; recovery via new inverter or PW3\'s built-in 6-MPPT inverter</div>';
+        if (_restoreOn && _restoreSysKw > 0) {
+          var _recKwh = Math.round(_restoreSysKw * 1600 * (1 - _restorePct/100));
+          h += '<div style="font-size:0.68rem;color:rgba(74,158,255,0.85);font-weight:700;margin-top:4px;">'+_restoreSysKw+' kW at '+_restorePct+'% today &rarr; recovers ~'+_recKwh.toLocaleString()+' kWh/yr</div>';
+        } else if (_restoreOn) {
+          h += '<div style="font-size:0.62rem;color:#ffaa00;margin-top:4px;">&#9888; Set system size on the lead to calculate recovery</div>';
+        }
+        h += '</div>';
+        if (_restoreOn) {
+          h += '<div style="display:flex;align-items:center;gap:5px;flex-shrink:0;" onclick="event.stopPropagation()">';
+          h += '<input type="number" min="1" max="99" value="'+_restorePct+'" onchange="_propSetOutputPct('+optIdx+',this.value)" style="width:52px;background:#0e0e0e;border:1px solid rgba(74,158,255,0.35);border-radius:6px;color:#4a9eff;font-weight:700;padding:5px 6px;font-size:0.78rem;text-align:center;"/>';
+          h += '<span style="font-size:0.6rem;color:#666;line-height:1.3;">% output<br>measured</span>';
+          h += '</div>';
+        }
+        h += '</div>';
         h += '</div>';
         // Tesla Powerwall Expansion Pack quantity card (spans full width, before panel stepper)
         var _expCount = _propExpPackCounts[optIdx] || 0;
@@ -10729,6 +10812,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (existing >= 0) { build.lineItems[existing] = item; } else { build.lineItems.push(item); }
     }
     _propUpdateTotal(optIdx);
+    _propRenderBuilds();
+  };
+
+  window._propToggleRestore = function(optIdx) {
+    var b = _propBuilds[optIdx];
+    if (!b) return;
+    b.restoreArray = !b.restoreArray;
+    _propRenderBuilds();
+  };
+  window._propSetOutputPct = function(optIdx, val) {
+    var b = _propBuilds[optIdx];
+    if (!b) return;
+    var p = parseFloat(val);
+    b.arrayOutputPct = (p > 0 && p < 100) ? p : 25;
     _propRenderBuilds();
   };
 
@@ -13297,8 +13394,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             // Methodology (only when prod_data present)
             var _mLines = [];
             if (_pd && _pd.panelKw > 0) _mLines.push(_pd.panelCount+' panels ('+_pd.panelKw+' kW) &rarr; '+_pd.panelKwh.toLocaleString()+' kWh/yr ['+_pd.panelSource+'] &times; $0.453/kWh');
-            if (_pd && _pd.hasInverter && _pd.sysKw > 0) _mLines.push(_pd.sysKw+' kW system at 25% output &rarr; '+_pd.inverterKwh.toLocaleString()+' kWh/yr recovered &times; $0.453/kWh');
-            if (_pd && _pd.hasBattery) _mLines.push('Battery TOU arbitrage: 13.5 kWh &times; 1.5 cycles/day &times; $0.31/kWh &times; 365 days');
+            if (_pd && _pd.hasInverter && _pd.sysKw > 0) _mLines.push(_pd.sysKw+' kW system at '+(_pd.outputPct||25)+'% measured output &rarr; '+_pd.inverterKwh.toLocaleString()+' kWh/yr recovered &times; $0.453/kWh');
+            if (_pd && _pd.hasBattery) _mLines.push('Battery TOU arbitrage: '+(_pd.storageKwh||13.5)+' kWh storage &rarr; '+(_pd.batteryCycledDaily ? _pd.batteryCycledDaily+' kWh/day shifted' : '1.5 cycles/day')+' &times; $0.31/kWh &times; 365 days');
+            if (_pd && _pd.surplusKwh > 0) _mLines.push('NEM true-up: '+_pd.surplusKwh.toLocaleString()+' kWh/yr beyond your annual usage credited at ~$0.04/kWh (wholesale)');
             _mLines.push('Rate: $0.453/kWh SDG&E verified blended (Tier 1: $0.41, Tier 2: $0.52)');
             _mLines.push('20-year total: geometric series Year1 &times; [(1+r)&sup2;&sup0;&minus;1] / r &bull; 3 scenarios: 5/7/10%/yr (CPUC SB 695)');
 
