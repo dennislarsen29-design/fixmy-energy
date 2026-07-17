@@ -255,6 +255,28 @@ exports.handler = async function(event) {
     };
   }
 
+  // ── Absorb orphan partials ─────────────────────────────────────────────────
+  // A mid-typed partial ("3335 Laurashawn", no phone/email) never equals the
+  // completed full address ("3335 Laurashawn Ave, La Mesa, CA"), so it lingers as
+  // a duplicate flagged "Booking Incomplete — Call Back". When a real booking
+  // (has contact info, not itself a partial) is processed, archive any contactless
+  // partial whose address shares this booking's house-number + street name.
+  if (!isPartial && address && (email || digits)) {
+    try {
+      const toks = address.trim().split(/\s+/).slice(0, 2).join(' ');
+      if (toks && /\d/.test(toks)) {
+        let cleanupFilter = 'address=ilike.' + encodeURIComponent(toks + '%')
+          + '&partial_capture=eq.true&phone=is.null&email=is.null';
+        if (existingId) cleanupFilter += '&id=neq.' + encodeURIComponent(existingId);
+        await fetch(SUPA_URL + '/rest/v1/customers?' + cleanupFilter, {
+          method: 'PATCH',
+          headers: { ...supaHeaders, 'Prefer': 'return=minimal' },
+          body: JSON.stringify({ partial_capture: false, archived: true })
+        }).catch(() => {});
+      }
+    } catch (e) { /* best-effort cleanup — never block the booking */ }
+  }
+
   console.log(existingId ? 'Updated' : 'Created', 'customer:', email || digits || address);
   return {
     statusCode: 200,
