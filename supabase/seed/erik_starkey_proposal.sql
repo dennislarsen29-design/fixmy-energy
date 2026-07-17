@@ -64,11 +64,11 @@ declare
         "array_output_pct": 63,
         "milestones": { "deposit": 1000, "remaining": 33008 },
         "line_items": [
-          { "name": "Tesla Powerwall 3 ×1 (integrated 11.5 kW / 6-MPPT solar inverter)", "price": 12500, "isCustom": false },
-          { "name": "Tesla Powerwall Expansion Pack ×1 (+13.5 kWh → 27 kWh total)", "price": 7000, "isCustom": false },
-          { "name": "Tesla 420W Panel ×8 (3.36 kW)", "price": 7358, "isCustom": false },
-          { "name": "String re-termination (3 strings → PW3 MPPTs) + SunPower inverter decommission — DRAFT labor est.", "price": 1200, "isCustom": true },
-          { "name": "West roof section reroof — $850/square × 7 squares (ESTIMATE — confirm measurement)", "price": 5950, "isCustom": true }
+          { "id": "pw3_retrofit", "name": "Tesla Powerwall 3 ×1 (integrated 11.5 kW / 6-MPPT solar inverter)", "price": 12500, "isCustom": false },
+          { "id": "pw3_expansion_pack", "name": "Tesla Powerwall Expansion Pack ×1 (+13.5 kWh → 27 kWh total)", "price": 7000, "isCustom": false },
+          { "id": "panel_addon_420w", "name": "Tesla 420W Panel ×8 (3.36 kW)", "price": 7358, "isCustom": false },
+          { "id": null, "name": "String re-termination (3 strings → PW3 MPPTs) + SunPower inverter decommission — DRAFT labor est.", "price": 1200, "isCustom": true },
+          { "id": null, "name": "West roof section reroof — $850/square × 7 squares (ESTIMATE — confirm measurement)", "price": 5950, "isCustom": true }
         ],
         "savings": {
           "conservative": { "monthly": 272, "annual": 3264, "total20yr": 107927, "afterBill": 72 },
@@ -96,8 +96,8 @@ declare
         "array_output_pct": 63,
         "milestones": { "deposit": 1000, "remaining": 12700 },
         "line_items": [
-          { "name": "Tesla Powerwall 3 ×1 (integrated 11.5 kW / 6-MPPT solar inverter)", "price": 12500, "isCustom": false },
-          { "name": "String re-termination (3 strings → PW3 MPPTs) + SunPower inverter decommission — DRAFT labor est.", "price": 1200, "isCustom": true }
+          { "id": "pw3_retrofit", "name": "Tesla Powerwall 3 ×1 (integrated 11.5 kW / 6-MPPT solar inverter)", "price": 12500, "isCustom": false },
+          { "id": null, "name": "String re-termination (3 strings → PW3 MPPTs) + SunPower inverter decommission — DRAFT labor est.", "price": 1200, "isCustom": true }
         ],
         "savings": {
           "conservative": { "monthly": 231, "annual": 2767, "total20yr": 91494,  "afterBill": 113 },

@@ -3999,8 +3999,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
   async function uploadPhotos(files) {
     if (!files.length || !currentJobId) return;
-    var status = document.getElementById('photoStatus');
-    if (!status) return;
+    // Status element differs by context: admin/ops job view uses #photoStatus,
+    // the Tech/Sales lead editor uses #sePhotoStatus. Falling back to a dummy
+    // keeps uploads working from any context — previously a missing #photoStatus
+    // silently aborted the whole upload while the caller still reported success.
+    var status = document.getElementById('photoStatus') || document.getElementById('sePhotoStatus')
+      || { style: {}, textContent: '', innerHTML: '' };
     status.style.color = '#4a9eff';
 
     var BUCKET = 'job_photos';
@@ -4106,6 +4110,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         status.textContent = '✓ ' + uploaded + ' of ' + files.length + ' photo(s) uploaded — all clear';
         status.style.color = '#8DC63F';
       }
+      // Advance the lead to step 2 (Photos Uploaded) on first photos — same as
+      // the customer-portal upload path. Leads only: skip sold jobs and New Solar.
+      try {
+        var _pRec = (typeof adminCustomers !== 'undefined' && adminCustomers || []).find(function(x){ return x.id === currentJobId; });
+        if (_pRec && !_pRec.sold_type && _pRec.lead_category !== 'new_solar' && (parseInt(_pRec.step)||1) < 2) {
+          client.from('customers').update({ step: 2 }).eq('id', currentJobId).then(function(){});
+          _pRec.step = 2;
+        }
+      } catch(e) { /* best effort — photos are already saved */ }
     } else if (!status.innerHTML.includes('&#9888;')) {
       status.textContent = 'All uploads failed — see error above';
       status.style.color = '#ef4444';
@@ -10078,11 +10091,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (opt.milestones) build.deposit = opt.milestones.deposit || 0;
       if (opt.line_items && opt.line_items.length) {
         build.lineItems = opt.line_items.map(function(li){
-          return { id: li.isCustom ? null : opt.id, name: li.name, price: li.price||0, isCustom: !!li.isCustom, subtitle:'', description:'' };
+          // Prefer the line's own saved id (battery/panel/inverter detection and
+          // the quantity steppers depend on it); older proposals saved without
+          // per-line ids fall back to the option's primary id.
+          return { id: li.isCustom ? null : (li.id || opt.id), name: li.name, price: li.price||0, isCustom: !!li.isCustom, subtitle:'', description:'' };
         });
       } else {
         build.lineItems = [{ id: opt.id, name: opt.title, price: opt.price||0, isCustom: false, subtitle: opt.subtitle||'', description: opt.description||'' }];
       }
+      // Rehydrate quantity steppers from restored line items (names carry ×N)
+      var _optIdx = _propBuilds.length;
+      [['pw3_retrofit', _propPw3Counts], ['pw3_expansion_pack', _propExpPackCounts], ['panel_addon_420w', _propPanelCounts]].forEach(function(pair){
+        var li = build.lineItems.find(function(x){ return x.id === pair[0]; });
+        if (!li) return;
+        var m = li.name.match(/[×x](\d+)/i);
+        pair[1][_optIdx] = m ? parseInt(m[1], 10) : 1;
+      });
       _propBuilds.push(build);
     });
     _propExisting = null; // consumed — hide the restore button
@@ -10272,7 +10296,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         participate: build.participate,
         participate_price: partPrice,
         milestones: milestones,
-        line_items: build.lineItems.map(function(li){ return { name: li.name, price: li.price, isCustom: !!li.isCustom }; })
+        line_items: build.lineItems.map(function(li){ return { id: li.id || null, name: li.name, price: li.price, isCustom: !!li.isCustom }; })
       };
       if (build.teslaRebate) opt.tesla_rebate = build.teslaRebate;
       if (build.sdcpRebate)  opt.sdcp_rebate  = build.sdcpRebate;
@@ -10392,7 +10416,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       build.deposit     = parseFloat(row.deposit_amount) || 0;
       build.participate = !!row.participate;
       build.partPrice   = row.default_participate_price != null ? parseFloat(row.default_participate_price) : null;
-      build.teslaRebate = parseFloat(row.tesla_rebate) || 0;
+      build.teslaRebate = 0; // Tesla Visa gift card promo expired 2026-07 — no longer pulled from catalog (was row.tesla_rebate)
       // SDCP rebate only if customer zip is in SDCP territory
       var _sdcpCust = adminCustomers ? (adminCustomers.find(function(x){ return x.id===_propPropId; })||{}) : {};
       var _sdcpZipM = (_sdcpCust.address||'').match(/\b(\d{5})\b/);
@@ -10827,9 +10851,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
     // Battery rebates auto-apply from the catalog battery row (the stepper bypasses
     // _propAddCatItem, which is where catalog rebates normally load). SDCP only in territory.
+    // Tesla Visa gift card promo expired 2026-07 — tesla_rebate no longer auto-applied.
     var _batRow = _propCatItems && _propCatItems.find(function(r){ return r.service_type === 'battery_retrofit'; });
     if (count > 0 && _batRow) {
-      build.teslaRebate = parseFloat(_batRow.tesla_rebate) || 0;
+      build.teslaRebate = 0;
       var _zc = adminCustomers ? (adminCustomers.find(function(x){ return x.id===_propPropId; })||{}) : {};
       var _zm = (_zc.address||'').match(/\b(\d{5})\b/);
       build.sdcpRebate = (_zm && typeof SDCP_ZIPS!=='undefined' && SDCP_ZIPS.has(_zm[1]))
@@ -13539,7 +13564,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
                 }
                 if (opt.tesla_rebate) {
                   _rp = Math.round((_rp - opt.tesla_rebate)*100)/100;
-                  _rb += '<div style="display:flex;justify-content:space-between;font-size:0.78rem;margin-bottom:6px;"><span style="color:#888;">$500 Tesla Visa Gift Card (mailed to you)</span><span style="color:#8DC63F;font-weight:600;">−$'+parseFloat(opt.tesla_rebate).toLocaleString('en-US',{minimumFractionDigits:2})+'</span></div>';
+                  _rb += '<div style="display:flex;justify-content:space-between;font-size:0.78rem;margin-bottom:6px;"><span style="color:#888;">Tesla Rebate</span><span style="color:#8DC63F;font-weight:600;">−$'+parseFloat(opt.tesla_rebate).toLocaleString('en-US',{minimumFractionDigits:2})+'</span></div>';
                   _rb += '<div style="display:flex;justify-content:space-between;font-size:0.88rem;font-weight:800;padding-top:6px;border-top:1px solid rgba(141,198,63,0.2);"><span style="color:#8DC63F;">Your Effective Price</span><span style="color:#8DC63F;">$'+parseFloat(_rp).toLocaleString('en-US',{minimumFractionDigits:2})+'</span></div>';
                 }
                 _rb += '</div>';
@@ -15308,10 +15333,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       currentJobId = id;
       var files = Array.from(input.files);
       if (!files.length) return;
-      var statusEl = document.getElementById('sePhotoStatus');
-      if (statusEl) statusEl.textContent = 'Uploading ' + files.length + ' photo' + (files.length > 1 ? 's' : '') + '…';
+      // uploadPhotos writes real progress/success/error into #sePhotoStatus itself —
+      // don't overwrite it here (a fabricated "✓ uploaded" used to mask real failures).
       uploadPhotos(files).then(function() {
-        if (statusEl) { statusEl.textContent = '✓ ' + files.length + ' photo' + (files.length > 1 ? 's' : '') + ' uploaded'; setTimeout(function() { if (statusEl) statusEl.textContent = ''; }, 3000); }
         window.renderSalesPhotoGrid(id);
       });
     };
