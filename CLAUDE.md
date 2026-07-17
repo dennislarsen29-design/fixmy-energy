@@ -300,8 +300,8 @@ All lead cards render through the single `buildLeadCard(c)` function in portal.h
 Staff sessions moved from `sessionStorage` (which iOS Safari wipes on backgrounding — the cause of constant iPad re-logins) to **localStorage with a 30-day sliding expiry**. Helpers `_persistUser` / `_readUser` / `_clearUser` in portal.html; `signOut()` clears both. Active use renews the 30 days. Keys: `fmUser`, `fmUserExp`.
 
 ## Sign & Pay — payment methods (2026-07-17)
-`sign.html` now has a pill row: **Credit Card (4.9%) · Bank/ACH (1%) · Check (0%)**. Fee (surcharge) and the Stripe PaymentIntent are recomputed per method; `sign-init.js` takes a `method` param → `SURCHARGE_PCT` {card:0.049, ach:0.01, check:0} and `payment_method_types` (`card` / `us_bank_account`); check returns `offline:true` with no PI.
-- **Card** (4.9%, was 3.9%): existing Card Element + `confirmCardPayment` → `sign-complete` (paid). 
+`sign.html` now has a pill row: **Credit Card (3.9%) · Bank/ACH (1%) · Check (0%)**. Fee (surcharge) and the Stripe PaymentIntent are recomputed per method; `sign-init.js` takes a `method` param → `SURCHARGE_PCT` {card:0.039, ach:0.01, check:0} and `payment_method_types` (`card` / `us_bank_account`); check returns `offline:true` with no PI.
+- **Card** (3.9%): existing Card Element + `confirmCardPayment` → `sign-complete` (paid). 
 - **ACH** (1%): `stripe.collectBankAccountForPayment` (Financial Connections) + `confirmUsBankAccountPayment`; ACH settles in 1–2 days so on `processing`/`succeeded` it records signature + invoice `sent` (pending) via `sign-fallback` `agreement_only`, not immediate paid. ⚠️ **Requires ACH + Financial Connections enabled on the Stripe account** — errors surface inline if not.
 - **Check** (0%): fully offline — records signature + pending invoice via `sign-fallback` `agreement_only`; admin marks Paid when the check clears (which then auto-converts to a Diagnostic Job per the relaxed rule above).
 

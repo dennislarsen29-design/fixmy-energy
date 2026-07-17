@@ -40,7 +40,7 @@ exports.handler = async function(event) {
   // Payment method drives the processing-fee surcharge and the Stripe method type.
   // card = 4.9% (card processing), ach = 1% (bank debit), check = 0% (offline).
   method = (method === 'ach' || method === 'check') ? method : 'card';
-  const SURCHARGE_PCT = { card: 0.049, ach: 0.01, check: 0 };
+  const SURCHARGE_PCT = { card: 0.039, ach: 0.01, check: 0 };
   const STRIPE_PM_TYPE = { card: 'card', ach: 'us_bank_account' };
 
   // Look up customer by token
