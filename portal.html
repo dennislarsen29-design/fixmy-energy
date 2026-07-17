@@ -131,6 +131,8 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
     .ed-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
     @media(max-width:520px){ .ed-grid { grid-template-columns:1fr; } }
     @media(max-width:540px){ .lead-card-top{flex-direction:column;gap:8px;} .lead-card-actions{flex-direction:row;flex-wrap:wrap;flex-shrink:1;} }
+    /* Tablet (iPad): bump the rem base ~5% so lead cards read larger and waste less screen */
+    @media(min-width:768px) and (max-width:1099px){ html { font-size:16.8px; } #dashboard { max-width:none; } .dash-body { padding:20px 28px; } }
     @media(min-width:1100px){ html { font-size:17px; } }
     /* iPad layout */
     .sales-card-grid { display:grid; grid-template-columns:1fr; gap:8px; }
@@ -475,7 +477,33 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var _ssb = document.getElementById('subSheetBtn'); if (_ssb) _ssb.style.display = 'inline-flex';
     document.getElementById('dashBody').innerHTML = content;
   }
-  function signOut() { sessionStorage.clear(); location.reload(); }
+  // ── Persistent staff auth (30-day) ──────────────────────────────────────────
+  // Staff sessions used to live in sessionStorage, which iOS Safari wipes every
+  // time it backgrounds/reclaims the tab — that's why the iPad kept logging out.
+  // Persist to localStorage with a 30-day expiry instead; Sign Out still clears it.
+  var _AUTH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+  function _persistUser(v){
+    try { localStorage.setItem('fmUser', v); localStorage.setItem('fmUserExp', String(Date.now() + _AUTH_TTL_MS)); } catch(e){}
+    try { sessionStorage.setItem('user', v); } catch(e){}
+  }
+  function _readUser(){
+    try {
+      var lu = localStorage.getItem('fmUser');
+      if (lu) {
+        var exp = parseInt(localStorage.getItem('fmUserExp') || '0', 10);
+        if (exp && Date.now() > exp) { _clearUser(); return null; }
+        // Sliding renewal — active use pushes the expiry back out 30 days
+        try { localStorage.setItem('fmUserExp', String(Date.now() + _AUTH_TTL_MS)); } catch(e){}
+        return lu;
+      }
+    } catch(e){}
+    try { return sessionStorage.getItem('user'); } catch(e){ return null; }
+  }
+  function _clearUser(){
+    try { localStorage.removeItem('fmUser'); localStorage.removeItem('fmUserExp'); } catch(e){}
+    try { sessionStorage.removeItem('user'); } catch(e){}
+  }
+  function signOut() { _clearUser(); sessionStorage.clear(); location.reload(); }
 
   function _renderSubSheetHTML() {
     function ssRow(label, val) {
@@ -615,7 +643,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // ── Admin check (always hardcoded) ───────────────────────────────────────
     if ((email === ADMIN_EMAIL) || (code === ADMIN_CODE)) {
       if (code === ADMIN_CODE) {
-        sessionStorage.setItem('user', JSON.stringify({isAdmin:true, name:'Admin', role:'admin'}));
+        _persistUser(JSON.stringify({isAdmin:true, name:'Admin', role:'admin'}));
         CURRENT_ROLE = 'admin';
         loadAdminDashboard(); return;
       } else { showErr('Admin code incorrect.'); btn.textContent = 'Access My Portal'; btn.disabled = false; return; }
@@ -650,10 +678,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       } catch(e) {}
       if (code !== mCode) { showErr('Access code incorrect.'); btn.textContent='Access My Portal'; btn.disabled=false; return; }
       var tm=teamMember;
-      if (tm.role==='rep')    { sessionStorage.setItem('user',JSON.stringify({isRep:true,name:tm.name,id:tm.id,role:'rep'})); loadRepDashboard(tm); return; }
-      if (tm.role==='tech')   { sessionStorage.setItem('user',JSON.stringify({isTech:true,name:tm.name,id:tm.id,role:'tech'})); try{await loadTechDashboard(tm);}catch(e){showErr('Error: '+e.message);btn.textContent='Access My Portal';btn.disabled=false;} return; }
-      if (tm.role==='setter') { sessionStorage.setItem('user',JSON.stringify({isSetter:true,name:tm.name,id:tm.id,role:'setter'})); loadSetterDashboard(tm); return; }
-      if (tm.role==='ops')    { sessionStorage.setItem('user',JSON.stringify({isOps:true,name:tm.name,id:tm.id,role:'ops'})); try{await loadOpsDashboard(tm);}catch(e){showErr('Error: '+e.message);btn.textContent='Access My Portal';btn.disabled=false;} return; }
+      if (tm.role==='rep')    { _persistUser(JSON.stringify({isRep:true,name:tm.name,id:tm.id,role:'rep'})); loadRepDashboard(tm); return; }
+      if (tm.role==='tech')   { _persistUser(JSON.stringify({isTech:true,name:tm.name,id:tm.id,role:'tech'})); try{await loadTechDashboard(tm);}catch(e){showErr('Error: '+e.message);btn.textContent='Access My Portal';btn.disabled=false;} return; }
+      if (tm.role==='setter') { _persistUser(JSON.stringify({isSetter:true,name:tm.name,id:tm.id,role:'setter'})); loadSetterDashboard(tm); return; }
+      if (tm.role==='ops')    { _persistUser(JSON.stringify({isOps:true,name:tm.name,id:tm.id,role:'ops'})); try{await loadOpsDashboard(tm);}catch(e){showErr('Error: '+e.message);btn.textContent='Access My Portal';btn.disabled=false;} return; }
     }
 
     // Customer login — Supabase lookup with timeout guard
@@ -682,7 +710,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
                || (normalize(code).length>=10 && normalize(code)===normalize(c.access_code))
                || code===c.access_code || code===c.phone;
       if (!match) { showErr('Access code incorrect.'); btn.textContent = 'Access My Portal'; btn.disabled = false; return; }
-      sessionStorage.setItem('user', JSON.stringify(c));
+      _persistUser(JSON.stringify(c));
       loadCustomerDashboard(c);
     } catch(e) { showErr('Error: '+e.message); btn.textContent = 'Access My Portal'; btn.disabled = false; }
   }
@@ -9846,6 +9874,50 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return '<button style="padding:6px 14px;border-radius:100px;font-size:0.75rem;font-weight:700;cursor:pointer;border:'+(isActive?'none':'1px solid rgba(255,255,255,0.1)')+';background:'+(isActive?'rgba(141,198,63,0.2)':'rgba(255,255,255,0.05)')+';color:'+(isActive?'#8DC63F':'#666')+';white-space:nowrap;" data-filter="'+val+'" onclick="setFilter(this.dataset.filter)">'+label+'</button>';
   }
 
+  // Shared lead-temperature gauge badge — used by the single lead-card renderer
+  // so every portal (Admin, Tech/Sales) shows the same thing.
+  function _leadTempBadge(t){
+    t=(t||'').toString().toLowerCase();
+    var m={hot:['&#128293;','#ef4444','Hot'],warm:['&#127774;','#ffaa00','Warm'],cold:['&#10052;&#65039;','#4a9eff','Cold']}[t];
+    return m?'<span class="mini-badge" style="background:'+m[1]+'22;color:'+m[1]+';">'+m[0]+' '+m[2]+'</span>':'';
+  }
+  // Top Tier-only extras appended below the shared card (confirm/reminder +
+  // Open Solar / Service Finance quick-links), so TT reps keep these tools on
+  // whichever portal they're in.
+  function _ttCardExtras(c, isTT){
+    if(!isTT) return '';
+    var h='<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;">';
+    if(!c.tt_confirmed) h+='<button class="lead-btn ghost" data-id="'+c.id+'" onclick="confirmTTLead(this.dataset.id)" style="color:#9b6de8;border-color:rgba(155,109,232,0.35);">&#10003; Confirm</button>';
+    else h+='<button class="lead-btn ghost" data-id="'+c.id+'" onclick="sendTTReminder(this.dataset.id)" style="color:#4a9eff;border-color:rgba(74,158,255,0.35);">&#128241; Reminder</button>';
+    h+='</div>';
+    h+='<div style="display:flex;gap:8px;margin-top:8px;">'+
+      '<a href="https://app.opensolar.com" target="_blank" rel="noopener" style="flex:1;display:flex;align-items:center;gap:8px;padding:10px 12px;background:rgba(155,109,232,0.08);border:1px solid rgba(155,109,232,0.25);border-radius:10px;text-decoration:none;color:#c4a3f0;font-weight:700;font-size:0.78rem;"><span>&#9728;</span><div><div>Open Solar</div><div style="font-size:0.65rem;font-weight:400;color:#888;">Build proposal</div></div><span style="margin-left:auto;font-size:0.65rem;opacity:0.5;">&#8599;</span></a>'+
+      '<button onclick="navigator.clipboard.writeText(\'815133104\').catch(function(){}).finally(function(){window.open(\'https://apply.svcfin.com/\',\'_blank\');});" style="flex:1;display:flex;align-items:center;gap:8px;padding:10px 12px;background:rgba(74,158,255,0.08);border:1px solid rgba(74,158,255,0.25);border-radius:10px;color:#4a9eff;font-weight:700;font-size:0.78rem;cursor:pointer;text-align:left;box-sizing:border-box;"><span>&#128176;</span><div><div>Service Finance</div><div style="font-size:0.65rem;font-weight:400;color:#888;">Dealer #815133104</div></div><span style="margin-left:auto;font-size:0.65rem;opacity:0.5;">&#8599;</span></button>'+
+    '</div>';
+    return h;
+  }
+
+  // Lead-temperature setter used inside both editors (admin + tech). Updates a
+  // hidden input the save reads; card gauge reflects it after save.
+  window._leadSetTemp = function(prefix, v){
+    var inp=document.getElementById(prefix+'LeadTemp'); if(inp) inp.value = (inp.value===v ? '' : v);
+    var cur = inp ? inp.value : v;
+    ['hot','warm','cold'].forEach(function(k){
+      var b=document.getElementById(prefix+'TempBtn_'+k);
+      if(b){ var on=k===cur; b.style.opacity=on?'1':'0.4'; b.style.fontWeight=on?'800':'600'; }
+    });
+  };
+  function _leadTempControl(prefix, cur){
+    cur=(cur||'').toString().toLowerCase();
+    var defs=[['hot','&#128293; Hot','#ef4444'],['warm','&#127774; Warm','#ffaa00'],['cold','&#10052;&#65039; Cold','#4a9eff']];
+    var h='<input type="hidden" id="'+prefix+'LeadTemp" value="'+cur+'"/>'+
+      '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:14px;">'+
+      '<span style="font-size:0.64rem;font-weight:600;text-transform:uppercase;letter-spacing:0.07em;color:#666;">Temp</span>';
+    defs.forEach(function(d){ var on=cur===d[0]; h+='<button type="button" id="'+prefix+'TempBtn_'+d[0]+'" onclick="_leadSetTemp(\''+prefix+'\',\''+d[0]+'\')" style="width:auto;padding:5px 12px;border-radius:100px;font-size:0.72rem;font-weight:'+(on?'800':'600')+';cursor:pointer;background:'+d[2]+'22;border:1px solid '+d[2]+'55;color:'+d[2]+';opacity:'+(on?'1':'0.4')+';">'+d[1]+'</button>'; });
+    h+='</div>';
+    return h;
+  }
+
   function buildLeadCard(c) {
     var isNS = c.lead_category === 'new_solar';
     var isTT = c.lead_category === 'top_tier';
@@ -9914,26 +9986,34 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (c.assigned_ops && _opsN[c.assigned_ops]) _assignParts.push('Ops: '+_opsN[c.assigned_ops]);
     var assignLine = _assignParts.length ? '<div style="font-size:0.65rem;color:#8DC63F;opacity:0.75;margin-top:3px;">'+_assignParts.join(' &middot; ')+'</div>' : '';
 
+    // SDCP eligibility badge (San Diego Community Power territory by zip) + temp gauge
+    var _zipCode = extractZip(c.address||'');
+    var sdcpBadge = (_zipCode && typeof SDCP_ZIPS!=='undefined' && SDCP_ZIPS.has(_zipCode))
+      ? ' <span class="mini-badge" style="background:rgba(0,150,255,0.15);color:#4AABF7;">SDCP</span>' : '';
+    var tempBadge = _leadTempBadge(c.lead_temp);
+    // Edit routes to the right editor for the current portal; Magic Link + Proposal
+    // now live INSIDE the editor (not on the card) per the unified card spec.
+    var _editFn = (typeof CURRENT_ROLE!=='undefined' && CURRENT_ROLE==='admin') ? 'openLeadEditor' : 'salesEditLead';
+    var _pd = (c.phone||'').replace(/\D/g,'');
+    var _navUrl = c.address ? 'https://maps.apple.com/?q='+encodeURIComponent(c.address) : '';
+
     return '<div class="lead-card" id="lead-'+c.id+'">'+
-      '<div class="lead-card-top"><div>'+
+      '<div class="lead-card-top"><div style="min-width:0;">'+
         '<div class="lead-name">'+(((c.first_name||'')+(c.last_name?' '+c.last_name:'')).trim()||c.email||c.phone||'Unknown')+pillHtml+'</div>'+
         '<div class="lead-meta">'+(c.email||'')+(c.phone?' &middot; '+c.phone:'')+(created?' &middot; '+created:'')+'</div>'+
-        '<div class="lead-addr">'+(c.address||'No address')+'</div>'+
+        '<div class="lead-addr">'+(c.address||'No address')+sdcpBadge+'</div>'+
         assignLine+
-        '<div style="margin-top:6px;">'+invBadge+agBadge+opsBadge+ttBadge+ttConfBadge+incompleteBadge+'</div></div>'+
+        '<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px;align-items:center;">'+tempBadge+invBadge+agBadge+opsBadge+ttBadge+ttConfBadge+incompleteBadge+'</div></div>'+
       '<div class="lead-card-actions">'+
-        '<button class="lead-btn lime" data-id="'+c.id+'" onclick="openLeadEditor(this.dataset.id)">Edit</button>'+
-        '<button class="lead-btn ghost" data-link="'+magic+'" data-email="'+c.email+'" onclick="sendMagicLink(this.dataset.link,this.dataset.email)">&#128279; Link</button>'+
-        '<button class="lead-btn ghost" data-phone="'+(c.phone||'')+'" onclick="callLead(this.dataset.phone)">&#128222; Call</button>'+
-        (c.phone ? '<a class="lead-btn ghost" href="sms:'+(c.phone||'').replace(/\D/g,'')+'" style="text-decoration:none;">&#128172; Text</a>' : '')+
-        (c.address ? '<button class="lead-btn ghost" data-addr="'+(c.address||'').replace(/"/g,'&quot;')+'" onclick="navLead(this.dataset.addr,this)">&#128506; Nav</button>' : '')+
-        (c.lead_category!=='new_solar' ? '<button class="lead-btn ghost" data-id="'+c.id+'" onclick="openProposalBuilder(this.dataset.id)" style="color:#4a9eff;border-color:rgba(74,158,255,0.3);">&#128196; Proposal</button>' : '')+
-        (isTT && !c.tt_confirmed ? '<button class="lead-btn ghost" data-id="'+c.id+'" onclick="confirmTTLead(this.dataset.id)" style="color:#9b6de8;border-color:rgba(155,109,232,0.35);">&#10003; Confirm</button>' :
-          (isTT ? '<button class="lead-btn ghost" data-id="'+c.id+'" onclick="sendTTReminder(this.dataset.id)" style="color:#4a9eff;border-color:rgba(74,158,255,0.35);">&#128241; Reminder</button>' : ''))+
+        '<button class="lead-btn lime" data-id="'+c.id+'" onclick="'+_editFn+'(this.dataset.id)">&#9998; Edit</button>'+
+        (_pd ? '<a class="lead-btn ghost" href="tel:'+_pd+'" style="text-decoration:none;">&#128222; Call</a>' : '')+
+        (_pd ? '<a class="lead-btn ghost" href="sms:'+_pd+'" style="text-decoration:none;">&#128172; Text</a>' : '')+
+        (_navUrl ? '<a class="lead-btn ghost" href="'+_navUrl+'" target="_blank" rel="noopener" style="text-decoration:none;">&#128506; Nav</a>' : '')+
         '<button class="lead-btn ghost" data-id="'+c.id+'" onclick="archiveLead(this.dataset.id)" style="color:#ffaa00;border-color:rgba(255,170,0,0.25);">&#128451; Archive</button>'+
       '</div></div>'+
       progressHtml+
       auroraHtml+
+      _ttCardExtras(c, isTT)+
     '</div>';
   }
 
@@ -11529,6 +11609,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<button onclick="closeLeadEditor()" style="background:none;border:none;color:#666;cursor:pointer;font-size:1.1rem;">&#10005;</button></div>'+
       '<input type="hidden" id="edId" value="'+c.id+'"/>'+
 
+      // ── In-editor quick actions (Magic Link + Proposal live here now, not on the card) ──
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;">'+
+        '<button type="button" onclick="sendMagicLink(\'https://fixmy.energy/portal?email='+encodeURIComponent(c.email||'')+'&code='+encodeURIComponent(c.access_code||(c.phone||'').replace(/\D/g,''))+'\',\''+esc(c.email||'')+'\')" style="width:auto;padding:8px 16px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);border-radius:100px;color:#4a9eff;font-size:0.75rem;font-weight:700;cursor:pointer;">&#128279; Magic Link</button>'+
+        (!isNSEdit ? '<button type="button" onclick="openProposalBuilder(\''+c.id+'\')" style="width:auto;padding:8px 16px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);border-radius:100px;color:#4a9eff;font-size:0.75rem;font-weight:700;cursor:pointer;">&#128196; Proposal</button>' : '')+
+      '</div>'+
+      _leadTempControl('ed', c.lead_temp)+
+
       // ── Pending action banners ────────────────────────────────────────────
       ((!isNSEdit && !isTTEdit && (c.agreement_status === 'sent' || c.agreement_status === 'pending')) ?
         '<div style="background:rgba(239,68,68,0.1);border:2px solid rgba(239,68,68,0.5);border-radius:10px;padding:14px 16px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">'+
@@ -12083,7 +12170,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var invStSave = (document.getElementById('edInvSt')||{}).value || '';
       var agStSave = (document.getElementById('edAgSt')||{}).value || '';
       var stepImpliesSold = stepVal === 6 || stepVal >= 8;
-      diagConverting = !cRec.sold_type && ((invStSave === 'paid' && agStSave === 'signed') || stepImpliesSold);
+      // A paid diagnostic fee = a Diagnostic Job, regardless of HOW the agreement
+      // was signed. Jan Burrell paid by check + signed outside Sign & Pay (which
+      // is the only thing that sets agreement_status='signed'), so requiring a
+      // digital signature left her stuck as a Lead. Invoice = Paid is the sale.
+      diagConverting = !cRec.sold_type && (invStSave === 'paid' || (invStSave === 'paid' && agStSave === 'signed') || stepImpliesSold);
       soldTypeVal = diagConverting ? 'diagnostic' : (cRec.sold_type || null);
       solarStatusVal = null;
     }
@@ -12103,6 +12194,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       step: stepVal,
       diagnostic_date: diagDate,
       install_date: instDate,
+      lead_temp: (document.getElementById('edLeadTemp')||{}).value||null,
       agreement_status: document.getElementById('edAgSt').value,
       notes: (function(){ var p=(document.getElementById('edNoteInput')||{}).value.trim(); return p ? _appendNote(cRec.notes||null,'Admin',p) : (cRec.notes||null); })(),
       setter_name: document.getElementById('edSetterName').value==='none'?null:document.getElementById('edSetterName').value||null,
@@ -13868,7 +13960,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // Fall through to magic link handler below
     } else {
     // Restore rep/tech session
-    var saved = sessionStorage.getItem('user');
+    var saved = _readUser();
     if (saved) {
       try {
         var u = JSON.parse(saved);
@@ -13900,7 +13992,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           var fr = await rc.from('customers').select('*').eq('id', u.id).limit(1);
           if (!fr.error && fr.data && fr.data.length) {
             var freshUser = fr.data[0];
-            sessionStorage.setItem('user', JSON.stringify(freshUser));
+            _persistUser(JSON.stringify(freshUser));
             loadCustomerDashboard(freshUser);
           } else {
             loadCustomerDashboard(u);
@@ -13917,7 +14009,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var _opsCode  = decodeURIComponent(uc).trim();
       var _opsMatch = OPS_PARTNERS.find(function(o){ return o.email===_opsEmail && o.code===_opsCode; });
       if(_opsMatch){
-        sessionStorage.setItem('user', JSON.stringify({isOps:true, name:_opsMatch.name, id:_opsMatch.id, role:'ops'}));
+        _persistUser(JSON.stringify({isOps:true, name:_opsMatch.name, id:_opsMatch.id, role:'ops'}));
         history.replaceState(null,'',location.pathname); // clean URL
         loadOpsDashboard(_opsMatch);
         return;
@@ -13962,7 +14054,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           if (opsMatch) {
             if (rawUc.toLowerCase() === opsMatch.code.toLowerCase()) {
               mlStatus('');
-              sessionStorage.setItem('user', JSON.stringify({isOps:true, name:opsMatch.name, id:opsMatch.id, role:'ops'}));
+              _persistUser(JSON.stringify({isOps:true, name:opsMatch.name, id:opsMatch.id, role:'ops'}));
               loadOpsDashboard(opsMatch);
             } else {
               showMagicLinkError('Access code incorrect.', 'Check your link or contact admin.');
@@ -13979,7 +14071,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
                 sessionStorage.setItem('showWelcome_' + tm.id, '1');
                 sessionStorage.removeItem('showWelcome_' + cleanEmail);
               }
-              sessionStorage.setItem('user', JSON.stringify(Object.assign({}, tm, { isTech: tm.role==='tech', isRep: tm.role==='rep', isSetter: tm.role==='setter' })));
+              _persistUser(JSON.stringify(Object.assign({}, tm, { isTech: tm.role==='tech', isRep: tm.role==='rep', isSetter: tm.role==='setter' })));
               history.replaceState(null, '', location.pathname);
               if (tm.role === 'setter') { loadSetterDashboard(tm); }
               else if (tm.role === 'rep') { loadRepDashboard(tm); }
@@ -14060,7 +14152,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
           // Success
           mlStatus('');
-          sessionStorage.setItem('user', JSON.stringify(c));
+          _persistUser(JSON.stringify(c));
           if (new URLSearchParams(location.search).get('reset_tour') === '1') {
             localStorage.removeItem('portalOnboard_' + c.id);
           }
@@ -14588,94 +14680,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           h += '<div style="text-align:center;padding:32px;color:#555;">No '+viewLeadCatLabel+' leads yet. Tap + New Lead to add one.</div>';
         } else {
           h += '<div class="sales-card-grid">';
-          viewLeads.forEach(function(l) {
-            var isNSL = l.lead_category === 'new_solar';
-            var isTTL = l.lead_category === 'top_tier';
-
-            // Card border/bg by category
-            var cardBorder = isTTL ? 'rgba(155,109,232,0.35)' : 'rgba(74,158,255,0.2)';
-            var cardBg = isTTL ? 'rgba(155,109,232,0.04)' : 'rgba(255,255,255,0.04)';
-
-            // Status pill
-            var pillHtml;
-            if (isNSL) {
-              var nsRec = NS_STATUSES[l.solar_status]||{label:'New Lead',color:'#4a9eff'};
-              pillHtml = '<span style="font-size:0.62rem;margin-left:6px;padding:2px 7px;border-radius:20px;background:'+nsRec.color+'22;color:'+nsRec.color+';border:1px solid '+nsRec.color+'44;">'+nsRec.label+'</span>';
-            } else {
-              var cardStep = l.step||1;
-              var sLabels = ['Eval Booked','Photos','Diagnostic','Analysis','Proposal Sent','Sold','Dead','Install','Monitoring'];
-              var sColors = isTTL ? ['#9b6de8','#4a9eff','#ffaa00','#f97316','#9b6de8','#8DC63F','#ef4444','#8DC63F','#8DC63F']
-                                  : ['#666','#4a9eff','#ffaa00','#f97316','#9b6de8','#8DC63F','#ef4444','#8DC63F','#8DC63F'];
-              var csClr = sColors[cardStep-1]||'#666';
-              pillHtml = '<span style="font-size:0.62rem;margin-left:6px;padding:2px 7px;border-radius:20px;background:'+csClr+'22;color:'+csClr+';border:1px solid '+csClr+'44;">'+(sLabels[cardStep-1]||'Step '+cardStep)+'</span>';
-            }
-
-            var ttBadge     = isTTL ? ' <span style="font-size:0.6rem;padding:2px 6px;border-radius:20px;background:rgba(155,109,232,0.15);color:#9b6de8;border:1px solid rgba(155,109,232,0.3);">&#11088; TOP TIER</span>' : '';
-            var ttConfBadge = (isTTL && l.tt_confirmed) ? ' <span style="font-size:0.6rem;padding:2px 6px;border-radius:20px;background:rgba(141,198,63,0.12);color:#8DC63F;border:1px solid rgba(141,198,63,0.3);">&#10003; Confirmed</span>' : '';
-            var invBadge    = (l.invoice_status && l.invoice_status!=='none') ? '<span style="font-size:0.62rem;padding:2px 7px;border-radius:20px;background:rgba(255,170,0,0.12);color:#ffaa00;border:1px solid rgba(255,170,0,0.25);">INV: '+l.invoice_status+'</span>' : '';
-            var agBadge     = (l.agreement_status && l.agreement_status!=='none') ? '<span style="font-size:0.62rem;padding:2px 7px;border-radius:20px;background:rgba(74,158,255,0.12);color:#4a9eff;border:1px solid rgba(74,158,255,0.25);">AGR: '+l.agreement_status+'</span>' : '';
-
-            h += '<div style="background:'+cardBg+';border:1px solid '+cardBorder+';border-radius:12px;padding:14px;margin-bottom:8px;">';
-            h += '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">';
-
-            // Left: info block
-            h += '<div style="flex:1;min-width:0;">';
-            h += '<div style="font-size:0.92rem;font-weight:700;line-height:1.3;">'+(l.first_name||'')+' '+(l.last_name||'')+pillHtml+ttBadge+ttConfBadge+'</div>';
-            h += '<div style="font-size:0.75rem;color:#888;margin-top:3px;display:flex;align-items:center;gap:6px;">';
-            h += (l.phone||'No phone');
-            if (l.phone) h += '<a href="sms:'+l.phone.replace(/\D/g,'')+'" style="font-size:0.6rem;padding:2px 7px;background:rgba(141,198,63,0.1);color:#8DC63F;border-radius:100px;border:1px solid rgba(141,198,63,0.25);text-decoration:none;font-weight:700;">&#128172; SMS</a>';
-            h += '</div>';
-            h += '<div style="font-size:0.72rem;color:#666;margin-top:2px;display:flex;align-items:center;gap:5px;">';
-            h += '<span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+(l.address||'No address')+'</span>';
-            if (l.address) h += '<button onclick="navigator.clipboard.writeText(\''+l.address.replace(/\\/g,'\\\\').replace(/'/g,"\\'")+'\')" style="flex-shrink:0;font-size:0.58rem;padding:1px 5px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:100px;color:#555;cursor:pointer;" title="Copy address">&#8853;</button>';
-            h += '</div>';
-            if (l.monthly_bill) h += '<div style="font-size:0.7rem;color:#8DC63F;margin-top:2px;">$'+l.monthly_bill+'/mo'+(l.utility?' &middot; '+l.utility:'')+'</div>';
-            if (l.notes) h += '<div style="font-size:0.7rem;color:#888;margin-top:3px;font-style:italic;">&#128203; '+l.notes.slice(0,60)+(l.notes.length>60?'&hellip;':'')+'</div>';
-            if (invBadge||agBadge) h += '<div style="margin-top:5px;display:flex;gap:4px;flex-wrap:wrap;">'+invBadge+agBadge+'</div>';
-            h += '</div>';
-
-            // Right: actions
-            h += '<div style="display:flex;flex-direction:column;gap:5px;align-items:flex-end;flex-shrink:0;">';
-            h += '<div style="display:flex;gap:4px;">';
-            if (l.phone) h += '<a href="tel:'+l.phone.replace(/\D/g,'')+'" style="font-size:0.68rem;padding:4px 10px;background:rgba(141,198,63,0.12);color:#8DC63F;border-radius:100px;border:1px solid rgba(141,198,63,0.25);text-decoration:none;font-weight:700;">&#128222;</a>';
-            if (l.address) h += '<a href="https://maps.apple.com/?q='+encodeURIComponent(l.address)+'" target="_blank" style="font-size:0.68rem;padding:4px 10px;background:rgba(255,255,255,0.06);color:#aaa;border-radius:100px;border:1px solid rgba(255,255,255,0.12);text-decoration:none;font-weight:700;" title="Open in Maps">&#128506;</a>';
-            if (l.phone||l.email) { var _mlE=l.email||(l.phone.replace(/\D/g,'').slice(-10)+'@setter.local'); var mlLink='https://fixmy.energy/portal?email='+encodeURIComponent(_mlE)+'&code='+(l.phone||'').replace(/\D/g,'').slice(-10); h += '<button onclick="sendMagicLink(\''+mlLink+'\',\''+_mlE+'\')" style="font-size:0.68rem;padding:4px 10px;background:rgba(74,158,255,0.08);color:#4a9eff;border-radius:100px;border:1px solid rgba(74,158,255,0.25);cursor:pointer;font-weight:700;" title="Customer portal link">&#128279;</button>'; }
-            h += '<button onclick="salesEditLead(\''+l.id+'\')" style="font-size:0.68rem;padding:4px 10px;background:rgba(255,255,255,0.06);color:#aaa;border-radius:100px;border:1px solid rgba(255,255,255,0.12);cursor:pointer;font-weight:700;">&#9998;</button>';
-            if (l.lead_category !== 'new_solar' && (l.step||1) < 7) h += '<button onclick="openProposalBuilder(\''+l.id+'\')" style="font-size:0.68rem;padding:4px 10px;background:rgba(74,158,255,0.08);color:#4a9eff;border-radius:100px;border:1px solid rgba(74,158,255,0.25);cursor:pointer;font-weight:700;" title="Open proposal builder">&#128196;</button>';
-            if (isTTL && !l.tt_confirmed) h += '<button onclick="confirmTTLead(\''+l.id+'\')" style="font-size:0.68rem;padding:4px 10px;background:rgba(155,109,232,0.08);color:#9b6de8;border-radius:100px;border:1px solid rgba(155,109,232,0.35);cursor:pointer;font-weight:700;" title="Mark customer confirmed">&#10003;</button>';
-            if (isTTL && l.tt_confirmed) h += '<button onclick="sendTTReminder(\''+l.id+'\')" style="font-size:0.68rem;padding:4px 10px;background:rgba(74,158,255,0.08);color:#4a9eff;border-radius:100px;border:1px solid rgba(74,158,255,0.25);cursor:pointer;font-weight:700;" title="Send appointment reminder SMS">&#128241;</button>';
-            h += '<button onclick="archiveLead(\''+l.id+'\')" style="font-size:0.68rem;padding:4px 10px;background:rgba(255,170,0,0.08);color:#ffaa00;border-radius:100px;border:1px solid rgba(255,170,0,0.25);cursor:pointer;font-weight:700;" title="Archive lead">&#128451;</button>';
-            h += '</div></div></div>';
-            if (isTTL) {
-              h += '<div style="display:flex;gap:8px;margin-top:10px;">';
-              h += '<a href="https://app.opensolar.com" target="_blank" style="flex:1;display:flex;align-items:center;gap:8px;padding:10px 12px;background:rgba(155,109,232,0.08);border:1px solid rgba(155,109,232,0.25);border-radius:10px;text-decoration:none;color:#c4a3f0;font-weight:700;font-size:0.78rem;">'+
-                '<span>&#9728;</span><div><div>Open Solar</div><div style="font-size:0.65rem;font-weight:400;color:#888;">Build proposal</div></div><span style="margin-left:auto;font-size:0.65rem;opacity:0.5;">&#8599;</span></a>';
-              h += '<button onclick="navigator.clipboard.writeText(\'815133104\').catch(function(){}).finally(function(){window.open(\'https://apply.svcfin.com/\',\'_blank\');});var s=this.querySelector(\'.sf-copied\');if(s)s.textContent=\'✓ Copied\';setTimeout(function(){if(s)s.textContent=\'Dealer #815133104\';},2000);" style="flex:1;display:flex;align-items:center;gap:8px;padding:10px 12px;background:rgba(74,158,255,0.08);border:1px solid rgba(74,158,255,0.25);border-radius:10px;color:#4a9eff;font-weight:700;font-size:0.78rem;cursor:pointer;text-align:left;box-sizing:border-box;">'+
-                '<span>&#128176;</span><div><div>Service Finance</div><div class="sf-copied" style="font-size:0.65rem;font-weight:400;color:#888;">Dealer #815133104</div></div><span style="margin-left:auto;font-size:0.65rem;opacity:0.5;">&#8599;</span></button>';
-              h += '</div>';
-            }
-
-            // Customer photo count
-            var cpCount = custPhotoMap[String(l.id)]||0;
-            if (cpCount) h += '<div style="margin-top:6px;font-size:0.7rem;color:#4a9eff;">&#128247; '+cpCount+' customer photo'+(cpCount>1?'s':'')+' uploaded</div>';
-
-            // Progress dots + status update dropdown
-            if (isNSL) {
-              var nsKeys = Object.keys(NS_STATUSES); var nsIdx = nsKeys.indexOf(l.solar_status||'ns_eval_booked');
-              h += '<div style="display:flex;align-items:center;gap:2px;margin-top:10px;">';
-              nsKeys.forEach(function(k,i){ var s=NS_STATUSES[k]; var filled=i<=nsIdx; h+='<div style="width:'+(filled?'7px':'4px')+';height:'+(filled?'7px':'4px')+';border-radius:50%;background:'+(filled?s.color:'rgba(255,255,255,0.12)')+';flex-shrink:0;"></div>'; if(i<nsKeys.length-1) h+='<div style="flex:1;height:2px;background:'+(i<nsIdx?NS_STATUSES[nsKeys[i+1]].color:'rgba(255,255,255,0.08)')+';"></div>'; });
-              h += '</div>';
-            } else {
-              var stepNum = l.step||1;
-              var dotClr = isTTL ? '#9b6de8' : '#8DC63F';
-              h += '<div style="display:flex;align-items:center;gap:2px;margin-top:10px;">';
-              [1,2,3,4,5,6,7,8].forEach(function(n,i){ h+='<div style="width:'+(n<=stepNum?'8px':'6px')+';height:'+(n<=stepNum?'8px':'6px')+';border-radius:50%;background:'+(n<=stepNum?dotClr:'rgba(255,255,255,0.12)')+';flex-shrink:0;"></div>'; if(i<7) h+='<div style="flex:1;height:2px;background:'+(stepNum>n?dotClr:'rgba(255,255,255,0.08)')+';"></div>'; });
-              h += '</div>';
-              var slOpts = ['Eval Booked','Photos','Diagnostic','Analysis','Proposal Sent','Sold','Dead','Install','Monitoring'].map(function(lbl,i){ return '<option value="'+(i+1)+'"'+(stepNum===i+1?' selected':'')+'>'+lbl+'</option>'; }).join('');
-              h += '<div style="margin-top:10px;display:flex;align-items:center;gap:8px;"><span style="font-size:0.65rem;color:#666;white-space:nowrap;">Update Status:</span><select onchange="setLeadStep(\''+l.id+'\',this.value)" style="flex:1;min-width:0;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:#ccc;font-size:0.75rem;padding:5px 8px;cursor:pointer;">'+slOpts+'</select></div>';
-            }
-            h += '</div>';
-          });
+          viewLeads.forEach(function(l) { h += buildLeadCard(l); });
           h += '</div>'; // .sales-card-grid
         }
       }
@@ -15214,6 +15219,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<div class="editor-header"><div style="font-weight:700;color:#8DC63F;">✏ Edit Lead: '+(l.first_name||'')+' '+(l.last_name||'')+'</div>'+
         '<button onclick="document.getElementById(\'editorSlot\').innerHTML=\'\'" style="background:none;border:none;color:#666;cursor:pointer;font-size:1.1rem;">&#10005;</button></div>'+
         '<input type="hidden" id="seId" value="'+l.id+'"/>'+
+        // In-editor quick actions (Magic Link + Proposal live here now, not on the card)
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;">'+
+          (function(){ var _e=l.email||((l.phone||'').replace(/\D/g,'').slice(-10)+'@setter.local'); var _ml='https://fixmy.energy/portal?email='+encodeURIComponent(_e)+'&code='+(l.phone||'').replace(/\D/g,'').slice(-10); return '<button type="button" onclick="sendMagicLink(\''+_ml+'\',\''+_e+'\')" style="width:auto;padding:8px 16px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);border-radius:100px;color:#4a9eff;font-size:0.75rem;font-weight:700;cursor:pointer;">&#128279; Magic Link</button>'; })()+
+          (!isNS ? '<button type="button" onclick="openProposalBuilder(\''+l.id+'\')" style="width:auto;padding:8px 16px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);border-radius:100px;color:#4a9eff;font-size:0.75rem;font-weight:700;cursor:pointer;">&#128196; Proposal</button>' : '')+
+        '</div>'+
+        _leadTempControl('se', l.lead_temp)+
         (!isNS && !l.sold_type && (l.step||1) >= 3 && (!l.invoice_status || l.invoice_status === 'none' || l.invoice_status === '') ?
           '<div style="background:rgba(141,198,63,0.07);border:2px solid rgba(141,198,63,0.4);border-radius:10px;padding:12px 14px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">'+
             '<div style="display:flex;align-items:center;gap:8px;">'+
@@ -15372,6 +15383,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           address: document.getElementById('seAddr').value || null,
           monthly_bill: billRaw ? parseFloat(billRaw) : null,
           lead_source: (document.getElementById('seLeadSource')||{}).value || null,
+          lead_temp: (document.getElementById('seLeadTemp')||{}).value || null,
         };
         var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
         var res = await c2.from('customers').update(updates).eq('id', id);

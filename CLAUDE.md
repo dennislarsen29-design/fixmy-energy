@@ -287,6 +287,27 @@ Production math lives in `_propCalcBaseProduction()` (portal.html) — shared by
 - **Proposal JSON round-trips faithfully (2026-07-17)**: `line_items[]` persist their `id` (option_key) and `_propRestoreExisting` prefers it over the option's primary id, plus rehydrates the PW3/Expansion/420W stepper counts from ×N in restored names — battery/panel detection and steppers survive save → Load Previous. The Erik seed carries per-line ids.
 - **Tesla Visa gift card promo EXPIRED 2026-07**: all $500/$1,000 Visa references removed from index.html; `_propAddCatItem` and the PW3 stepper no longer copy `tesla_rebate` from the catalog (SDCP rebate logic untouched); customer render shows a neutral "Tesla Rebate" label only for legacy proposals that already carry a value.
 
+## Formatting / Branding SOP (2026-07-17, per Dennis — AUTHORITATIVE)
+**Whenever a formatting/branding/layout change comes up, ASK clarifying questions first** (AskUserQuestion) so branding, flow, and formatting stay synonymous across ALL portals (Admin, Tech/Sales, Ops, customer). Don't unilaterally restyle one portal — changes should keep every portal consistent.
+
+## Unified Lead Card (2026-07-17)
+All lead cards render through the single `buildLeadCard(c)` function in portal.html — used by both the Admin Leads view and the Tech/Sales Leads view, so every portal shows the **same** card. Contents: name + disposition/step pill, meta line, address **+ SDCP badge** (San Diego Community Power territory by zip via `SDCP_ZIPS`/`extractZip`), assignment line, a badges row (**temperature gauge** `lead_temp` hot/warm/cold via `_leadTempBadge`, INV/AGR/OPS badges, Incomplete-Booking warning), then action buttons: **Edit · Call · Text · Nav (Apple Maps) · Archive** (icon **and** word). Edit routes by role (`openLeadEditor` for admin, `salesEditLead` otherwise). Top Tier cards append confirm/reminder + Open Solar / Service Finance quick-links via `_ttCardExtras`.
+- **Magic Link + Proposal moved OFF the card and INTO both editors** (admin `openLeadEditor` + tech `salesEditLead` header action row). The tech leads list no longer has an inline "Update Status" dropdown (dispositions are changed inside the editor, not from the card list).
+- **Lead temperature** is settable via a segmented control (`_leadTempControl('ed'|'se', ...)`) in both editors; saved to `customers.lead_temp` by `saveLeadEditor` + `savesSalesEdit`. Was previously only ever set server-side by ghl-inbound.
+- **Diagnostic auto-conversion relaxed** (`saveLeadEditor`): a lead converts to a `sold_type='diagnostic'` Job when **invoice_status='paid'** alone (no longer requires agreement_status='signed' too). Jan Burrell paid by check + signed outside Sign & Pay — the strict "paid AND digitally signed" rule left her stuck as a Lead. Invoice = Paid IS the sale.
+
+## Persistent Staff Auth (2026-07-17)
+Staff sessions moved from `sessionStorage` (which iOS Safari wipes on backgrounding — the cause of constant iPad re-logins) to **localStorage with a 30-day sliding expiry**. Helpers `_persistUser` / `_readUser` / `_clearUser` in portal.html; `signOut()` clears both. Active use renews the 30 days. Keys: `fmUser`, `fmUserExp`.
+
+## Sign & Pay — payment methods (2026-07-17)
+`sign.html` now has a pill row: **Credit Card (4.9%) · Bank/ACH (1%) · Check (0%)**. Fee (surcharge) and the Stripe PaymentIntent are recomputed per method; `sign-init.js` takes a `method` param → `SURCHARGE_PCT` {card:0.049, ach:0.01, check:0} and `payment_method_types` (`card` / `us_bank_account`); check returns `offline:true` with no PI.
+- **Card** (4.9%, was 3.9%): existing Card Element + `confirmCardPayment` → `sign-complete` (paid). 
+- **ACH** (1%): `stripe.collectBankAccountForPayment` (Financial Connections) + `confirmUsBankAccountPayment`; ACH settles in 1–2 days so on `processing`/`succeeded` it records signature + invoice `sent` (pending) via `sign-fallback` `agreement_only`, not immediate paid. ⚠️ **Requires ACH + Financial Connections enabled on the Stripe account** — errors surface inline if not.
+- **Check** (0%): fully offline — records signature + pending invoice via `sign-fallback` `agreement_only`; admin marks Paid when the check clears (which then auto-converts to a Diagnostic Job per the relaxed rule above).
+
+## Tablet (iPad) zoom (2026-07-17)
+Lead views bumped ~5% on tablet: `@media(min-width:768px) and (max-width:1099px)` sets `html{font-size:16.8px}`, `#dashboard{max-width:none}`, wider `.dash-body` padding — less wasted screen, easier navigation.
+
 ## Photo Upload (rep/admin paths — fixed 2026-07-17)
 - `uploadPhotos()` no longer hard-requires `#photoStatus`: it falls back to the Tech/Sales editor's `#sePhotoStatus` (or a dummy). Previously a missing element silently aborted the entire upload while `salesUploadPhotos` still reported "✓ N photos uploaded" — the "saved 6 photos but nothing shows" bug. The fabricated success message is removed; the real per-photo status from `uploadPhotos` is shown instead.
 - Rep/admin uploads now auto-advance an unsold FixMy lead from step 1 → 2 (Photos Uploaded) on first successful upload, matching the customer-portal upload path.

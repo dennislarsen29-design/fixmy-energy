@@ -258,6 +258,12 @@ label[for="sig-input"] {
   transition: border-color 0.2s;
 }
 
+/* ── Payment method pills ── */
+.pay-method-pills { display:flex; gap:6px; margin-bottom:14px; flex-wrap:wrap; }
+.pm-pill { flex:1; min-width:96px; background:var(--cream); border:1.5px solid var(--line); border-radius:100px; padding:9px 10px; font-size:0.8rem; font-weight:700; color:var(--muted); cursor:pointer; font-family:inherit; transition:all 0.15s; white-space:nowrap; }
+.pm-pill.active { border-color:var(--lime); background:rgba(141,198,63,0.1); color:var(--dark); }
+.pm-fee { font-size:0.68rem; font-weight:600; opacity:0.7; }
+
 /* ── Pay button ── */
 #pay-btn {
   width: 100%;
@@ -542,10 +548,17 @@ label[for="sig-input"] {
 
     <div class="card payment-card">
       <div class="card-title">Secure Payment</div>
+      <div class="pay-method-pills" id="pay-method-pills">
+        <button type="button" class="pm-pill active" data-method="card" onclick="window._setPayMethod('card')">💳 Credit Card <span class="pm-fee">+4.9%</span></button>
+        <button type="button" class="pm-pill" data-method="ach" onclick="window._setPayMethod('ach')">🏦 Bank / ACH <span class="pm-fee">+1%</span></button>
+        <button type="button" class="pm-pill" data-method="check" onclick="window._setPayMethod('check')">📝 Check <span class="pm-fee">no fee</span></button>
+      </div>
       <div id="card-element"></div>
+      <div id="ach-note" style="display:none;font-size:0.82rem;color:#4A443C;line-height:1.6;padding:2px 2px 14px;">You'll securely connect your bank to authorize a one-time ACH debit (1% fee). Bank payments take 1–2 business days to clear — your appointment is confirmed as soon as it's initiated.</div>
+      <div id="check-note" style="display:none;font-size:0.82rem;color:#4A443C;line-height:1.6;padding:2px 2px 14px;">Sign now and pay by check to <strong>Solar Review Corp</strong> — no processing fee. Hand it to your technician or mail it; we'll mark your invoice paid when it's received.</div>
       <div id="error-msg" class="error-msg"></div>
       <button id="pay-btn" disabled>Sign &amp; Pay <span id="btn-amount"></span></button>
-      <div class="secure-note">🔒 Payment Card Industry (PCI) compliant. Your card data is not stored on our servers — processed securely and encrypted by Stripe.</div>
+      <div class="secure-note">🔒 PCI compliant. Card &amp; bank data are encrypted and processed by Stripe — never stored on our servers.</div>
     </div>
 
   </div><!-- /.right-col -->
@@ -633,15 +646,17 @@ label[for="sig-input"] {
     return;
   }
 
-  var clientSecret        = initData.clientSecret;
   var publishableKey      = initData.publishableKey;
   var baseAmountCents     = initData.amountCents || 34900;
-  var surchargeAmountCents = initData.surchargeAmountCents || Math.round(baseAmountCents * 0.039);
-  var totalAmountCents    = initData.totalAmountCents || (baseAmountCents + surchargeAmountCents);
   var baseDisplay         = '$' + (baseAmountCents / 100).toFixed(2);
-  var surchargeDisplay    = '$' + (surchargeAmountCents / 100).toFixed(2);
-  var totalDisplay        = '$' + (totalAmountCents / 100).toFixed(2);
-  var amountDisplay       = totalDisplay;
+  var FEE_PCT             = { card: 0.049, ach: 0.01, check: 0 };
+  // clientSecret is per-method — each PaymentIntent's amount bakes in that method's
+  // surcharge. Initial load returns the card PI; ACH is fetched lazily on first select.
+  var secrets            = { card: initData.clientSecret, ach: null };
+  var currentMethod      = 'card';
+  var money = function(c){ return '$' + (c/100).toFixed(2); };
+  function methodTotals(m){ var s=Math.round(baseAmountCents*FEE_PCT[m]); return { surcharge:s, total:baseAmountCents+s }; }
+  var amountDisplay = money(methodTotals('card').total);
 
   if (!publishableKey) {
     showErr('Configuration Error', 'Payment system not configured. Please contact Solar Review.');
@@ -653,11 +668,26 @@ label[for="sig-input"] {
 
   var firstName = initData.customerName ? initData.customerName.split(' ')[0] : null;
   document.getElementById('customer-name').textContent = firstName ? 'Hi, ' + firstName + '!' : 'Hi there!';
-  document.getElementById('amount-display').textContent = totalDisplay;
-  document.getElementById('fee-breakdown').innerHTML =
-    'Diagnostic fee: ' + baseDisplay + ' + CC processing (3.9%): ' + surchargeDisplay + ' = <strong style="color:var(--dark)">' + totalDisplay + '</strong><br>' +
-    'Prefer to skip the fee? Pay by check to Solar Review Corp — <a href="tel:6197776527">(619) 777-6527</a>.';
-  document.getElementById('btn-amount').textContent = totalDisplay;
+
+  function renderMethodUI(){
+    var t = methodTotals(currentMethod);
+    amountDisplay = money(t.total);
+    document.getElementById('amount-display').textContent = currentMethod==='check' ? baseDisplay : money(t.total);
+    var feeLabel = currentMethod==='card' ? 'card processing (4.9%)' : currentMethod==='ach' ? 'ACH processing (1%)' : '';
+    document.getElementById('fee-breakdown').innerHTML =
+      currentMethod==='check'
+        ? 'Diagnostic fee: <strong style="color:var(--dark)">'+baseDisplay+'</strong> — no processing fee. Pay by check to Solar Review Corp.'
+        : 'Diagnostic fee: '+baseDisplay+' + '+feeLabel+': '+money(t.surcharge)+' = <strong style="color:var(--dark)">'+money(t.total)+'</strong>';
+    var pills = document.querySelectorAll('#pay-method-pills .pm-pill');
+    for (var i=0;i<pills.length;i++){ pills[i].classList.toggle('active', pills[i].getAttribute('data-method')===currentMethod); }
+    document.getElementById('card-element').style.display = currentMethod==='card' ? 'block' : 'none';
+    document.getElementById('ach-note').style.display     = currentMethod==='ach'  ? 'block' : 'none';
+    document.getElementById('check-note').style.display   = currentMethod==='check'? 'block' : 'none';
+    var pb = document.getElementById('pay-btn');
+    if (pb.childNodes[0]) pb.childNodes[0].nodeValue = currentMethod==='check' ? 'Sign & Confirm ' : 'Sign & Pay ';
+    var ba = document.getElementById('btn-amount'); if (ba) ba.textContent = currentMethod==='check' ? baseDisplay : money(t.total);
+  }
+  renderMethodUI();
 
   // Personalize ESIGN statement
   if (initData.customerName) {
@@ -667,7 +697,7 @@ label[for="sig-input"] {
 
   // Stripe Elements — light theme
   var stripe   = Stripe(publishableKey);
-  var elements = stripe.elements({ clientSecret: clientSecret });
+  var elements = stripe.elements({ clientSecret: secrets.card });
   var cardEl   = elements.create('card', {
     style: {
       base: {
@@ -698,6 +728,91 @@ label[for="sig-input"] {
     errorMsg.textContent = e.error ? e.error.message : '';
   });
 
+  function _resetPayBtn(){
+    payBtn.disabled = false;
+    payBtn.innerHTML = (currentMethod==='check' ? 'Sign &amp; Confirm ' : 'Sign &amp; Pay ') +
+      '<span id="btn-amount">' + (currentMethod==='check' ? baseDisplay : amountDisplay) + '</span>';
+    updateBtnState();
+  }
+
+  // Switch payment method: updates fee/UI and lazily fetches an ACH PaymentIntent
+  // (its amount includes the 1% fee) the first time ACH is chosen.
+  window._setPayMethod = async function(m){
+    if (m === currentMethod) return;
+    currentMethod = m;
+    errorMsg.textContent = '';
+    renderMethodUI();
+    updateBtnState();
+    if (m === 'ach' && !secrets.ach) {
+      try {
+        var r = await fetch('/.netlify/functions/sign-init', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ token: token, method: 'ach' })
+        });
+        var d = await r.json();
+        if (r.ok && d.clientSecret) secrets.ach = d.clientSecret;
+        else errorMsg.textContent = d.error || 'Could not initialize bank payment. Try card or check.';
+      } catch(e){ errorMsg.textContent = 'Network error initializing bank payment.'; }
+    }
+  };
+
+  // Record signature + mark invoice pending (no online charge). Used by Check
+  // (fully offline) and by ACH once the bank debit is initiated (clears in days).
+  async function _recordAgreementOnly(sig, repair, payMethod){
+    try {
+      var r = await fetch('/.netlify/functions/sign-fallback', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ action:'agreement_only', token: token, signature: sig, repairAuthInitial: repair, signedAt: new Date().toISOString(), paymentMethod: payMethod })
+      });
+      var d = await r.json();
+      if (!r.ok || !d.ok) throw new Error(d.error || 'Could not record signature');
+      var payLine = payMethod === 'ach'
+        ? 'Your bank payment has been initiated and will clear in 1&ndash;2 business days. Your appointment is confirmed.'
+        : 'Please pay by check to Solar Review Corp &mdash; hand it to your technician or mail it. Your appointment is confirmed.';
+      mainEl.style.display = 'none';
+      successEl.innerHTML =
+        '<div class="cert-card"><div class="cert-top"><div class="cert-check">✅</div>' +
+          '<div class="cert-title">Agreement Signed</div>' +
+          '<div class="cert-subtitle">Solar Review Corp · Diagnostic Service Agreement</div>' +
+        '</div><div class="cert-body">' +
+          '<p style="font-size:15px;line-height:1.6;color:#1A1A1A;margin:0 0 12px;">Thank you, ' + (firstName || 'there') + '! Your agreement is signed.</p>' +
+          '<p style="font-size:14px;line-height:1.6;color:#4A443C;margin:0;">' + payLine + ' Questions? Call <a href="tel:6197776527">(619) 777-6527</a>.</p>' +
+        '</div>' +
+        '<div class="cert-footer">Solar Review Corp &nbsp;·&nbsp; License #: 117450 &nbsp;·&nbsp; (619) 777-6527 &nbsp;·&nbsp; fixmy.energy &nbsp;·&nbsp; San Diego, CA</div></div>';
+      successEl.style.display = 'block';
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch(e){
+      errorMsg.textContent = e.message || 'Could not record signature. Please try again.';
+      _resetPayBtn();
+    }
+  }
+
+  // ACH: collect the bank account (Stripe Financial Connections), confirm the
+  // us_bank_account debit, then record the signature + pending invoice.
+  async function _payAch(sig, repair){
+    if (!secrets.ach) { errorMsg.textContent = 'Bank payment not ready yet — tap Bank / ACH again.'; _resetPayBtn(); return; }
+    try {
+      var res = await stripe.collectBankAccountForPayment({
+        clientSecret: secrets.ach,
+        params: { payment_method_type:'us_bank_account', payment_method_data:{ billing_details:{ name: sig, email: initData.email || undefined } } },
+        expand: ['payment_method']
+      });
+      if (res.error) { errorMsg.textContent = res.error.message; _resetPayBtn(); return; }
+      var pi = res.paymentIntent;
+      if (pi && pi.status === 'requires_confirmation') {
+        var conf = await stripe.confirmUsBankAccountPayment(secrets.ach);
+        if (conf.error) { errorMsg.textContent = conf.error.message; _resetPayBtn(); return; }
+        pi = conf.paymentIntent;
+      }
+      if (pi && (pi.status === 'processing' || pi.status === 'succeeded')) {
+        await _recordAgreementOnly(sig, repair, 'ach');
+      } else {
+        errorMsg.textContent = 'Bank authorization incomplete. Please try again or use a card.';
+        _resetPayBtn();
+      }
+    } catch(e){ errorMsg.textContent = e.message || 'Bank payment failed. Try a card instead.'; _resetPayBtn(); }
+  }
+
   payBtn.addEventListener('click', async function() {
     var sig    = sigInput.value.trim();
     var repair = repairInput.value.trim();
@@ -708,7 +823,11 @@ label[for="sig-input"] {
     payBtn.innerHTML = '<span class="spinner"></span>Processing…';
     errorMsg.textContent = '';
 
-    var { paymentIntent, error } = await stripe.confirmCardPayment(clientSecret, {
+    // Non-card methods branch off here.
+    if (currentMethod === 'check') { await _recordAgreementOnly(sig, repair, 'check'); return; }
+    if (currentMethod === 'ach')   { await _payAch(sig, repair); return; }
+
+    var { paymentIntent, error } = await stripe.confirmCardPayment(secrets.card, {
       payment_method: { card: cardEl }
     });
 

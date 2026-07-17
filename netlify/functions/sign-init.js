@@ -32,11 +32,16 @@ exports.handler = async function(event) {
     }
   }
 
-  let token;
-  try { token = JSON.parse(event.body).token; } catch(e) {
+  let token, method;
+  try { const b = JSON.parse(event.body); token = b.token; method = b.method; } catch(e) {
     return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Invalid JSON' }) };
   }
   if (!token) return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'token required' }) };
+  // Payment method drives the processing-fee surcharge and the Stripe method type.
+  // card = 4.9% (card processing), ach = 1% (bank debit), check = 0% (offline).
+  method = (method === 'ach' || method === 'check') ? method : 'card';
+  const SURCHARGE_PCT = { card: 0.049, ach: 0.01, check: 0 };
+  const STRIPE_PM_TYPE = { card: 'card', ach: 'us_bank_account' };
 
   // Look up customer by token
   const lookupUrl = SUPA_URL + '/rest/v1/customers?sign_token=eq.' + encodeURIComponent(token) +
@@ -67,8 +72,23 @@ exports.handler = async function(event) {
   }
 
   const amountCents = Math.round((c.invoice_amount || 349) * 100);
-  const surchargeAmountCents = Math.round(amountCents * 0.039);
+  const surchargeAmountCents = Math.round(amountCents * SURCHARGE_PCT[method]);
   const totalAmountCents = amountCents + surchargeAmountCents;
+
+  // Check = offline (no Stripe charge). Return amounts only; the client records
+  // the signature and marks the invoice pending — admin marks paid when it clears.
+  if (method === 'check') {
+    return {
+      statusCode: 200, headers: cors,
+      body: JSON.stringify({
+        method: 'check', offline: true,
+        publishableKey: process.env.STRIPE_PUBLISHABLE_KEY || '',
+        customerName: ((c.first_name||'') + ' ' + (c.last_name||'')).trim(),
+        amountCents, surchargeAmountCents: 0, totalAmountCents: amountCents,
+        surchargePct: 0, address: c.address || '', customerId: c.id,
+      })
+    };
+  }
 
   // Always create a fresh PaymentIntent — avoids stale PI / cross-account key mismatch errors
   // Clear any stored PI ID so Supabase stays clean
@@ -86,10 +106,11 @@ exports.handler = async function(event) {
     const params = new URLSearchParams({
       amount: totalAmountCents,
       currency: 'usd',
-      'payment_method_types[]': 'card',
+      'payment_method_types[]': STRIPE_PM_TYPE[method],
       description: 'FixMy.Energy Diagnostic Fee — ' + ((c.first_name||'') + ' ' + (c.last_name||'')).trim(),
       'metadata[customer_id]': c.id,
       'metadata[token]': token,
+      'metadata[method]': method,
     });
     if (c.email) params.set('receipt_email', c.email);
 
@@ -125,11 +146,14 @@ exports.handler = async function(event) {
     headers: cors,
     body: JSON.stringify({
       clientSecret,
+      method,
+      surchargePct: SURCHARGE_PCT[method],
       publishableKey: process.env.STRIPE_PUBLISHABLE_KEY || '',
       customerName: ((c.first_name||'') + ' ' + (c.last_name||'')).trim(),
       amountCents,
       surchargeAmountCents,
       totalAmountCents,
+      email: c.email || '',
       address: c.address || '',
       customerId: c.id,
     })
