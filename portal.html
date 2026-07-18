@@ -9876,11 +9876,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
   // Shared lead-temperature gauge badge — used by the single lead-card renderer
   // so every portal (Admin, Tech/Sales) shows the same thing.
-  function _leadTempBadge(t){
-    t=(t||'').toString().toLowerCase();
-    var m={hot:['&#128293;','#ef4444','Hot'],warm:['&#127774;','#ffaa00','Warm'],cold:['&#10052;&#65039;','#4a9eff','Cold']}[t];
-    return m?'<span class="mini-badge" style="background:'+m[1]+'22;color:'+m[1]+';">'+m[0]+' '+m[2]+'</span>':'';
-  }
   // Top Tier-only extras appended below the shared card (confirm/reminder +
   // Open Solar / Service Finance quick-links), so TT reps keep these tools on
   // whichever portal they're in.
@@ -9897,25 +9892,27 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return h;
   }
 
-  // Lead-temperature setter used inside both editors (admin + tech). Updates a
-  // hidden input the save reads; card gauge reflects it after save.
-  window._leadSetTemp = function(prefix, v){
-    var inp=document.getElementById(prefix+'LeadTemp'); if(inp) inp.value = (inp.value===v ? '' : v);
-    var cur = inp ? inp.value : v;
-    ['hot','warm','cold'].forEach(function(k){
-      var b=document.getElementById(prefix+'TempBtn_'+k);
-      if(b){ var on=k===cur; b.style.opacity=on?'1':'0.4'; b.style.fontWeight=on?'800':'600'; }
-    });
+  // Opens an external proposal tool in a new tab and copies the lead address to the
+  // clipboard so it can be pasted straight into the tool's address field.
+  window._propOpenExternal = function(url, addr){
+    if (addr) { try { navigator.clipboard.writeText(addr).then(function(){ if(window._propToast) _propToast('✓ Address copied — paste into the tool'); }).catch(function(){}); } catch(e){} }
+    window.open(url, '_blank');
   };
-  function _leadTempControl(prefix, cur){
-    cur=(cur||'').toString().toLowerCase();
-    var defs=[['hot','&#128293; Hot','#ef4444'],['warm','&#127774; Warm','#ffaa00'],['cold','&#10052;&#65039; Cold','#4a9eff']];
-    var h='<input type="hidden" id="'+prefix+'LeadTemp" value="'+cur+'"/>'+
-      '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:14px;">'+
-      '<span style="font-size:0.64rem;font-weight:600;text-transform:uppercase;letter-spacing:0.07em;color:#666;">Temp</span>';
-    defs.forEach(function(d){ var on=cur===d[0]; h+='<button type="button" id="'+prefix+'TempBtn_'+d[0]+'" onclick="_leadSetTemp(\''+prefix+'\',\''+d[0]+'\')" style="width:auto;padding:5px 12px;border-radius:100px;font-size:0.72rem;font-weight:'+(on?'800':'600')+';cursor:pointer;background:'+d[2]+'22;border:1px solid '+d[2]+'55;color:'+d[2]+';opacity:'+(on?'1':'0.4')+';">'+d[1]+'</button>'; });
-    h+='</div>';
-    return h;
+  // "Proposal Tools" cluster shown inside both lead editors (admin + closing tech).
+  // Internal builder is FixMy/Top-Tier only (hidden on New Solar); Aurora + SolarGraf
+  // copy the address to the clipboard; Imgur opens the uploader for a roof photo whose
+  // URL gets pasted into the proposal builder's image field. Gated out of Setter/Ops.
+  function _proposalToolsRow(id, address, isNS){
+    var jaddr = (address||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;');
+    var pill = 'width:auto;padding:8px 14px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);border-radius:100px;color:#4a9eff;font-size:0.75rem;font-weight:700;cursor:pointer;';
+    return '<div style="margin-bottom:14px;">'+
+      '<div style="font-size:0.64rem;font-weight:600;text-transform:uppercase;letter-spacing:0.07em;color:#666;margin-bottom:7px;">Proposal Tools</div>'+
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;">'+
+        (!isNS ? '<button type="button" onclick="openProposalBuilder(\''+id+'\')" style="'+pill+'">&#128196; Internal Tool</button>' : '')+
+        '<button type="button" onclick="_propOpenExternal(\'https://v2.aurorasolar.com/new-project\',\''+jaddr+'\')" style="'+pill+'">&#128314; Aurora</button>'+
+        '<button type="button" onclick="_propOpenExternal(\'https://app.solargraf.com/dashboard\',\''+jaddr+'\')" style="'+pill+'">&#128208; SolarGraf</button>'+
+        '<button type="button" onclick="window.open(\'https://imgur.com/upload\',\'_blank\')" style="'+pill+'">&#128444;&#65039; Imgur</button>'+
+      '</div></div>';
   }
 
   function buildLeadCard(c) {
@@ -9989,11 +9986,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (c.assigned_ops && _opsN[c.assigned_ops]) _assignParts.push('Ops: '+_opsN[c.assigned_ops]);
     var assignLine = _assignParts.length ? '<div style="font-size:0.65rem;color:#8DC63F;opacity:0.75;margin-top:3px;">'+_assignParts.join(' &middot; ')+'</div>' : '';
 
-    // SDCP eligibility badge (San Diego Community Power territory by zip) + temp gauge
+    // SDCP eligibility badge (San Diego Community Power territory by zip)
     var _zipCode = extractZip(c.address||'');
     var sdcpBadge = (_zipCode && typeof SDCP_ZIPS!=='undefined' && SDCP_ZIPS.has(_zipCode))
       ? ' <span class="mini-badge" style="background:rgba(0,150,255,0.15);color:#4AABF7;">SDCP</span>' : '';
-    var tempBadge = _leadTempBadge(c.lead_temp);
     // Edit routes to the right editor for the current portal; Magic Link + Proposal
     // now live INSIDE the editor (not on the card) per the unified card spec.
     var _editFn = (typeof CURRENT_ROLE!=='undefined' && CURRENT_ROLE==='admin') ? 'openLeadEditor' : 'salesEditLead';
@@ -10006,7 +10002,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<div class="lead-meta">'+(c.email||'')+(c.phone?' &middot; '+c.phone:'')+(created?' &middot; '+created:'')+'</div>'+
         '<div class="lead-addr">'+(c.address||'No address')+sdcpBadge+'</div>'+
         assignLine+
-        '<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px;align-items:center;">'+tempBadge+invBadge+agBadge+opsBadge+ttBadge+ttConfBadge+incompleteBadge+'</div></div>'+
+        '<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px;align-items:center;">'+invBadge+agBadge+opsBadge+ttBadge+ttConfBadge+incompleteBadge+'</div></div>'+
       '<div class="lead-card-actions">'+
         '<button class="lead-btn lime" data-id="'+c.id+'" onclick="'+_editFn+'(this.dataset.id)">&#9998; Edit</button>'+
         (_pd ? '<a class="lead-btn ghost" href="tel:'+_pd+'" style="text-decoration:none;">&#128222; Call</a>' : '')+
@@ -11612,12 +11608,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<button onclick="closeLeadEditor()" style="background:none;border:none;color:#666;cursor:pointer;font-size:1.1rem;">&#10005;</button></div>'+
       '<input type="hidden" id="edId" value="'+c.id+'"/>'+
 
-      // ── In-editor quick actions (Magic Link + Proposal live here now, not on the card) ──
+      // ── In-editor quick actions (Magic Link lives here; Proposal Tools cluster below) ──
       '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;">'+
         '<button type="button" onclick="sendMagicLink(\'https://fixmy.energy/portal?email='+encodeURIComponent(c.email||'')+'&code='+encodeURIComponent(c.access_code||(c.phone||'').replace(/\D/g,''))+'\',\''+esc(c.email||'')+'\')" style="width:auto;padding:8px 16px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);border-radius:100px;color:#4a9eff;font-size:0.75rem;font-weight:700;cursor:pointer;">&#128279; Magic Link</button>'+
-        (!isNSEdit ? '<button type="button" onclick="openProposalBuilder(\''+c.id+'\')" style="width:auto;padding:8px 16px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);border-radius:100px;color:#4a9eff;font-size:0.75rem;font-weight:700;cursor:pointer;">&#128196; Proposal</button>' : '')+
       '</div>'+
-      _leadTempControl('ed', c.lead_temp)+
+      _proposalToolsRow(c.id, c.address||'', isNSEdit)+
 
       // ── Pending action banners ────────────────────────────────────────────
       ((!isNSEdit && !isTTEdit && (c.agreement_status === 'sent' || c.agreement_status === 'pending')) ?
@@ -12197,7 +12192,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       step: stepVal,
       diagnostic_date: diagDate,
       install_date: instDate,
-      lead_temp: (document.getElementById('edLeadTemp')||{}).value||null,
       agreement_status: document.getElementById('edAgSt').value,
       notes: (function(){ var p=(document.getElementById('edNoteInput')||{}).value.trim(); return p ? _appendNote(cRec.notes||null,'Admin',p) : (cRec.notes||null); })(),
       setter_name: document.getElementById('edSetterName').value==='none'?null:document.getElementById('edSetterName').value||null,
@@ -12243,20 +12237,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       openDiagFeeModal(id, updates);
       return;
     }
-    // Intercept step-5 transition: open proposal builder when moving to Proposal Sent
-    if (!isNSSave && !isAutoSave && stepVal === 5 && (cRec.step||1) < 5) {
-      (async function(){
-        try {
-          var c5 = supabase.createClient(SUPA_URL, SUPA_KEY);
-          await c5.from('customers').update(updates).eq('id', id);
-          var idx5 = adminCustomers.findIndex(function(x){ return x.id===id; });
-          if (idx5>-1) adminCustomers[idx5] = Object.assign(adminCustomers[idx5], updates);
-        } catch(e) { console.error('step-5 save:', e); }
-        var em = document.getElementById('editLeadModal'); if (em) em.remove();
-        openProposalBuilder(id);
-      })();
-      return;
-    }
+    // Step-5 "Proposal Sent" no longer auto-opens the proposal builder — the Proposal
+    // Tools cluster in the editor is the entry point now. Step 5 saves like any other step.
     if (isFixMySave && stepVal === 7 && (cRec.step||1) !== 7) updates.archived = true;
     if (isTTSave && (document.getElementById('edTTDisposition')||{}).value === 'dead') updates.archived = true;
     try {
@@ -15225,12 +15207,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<div class="editor-header"><div style="font-weight:700;color:#8DC63F;">✏ Edit Lead: '+(l.first_name||'')+' '+(l.last_name||'')+'</div>'+
         '<button onclick="document.getElementById(\'editorSlot\').innerHTML=\'\'" style="background:none;border:none;color:#666;cursor:pointer;font-size:1.1rem;">&#10005;</button></div>'+
         '<input type="hidden" id="seId" value="'+l.id+'"/>'+
-        // In-editor quick actions (Magic Link + Proposal live here now, not on the card)
+        // In-editor quick actions (Magic Link here; Proposal Tools cluster below — closers only)
         '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;">'+
           (function(){ var _e=l.email||((l.phone||'').replace(/\D/g,'').slice(-10)+'@setter.local'); var _ml='https://fixmy.energy/portal?email='+encodeURIComponent(_e)+'&code='+(l.phone||'').replace(/\D/g,'').slice(-10); return '<button type="button" onclick="sendMagicLink(\''+_ml+'\',\''+_e+'\')" style="width:auto;padding:8px 16px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);border-radius:100px;color:#4a9eff;font-size:0.75rem;font-weight:700;cursor:pointer;">&#128279; Magic Link</button>'; })()+
-          (!isNS ? '<button type="button" onclick="openProposalBuilder(\''+l.id+'\')" style="width:auto;padding:8px 16px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);border-radius:100px;color:#4a9eff;font-size:0.75rem;font-weight:700;cursor:pointer;">&#128196; Proposal</button>' : '')+
         '</div>'+
-        _leadTempControl('se', l.lead_temp)+
+        (!config.setterMode ? _proposalToolsRow(l.id, l.address||'', isNS) : '')+
         (!isNS && !l.sold_type && (l.step||1) >= 3 && (!l.invoice_status || l.invoice_status === 'none' || l.invoice_status === '') ?
           '<div style="background:rgba(141,198,63,0.07);border:2px solid rgba(141,198,63,0.4);border-radius:10px;padding:12px 14px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">'+
             '<div style="display:flex;align-items:center;gap:8px;">'+
@@ -15389,7 +15370,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           address: document.getElementById('seAddr').value || null,
           monthly_bill: billRaw ? parseFloat(billRaw) : null,
           lead_source: (document.getElementById('seLeadSource')||{}).value || null,
-          lead_temp: (document.getElementById('seLeadTemp')||{}).value || null,
         };
         var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
         var res = await c2.from('customers').update(updates).eq('id', id);
@@ -15445,14 +15425,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         openSalesDiagModal(id, rec);
         return;
       }
-      var oldStep = rec.step || 1;
       var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
       await c2.from('customers').update({step: newStep}).eq('id', id);
       rec.step = newStep;
       renderSales();
-      if (newStep === 5 && oldStep < 5) {
-        openProposalBuilder(id);
-      }
+      // Step-5 "Proposal Sent" no longer auto-opens the proposal builder — closers use the
+      // Proposal Tools cluster in the editor instead.
     };
     function openSalesDiagModal(id, rec) {
       var presets = [250, 349, 449, 499, 599];
