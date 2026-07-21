@@ -79,6 +79,14 @@ exports.handler = async function(event) {
         title:               `Solar Evaluation — ${(firstName || '')} ${(lastName || '')}`.trim(),
         meetingLocationType: 'default',
         address:             address || undefined,
+        // Manual/override times (Black Box Dialer, editor) aren't validated free
+        // slots and can fall outside the calendar's configured availability, so
+        // GHL would silently reject them. These flags let an API booking land at
+        // any time, and toNotify fires the calendar's confirmation SMS/email
+        // automations (which otherwise default off for API-created appointments).
+        ignoreDateRange:          true,
+        ignoreFreeSlotValidation: true,
+        toNotify:                 true,
       }),
     });
     const apptData = await apptResp.json();
