@@ -14,6 +14,27 @@ const cors = {
   'Access-Control-Allow-Origin': '*',
 };
 
+// GHL rejects appointment creation with 422 "A team member needs to be selected"
+// when assignedUserId is missing on calendars that require one (the Evaluation
+// calendar does). Resolve it once: prefer an explicit env override, else read the
+// calendar's own first assigned team member. Cached across warm invocations.
+let cachedEvalUserId;
+async function resolveAssignedUserId(ghlHeaders) {
+  if (process.env.GHL_EVAL_USER_ID) return process.env.GHL_EVAL_USER_ID;
+  if (cachedEvalUserId !== undefined) return cachedEvalUserId;
+  cachedEvalUserId = null;
+  try {
+    const resp = await fetch(`${GHL_BASE}/calendars/${CALENDAR_ID}`, { headers: ghlHeaders });
+    const data = await resp.json();
+    const members = data?.calendar?.teamMembers || data?.teamMembers || [];
+    if (members.length && members[0].userId) cachedEvalUserId = members[0].userId;
+    else console.error('resolveAssignedUserId: no team member on calendar', CALENDAR_ID);
+  } catch (e) {
+    console.error('resolveAssignedUserId failed:', e.message);
+  }
+  return cachedEvalUserId;
+}
+
 exports.handler = async function(event) {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers: cors, body: '' };
   if (event.httpMethod !== 'POST')
@@ -64,6 +85,7 @@ exports.handler = async function(event) {
   }
 
   // ── 2. Book appointment ────────────────────────────────────────────────────
+  const assignedUserId = await resolveAssignedUserId(ghlHeaders);
   let appointmentId;
   let apptError = null;
   try {
@@ -74,6 +96,7 @@ exports.handler = async function(event) {
         calendarId:          CALENDAR_ID,
         locationId,
         contactId,
+        assignedUserId:      assignedUserId || undefined,
         startTime:           startISO,
         endTime:             endISO,
         title:               `Solar Evaluation — ${(firstName || '')} ${(lastName || '')}`.trim(),
