@@ -100,6 +100,12 @@ var OPS_PARTNERS = [
 ];
 ```
 
+### Pre-sale "Ask Ops for Advice" (2026-07-20)
+Lets the admin share a **not-yet-sold** lead's proposal (Option 1 & 2 specs) with a specific Ops Partner for technical/sales input before the deal closes. **No migration** — the request rides inside the existing `customers.proposal` jsonb as `proposal.ops_advice = { ops_id, ops_name, requested_at, status }`.
+- **Admin editor** (`_opsAdviceControl(c)` in portal.html, rendered under the Proposal Tools row): appears only when `c.proposal` has options. An `OPS_PARTNERS` `<select>` + **Request Advice** button → `edRequestOpsAdvice(id)` stamps `proposal.ops_advice` (status `pending`); **Withdraw** = `edClearOpsAdvice(id)`. Admin editor only.
+- **Ops portal** (`loadOpsDashboard`): a second query (`proposal->ops_advice->>ops_id=eq.<ops.id>` + `sold_type is null`) feeds a "💡 Sales Advice Requested" section at the top of the Jobs tab (renders even with zero assigned jobs). Each card shows the customer name/address + `_opsProposalSpecs(proposal)` — option title, equipment (`line_items`), system specs (`prod_data`), retail price + Moderate savings. **Internal `redline`/`rep_commission`/`gross_commission` are deliberately omitted.** Targeting is per-lead: only the chosen partner sees the request.
+- **Two-way reply:** `opsSendAdvice(id)` appends the partner's note to `customers.notes` via `_appendNote(notes,'💡 Ops Advice — <ops name>', text)` (surfaces in the admin lead-editor notes log) and flips `proposal.ops_advice.status` to `answered`.
+
 ## Netlify Environment Variables (set in Netlify UI)
 - `ANTHROPIC_KEY` — Claude API key for photo AI
 - `REGRID_KEY` — Regrid parcel lookup JWT
