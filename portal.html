@@ -541,6 +541,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += ssRow('SolarEdge Inverter Swap', '$3,000.00');
     h += ssRow('RMA / Warranty Replacement Service', '$450.00');
     h += ssRow('Custom / Adjusted Pricing', 'Call admin');
+    h += ssSection('Reroofing');
+    h += ssRow('Reroof (per square)', '$750.00 / sq');
+    h += '<div style="font-size:0.7rem;color:#888;margin-top:6px;font-style:italic;">1 square = 100 sq ft of roof surface. Dealer cost; retail charge set per proposal.</div>';
     h += '</div>';
     h += '<div style="background:#fff;border:1px solid rgba(0,0,0,0.09);border-radius:12px;padding:16px;margin-bottom:12px;">';
     h += ssSection('Solar Panel Expansions & Add-Ons (Non-Export / NEM 1.0)');
@@ -10301,8 +10304,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       build.auroraImg  = opt.aurora_image_url  || '';
       build.auroraPortal= opt.aurora_portal_url || '';
       if (opt.milestones) build.deposit = opt.milestones.deposit || 0;
+      // Rehydrate the reroof block (its line item is a display-only echo — excluded below)
+      if (opt.reroof && opt.reroof.squares > 0) {
+        build.reroof = { on: true, sqft: opt.reroof.sqft || (opt.reroof.squares * 100), chargePerSq: opt.reroof.charge_per_sq || 0 };
+      }
       if (opt.line_items && opt.line_items.length) {
-        build.lineItems = opt.line_items.map(function(li){
+        build.lineItems = opt.line_items.filter(function(li){ return li.id !== 'reroof'; }).map(function(li){
           // Prefer the line's own saved id (battery/panel/inverter detection and
           // the quantity steppers depend on it); older proposals saved without
           // per-line ids fall back to the option's primary id.
@@ -10524,6 +10531,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         opt.gross_commission = Math.round(Math.max(0, effCommPrice - redline) * 100) / 100;
         opt.redline = redline;
       }
+      // Reroof: persist the reroof block + surface it as a customer-visible line item.
+      var _rrSqSend = _reroofSquares(build);
+      if (_rrSqSend > 0) {
+        var _rrChg = parseFloat(build.reroof.chargePerSq) || 0;
+        opt.reroof = {
+          squares: _rrSqSend,
+          sqft: parseFloat(build.reroof.sqft) || 0,
+          cost_per_sq: REROOF_COST_PER_SQ,
+          charge_per_sq: _rrChg,
+          cost: _rrSqSend * REROOF_COST_PER_SQ,
+          charge: _rrSqSend * _rrChg
+        };
+        opt.line_items.push({ id: 'reroof', name: 'Complete Reroof — ' + _rrSqSend + ' square' + (_rrSqSend !== 1 ? 's' : ''), price: opt.reroof.charge, isCustom: false });
+      }
       options.push(opt);
     });
 
@@ -10615,7 +10636,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // ── PROPOSAL MENU BUILDER HELPERS ─────────────────────────────────────────
 
   function _propInitBuild() {
-    return { lineItems: [], price: 0, deposit: 0, participate: false, partPrice: null, teslaRebate: 0, sdcpRebate: 0, redline: 0, auroraImg: '', auroraPortal: '', nonExport: false, restoreArray: false, arrayOutputPct: 25 };
+    return { lineItems: [], price: 0, deposit: 0, participate: false, partPrice: null, teslaRebate: 0, sdcpRebate: 0, redline: 0, auroraImg: '', auroraPortal: '', nonExport: false, restoreArray: false, arrayOutputPct: 25, reroof: null };
+  }
+  // Reroof squares from surface area (100 sq ft = 1 square). Cost is a fixed $750/sq
+  // (the sub-sheet rate); the charge-per-square is the editable retail the rep sets.
+  var REROOF_COST_PER_SQ = 750;
+  function _reroofSquares(build){
+    if (!build || !build.reroof || !build.reroof.on) return 0;
+    var sqft = parseFloat(build.reroof.sqft) || 0;
+    return sqft > 0 ? Math.ceil(sqft / 100) : 0;
   }
 
   window._propAddCatItem = function(catIdx, optIdx) {
@@ -10658,10 +10687,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   function _propRecalcRedline(optIdx) {
     var build = _propBuilds[optIdx];
     if (!build) return;
-    build.redline = build.lineItems
+    var lineSum = build.lineItems
       .filter(function(li){ return !li.isCustom; })
       .reduce(function(s, li){ return s + (parseFloat(li.price)||0); }, 0);
-    build.price = build.redline;
+    // Reroof: cost ($750/sq) adds to dealer cost/redline (→ Sub Sheet + commission math);
+    // the per-square charge auto-adds to the retail System Price.
+    var sq = _reroofSquares(build);
+    var reroofCost   = sq * REROOF_COST_PER_SQ;
+    var reroofCharge = sq * ((build.reroof && parseFloat(build.reroof.chargePerSq)) || 0);
+    build.redline = lineSum + reroofCost;
+    build.price   = lineSum + reroofCharge;
   }
 
   window._propUpdateTotal = function(optIdx) {
@@ -10779,6 +10814,30 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '<div style="font-size:0.62rem;color:#666;margin-top:2px;">Component warranty swap · labor + coordination</div>';
         h += '<div style="font-size:0.78rem;color:'+(_rmaAdded?'rgba(141,198,63,0.7)':'#8DC63F')+';font-weight:700;margin-top:5px;">$450</div>';
         h += '<div style="font-size:0.6rem;color:#555;margin-top:2px;">Dealer cost</div>';
+        h += '</div>';
+        // Reroof category box (full-width) — auto-adds $750/sq cost (→ Dealer cost + Sub
+        // Sheet) and the per-square charge into the retail System Price. Squares come from
+        // an editable surface area, auto-filled from the Google Solar roof area.
+        var _rr = build.reroof || null;
+        var _rrOn = !!(_rr && _rr.on);
+        var _rrSq = _reroofSquares(build);
+        var _rrCharge = _rr ? (parseFloat(_rr.chargePerSq)||0) : 0;
+        h += '<div style="grid-column:1/-1;border:1px solid '+(_rrOn?'rgba(141,198,63,0.5)':'rgba(255,255,255,0.1)')+';background:'+(_rrOn?'rgba(141,198,63,0.07)':'rgba(255,255,255,0.03)')+';border-radius:8px;padding:10px;">';
+        h += '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">';
+        h += '<div onclick="_propToggleReroof('+optIdx+')" style="flex:1;min-width:0;cursor:pointer;user-select:none;">';
+        h += '<div style="font-size:0.74rem;font-weight:700;color:'+(_rrOn?'#8DC63F':'#ddd')+';line-height:1.3;">&#127968; Reroof</div>';
+        h += '<div style="font-size:0.62rem;color:#666;margin-top:2px;">Cost $'+REROOF_COST_PER_SQ+'/sq &middot; set surface area + price charged</div>';
+        h += '</div>';
+        h += '<button onclick="_propToggleReroof('+optIdx+')" style="width:auto;flex-shrink:0;padding:6px 14px;border-radius:100px;font-size:0.7rem;font-weight:800;cursor:pointer;'+(_rrOn?'background:#8DC63F;color:#000;border:none;':'background:rgba(141,198,63,0.12);color:#8DC63F;border:1px solid rgba(141,198,63,0.4);')+'">'+(_rrOn?'ON &#10003;':'Add')+'</button>';
+        h += '</div>';
+        if (_rrOn) {
+          h += '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;">';
+          h += '<div><label style="font-size:0.58rem;color:#888;display:block;margin-bottom:2px;">Surface area (sq ft)</label><input type="number" id="propReroofArea_'+optIdx+'" value="'+(_rr.sqft||'')+'" step="1" onchange="_propReroofArea('+optIdx+',this.value)" style="width:120px;background:#0e0e0e;border:1px solid rgba(141,198,63,0.25);border-radius:6px;color:#8DC63F;font-weight:700;padding:5px 7px;font-size:0.78rem;box-sizing:border-box;"/></div>';
+          h += '<div><label style="font-size:0.58rem;color:#888;display:block;margin-bottom:2px;">$ / square (charged)</label><input type="number" id="propReroofCharge_'+optIdx+'" value="'+(_rrCharge||'')+'" step="1" onchange="_propReroofCharge('+optIdx+',this.value)" style="width:120px;background:#0e0e0e;border:1px solid rgba(141,198,63,0.25);border-radius:6px;color:#8DC63F;font-weight:700;padding:5px 7px;font-size:0.78rem;box-sizing:border-box;"/></div>';
+          h += '</div>';
+          var _rrCost = _rrSq * REROOF_COST_PER_SQ, _rrChargeTot = _rrSq * _rrCharge;
+          h += '<div style="font-size:0.66rem;color:#aaa;margin-top:8px;line-height:1.7;">'+_rrSq+' square'+(_rrSq!==1?'s':'')+' &middot; Cost <b style="color:#ef9b9b;">$'+_rrCost.toLocaleString('en-US')+'</b> (Sub Sheet) &middot; Charge <b style="color:#8DC63F;">$'+_rrChargeTot.toLocaleString('en-US')+'</b> (System Price)</div>';
+        }
         h += '</div>';
         // Restore Existing Array card (full-width) — measured-output inverter recovery.
         // A PW3's integrated 6-MPPT inverter can absorb existing strings, so recovery
@@ -11143,6 +11202,40 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       build.lineItems.push({ id: _rmaId, name: 'RMA / Warranty Replacement Service', subtitle: 'Component warranty swap · labor + coordination', description: '', price: 450, isCustom: false });
     }
     _propRecalcRedline(optIdx);
+    _propUpdateTotal(optIdx);
+    _propRenderBuilds();
+  };
+
+  window._propToggleReroof = function(optIdx) {
+    var build = _propBuilds[optIdx];
+    if (!build) return;
+    if (build.reroof && build.reroof.on) {
+      build.reroof.on = false;
+    } else {
+      var sqftDefault = '';
+      if (_propSolarData && !_propSolarData.loading && !_propSolarData.error && _propSolarData.roofAreaMeters2) {
+        sqftDefault = Math.round(_propSolarData.roofAreaMeters2 * 10.7639);
+      }
+      build.reroof = {
+        on: true,
+        sqft: (build.reroof && build.reroof.sqft) || sqftDefault,
+        chargePerSq: (build.reroof && build.reroof.chargePerSq) || 850
+      };
+    }
+    _propUpdateTotal(optIdx);
+    _propRenderBuilds();
+  };
+  window._propReroofArea = function(optIdx, val) {
+    var build = _propBuilds[optIdx];
+    if (!build || !build.reroof) return;
+    build.reroof.sqft = parseFloat(val) || 0;
+    _propUpdateTotal(optIdx);
+    _propRenderBuilds();
+  };
+  window._propReroofCharge = function(optIdx, val) {
+    var build = _propBuilds[optIdx];
+    if (!build || !build.reroof) return;
+    build.reroof.chargePerSq = parseFloat(val) || 0;
     _propUpdateTotal(optIdx);
     _propRenderBuilds();
   };
