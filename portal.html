@@ -5614,6 +5614,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   var bbDialSkipIds = [];
   var bbDialRightTab = 'upnext'; // upnext | recent — right sidebar toggle
   var bbDialPinnedId = null;     // lead pulled up via search or "recent calls" — bypasses bucket order
+  // Selective ZIP-code dialing: when set, leads in this ZIP sort to the top of the
+  // queue so a rep can cluster calls around a booked appointment's area.
+  var bbDialFocusZip = (function(){ try { return sessionStorage.getItem('bbDialFocusZip') || ''; } catch(e){ return ''; } })();
   var bbDialSearchStatus = null;
   var bbDialSearchResults = null;
 
@@ -5749,6 +5752,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var pri = function(a,b) {
       var pa = bbDialPriorityIds.indexOf(a.id), pb = bbDialPriorityIds.indexOf(b.id);
       if (pa > -1 || pb > -1) return (pa > -1 ? pa : 999) - (pb > -1 ? pb : 999);
+      // Focus-ZIP leads jump ahead of the normal order (but below explicit priority IDs).
+      if (bbDialFocusZip) {
+        var za = extractZip(a.address||'') === bbDialFocusZip, zb = extractZip(b.address||'') === bbDialFocusZip;
+        if (za !== zb) return za ? -1 : 1;
+      }
       var sa = bbDialSkipIds.indexOf(a.id) > -1, sb = bbDialSkipIds.indexOf(b.id) > -1;
       if (sa !== sb) return sa ? 1 : -1;
       return 0;
@@ -5850,6 +5858,44 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         (on ? 'background:rgba(232,121,58,0.16);border:1px solid rgba(232,121,58,0.5);color:#E8793A;' : 'background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);color:#888;')+'">'+ch.label+'</button>';
     });
     h += '<button onclick="bbDialLoaded=false;renderBBDialerView()" title="Reloads the dial queue fresh from the database — picks up new leads and other reps&#39; activity." style="padding:6px 12px;background:none;border:none;color:#555;cursor:pointer;font-size:0.7rem;text-decoration:underline;">&#8635; Refresh</button>';
+    h += '</div>';
+
+    // ── Selective ZIP-code dialing — cluster calls around a booked appointment ──
+    // Upcoming-appointment ZIP suggestions (from leads with a future diagnostic_date).
+    var _apptZips = [];
+    if (typeof adminCustomers !== 'undefined' && adminCustomers && adminCustomers.length) {
+      var _seenZ = {}, _nowZ = Date.now();
+      adminCustomers.forEach(function(c) {
+        if (!c.diagnostic_date) return;
+        var t = new Date(c.diagnostic_date).getTime();
+        if (isNaN(t) || t < _nowZ - 12*3600*1000) return; // today or later
+        var z = extractZip(c.address||''); if (!z || _seenZ[z]) return;
+        _seenZ[z] = true;
+        var nm = ((c.first_name||'')+' '+(c.last_name||'')).trim() || 'Appt';
+        _apptZips.push({ zip: z, label: nm + ' · ' + z });
+      });
+      _apptZips = _apptZips.slice(0, 6);
+    }
+    h += '<div style="margin-bottom:14px;background:rgba(232,121,58,0.05);border:1px solid rgba(232,121,58,0.18);border-radius:12px;padding:10px 12px;">';
+    h += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">';
+    h += '<span style="font-size:0.7rem;font-weight:700;color:#E8793A;">&#127919; Focus ZIP</span>';
+    h += '<input id="bbDialZipInput" type="text" inputmode="numeric" maxlength="5" value="'+esc(bbDialFocusZip)+'" placeholder="e.g. 92065" oninput="this.value=this.value.replace(/\\D/g,\'\')" onkeypress="if(event.key===\'Enter\')bbDialSetFocusZip(this.value)" style="width:auto;flex:0 0 110px;min-width:0;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:100px;color:#fff;padding:7px 14px;font-size:0.8rem;">';
+    h += '<button onclick="bbDialSetFocusZip(document.getElementById(\'bbDialZipInput\').value)" style="width:auto;padding:7px 14px;background:rgba(232,121,58,0.16);border:1px solid rgba(232,121,58,0.5);color:#E8793A;border-radius:100px;font-size:0.75rem;font-weight:700;cursor:pointer;">Focus</button>';
+    if (bbDialFocusZip) {
+      var _zc = bbDialQueue.filter(function(l){ return extractZip(l.address||'') === bbDialFocusZip; }).length;
+      h += '<span style="font-size:0.72rem;color:#8DC63F;font-weight:700;">'+_zc+' in '+esc(bbDialFocusZip)+' &uarr; top of queue</span>';
+      h += '<button onclick="bbDialClearFocusZip()" style="width:auto;padding:7px 12px;background:none;border:1px solid rgba(255,255,255,0.15);color:#888;border-radius:100px;font-size:0.72rem;cursor:pointer;">&#10005; All ZIPs</button>';
+    }
+    h += '</div>';
+    if (_apptZips.length) {
+      h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;align-items:center;">';
+      h += '<span style="font-size:0.64rem;color:#666;">Upcoming appts:</span>';
+      _apptZips.forEach(function(s) {
+        var on = s.zip === bbDialFocusZip;
+        h += '<button onclick="bbDialSetFocusZip(\''+s.zip+'\')" style="width:auto;padding:5px 11px;border-radius:100px;font-size:0.68rem;font-weight:600;cursor:pointer;'+(on?'background:rgba(232,121,58,0.16);border:1px solid rgba(232,121,58,0.5);color:#E8793A;':'background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);color:#aaa;')+'">'+esc(s.label)+'</button>';
+      });
+      h += '</div>';
+    }
     h += '</div>';
 
     // Callback-number search — find any lead by phone, regardless of which bucket it's in
@@ -6082,6 +6128,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   };
 
   window.bbDialSetFilter = function(f) { bbDialFilter = f; renderBBDialerView(); };
+  window.bbDialSetFocusZip = function(z) {
+    z = (z||'').replace(/\D/g,'').slice(0,5);
+    bbDialFocusZip = z;
+    try { if (z) sessionStorage.setItem('bbDialFocusZip', z); else sessionStorage.removeItem('bbDialFocusZip'); } catch(e){}
+    renderBBDialerView();
+  };
+  window.bbDialClearFocusZip = function() { window.bbDialSetFocusZip(''); };
 
   window.bbDialJump = function(id, toBack) {
     if (toBack) {
