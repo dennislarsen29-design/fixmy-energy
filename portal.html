@@ -4033,11 +4033,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         detail: 'Supabase free tier allows up to 50MB per file. Reduce the image size or upgrade your Supabase plan.'
       };
     }
-    // Network / CORS
-    if (msg.includes('cors') || msg.includes('network') || msg.includes('failed to fetch')) {
+    // Network / CORS — covers Chrome's "Failed to fetch" AND Safari/WebKit's "Load failed"
+    // (both are the browser's generic wording for a network-layer fetch failure, e.g. a
+    // connectivity blip — not necessarily a Supabase config problem).
+    if (msg.includes('cors') || msg.includes('network') || msg.includes('failed to fetch') || msg.includes('load failed') || msg.includes('typeerror')) {
       return {
-        title: 'Network / CORS error',
-        detail: 'The browser is blocking the request. Check that your Supabase project URL is correct and that the domain is allowed under Supabase → Auth → URL Configuration.'
+        title: 'Network hiccup talking to Supabase Storage',
+        detail: 'This is usually a connectivity blip, not a config problem — check your connection and try again. If it keeps happening, check that your Supabase project URL is correct and the domain is allowed under Supabase → Auth → URL Configuration.'
       };
     }
     // Generic fallback
@@ -4045,6 +4047,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       title: 'Upload error: ' + rawMsg,
       detail: 'Raw error code: ' + code + '. Check the browser console (F12 → Console) for the full error object.'
     };
+  }
+
+  // Shared with the Step-1 preflight retry below — same substrings diagnoseBucketError()
+  // matches, so a transient connectivity blip (Safari "Load failed" / Chrome "Failed to
+  // fetch") is treated as retryable, while a real policy/permission/bucket error is not.
+  function _isNetworkClassError(e) {
+    var msg = ((e && e.message) || '').toLowerCase();
+    return msg.includes('cors') || msg.includes('network') || msg.includes('failed to fetch') || msg.includes('load failed') || msg.includes('typeerror');
   }
 
   async function uploadPhotos(files) {
@@ -4072,16 +4082,31 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       console.error('[Photo Upload]', diag.title, diag.detail);
     }
 
-    // Step 1 — test bucket access
+    // Step 1 — test bucket access. This is a diagnostic canary, not a hard requirement —
+    // the real per-file uploads below have their own independent error handling. A single
+    // transient connectivity blip here (Safari "Load failed" etc.) used to abort the whole
+    // batch before a single real file was even attempted, so: retry once on a network-class
+    // error, and if it's STILL failing for network reasons, proceed to the real uploads
+    // anyway. A genuine policy/permission/bucket-not-found error still aborts immediately.
     status.textContent = 'Checking storage access...';
     var testPath = 'jobs/' + String(currentJobId) + '/_test_' + Date.now() + '.txt';
     var testBlob = new Blob(['test'], { type: 'text/plain' });
     var testResult = await client.storage.from(BUCKET).upload(testPath, testBlob, { upsert: true });
-    if (testResult.error) {
-      showError(diagnoseBucketError(testResult.error, BUCKET));
-      return;
+    if (testResult.error && _isNetworkClassError(testResult.error)) {
+      await new Promise(function(r){ setTimeout(r, 700); });
+      status.textContent = 'Checking storage access (retrying)...';
+      testResult = await client.storage.from(BUCKET).upload(testPath, testBlob, { upsert: true });
     }
-    await client.storage.from(BUCKET).remove([testPath]);
+    if (testResult.error) {
+      if (_isNetworkClassError(testResult.error)) {
+        console.warn('[Photo Upload] preflight network blip — proceeding to real uploads anyway:', testResult.error);
+      } else {
+        showError(diagnoseBucketError(testResult.error, BUCKET));
+        return;
+      }
+    } else {
+      await client.storage.from(BUCKET).remove([testPath]);
+    }
 
     // Step 2 — upload each file
     for (var i = 0; i < files.length; i++) {
