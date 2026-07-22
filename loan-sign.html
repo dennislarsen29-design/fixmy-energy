@@ -12,16 +12,27 @@
   .card { background:#fff; border:1px solid rgba(0,0,0,0.08); border-radius:14px; padding:22px; margin-bottom:16px; box-shadow:0 1px 4px rgba(0,0,0,0.05); }
   h1 { font-size:1.3rem; margin:0 0 4px; }
   .sub { color:#666; font-size:0.85rem; margin-bottom:18px; }
-  .row { display:flex; justify-content:space-between; padding:7px 0; border-bottom:1px solid rgba(0,0,0,0.06); font-size:0.9rem; }
+  .row { display:flex; justify-content:space-between; padding:7px 0; border-bottom:1px solid rgba(0,0,0,0.06); font-size:0.9rem; gap:12px; }
   .row:last-child { border-bottom:none; }
-  .row b { font-weight:700; }
+  .row b { font-weight:700; text-align:right; }
   .terms { font-size:0.82rem; color:#444; background:#fafafa; border:1px solid rgba(0,0,0,0.06); border-radius:10px; padding:14px; margin:14px 0; }
+  .sigList { margin:14px 0; }
+  .sigRow { display:flex; justify-content:space-between; align-items:center; padding:8px 10px; border-radius:8px; font-size:0.85rem; margin-bottom:6px; background:#fafafa; }
+  .sigRow.mine { background:#eef7e6; border:1px solid rgba(26,127,55,0.25); }
+  .sigOk { color:#1a7f37; font-weight:700; font-size:0.78rem; }
+  .sigPend { color:#b45309; font-weight:600; font-size:0.78rem; }
   label { font-size:0.78rem; font-weight:700; color:#555; display:block; margin:14px 0 6px; }
   input[type=text] { width:100%; box-sizing:border-box; padding:12px 14px; border:1px solid rgba(0,0,0,0.2); border-radius:10px; font-size:1rem; font-family:'Georgia',serif; }
   button { width:100%; margin-top:16px; padding:14px; background:#1a7f37; color:#fff; border:none; border-radius:100px; font-size:1rem; font-weight:700; cursor:pointer; }
+  button.pdf { background:#2563eb; }
   button:disabled { opacity:0.5; }
   .msg { text-align:center; padding:14px; font-size:0.9rem; }
   .ok { color:#1a7f37; } .err { color:#c0392b; }
+  @media print {
+    body { background:#fff; }
+    .no-print { display:none !important; }
+    .card { box-shadow:none; border:none; padding:0; }
+  }
 </style>
 </head>
 <body>
@@ -33,47 +44,87 @@
   function money(n){ return '$' + Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}); }
   function token(){ var m = location.search.match(/[?&]t=([^&]+)/); return m ? decodeURIComponent(m[1]) : ''; }
   var t = token();
-
-  // We render the terms from the seeded numbers (7% / $20,000 / 36 mo) — the sign action
-  // is validated server-side by the token. The lender/borrower/amounts are fixed on file.
-  var terms = { lender:'Cody & Casey Larsen', borrower:'Dennis Larsen', principal:20000, apr:7, term:36, monthly:617.55 };
+  var DATA = null;
+  function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
   function render(){
     if (!t) { document.getElementById('main').innerHTML = '<div class="msg err">Invalid link.</div>'; return; }
-    var totalPaid = terms.monthly * terms.term;
-    document.getElementById('main').innerHTML =
-      '<h1>Personal Loan Agreement</h1>'+
+    fetch(API, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'get_by_token', token:t }) })
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        if (d.error) { document.getElementById('main').innerHTML = '<div class="msg err">'+esc(d.error)+'</div>'; return; }
+        DATA = d;
+        renderCard(d);
+      })
+      .catch(function(e){ document.getElementById('main').innerHTML = '<div class="msg err">Error: '+esc(e.message)+'</div>'; });
+  }
+
+  function renderCard(d){
+    var L = d.loan;
+    var totalPaid = L.monthly_payment * L.term_months;
+    var collateralClause = L.collateral_description
+      ? ('As collateral securing this loan, the Borrower pledges the following asset: <b>'+esc(L.collateral_description)+'</b>'+
+         (L.collateral_value ? ' (valued at approximately '+money(L.collateral_value)+')' : '')+
+         '. In the event of default, the Lender(s) may look to this collateral to help satisfy the outstanding balance. ')
+      : '';
+
+    var signersHtml = d.signers.map(function(s){
+      var mine = s.role === d.role;
+      var status = s.signed_at
+        ? '<span class="sigOk">&#10003; Signed '+new Date(s.signed_at).toLocaleDateString()+'</span>'
+        : '<span class="sigPend">Awaiting signature</span>';
+      return '<div class="sigRow'+(mine?' mine':'')+'"><span>'+esc(s.name)+(mine?' (you)':'')+'</span>'+status+'</div>';
+    }).join('');
+
+    var h = '<h1>Personal Loan Agreement</h1>'+
       '<div class="sub">Please review and sign to accept the terms of this loan.</div>'+
-      '<div class="row"><span>Lender</span><b>'+terms.lender+'</b></div>'+
-      '<div class="row"><span>Borrower</span><b>'+terms.borrower+'</b></div>'+
-      '<div class="row"><span>Principal</span><b>'+money(terms.principal)+'</b></div>'+
-      '<div class="row"><span>Interest rate (APR)</span><b>'+terms.apr+'%</b></div>'+
-      '<div class="row"><span>Term</span><b>'+terms.term+' months</b></div>'+
-      '<div class="row"><span>Monthly payment</span><b>'+money(terms.monthly)+'</b></div>'+
+      '<div class="row"><span>Lender(s)</span><b>'+esc(L.lender_names)+'</b></div>'+
+      '<div class="row"><span>Borrower</span><b>'+esc(L.borrower)+'</b></div>'+
+      '<div class="row"><span>Principal</span><b>'+money(L.principal)+'</b></div>'+
+      '<div class="row"><span>Interest rate (APR)</span><b>'+L.apr+'%</b></div>'+
+      '<div class="row"><span>Term</span><b>'+L.term_months+' months</b></div>'+
+      '<div class="row"><span>Monthly payment</span><b>'+money(L.monthly_payment)+'</b></div>'+
       '<div class="row"><span>Total of payments</span><b>'+money(totalPaid)+'</b></div>'+
+      (d.collateral_description ? '<div class="row"><span>Collateral</span><b>'+esc(d.collateral_description)+(d.collateral_value?' ('+money(d.collateral_value)+')':'')+'</b></div>' : '')+
       '<div class="terms">'+
-        'The Borrower ('+terms.borrower+') agrees to repay the Lender ('+terms.lender+') the principal sum of '+money(terms.principal)+
-        ' with interest at '+terms.apr+'% per annum, in '+terms.term+' equal monthly installments of approximately '+money(terms.monthly)+
+        'The Borrower ('+esc(L.borrower)+') agrees to repay the Lender ('+esc(L.lender_names)+') the principal sum of '+money(L.principal)+
+        ' with interest at '+L.apr+'% per annum, in '+L.term_months+' equal monthly installments of approximately '+money(L.monthly_payment)+
         ', beginning the month following execution of this agreement. The Borrower may prepay any amount at any time without penalty; '+
-        'prepayments reduce the outstanding principal and shorten the payoff. This is a good-faith agreement between family members.'+
+        'prepayments reduce the outstanding principal and shorten the payoff. '+collateralClause+
+        'This is a good-faith agreement between family members, signed individually by each party below.'+
       '</div>'+
-      '<label>Type your full legal name to sign</label>'+
-      '<input type="text" id="sig" placeholder="'+terms.borrower+'" autocomplete="name"/>'+
-      '<button id="signBtn" onclick="doSign()">Sign &amp; Accept — '+money(terms.principal)+' @ '+terms.apr+'%</button>'+
-      '<div id="status" class="msg"></div>';
+      '<div class="sigList">'+signersHtml+'</div>';
+
+    if (d.my_signed) {
+      h += '<div class="msg ok">You ('+esc(d.my_name)+') have signed this agreement.</div>';
+    } else {
+      h += '<div class="no-print">'+
+        '<label>Type your full legal name to sign</label>'+
+        '<input type="text" id="sig" placeholder="'+esc(d.my_name)+'" autocomplete="name"/>'+
+        '<button id="signBtn" onclick="doSign()">Sign &amp; Accept</button>'+
+        '<div id="status" class="msg"></div>'+
+      '</div>';
+    }
+
+    if (d.fully_signed) {
+      h += '<div class="no-print"><button class="pdf" onclick="window.print()">&#128190; Download Signed Agreement (PDF)</button>'+
+        '<div class="sub" style="text-align:center;margin-top:6px;">All parties have signed. Use your browser\'s Print &rarr; Save as PDF.</div></div>';
+    }
+
+    document.getElementById('main').innerHTML = h;
   }
 
   window.doSign = function(){
-    var sig = (document.getElementById('sig').value||'').trim();
+    var el = document.getElementById('sig');
+    var sig = (el ? el.value : '').trim();
     var st = document.getElementById('status');
     if (sig.length < 3) { st.className='msg err'; st.textContent='Please type your full name to sign.'; return; }
     var btn = document.getElementById('signBtn'); btn.disabled = true; btn.textContent = 'Signing…';
     fetch(API, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'sign', sign_token:t, signature:sig }) })
       .then(function(r){ return r.json(); })
       .then(function(d){
-        if (d.ok || d.alreadySigned) {
-          document.getElementById('main').innerHTML = '<h1>✓ Signed</h1><div class="msg ok">Thank you, '+sig+'. Your loan agreement is now active. Cody & Casey can track the balance and your payments.</div>';
-        } else { st.className='msg err'; st.textContent = d.error || 'Could not sign — try again.'; btn.disabled=false; btn.textContent='Sign & Accept'; }
+        if (d.ok || d.alreadySigned) { render(); }
+        else { st.className='msg err'; st.textContent = d.error || 'Could not sign — try again.'; btn.disabled=false; btn.textContent='Sign & Accept'; }
       })
       .catch(function(e){ st.className='msg err'; st.textContent='Error: '+e.message; btn.disabled=false; btn.textContent='Sign & Accept'; });
   };
