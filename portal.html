@@ -9442,11 +9442,28 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   var _loanBundle = null;
   function _loanKeyHeaders(){ var k=''; try{ k=sessionStorage.getItem('personalKey')||''; }catch(e){} return k ? { 'x-personal-key': k } : {}; }
   function _loanMoney(n){ return '$'+Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+  // Same prompt-and-retry pattern as personalApi() (portal.html ~9371) — loan-api.js
+  // returns the identical 'personal_key_required' 401 code, so entering the key here
+  // works exactly like it does for Bookkeeper/Coach instead of just showing "Unauthorized".
+  async function loanApi(body){
+    async function call(){
+      return fetch('/.netlify/functions/loan-api', { method:'POST', headers: Object.assign({'Content-Type':'application/json'}, _loanKeyHeaders()), body: JSON.stringify(body) });
+    }
+    var r = await call();
+    if (r.status === 401) {
+      var d = await r.json().catch(function(){ return {}; });
+      if (d.error === 'personal_key_required') {
+        var k = prompt('Enter your Personal access key (set as PERSONAL_ACCESS_KEY in Netlify):');
+        if (k) { try { sessionStorage.setItem('personalKey', k); } catch(e){} r = await call(); return r.json(); }
+      }
+      return d;
+    }
+    return r.json();
+  }
   async function bkMountLoan(){
     var el = document.getElementById('loanLedgerMount'); if(!el) return;
     try {
-      var r = await fetch('/.netlify/functions/loan-api', { method:'POST', headers: Object.assign({'Content-Type':'application/json'}, _loanKeyHeaders()), body: JSON.stringify({ action:'get' }) });
-      var d = await r.json();
+      var d = await loanApi({ action:'get' });
       if (d.error) { el.innerHTML = '<div style="color:#ffaa00;padding:16px;background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.3);border-radius:10px;font-size:0.82rem;">Loan ledger unavailable: '+esc(d.error)+'<br><span style="color:#888;font-size:0.75rem;">Run supabase/migrations/20260722_personal_loan.sql, then set PERSONAL_ACCESS_KEY if prompted.</span></div>'; return; }
       if (!d.loan) { el.innerHTML = '<div style="color:#888;padding:16px;">No loan on file yet — run the loan migration to seed it.</div>'; return; }
       _loanBundle = d;
@@ -9537,8 +9554,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var isExtra = !!(document.getElementById('loanPayExtra')||{}).checked;
     if (st) { st.style.color='#888'; st.textContent='Saving…'; }
     try {
-      var r = await fetch('/.netlify/functions/loan-api', { method:'POST', headers: Object.assign({'Content-Type':'application/json'}, _loanKeyHeaders()), body: JSON.stringify({ action:'add_payment', amount:amt, paid_on:paidOn, is_extra:isExtra }) });
-      var d = await r.json();
+      var d = await loanApi({ action:'add_payment', amount:amt, paid_on:paidOn, is_extra:isExtra });
       if (d.error) { if(st){st.style.color='#ef4444';st.textContent=d.error;} return; }
       _loanBundle = d;
       var el = document.getElementById('loanLedgerMount'); if (el) el.innerHTML = bkRenderLoan(d);
@@ -9550,8 +9566,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var st = document.getElementById('loanCollStatus');
     if (st) { st.style.color='#888'; st.textContent='Saving…'; }
     try {
-      var r = await fetch('/.netlify/functions/loan-api', { method:'POST', headers: Object.assign({'Content-Type':'application/json'}, _loanKeyHeaders()), body: JSON.stringify({ action:'update', collateral_description: desc || null, collateral_value: isNaN(val) ? null : val }) });
-      var d = await r.json();
+      var d = await loanApi({ action:'update', collateral_description: desc || null, collateral_value: isNaN(val) ? null : val });
       if (d.error) { if(st){st.style.color='#ef4444';st.textContent=d.error;} return; }
       _loanBundle = d;
       var el = document.getElementById('loanLedgerMount'); if (el) el.innerHTML = bkRenderLoan(d);

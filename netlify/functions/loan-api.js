@@ -147,7 +147,9 @@ exports.handler = async function (event) {
     }
 
     // ── Admin actions (gated by PERSONAL_ACCESS_KEY) ──
-    if (!adminOk) return { statusCode: 401, headers: cors, body: JSON.stringify({ error: 'Unauthorized' }) };
+    // Same error code lib/personal.js's personalGate() uses — the client's key-prompt
+    // retry logic keys off this exact string (see loanApi() in portal.html).
+    if (!adminOk) return { statusCode: 401, headers: cors, body: JSON.stringify({ error: 'personal_key_required' }) };
 
     // Fetch (and lazily initialize tokens for) the single active loan
     const lr = await sb('personal_loans?order=created_at.desc&limit=1&select=*', { method: 'GET' });
