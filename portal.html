@@ -9415,7 +9415,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
     // Sub-nav
     var st='width:auto;margin:0;padding:6px 14px;border:none;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;white-space:nowrap;';
-    var subs=[['budget','&#128202; Budget'],['assets','&#127974; Assets'],['debt','&#128181; Debt'],['reports','&#128196; Reports']];
+    var subs=[['budget','&#128202; Budget'],['assets','&#127974; Assets'],['debt','&#128181; Debt'],['loans','&#129309; Loans'],['reports','&#128196; Reports']];
     h += '<div style="display:flex;gap:7px;margin-bottom:16px;flex-wrap:wrap;">'+subs.map(function(t){ var on=bkSubTab===t[0];
       return '<button onclick="bkSubTab=\''+t[0]+'\';renderBookkeeperView()" style="'+st+'background:'+(on?'#8DC63F':'rgba(255,255,255,0.07)')+';color:'+(on?'#1A1A1A':'#888')+';">'+t[1]+'</button>'; }).join('')+'</div>';
 
@@ -9423,12 +9423,94 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (bkSubTab==='budget') h += bkRenderBudget(snap);
     else if (bkSubTab==='assets') h += bkRenderAssets(snap);
     else if (bkSubTab==='debt') h += bkRenderDebt(snap);
+    else if (bkSubTab==='loans') h += '<div id="loanLedgerMount"><div style="color:#888;padding:20px 0;">Loading loan…</div></div>';
     else h += bkRenderReports(snap);
     h += '</div>';
 
     document.getElementById('dashBody').innerHTML = h;
     if (bkSubTab==='reports') bkMountReportCharts(snap);
+    if (bkSubTab==='loans') bkMountLoan();
   }
+
+  // ── Personal loan ledger (Cody & Casey → Dennis) via the service-role loan-api ──
+  var _loanBundle = null;
+  function _loanKeyHeaders(){ var k=''; try{ k=sessionStorage.getItem('personalKey')||''; }catch(e){} return k ? { 'x-personal-key': k } : {}; }
+  function _loanMoney(n){ return '$'+Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+  async function bkMountLoan(){
+    var el = document.getElementById('loanLedgerMount'); if(!el) return;
+    try {
+      var r = await fetch('/.netlify/functions/loan-api', { method:'POST', headers: Object.assign({'Content-Type':'application/json'}, _loanKeyHeaders()), body: JSON.stringify({ action:'get' }) });
+      var d = await r.json();
+      if (d.error) { el.innerHTML = '<div style="color:#ffaa00;padding:16px;background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.3);border-radius:10px;font-size:0.82rem;">Loan ledger unavailable: '+esc(d.error)+'<br><span style="color:#888;font-size:0.75rem;">Run supabase/migrations/20260722_personal_loan.sql, then set PERSONAL_ACCESS_KEY if prompted.</span></div>'; return; }
+      if (!d.loan) { el.innerHTML = '<div style="color:#888;padding:16px;">No loan on file yet — run the loan migration to seed it.</div>'; return; }
+      _loanBundle = d;
+      el.innerHTML = bkRenderLoan(d);
+    } catch(e) { el.innerHTML = '<div style="color:#ef4444;padding:16px;">Error loading loan: '+esc(e.message)+'</div>'; }
+  }
+  function bkRenderLoan(d){
+    var L=d.loan, pct = L.principal>0 ? Math.min(100, Math.round((1 - d.balance/L.principal)*100)) : 0;
+    var origin = location.origin;
+    var signLink = d.sign_token ? origin+'/loan-sign?t='+d.sign_token : '';
+    var viewLink = d.view_token ? origin+'/loan-view?t='+d.view_token : '';
+    var statusColor = L.status==='paid_off'?'#8DC63F':L.status==='active'?'#4a9eff':'#ffaa00';
+    var h='<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:14px;padding:18px;margin-bottom:14px;">'+
+      '<div style="font-size:0.95rem;font-weight:800;color:#eee;">'+esc(L.lender_names)+' &rarr; '+esc(L.borrower)+'</div>'+
+      '<div style="font-size:0.75rem;color:#888;margin-bottom:12px;">'+_loanMoney(L.principal)+' @ '+L.apr+'% &middot; '+L.term_months+' mo &middot; <span style="color:'+statusColor+';font-weight:700;">'+esc(L.status)+'</span>'+
+        (L.signed_at?' &middot; signed '+new Date(L.signed_at).toLocaleDateString():'')+'</div>'+
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">'+
+        bkTile('Balance', _loanMoney(d.balance), '#ef9b9b')+
+        bkTile('Paid Down', _loanMoney(L.principal-d.balance), '#8DC63F')+
+        bkTile('Monthly Pmt', _loanMoney(L.monthly_payment), '#eee')+
+        bkTile('Payments', d.payments_made+' / '+L.term_months, '#4a9eff')+
+      '</div>'+
+      '<div style="height:9px;background:rgba(255,255,255,0.08);border-radius:6px;overflow:hidden;"><div style="height:100%;width:'+pct+'%;background:#8DC63F;"></div></div>'+
+      '<div style="font-size:0.7rem;color:#888;text-align:center;margin-top:4px;">'+pct+'% paid off</div>'+
+    '</div>';
+    // Log a payment
+    h+='<div style="background:rgba(141,198,63,0.05);border:1px solid rgba(141,198,63,0.25);border-radius:12px;padding:14px;margin-bottom:14px;">'+
+      '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#8DC63F;margin-bottom:8px;">Log a Payment</div>'+
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">'+
+        '<input id="loanPayAmt" type="number" step="0.01" placeholder="'+Math.round(L.monthly_payment)+'" style="width:120px;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:8px 10px;font-size:0.85rem;"/>'+
+        '<input id="loanPayDate" type="date" value="'+new Date().toISOString().slice(0,10)+'" style="background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:8px 10px;font-size:0.85rem;"/>'+
+        '<label style="font-size:0.75rem;color:#aaa;display:flex;align-items:center;gap:5px;cursor:pointer;"><input type="checkbox" id="loanPayExtra"/> Extra payment</label>'+
+        '<button onclick="bkLogLoanPayment()" style="width:auto;padding:8px 18px;background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;font-size:0.8rem;font-weight:700;cursor:pointer;">+ Add</button>'+
+      '</div><div id="loanPayStatus" style="font-size:0.72rem;color:#888;margin-top:6px;min-height:16px;"></div>'+
+    '</div>';
+    // Share links
+    h+='<div style="background:rgba(74,158,255,0.05);border:1px solid rgba(74,158,255,0.2);border-radius:12px;padding:14px;margin-bottom:14px;">'+
+      '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#4a9eff;margin-bottom:8px;">Share Links</div>'+
+      (signLink?'<div style="font-size:0.75rem;color:#ccc;margin-bottom:6px;">Borrower e-sign: <button onclick="navigator.clipboard.writeText(\''+signLink+'\');this.textContent=\'Copied!\'" style="width:auto;padding:3px 10px;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.4);border-radius:100px;color:#8DC63F;cursor:pointer;font-size:0.72rem;">Copy</button></div>':'')+
+      (viewLink?'<div style="font-size:0.75rem;color:#ccc;">Cody &amp; Casey (read-only): <button onclick="navigator.clipboard.writeText(\''+viewLink+'\');this.textContent=\'Copied!\'" style="width:auto;padding:3px 10px;background:rgba(74,158,255,0.15);border:1px solid rgba(74,158,255,0.4);border-radius:100px;color:#4a9eff;cursor:pointer;font-size:0.72rem;">Copy</button></div>':'')+
+    '</div>';
+    // Payment history
+    var rows=(d.payments||[]).slice().reverse().map(function(p){
+      return '<tr><td style="padding:7px 6px;color:#ccc;">'+esc(p.paid_on)+(p.is_extra?' <span style="color:#8DC63F;font-size:0.68rem;">extra</span>':'')+'</td>'+
+        '<td style="padding:7px 6px;text-align:right;color:#eee;">'+_loanMoney(p.amount)+'</td>'+
+        '<td style="padding:7px 6px;text-align:right;color:#8DC63F;">'+_loanMoney(p.principal_portion)+'</td>'+
+        '<td style="padding:7px 6px;text-align:right;color:#ffaa00;">'+_loanMoney(p.interest_portion)+'</td>'+
+        '<td style="padding:7px 6px;text-align:right;color:#aaa;">'+_loanMoney(p.balance_after)+'</td></tr>';
+    }).join('');
+    h+='<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:14px;">'+
+      '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;margin-bottom:8px;">Payment History</div>'+
+      (rows?'<table style="width:100%;border-collapse:collapse;font-size:0.78rem;"><thead><tr style="color:#666;font-size:0.65rem;text-transform:uppercase;"><th style="text-align:left;padding:6px;">Date</th><th style="text-align:right;padding:6px;">Amount</th><th style="text-align:right;padding:6px;">Principal</th><th style="text-align:right;padding:6px;">Interest</th><th style="text-align:right;padding:6px;">Balance</th></tr></thead><tbody>'+rows+'</tbody></table>':'<div style="color:#888;font-size:0.8rem;">No payments yet.</div>')+
+    '</div>';
+    return h;
+  }
+  window.bkLogLoanPayment = async function(){
+    var amt = parseFloat((document.getElementById('loanPayAmt')||{}).value);
+    var st = document.getElementById('loanPayStatus');
+    if (!(amt>0)) { if(st){st.style.color='#ef4444';st.textContent='Enter a payment amount.';} return; }
+    var paidOn = (document.getElementById('loanPayDate')||{}).value || new Date().toISOString().slice(0,10);
+    var isExtra = !!(document.getElementById('loanPayExtra')||{}).checked;
+    if (st) { st.style.color='#888'; st.textContent='Saving…'; }
+    try {
+      var r = await fetch('/.netlify/functions/loan-api', { method:'POST', headers: Object.assign({'Content-Type':'application/json'}, _loanKeyHeaders()), body: JSON.stringify({ action:'add_payment', amount:amt, paid_on:paidOn, is_extra:isExtra }) });
+      var d = await r.json();
+      if (d.error) { if(st){st.style.color='#ef4444';st.textContent=d.error;} return; }
+      _loanBundle = d;
+      var el = document.getElementById('loanLedgerMount'); if (el) el.innerHTML = bkRenderLoan(d);
+    } catch(e) { if(st){st.style.color='#ef4444';st.textContent='Error: '+e.message;} }
+  };
 
   function bkTile(label,val,color){ return '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:14px;text-align:center;"><div style="font-size:1.3rem;font-weight:800;color:'+color+';">'+val+'</div><div style="font-size:0.66rem;color:#888;margin-top:3px;">'+label+'</div></div>'; }
   function bkMonthTxns(snap){ var y=bkRange.year, m=String(bkRange.month).padStart(2,'0'), pre=y+'-'+m; return (snap.transactions||[]).filter(function(t){ return String(t.txn_date||'').slice(0,7)===pre; }); }

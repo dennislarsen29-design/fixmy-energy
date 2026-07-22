@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<meta name="robots" content="noindex"/>
+<title>Loan Ledger</title>
+<style>
+  :root { color-scheme: light; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; background:#f4f5f7; color:#1a1a1a; line-height:1.5; }
+  .wrap { max-width:640px; margin:0 auto; padding:24px 18px 60px; }
+  .card { background:#fff; border:1px solid rgba(0,0,0,0.08); border-radius:14px; padding:20px; margin-bottom:16px; box-shadow:0 1px 4px rgba(0,0,0,0.05); }
+  h1 { font-size:1.25rem; margin:0 0 2px; }
+  .sub { color:#666; font-size:0.82rem; margin-bottom:6px; }
+  .tiles { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .tile { background:#fafafa; border:1px solid rgba(0,0,0,0.07); border-radius:10px; padding:14px; text-align:center; }
+  .tile .v { font-size:1.35rem; font-weight:800; }
+  .tile .l { font-size:0.68rem; color:#777; margin-top:3px; text-transform:uppercase; letter-spacing:0.05em; }
+  .bar { height:10px; background:#eee; border-radius:6px; overflow:hidden; margin:12px 0 4px; }
+  .bar > div { height:100%; background:#1a7f37; }
+  table { width:100%; border-collapse:collapse; font-size:0.82rem; }
+  th,td { padding:8px 6px; text-align:right; border-bottom:1px solid rgba(0,0,0,0.06); }
+  th:first-child, td:first-child { text-align:left; }
+  th { color:#888; font-size:0.66rem; text-transform:uppercase; letter-spacing:0.05em; }
+  .msg { text-align:center; padding:16px; font-size:0.9rem; }
+  .err { color:#c0392b; }
+  .status { display:inline-block; font-size:0.68rem; font-weight:700; padding:2px 10px; border-radius:100px; }
+</style>
+</head>
+<body>
+<div class="wrap"><div id="main"><div class="card"><div class="msg">Loading ledger…</div></div></div></div>
+<script>
+  var API='/.netlify/functions/loan-api';
+  function money(n){ return '$'+Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+  function token(){ var m=location.search.match(/[?&]t=([^&]+)/); return m?decodeURIComponent(m[1]):''; }
+  var t=token();
+  function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+  if(!t){ document.getElementById('main').innerHTML='<div class="card"><div class="msg err">Invalid link.</div></div>'; }
+  else fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'lender_view',view_token:t})})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(d.error){ document.getElementById('main').innerHTML='<div class="card"><div class="msg err">'+esc(d.error)+'</div></div>'; return; }
+      var L=d.loan, pct = L.principal>0 ? Math.min(100, Math.round((1 - d.balance/L.principal)*100)) : 0;
+      var statusColor = L.status==='paid_off'?'#1a7f37':L.status==='active'?'#2563eb':'#b45309';
+      var h='<div class="card">'+
+        '<h1>'+esc(L.lender_names)+' → '+esc(L.borrower)+'</h1>'+
+        '<div class="sub">'+money(L.principal)+' @ '+L.apr+'% · '+L.term_months+' months · '+
+          '<span class="status" style="background:'+statusColor+'22;color:'+statusColor+';">'+esc(L.status)+'</span></div>'+
+        (L.signed_at?'<div class="sub">Signed '+new Date(L.signed_at).toLocaleDateString()+' by '+esc(L.signature||L.borrower)+'</div>':'<div class="sub" style="color:#b45309;">Awaiting borrower signature</div>')+
+        '<div class="tiles" style="margin-top:14px;">'+
+          '<div class="tile"><div class="v" style="color:#c0392b;">'+money(d.balance)+'</div><div class="l">Balance Remaining</div></div>'+
+          '<div class="tile"><div class="v" style="color:#1a7f37;">'+money(L.principal-d.balance)+'</div><div class="l">Paid Down</div></div>'+
+          '<div class="tile"><div class="v">'+money(L.monthly_payment)+'</div><div class="l">Monthly Payment</div></div>'+
+          '<div class="tile"><div class="v">'+d.payments_made+' / '+L.term_months+'</div><div class="l">Payments Made</div></div>'+
+        '</div>'+
+        '<div class="bar"><div style="width:'+pct+'%;"></div></div>'+
+        '<div class="sub" style="text-align:center;">'+pct+'% paid off</div>'+
+      '</div>';
+      var rows=(d.payments||[]).slice().reverse().map(function(p){
+        return '<tr><td>'+esc(p.paid_on)+(p.is_extra?' <span style="color:#1a7f37;font-size:0.7rem;">(extra)</span>':'')+'</td>'+
+          '<td>'+money(p.amount)+'</td><td>'+money(p.principal_portion)+'</td><td>'+money(p.interest_portion)+'</td><td>'+money(p.balance_after)+'</td></tr>';
+      }).join('');
+      h+='<div class="card"><h1 style="font-size:1rem;margin-bottom:10px;">Payment History</h1>'+
+        (rows? '<table><thead><tr><th>Date</th><th>Amount</th><th>Principal</th><th>Interest</th><th>Balance</th></tr></thead><tbody>'+rows+'</tbody></table>'
+             : '<div class="msg" style="color:#888;">No payments recorded yet.</div>')+'</div>';
+      document.getElementById('main').innerHTML=h;
+    })
+    .catch(function(e){ document.getElementById('main').innerHTML='<div class="card"><div class="msg err">Error: '+esc(e.message)+'</div></div>'; });
+</script>
+</body>
+</html>
