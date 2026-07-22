@@ -3822,7 +3822,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
         // ── FIELD PHOTOS ──
         '<div class="job-section">'+
-          '<div class="job-section-title">&#128247; Tech Photos</div>'+
+          '<div class="job-section-title" style="display:flex;align-items:center;justify-content:space-between;">'+
+            '<span>&#128247; Tech Photos</span>'+
+            '<button type="button" id="quoyaSyncBtn_'+c.id+'" onclick="quoyaSyncLead(\''+c.id+'\')" '+
+              'style="font-size:0.68rem;padding:4px 10px;border:1px solid rgba(74,158,255,0.35);border-radius:20px;background:rgba(74,158,255,0.08);color:#4a9eff;cursor:pointer;white-space:nowrap;width:auto;">'+
+              '&#128260; Sync with Quoya'+
+            '</button>'+
+          '</div>'+
           '<div class="job-upload-area" ondragover="event.preventDefault()" ondrop="handlePhotoDrop(event)">'+
             '<div class="job-upload-icon">&#128247;</div>'+
             '<div class="job-upload-label">Drag &amp; drop photos here</div>'+
@@ -4108,7 +4114,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       await client.storage.from(BUCKET).remove([testPath]);
     }
 
-    // Step 2 — upload each file
+    // Step 2 — upload each file. AI categorization is INTENTIONALLY not run here —
+    // it used to run synchronously per photo (quoyaAutoAssess), which made
+    // multi-photo uploads slow and let one flaky AI call fail the whole batch.
+    // Photos save immediately with quoya_status='pending'; the "Sync with Quoya"
+    // button (quoyaSyncLead) or the nightly sweep (quoya-sync-background.js)
+    // categorizes them afterward. See netlify/functions/lib/quoya.js.
+    var hadError = false; // tracks real per-file failures — do NOT sniff status.innerHTML for
+                           // this (assigning innerHTML with an HTML entity like &#9888; and
+                           // reading it back returns the rendered character, not the entity
+                           // text, so a naive .includes('&#9888;') check never matches).
     for (var i = 0; i < files.length; i++) {
       var file = files[i];
       status.textContent = 'Uploading ' + (i+1) + ' of ' + files.length + ' — ' + file.name;
@@ -4121,30 +4136,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var diag = diagnoseBucketError(uploadResult.error, BUCKET);
         showError({ title: 'Photo ' + (i+1) + ' failed — ' + diag.title, detail: diag.detail });
         status.style.color = '#ef4444';
+        hadError = true;
         continue;
       }
 
       var publicUrl = client.storage.from(BUCKET).getPublicUrl(path).data.publicUrl;
 
-      status.textContent = 'Quoya reviewing ' + (i+1) + ' of ' + files.length + '...';
-      // Rate-limit: small delay between API calls when processing multiple photos
-      if (i > 0) await new Promise(function(r){ setTimeout(r, 300); });
-      var aiResult = await quoyaAutoAssess(file);
-
-      // Show per-photo quality feedback in status before moving on
-      if (aiResult.flag === 'needs_retake') {
-        status.innerHTML = '⚠ Photo ' + (i+1) + ': <span style="color:#ffaa00;">' + (aiResult.note || 'Needs retake') + '</span> — labeled as <strong>' + aiResult.label + '</strong>';
-      } else {
-        status.textContent = '✓ Photo ' + (i+1) + ': ' + aiResult.label;
-      }
-
       var photoRecord = {
         job_id: String(currentJobId),
         url: publicUrl,
         path: path,
-        label: aiResult.label,
-        quality_flag: aiResult.flag,
-        quality_note: aiResult.note
+        label: null,
+        quality_flag: null,
+        quality_note: null,
+        quoya_status: 'pending'
       };
 
       // Step 3 — save to DB
@@ -4161,6 +4166,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           ? 'Foreign key error — the job_id ' + currentJobId + ' does not exist in the jobs table yet.'
           : iCode === '42P01'
           ? 'Table "job_photos" does not exist in Supabase. Check Table Editor.'
+          : iCode === '42703'
+          ? 'Column mismatch on job_photos table — run supabase/migrations/20260722_job_photos_schema_fix.sql.'
           : iDetail + iHint;
         status.innerHTML =
           '<div style="color:#ffaa00;font-size:0.82rem;line-height:1.6;">' +
@@ -4169,23 +4176,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '</div>';
         console.warn('[DB Insert]', iDetail, ie);
         jobPhotos[currentJobId].push(photoRecord);
+        hadError = true;
       } else {
         var savedRecord = (insertResult.data && insertResult.data[0]) ? insertResult.data[0] : photoRecord;
         jobPhotos[currentJobId].push(savedRecord);
         uploaded++;
+        status.style.color = '#8DC63F';
+        status.textContent = '✓ Photo ' + (i+1) + ' of ' + files.length + ' uploaded';
       }
       renderPhotoGrid();
     }
 
     if (uploaded > 0) {
-      var retakes = (jobPhotos[currentJobId] || []).filter(function(p){ return p.quality_flag === 'needs_retake'; }).length;
-      if (retakes > 0) {
-        status.innerHTML = '✓ ' + uploaded + ' uploaded — <span style="color:#ffaa00;">⚠ ' + retakes + ' photo' + (retakes!==1?'s':'') + ' need retaking (see flags above)</span>';
-        status.style.color = '#8DC63F';
-      } else {
-        status.textContent = '✓ ' + uploaded + ' of ' + files.length + ' photo(s) uploaded — all clear';
-        status.style.color = '#8DC63F';
-      }
+      status.textContent = '✓ ' + uploaded + ' of ' + files.length + ' photo(s) uploaded — tap 🔄 Sync with Quoya to categorize, or they\'ll sync automatically tonight';
+      status.style.color = '#8DC63F';
       // Advance the lead to step 2 (Photos Uploaded) on first photos — same as
       // the customer-portal upload path. Leads only: skip sold jobs and New Solar.
       try {
@@ -4195,9 +4199,44 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           _pRec.step = 2;
         }
       } catch(e) { /* best effort — photos are already saved */ }
-    } else if (!status.innerHTML.includes('&#9888;')) {
+    } else if (!hadError) {
       status.textContent = 'All uploads failed — see error above';
       status.style.color = '#ef4444';
+    }
+  }
+
+  // Manual "Sync with Quoya" — categorizes this lead's pending photos now instead
+  // of waiting for the nightly sweep. Works from any of the three photo panels
+  // (admin job detail, admin lead editor, tech/sales editor) since it just looks
+  // for whichever status element is present and reloads whichever grid exists.
+  async function quoyaSyncLead(id) {
+    if (!id) return;
+    var btn = document.getElementById('quoyaSyncBtn_' + id);
+    var statusEl = document.getElementById('sePhotoStatus') || document.getElementById('editorPhotoStatus') || document.getElementById('photoStatus');
+    if (btn) { btn.disabled = true; btn.style.opacity = '0.6'; btn.innerHTML = '&#8987; Syncing…'; }
+    if (statusEl) { statusEl.style.color = '#4a9eff'; statusEl.textContent = 'Asking Quoya to review pending photos…'; }
+    try {
+      var resp = await fetch('/.netlify/functions/quoya-sync', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ job_id: id })
+      });
+      var data = await resp.json();
+      if (!resp.ok || data.error) throw new Error(data.error || ('HTTP ' + resp.status));
+      currentJobId = id;
+      await loadJobPhotos(id);
+      if (typeof window.renderSalesPhotoGrid === 'function') window.renderSalesPhotoGrid(id);
+      if (typeof loadEditorPhotos === 'function') loadEditorPhotos(id);
+      var okCount = (data.results || []).filter(function(r){ return r.ok; }).length;
+      if (statusEl) {
+        statusEl.style.color = '#8DC63F';
+        statusEl.textContent = data.processed
+          ? ('✓ Quoya reviewed ' + okCount + ' of ' + data.processed + ' photo(s)')
+          : '✓ Nothing pending — all photos already reviewed';
+      }
+    } catch (e) {
+      if (statusEl) { statusEl.style.color = '#ef4444'; statusEl.textContent = 'Quoya sync failed: ' + e.message; }
+    } finally {
+      if (btn) { btn.disabled = false; btn.style.opacity = '1'; btn.innerHTML = '&#128260; Sync with Quoya'; }
     }
   }
 
@@ -4279,154 +4318,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     } catch(e) {
       console.warn('AI labeling failed:', e);
       return 'Additional Photos';
-    }
-  }
-
-  // ── Quoya combined assessment: label + quality flag ─────────────────────────
-  async function quoyaAssessPhoto(file, expectedCategory) {
-    try {
-      var base64 = await new Promise(function(resolve) {
-        var reader = new FileReader();
-        reader.onload = function(e) { resolve(e.target.result.split(',')[1]); };
-        reader.readAsDataURL(file);
-      });
-
-      var prompt = [
-        'You are Quoya, a solar field assessment AI for Solar Review in Southern California.',
-        'Assess this photo and respond with ONLY a valid JSON object — no extra text.',
-        '',
-        'Expected category: ' + expectedCategory,
-        '',
-        'Categories: MSP Step Back Photo, MSP Sticker Photo, Panel Placard, Battery Placement Wall Photo, Sub Panel, Sub Panel Sticker Photo, Inverter Photo, Solar Array, Utility Bill, Front of House, Attic, Additional Photos',
-        '',
-        'Respond with this exact JSON structure:',
-        '{',
-        '  "label": "<exact category name from list>",',
-        '  "flag": "<good|needs_retake|wrong_category>",',
-        '  "note": "<one sentence reason if flag is not good, else empty string>"',
-        '}',
-        '',
-        'flag = good: photo is clear, correctly categorized, required info visible',
-        'flag = needs_retake: correct subject but blurry/dark/partial/too far/info not readable',
-        'flag = wrong_category: subject does not match expected category',
-        '',
-        'Examples of needs_retake notes:',
-        '- "Inverter model number not visible — move closer"',
-        '- "MSP sticker not fully legible — open panel door and move closer"',
-        '- "Panel amperage label not legible — open panel door fully"',
-        '- "Battery wall area partially cut off — step back to show full mounting area"'
-      ].join('\n');
-
-      var response = await fetch('/.netlify/functions/claude-vision', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: 'claude-sonnet-5',
-          max_tokens: 120,
-          messages: [{ role: 'user', content: [
-            { type: 'image', source: { type: 'base64', media_type: file.type, data: base64 } },
-            { type: 'text', text: prompt }
-          ]}]
-        })
-      });
-
-      var result = await response.json();
-      if (result.content && result.content[0] && result.content[0].text) {
-        try {
-          var parsed = JSON.parse(result.content[0].text.trim());
-          var validCats = PHOTO_CATEGORIES;
-          var label = validCats.find(function(c){ return c.toLowerCase()===parsed.label.toLowerCase(); }) || expectedCategory;
-          var flag  = ['good','needs_retake','wrong_category'].includes(parsed.flag) ? parsed.flag : 'good';
-          return { label: label, flag: flag, note: parsed.note || '' };
-        } catch(e) {
-          return { label: expectedCategory, flag: 'good', note: '' };
-        }
-      }
-      return { label: expectedCategory, flag: 'good', note: '' };
-    } catch(e) {
-      console.warn('Quoya assessment failed:', e);
-      return { label: expectedCategory, flag: 'good', note: '' };
-    }
-  }
-
-  // ── Quoya auto-assessment (no expected category — ops/tech upload flow) ───────
-  // Returns { label, flag: 'good'|'needs_retake', note } without wrong_category logic
-  async function quoyaAutoAssess(file) {
-    try {
-      var base64 = await new Promise(function(resolve) {
-        var reader = new FileReader();
-        reader.onload = function(e) { resolve(e.target.result.split(',')[1]); };
-        reader.readAsDataURL(file);
-      });
-
-      var prompt = [
-        'You are Quoya, a solar field assessment AI for Solar Review in Southern California.',
-        'Assess this field photo and respond with ONLY a valid JSON object — no extra text.',
-        '',
-        'Categories:',
-        '- MSP Step Back Photo: wide shot of main service panel/breaker box from 3-4 feet showing full panel',
-        '- MSP Sticker Photo: close-up of sticker/label inside main panel showing amperage, voltage, manufacturer info',
-        '- Panel Placard: service entrance placard, main disconnect label, or rating nameplate on panel exterior',
-        '- Battery Placement Wall Photo: wall or garage area designated for battery storage installation',
-        '- Sub Panel: sub panel or secondary load center separate from main panel',
-        '- Sub Panel Sticker Photo: close-up of sub panel interior label showing breaker ratings',
-        '- Inverter Photo: solar inverter unit (Enphase, SolarEdge, SMA, Fronius, Generac, etc.)',
-        '- Solar Array: solar panels on roof, ground mount, or in yard',
-        '- Roof Photo: roof surface, shingles/tile, penetrations, flashing, or roof condition (no panels in frame, or focus is the roof itself)',
-        '- Utility Bill: utility bill document, SDG&E/SCE/LADWP statement, true-up notice',
-        '- Front of House: street view or exterior front of home',
-        '- Attic: attic space, rafters, roof sheathing, insulation',
-        '- Additional Photos: anything else not matching above categories',
-        '',
-        'Respond with this exact JSON structure:',
-        '{',
-        '  "label": "<exact category name from list>",',
-        '  "flag": "<good|needs_retake>",',
-        '  "note": "<one sentence reason if needs_retake, else empty string>"',
-        '}',
-        '',
-        'flag = good: photo is clear, subject identifiable, required info visible',
-        'flag = needs_retake: blurry, too dark, too far away, partially cut off, or key info not readable',
-        '',
-        'Examples of needs_retake notes:',
-        '- "Inverter model number not visible — move closer"',
-        '- "MSP sticker text not legible — open panel door fully and move closer"',
-        '- "Panel amperage label not readable — better lighting needed"',
-        '- "Battery wall area cut off — step back to show full mounting surface"'
-      ].join('\n');
-
-      var response = await fetch('/.netlify/functions/claude-vision', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: 'claude-sonnet-5',
-          max_tokens: 120,
-          messages: [{ role: 'user', content: [
-            { type: 'image', source: { type: 'base64', media_type: file.type, data: base64 } },
-            { type: 'text', text: prompt }
-          ]}]
-        })
-      });
-
-      var result = await response.json();
-      if (result.content && result.content[0] && result.content[0].text) {
-        try {
-          // Strip markdown code fences the model sometimes wraps JSON in, and grab the
-          // first {...} block, so a stray prose wrapper doesn't force the Additional fallback.
-          var raw = result.content[0].text.trim().replace(/^```(?:json)?/i,'').replace(/```$/,'').trim();
-          var brace = raw.indexOf('{'); if (brace > 0) raw = raw.slice(brace);
-          var parsed = JSON.parse(raw);
-          var label = PHOTO_CATEGORIES.find(function(c){ return c.toLowerCase() === (parsed.label||'').toLowerCase(); }) || 'Additional Photos';
-          var flag  = parsed.flag === 'needs_retake' ? 'needs_retake' : 'good';
-          return { label: label, flag: flag, note: parsed.note || '' };
-        } catch(e) {
-          return { label: 'Additional Photos', flag: 'good', note: '' };
-        }
-      }
-      return { label: 'Additional Photos', flag: 'good', note: '' };
-    } catch(e) {
-      console.warn('Quoya auto-assess failed:', e);
-      return { label: 'Additional Photos', flag: 'good', note: '' };
     }
   }
 
@@ -4555,15 +4446,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }
       statusEl.textContent = '';
       gridEl.innerHTML = data.map(function(p) {
-        var flag = p.quality_flag === 'needs_retake'
-          ? '<div style="font-size:0.6rem;color:#ffaa00;margin-top:3px;">&#9888; Retake</div>' : '';
+        var pending = p.quoya_status === 'pending' || p.quoya_status === 'failed';
+        var flag = pending
+          ? '<div style="font-size:0.6rem;color:#4a9eff;margin-top:3px;">&#8987; Analyzing…</div>'
+          : (p.quality_flag === 'needs_retake' ? '<div style="font-size:0.6rem;color:#ffaa00;margin-top:3px;">&#9888; Retake</div>' : '');
         var by = p.uploaded_by === 'customer'
           ? '<div style="font-size:0.58rem;color:#4a9eff;margin-top:2px;">Customer</div>' : '';
         return '<div style="text-align:center;">' +
           '<a href="' + p.url + '" target="_blank">' +
           '<img src="' + p.url + '" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:6px;border:1px solid rgba(255,255,255,0.1);" loading="lazy"/>' +
           '</a>' +
-          '<div style="font-size:0.6rem;color:rgba(243,237,227,0.5);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + (p.label||'Photo') + '</div>' +
+          '<div style="font-size:0.6rem;color:rgba(243,237,227,0.5);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + (pending ? 'Pending' : (p.label||'Photo')) + '</div>' +
           flag + by +
         '</div>';
       }).join('');
@@ -10085,17 +9978,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       return;
     }
 
-    // Group by AI label
+    var PENDING_GROUP = '⏳ Pending Quoya Review';
+
+    // Group by AI label — photos not yet categorized get their own group up top
+    // instead of quietly lumping into "Additional Photos" so it's obvious there's
+    // something to sync (tap "Sync with Quoya" above, or wait for the nightly sweep).
     var groups = {};
     photos.forEach(function(p) {
-      var k = p.label || 'Additional Photos';
+      var k = (p.quoya_status === 'pending' || p.quoya_status === 'failed') ? PENDING_GROUP : (p.label || 'Additional Photos');
       if (!groups[k]) groups[k] = [];
       groups[k].push(p);
     });
 
-    // Sort groups by defined category order
-    var keys = PHOTO_CATEGORIES.filter(function(cat) { return groups[cat]; });
-    // Add any unexpected categories at the end
+    // Sort groups: pending first, then defined category order, then anything else
+    var keys = [];
+    if (groups[PENDING_GROUP]) keys.push(PENDING_GROUP);
+    keys = keys.concat(PHOTO_CATEGORIES.filter(function(cat) { return groups[cat]; }));
     Object.keys(groups).forEach(function(k) { if (keys.indexOf(k) === -1) keys.push(k); });
     var h = '<div class="photo-summary-bar">&#128247; ' + photos.length + ' photo' + (photos.length !== 1 ? 's' : '') + ' across ' + keys.length + ' categor' + (keys.length !== 1 ? 'ies' : 'y') + '</div>';
 
@@ -10116,7 +10014,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var qNote = p.quality_note || '';
         var uploadedBy = p.uploaded_by || 'tech';
         var flagBadge = '';
-        if (qFlag === 'needs_retake') {
+        if (p.quoya_status === 'pending' || p.quoya_status === 'failed') {
+          flagBadge = '<div style="position:absolute;top:4px;left:4px;background:rgba(74,158,255,0.92);color:#fff;font-size:0.55rem;font-weight:700;padding:2px 6px;border-radius:4px;line-height:1.4;" title="Not yet reviewed by Quoya">&#8987; PENDING</div>';
+        } else if (qFlag === 'needs_retake') {
           flagBadge = '<div style="position:absolute;top:4px;left:4px;background:rgba(255,170,0,0.92);color:#1A1A1A;font-size:0.55rem;font-weight:700;padding:2px 6px;border-radius:4px;line-height:1.4;" title="' + qNote + '">⚠ RETAKE</div>';
         } else if (qFlag === 'wrong_category') {
           flagBadge = '<div style="position:absolute;top:4px;left:4px;background:rgba(239,68,68,0.92);color:#fff;font-size:0.55rem;font-weight:700;padding:2px 6px;border-radius:4px;line-height:1.4;">✗ WRONG CAT</div>';
@@ -12288,7 +12188,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '</button>'+
         '</div>'
       : '')+
-      '<div class="editor-section-title">Customer Photos</div>'+
+      '<div class="editor-section-title" style="display:flex;align-items:center;justify-content:space-between;">'+
+        '<span>Customer Photos</span>'+
+        '<button type="button" id="quoyaSyncBtn_'+c.id+'" onclick="quoyaSyncLead(\''+c.id+'\')" '+
+          'style="font-size:0.68rem;padding:4px 10px;border:1px solid rgba(74,158,255,0.35);border-radius:20px;background:rgba(74,158,255,0.08);color:#4a9eff;cursor:pointer;white-space:nowrap;width:auto;">'+
+          '&#128260; Sync with Quoya'+
+        '</button>'+
+      '</div>'+
       '<div id="editorPhotoPanel" style="min-height:32px;">'+
         '<div id="editorPhotoStatus" style="font-size:0.72rem;color:#4a9eff;padding:4px 0;"></div>'+
         '<div id="editorPhotoGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(100px,1fr));gap:8px;margin-top:4px;"></div>'+
@@ -14315,7 +14221,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var client=supabase.createClient(SUPA_URL,SUPA_KEY);
       // Check both uploads table and job_photos for status
       var resp=await client.from('job_photos')
-        .select('label,quality_flag,quality_note')
+        .select('label,quality_flag,quality_note,quoya_status')
         .eq('customer_id',String(custId))
         .eq('uploaded_by','customer');
       if(resp.data && resp.data.length){
@@ -14326,12 +14232,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           if(!type) return;
           var el=document.getElementById('ust-'+type);
           if(!el) return;
-          if(p.quality_flag==='good'){
-            el.textContent='✓ Uploaded';
-            el.className='upload-status ok';
-          } else if(p.quality_flag==='needs_retake'){
+          if(p.quality_flag==='needs_retake'){
             el.innerHTML='⚠ Needs Retake<br><span style="font-size:0.65rem;font-weight:400;">'+p.quality_note+'</span>';
             el.style.cssText='background:rgba(255,170,0,0.12);color:#ffaa00;border-radius:6px;padding:6px 10px;line-height:1.5;display:inline-block;font-size:0.72rem;font-weight:600;';
+          } else if(p.quoya_status==='pending'){
+            el.textContent='✓ Uploaded — reviewing quality...';
+            el.className='upload-status ok';
           } else {
             el.textContent='✓ Uploaded';
             el.className='upload-status ok';
@@ -14368,20 +14274,24 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // 2 — Get public URL
       var publicUrl=client.storage.from('job_photos').getPublicUrl(path).data.publicUrl;
 
-      // 3 — Run Quoya AI label + quality check
-      if(el){el.textContent='Quoya reviewing...';el.className='upload-status';}
-      var aiResult = await quoyaAssessPhoto(file, category);
-
-      // 4 — Write to job_photos table (visible to all roles)
+      // 3 — Write to job_photos table immediately (visible to all roles). The
+      // category is already known from which upload card the customer tapped,
+      // so labeling doesn't need to wait on AI — Quoya only needs to run the
+      // quality-check pass (blurry/dark/cut-off), which now happens afterward
+      // via the nightly sync or a rep's manual "Sync with Quoya" (previously
+      // this blocked here on quoyaAssessPhoto, which made uploads slow and let
+      // one flaky AI call fail the save).
       await client.from('job_photos').insert({
         job_id:       custId,
         customer_id:  custId,
         url:          publicUrl,
         path:         path,
-        label:        aiResult.label,
+        label:        category,
+        expected_label: category,
         uploaded_by:  'customer',
-        quality_flag: aiResult.flag,
-        quality_note: aiResult.note
+        quality_flag: null,
+        quality_note: null,
+        quoya_status: 'pending'
       });
 
       // Notify assigned rep via SMS (fire-and-forget)
@@ -14402,20 +14312,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }
 
 
-      // 6 — Show result with quality feedback
+      // 6 — Show immediate success — quality check result lands later via loadUploadStatus
       if(el){
-        if(aiResult.flag === 'good'){
-          el.textContent='✓ Uploaded';
-          el.className='upload-status ok';
-        } else {
-          el.innerHTML='⚠ Needs Retake<br><span style="font-size:0.65rem;color:#ffaa00;font-weight:400;">'+aiResult.note+'</span>';
-          el.className='upload-status';
-          el.style.background='rgba(255,170,0,0.12)';
-          el.style.color='#ffaa00';
-          el.style.borderRadius='6px';
-          el.style.padding='6px 10px';
-          el.style.lineHeight='1.5';
-        }
+        el.textContent='✓ Uploaded — reviewing quality...';
+        el.className='upload-status ok';
       }
 
     }catch(e){if(el) el.textContent='Failed: '+(e.message||'Unknown error');}
@@ -15821,7 +15721,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         : '')+
         '<div class="editor-section-title">Lead Source</div>'+
         '<select id="seLeadSource" class="ed-input" style="margin-bottom:14px;"><option value="">— Unknown —</option><option value="self_generated"'+(l.lead_source==='self_generated'?' selected':'')+'>Self-Generated (Black Box)</option><option value="referral"'+(l.lead_source==='referral'?' selected':'')+'>Referral</option><option value="inbound_web"'+(l.lead_source==='inbound_web'?' selected':'')+'>Inbound / Web</option><option value="orphaned_list"'+(l.lead_source==='orphaned_list'?' selected':'')+'>Orphaned Installer List</option><option value="top_tier_appt"'+(l.lead_source==='top_tier_appt'?' selected':'')+'>Top Tier Appt</option></select>'+
-        '<div class="editor-section-title">Photos</div>'+
+        '<div class="editor-section-title" style="display:flex;align-items:center;justify-content:space-between;">'+
+          '<span>Photos</span>'+
+          '<button type="button" id="quoyaSyncBtn_'+l.id+'" onclick="quoyaSyncLead(\''+l.id+'\')" '+
+            'style="font-size:0.68rem;padding:4px 10px;border:1px solid rgba(74,158,255,0.35);border-radius:20px;background:rgba(74,158,255,0.08);color:#4a9eff;cursor:pointer;white-space:nowrap;width:auto;">'+
+            '&#128260; Sync with Quoya'+
+          '</button>'+
+        '</div>'+
         '<div id="sePhotoStatus" style="font-size:0.72rem;color:#8DC63F;min-height:18px;margin-bottom:6px;"></div>'+
         '<div id="sePhotoGrid" style="margin-bottom:10px;"><div style="font-size:0.72rem;color:#888;">Loading photos…</div></div>'+
         '<label style="display:inline-flex;align-items:center;gap:6px;font-size:0.8rem;font-weight:700;cursor:pointer;padding:8px 16px;background:rgba(141,198,63,0.1);color:#8DC63F;border:1px solid rgba(141,198,63,0.3);border-radius:100px;margin-bottom:16px;">'+
@@ -15847,13 +15753,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }
       var h = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(76px,1fr));gap:6px;">';
       photos.forEach(function(p) {
+        var pending = p.quoya_status === 'pending' || p.quoya_status === 'failed';
         var custBadge = p.uploaded_by === 'customer'
           ? '<div style="position:absolute;bottom:2px;right:2px;background:rgba(74,158,255,0.85);color:#fff;font-size:0.5rem;padding:1px 4px;border-radius:3px;font-weight:700;">CUST</div>' : '';
-        var lbl = (p.Label || p.label || 'Photo').replace(' Photo','').replace('MSP ','').slice(0, 12);
+        var pendingBadge = pending
+          ? '<div style="position:absolute;top:2px;left:2px;background:rgba(74,158,255,0.92);color:#fff;font-size:0.5rem;padding:1px 4px;border-radius:3px;font-weight:700;">&#8987;</div>' : '';
+        var lbl = pending ? 'Analyzing…' : (p.Label || p.label || 'Photo').replace(' Photo','').replace('MSP ','').slice(0, 12);
         h += '<div style="position:relative;">' +
           '<img src="' + p.url + '" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:8px;cursor:pointer;border:1.5px solid rgba(0,0,0,0.1);" ' +
-          'onclick="window.open(\'' + p.url + '\',\'_blank\')" title="' + (p.Label||p.label||'') + '">' +
-          custBadge +
+          'onclick="window.open(\'' + p.url + '\',\'_blank\')" title="' + (pending ? 'Not yet reviewed by Quoya' : (p.Label||p.label||'')) + '">' +
+          custBadge + pendingBadge +
           '<div style="font-size:0.58rem;color:#888;text-align:center;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + lbl + '</div>' +
           '</div>';
       });
