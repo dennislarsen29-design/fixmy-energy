@@ -126,8 +126,11 @@ exports.handler = async function(event) {
     new_system_size_kw, annual_kwh_with_bundle,
     annual_kwh_solar_api, calculated_monthly_savings, calculated_annual_savings,
     savings_source, panel_kw_added, has_battery,
-    storage_kwh, annual_usage_kwh, surplus_kwh_trueup
+    storage_kwh, annual_usage_kwh, surplus_kwh_trueup,
+    photo_urls
   } = body;
+  // Quoya reads the uploaded equipment photos (issues/recalls/warranty). Cap to bound cost.
+  const photos = Array.isArray(photo_urls) ? photo_urls.filter(p => p && p.url).slice(0, 10) : [];
 
   const svcType = service_type || 'inverter_swap';
   const focusInstructions = SERVICE_FOCUS[svcType] || SERVICE_FOCUS.inverter_swap;
@@ -161,30 +164,51 @@ exports.handler = async function(event) {
     ? `Customer profile:\n${parts.join('\n')}\n\nWrite the proposal insight paragraph now.`
     : 'Write a proposal insight paragraph for a San Diego homeowner with a solar upgrade on SDG&E NEM 1.0.';
 
+  // When photos are present, Quoya first reads the equipment and appends a short tech-facing
+  // "Quoya Insight" block (issues / recalls / warranty / suggested fixes), then the customer
+  // paragraph. Photos ride as image blocks; web_search lets it verify recalls/warranty.
+  const hasPhotos = photos.length > 0;
+  const content = [];
+  photos.forEach(p => content.push({ type: 'image', source: { type: 'url', url: p.url } }));
+  content.push({ type: 'text', text: (hasPhotos
+    ? `Uploaded equipment photos are attached (labels: ${photos.map(p => p.label || 'unlabeled').join(', ')}).\n\n`
+    : '') + userMessage });
+
+  const photoSystemAddon = hasPhotos ? `
+
+PHOTO ANALYSIS (Quoya Insight) — when equipment photos are attached, BEFORE the customer paragraph, add a short technician-facing block titled "QUOYA INSIGHT (tech):" with 2–5 bullet points that:
+- Identify the equipment you can see (inverter/panel/battery/MSP make & model, and any visible serial/model numbers).
+- Flag likely issues, failure signs, or code concerns visible in the photos.
+- Use web_search to check for known recalls, common failure modes, and warranty status/terms for the identified make/model or serial where possible — cite what you find briefly.
+- Suggest what the tech should verify or bring to the diagnostic appointment.
+Keep it factual and only claim what the photos or search support. After that block, add a line "---" and then the customer-facing paragraph per the rules below.` : '';
+
   try {
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'x-api-key': ANTHROPIC_KEY,
         'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'web-search-2025-03-05',
         'content-type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 500,
-        system: `You are a solar sales coach writing a customer-facing proposal insight paragraph.
-${focusInstructions}
+        model: 'claude-sonnet-5',
+        max_tokens: hasPhotos ? 1100 : 500,
+        tools: hasPhotos ? [{ type: 'web_search_20250305', name: 'web_search', max_uses: 4 }] : undefined,
+        system: `You are Quoya, Solar Review's solar assessment + sales AI.${photoSystemAddon}
 
-Rules:
+CUSTOMER PARAGRAPH RULES:
+${focusInstructions}
 - Use ONLY the data provided. Never invent numbers. If diagnostic findings are given, reference them directly and specifically — the tech saw this with their own eyes, making it credible and personal to this homeowner.
 - If calculated_monthly_savings or calculated_annual_savings are provided, use those exact numbers — they were derived from actual kWh production × verified SDG&E rates, not guessed.
 - If Google Solar API data is provided, reference it as an address-specific estimate for this roof.
 - Write in plain conversational English. No jargon, no buzzwords.
 - Do NOT start with "I" or "Your system". Do NOT use the word "journey".
-- Output ONLY the insight paragraph — no labels, headers, quotes, or introductory phrases.
+- Output the customer paragraph with no labels/headers/quotes (the QUOYA INSIGHT block above is the only exception when photos are attached).
 
 ${RESEARCH_CONTEXT}`,
-        messages: [{ role: 'user', content: userMessage }],
+        messages: [{ role: 'user', content }],
       }),
     });
 
@@ -194,7 +218,10 @@ ${RESEARCH_CONTEXT}`,
     }
 
     const data = await resp.json();
-    const insight = data.content?.[0]?.text?.trim() ?? null;
+    // web_search returns mixed blocks (text + tool_use + tool_result) — join the text blocks.
+    const insight = Array.isArray(data.content)
+      ? data.content.filter(b => b.type === 'text').map(b => b.text).join('').trim()
+      : (data.content?.[0]?.text?.trim() ?? '');
     if (!insight) return { statusCode: 200, headers: CORS, body: JSON.stringify({ error: 'No insight returned' }) };
 
     return { statusCode: 200, headers: CORS, body: JSON.stringify({ insight }) };
