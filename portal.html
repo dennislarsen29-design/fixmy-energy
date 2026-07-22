@@ -5768,13 +5768,29 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // Raw REST fetch, not supabase-js .or() chaining — PostgREST only honors one
     // "or=" filter per request, so multiple chained .or() calls silently break
     // the query. Three OR-groups are combined here into a single and=(or(),or(),or()).
-    var filters = 'sold_type=is.null'
+    //
+    // Dispositioning a lead (esp. "Booked") flips black_box=false / can leave sold_type
+    // set so it drops out of the dialable pool — correct, it shouldn't come back into
+    // Fresh/Callbacks. But a plain reload used to re-run this exact query, which then
+    // excluded that same lead entirely, silently wiping it out of "Recent Calls" too
+    // (e.g. a rep books an appointment, the iPad's Safari tab gets backgrounded and
+    // reloads the page, and the just-booked lead vanishes from the call log). Leads
+    // dialed in the last 7 days are exempted from the sold/dialable checks below (but
+    // NOT from the dnc/archived checks, which stay strict for safety) so they still
+    // surface in bbDialBuckets()'s Worked bucket + the Recent Calls sidebar.
+    var recentCutoff = new Date(Date.now() - 7*24*3600*1000).toISOString();
+    var filters = 'phone=not.is.null&phone=neq.'
+      + '&and=(or(sold_type.is.null,dialed_at.gt.' + recentCutoff + '),'
+      + 'or(black_box.eq.true,lead_source.eq.orphaned_list,dialed_at.gt.' + recentCutoff + '),'
+      + 'or(dnc.is.null,dnc.eq.false),or(archived.is.null,archived.eq.false))'
+      + '&limit=2000';
+    var filtersBase = 'sold_type=is.null' // pre-migration fallback: no dialed_at column to relax against
       + '&phone=not.is.null&phone=neq.'
       + '&and=(or(black_box.eq.true,lead_source.eq.orphaned_list),or(dnc.is.null,dnc.eq.false),or(archived.is.null,archived.eq.false))'
       + '&limit=2000';
     var lastErr = null;
-    var q = async function(sel) {
-      var resp = await fetch(SUPA_URL + '/rest/v1/customers?select=' + sel + '&' + filters, {
+    var q = async function(sel, f) {
+      var resp = await fetch(SUPA_URL + '/rest/v1/customers?select=' + sel + '&' + f, {
         headers: { 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY }
       });
       var data;
@@ -5783,8 +5799,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       return data;
     };
     bbDialLoadError = null;
-    var data = await q(BB_DIAL_SEL_FULL);
-    if (!data) data = await q(BB_DIAL_SEL_BASE); // dialer columns not migrated yet
+    var data = await q(BB_DIAL_SEL_FULL, filters);
+    if (!data) data = await q(BB_DIAL_SEL_BASE, filtersBase); // dialer columns not migrated yet
     if (!data) bbDialLoadError = lastErr || 'Unknown error';
     bbDialQueue = data || [];
     bbDialLoaded = true;
