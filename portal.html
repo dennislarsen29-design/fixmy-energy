@@ -11858,7 +11858,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             'style="'+(c.title_confirmed===true?'':'display:none;')+'padding:5px 14px;border:1px solid rgba(141,198,63,0.4);border-radius:100px;background:rgba(141,198,63,0.1);color:#8DC63F;font-size:0.72rem;font-weight:700;cursor:pointer;">&#8592; Use as Lead Name</button>'+
         '</div>'
       : '<span style="font-size:0.75rem;color:#666;">No title data yet — click <strong style="color:#4a9eff;">Run Lookup</strong> to check parcel owner.</span>';
-    var _notesLogHtml = _renderNotesLog(_parseNotes(c.notes || ''));
+    var _notesLogHtml = _renderNotesLog(_parseNotes(c.notes || ''), false, { deletable: true, custId: c.id });
     slot.innerHTML = '<div style="position:sticky;top:0;z-index:10;background:#0d0d0d;border-bottom:1px solid #2a2a2a;margin-bottom:12px;"><button onclick="closeLeadEditor()" style="display:block;width:100%;padding:12px;background:transparent;border:none;color:#aaa;cursor:pointer;font-size:0.85rem;font-weight:700;letter-spacing:0.5px;">&#10005;&nbsp;&nbsp;Close</button></div>'+
     '<div class="editor-panel" id="editorPanel">'+
       '<div class="editor-header"><div style="font-weight:700;color:'+(isNSEdit?'#4a9eff':isTTEdit?'#9b6de8':'#8DC63F')+';">Editing: '+esc(c.first_name||'')+' '+esc(c.last_name||'')+
@@ -13137,11 +13137,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     entries.push({ ts: new Date().toISOString(), by: by, text: text });
     return JSON.stringify(entries);
   }
-  function _renderNotesLog(entries, light) {
+  function _renderNotesLog(entries, light, opts) {
+    opts = opts || {};
     if (!entries || !entries.length) return '<div style="font-size:0.8rem;color:#555;padding:12px 14px;">No notes yet.</div>';
     var borderBtm = light ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.07)';
     var textColor = light ? '#1A1A1A' : '#e0e0e0';
-    return entries.slice().reverse().map(function(e) {
+    var _total = entries.length;
+    return entries.slice().reverse().map(function(e, _di) {
+      var _origIdx = _total - 1 - _di;
+      var delBtn = opts.deletable ? '<button onclick="deleteEditorNote(\''+opts.custId+'\','+_origIdx+')" title="Delete this note" style="margin-left:auto;background:none;border:none;color:#888;cursor:pointer;font-size:0.95rem;line-height:1;padding:0 2px;flex-shrink:0;">&#10005;</button>' : '';
       var dateStr = e.ts ? new Date(e.ts).toLocaleString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'}) : 'Prior to log';
       var by = e.by || 'Unknown';
       var isDialer = by.indexOf('Dialer') > -1;
@@ -13154,11 +13158,31 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">'+
           '<span style="font-size:0.72rem;font-weight:700;color:'+badgeColor+';">'+by+'</span>'+
           '<span style="color:#444;font-size:0.68rem;">'+dateStr+'</span>'+
+          delBtn+
         '</div>'+
         '<div style="color:'+textColor+';font-size:0.82rem;line-height:1.65;white-space:pre-wrap;">'+e.text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/ \| /g,'\n')+'</div>'+
       '</div>';
     }).join('');
   }
+  // Delete a single note entry from a lead's notes feed (admin editor only). Runs in
+  // the browser via the anon client, so it works even when the notes were logged by
+  // another path. Used to clean up the old partial-capture entries.
+  window.deleteEditorNote = async function(id, idx) {
+    if (!confirm('Delete this note entry? This cannot be undone.')) return;
+    var rec = (typeof adminCustomers !== 'undefined' && adminCustomers) ? adminCustomers.find(function(x){ return x.id === id; }) : null;
+    var entries = _parseNotes(rec ? rec.notes : null);
+    if (idx < 0 || idx >= entries.length) return;
+    entries.splice(idx, 1);
+    var newNotes = entries.length ? JSON.stringify(entries) : null;
+    try {
+      var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var res = await client.from('customers').update({ notes: newNotes }).eq('id', id);
+      if (res.error) { alert('Delete failed: ' + res.error.message); return; }
+    } catch(e) { alert('Delete failed: ' + e.message); return; }
+    if (rec) rec.notes = newNotes;
+    var logDiv = document.getElementById('edNotesLog');
+    if (logDiv) logDiv.innerHTML = _renderNotesLog(_parseNotes(newNotes), false, { deletable: true, custId: id });
+  };
   async function addEditorNote() {
     var idEl = document.getElementById('edId');
     var inputEl = document.getElementById('edNoteInput');
@@ -13170,7 +13194,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     try {
       var newNotes = await bbLogActivity(id, 'note', null, text); // shared feed + lead_activity
       inputEl.value = '';
-      if (logDiv) logDiv.innerHTML = _renderNotesLog(_parseNotes(newNotes));
+      if (logDiv) logDiv.innerHTML = _renderNotesLog(_parseNotes(newNotes), false, { deletable: true, custId: id });
     } catch(e) { alert('Failed to save note: '+e.message); }
   }
 
