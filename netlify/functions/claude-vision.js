@@ -8,7 +8,7 @@
 //     actually use, max_tokens is capped, and the message shape is constrained. This bounds
 //     the cost blast radius even if the origin check is bypassed.
 
-const ALLOWED_MODELS = new Set(['claude-sonnet-4-6', 'claude-haiku-4-5-20251001']);
+const ALLOWED_MODELS = new Set(['claude-sonnet-5', 'claude-haiku-4-5-20251001']);
 const MAX_TOKENS_CAP = 200;
 const MAX_BODY_BYTES = 8 * 1024 * 1024; // ~8MB — one base64 photo plus prompt
 

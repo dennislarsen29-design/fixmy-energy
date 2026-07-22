@@ -94,7 +94,7 @@ Only include links whose URLs you've confirmed exist via web search. Do not fabr
         'content-type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
+        model: 'claude-sonnet-5',
         max_tokens: 4000,
         tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 8 }],
         system: `You are an expert solar inverter diagnostician with 15 years of field experience in San Diego, CA. You specialize in diagnosing and repairing all major brands: SolarEdge, Enphase, SMA, Fronius, Generac, ABB/Fimer, SunPower (SMA-based), Delta, Sungrow, and others.
