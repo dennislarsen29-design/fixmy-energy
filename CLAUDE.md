@@ -126,6 +126,8 @@ The admin lead editor auto-saves 1.5s after any input (`edPanel` 'input' listene
 - `STRIPE_SECRET_KEY` — Stripe secret key (server-side only, for sign-init.js / sign-complete.js) ✅
 - `STRIPE_PUBLISHABLE_KEY` — Stripe publishable key (returned to client by sign-init.js) ✅
 - `SUPA_SERVICE_KEY` — Supabase service role key (bypasses RLS, used in sign-init/complete) ✅
+- `RESEND_API_KEY` — Resend transactional email key (rep-onboard welcome email + AI agent report digest)
+- `AGENT_REPORT_EMAIL` — recipient for the daily AI agent report digest (defaults to `dennislarsen29@gmail.com` if unset)
 - `SECRETS_SCAN_SMART_DETECTION_OMIT_VALUES` — set to Google Maps key to bypass scanner
 
 ## Google Maps API Key
@@ -315,6 +317,14 @@ The Business Model tab (`portal.html` links to `/business-model.html?t=fixmybp26
 - **`netlify/functions/roadmap-agent.js`** — weekly AI growth strategist (Friday ~8am PT in netlify.toml; manual via `run-agent-background?agent=roadmap`). Reads `business_model_data` + live growth metrics (lead/job volume, revenue, social) + the current roadmap, uses `web_search` (with the `anthropic-beta: web-search-2025-03-05` header — same gotcha as finance-agent) for current solar-growth tactics, then **auto-adds 2–4 new tasks** straight onto the board (`source='ai'`, `status='todo'`, each with a paste-ready Claude prompt) and files a summary to `agent_reports` (`agent='roadmap'`). Dedupes against existing titles.
 - **Ship-time SOP:** the board only stays accurate if shipped work is marked done. **Whenever you (Claude Code) ship something that corresponds to a `roadmap_items` row, flip that row to `status='done'` (and `checked=true`, stamp `completed_at`) in the same change** — or add a done `history` row for a noteworthy accomplishment that has no card. Dennis's one-tap Done covers the rest.
 - The legacy localStorage checklist and the separate `business_model_data` "milestones" render were removed from the Roadmap view; `business_model_data` still powers Services/Projections/Metrics/Team/Questions sections.
+
+## AI Agent Report Email Digest (2026-07-23)
+Dennis doesn't always log in to check the Agents tab, so all AI agent reports are now emailed to him as a **once-daily digest**.
+- **`netlify/functions/agent-report-digest.js`** — scheduled daily `30 16 * * *` (~9:30am PT). Pulls every `agent_reports` row with `emailed_at IS NULL`, groups by agent (urgent agents first), and sends ONE branded email via **Resend** (reuses the existing `RESEND_API_KEY` + verified `info@fixmy.energy` sender from `rep-onboard.js`), then stamps `emailed_at` so nothing is ever sent twice. No-ops (sends no email) when there's nothing new. A failed/missed day self-heals on the next run because it keys off `emailed_at`, not a time window.
+- Covers every agent that writes to `agent_reports` (marketing, bizdev, crm-dev, seo, finance, roadmap, socials) automatically — future agents need no wiring. **Personal Coach reports are excluded by design** (they live in the private `personal_coach_reports` table, not `agent_reports`).
+- **Recipient:** `AGENT_REPORT_EMAIL` env var (Netlify), defaults to `dennislarsen29@gmail.com`. Change the env var to redirect.
+- **Migration `20260723_agent_reports_emailed.sql`:** adds `emailed_at timestamptz` to `agent_reports`. ⚠️ Not yet applied — run in the SQL Editor.
+- The digest subject flags urgent count (e.g. "⚠️ 3 new agent reports (1 urgent)"); the email links back to `/portal` (Agents tab). Manual run: GET `/.netlify/functions/agent-report-digest`.
 
 ## Reroof category box (proposal builder, 2026-07-20)
 Per-option **🏠 Reroof** card in the builder's catalog grid (`_propRenderBuilds`, after the RMA card). Toggle on → two inputs: **Surface area (sq ft)** (auto-filled from the Google Solar `roofAreaMeters2 × 10.7639` when a site map exists, editable) and **$ / square charged** (editable retail, default $850). `_reroofSquares(build)` = `ceil(sqft / 100)` (100 sq ft = 1 square).
