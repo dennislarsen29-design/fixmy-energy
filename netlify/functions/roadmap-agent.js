@@ -207,7 +207,7 @@ Process:
 1. Read get_business_model, get_current_roadmap, and get_growth_metrics.
 2. Use web_search to check CURRENT (this-year) solar growth tactics, orphaned-installer opportunities (SunPower/Titan/Sunnova aftermarket), local-SEO/LSA trends, and battery-retrofit demand signals in California. Ground your ideas in what's actually working now.
 3. Add 2–4 NEW tasks with add_roadmap_task. Rules:
-   - NEVER duplicate an existing roadmap item (you have the full list) or re-add something already done.
+   - NEVER duplicate an existing roadmap item (you have the full list), re-add something already done, or resurface anything with status 'dismissed' (Dennis rejected it — do not propose it or a close variant again).
    - Be specific and buildable, not vague. "Build a /sunpower-repair landing page with a orphaned-system checklist + book CTA" — not "improve marketing."
    - Favor high-leverage / low-effort first (mark effort honestly: quick/medium/large).
    - Write a real, paste-ready Claude Code prompt for each: context (files, tables, env vars this repo uses), explicit numbered steps, and end with "commit and push". Match how this codebase works — single-file portal.html, Netlify functions, Supabase.

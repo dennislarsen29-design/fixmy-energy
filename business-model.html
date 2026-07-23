@@ -128,6 +128,12 @@
   .effort-large{background:rgba(155,109,232,0.1);border:1px solid rgba(155,109,232,0.35);color:#c4a3f0;}
   .ai-badge{font-size:0.6rem;font-weight:700;padding:2px 8px;border-radius:100px;background:rgba(74,158,255,0.12);border:1px solid rgba(74,158,255,0.35);color:var(--blue);white-space:nowrap;}
   .rm-dennis{font-size:0.68rem;color:var(--green);margin-top:6px;line-height:1.5;}
+  .rm-dismiss-btn{background:none;border:none;color:rgba(243,237,227,0.28);font-size:0.66rem;cursor:pointer;padding:2px 4px;font-family:inherit;white-space:nowrap;transition:color 0.15s;}
+  .rm-dismiss-btn:hover{color:#f87171;}
+  .rm-restore-btn{background:rgba(74,158,255,0.08);border:1px solid rgba(74,158,255,0.25);color:var(--blue);font-size:0.68rem;font-weight:600;cursor:pointer;padding:4px 12px;border-radius:100px;font-family:inherit;white-space:nowrap;}
+  .rm-restore-btn:hover{background:rgba(74,158,255,0.16);}
+  .roadmap-dismissed{opacity:0.4;}
+  .roadmap-dismissed .roadmap-card-title{text-decoration:line-through;}
 
   /* Task cards (milestones — card-based) */
   .task-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 16px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:flex-start;gap:12px;transition:border-color 0.15s,background 0.15s;}
@@ -608,28 +614,33 @@
   function _rmCardHtml(item, opts) {
     opts = opts || {};
     var done = item.status === 'done';
-    var blocked = !done && _rmBlocked(item);
+    var dismissed = item.status === 'dismissed';
+    var blocked = !done && !dismissed && _rmBlocked(item);
     var eff = RM_EFFORT[item.effort];
     var meta = '';
-    if (!done) {
+    if (!done && !dismissed) {
       meta += '<div class="rm-meta">';
       if (eff) meta += '<span class="effort-badge ' + eff.cls + '">' + eff.label + '</span>';
       if (item.source === 'ai') meta += '<span class="ai-badge">✨ AI</span>';
       if (blocked) meta += '<span class="blocked-badge">⚠ Blocked</span>';
       meta += '</div>';
     }
-    var dennis = (!done && item.dennis_action)
+    var dennis = (!done && !dismissed && item.dennis_action)
       ? '<div class="rm-dennis">Dennis → ' + _rmEsc(item.dennis_action) + '</div>' : '';
     var right;
-    if (done) {
+    if (dismissed) {
+      right = '<button class="rm-restore-btn" onclick="rmRestore(\'' + item.key + '\')">↩ Restore</button>';
+    } else if (done) {
       var d = item.completed_at ? new Date(item.completed_at).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '';
-      right = d ? '<span class="task-done-date">' + d + '</span>' : '';
+      right = (d ? '<span class="task-done-date">' + d + '</span>' : '') +
+        '<button class="rm-dismiss-btn" title="Remove from the board" onclick="rmDismiss(\'' + item.key + '\')">✕</button>';
     } else {
       right =
         (_rmHasPrompt(item) ? '<button class="prompt-btn" onclick="rmCopyPrompt(\'' + item.key + '\')">📋 Prompt</button>' : '') +
-        '<label class="roadmap-check-wrap"><input type="checkbox" onchange="rmToggleDone(\'' + item.key + '\', this.checked)"> Done</label>';
+        '<label class="roadmap-check-wrap"><input type="checkbox" onchange="rmToggleDone(\'' + item.key + '\', this.checked)"> Done</label>' +
+        '<button class="rm-dismiss-btn" title="Dismiss — this card doesn\'t apply" onclick="rmDismiss(\'' + item.key + '\')">✕ Dismiss</button>';
     }
-    return '<div class="roadmap-card' + (done ? ' roadmap-done' : '') + (blocked ? ' roadmap-blocked' : '') + '">' +
+    return '<div class="roadmap-card' + (done ? ' roadmap-done' : '') + (dismissed ? ' roadmap-dismissed' : '') + (blocked ? ' roadmap-blocked' : '') + '">' +
       '<div class="roadmap-card-body">' +
         '<div class="roadmap-card-title">' + _rmEsc(item.title || item.key) + '</div>' +
         (item.description ? '<div class="roadmap-card-sub">' + _rmEsc(item.description) + '</div>' : '') +
@@ -649,8 +660,9 @@
       _rmItems = {}; _rmStatusByKey = {};
       items.forEach(function(it) { _rmItems[it.key] = it; _rmStatusByKey[it.key] = it.status; });
 
-      var active = items.filter(function(i){ return i.status !== 'done'; });
-      var done   = items.filter(function(i){ return i.status === 'done'; });
+      var active    = items.filter(function(i){ return i.status !== 'done' && i.status !== 'dismissed'; });
+      var done      = items.filter(function(i){ return i.status === 'done'; });
+      var dismissed = items.filter(function(i){ return i.status === 'dismissed'; });
 
       // ⚡ Do Now — highest-leverage, unblocked, sorted by priority → effort (quick first)
       var doNow = active.filter(function(i){ return !_rmBlocked(i); })
@@ -699,6 +711,17 @@
         '</div>';
       }
 
+      // 🗑 Dismissed (collapsible), restorable
+      if (dismissed.length) {
+        dismissed.sort(function(a, b){ return (a.sort || 100) - (b.sort || 100); });
+        html += '<div id="roadmap-dismissed-wrap" style="margin-top:14px;">' +
+          '<div class="roadmap-completed-header" onclick="var s=document.getElementById(\'roadmap-dismissed\');var o=s.style.display!==\'none\';s.style.display=o?\'none\':\'block\';this.querySelector(\'.rd-arrow\').textContent=o?\'▸\':\'▾\';">' +
+            '<span class="rd-arrow">▸</span> 🗑 ' + dismissed.length + ' dismissed' +
+          '</div>' +
+          '<div id="roadmap-dismissed" style="display:none;">' + dismissed.map(function(i){ return _rmCardHtml(i); }).join('') + '</div>' +
+        '</div>';
+      }
+
       board.innerHTML = html || '<div style="font-size:0.8rem;color:var(--dim);">No roadmap items yet.</div>';
     } catch(e) {
       console.warn('Roadmap board failed', e);
@@ -719,6 +742,25 @@
         })
       });
     } catch(e) { console.warn('Roadmap save failed', e); }
+    renderRoadmapBoard();
+  }
+
+  // Dismiss a card that doesn't apply (soft — recoverable from the Dismissed section).
+  async function rmDismiss(key) {
+    var item = _rmItems[key] || {};
+    if (!confirm('Dismiss "' + (item.title || key) + '"? It moves to the Dismissed list — you can restore it anytime.')) return;
+    await _rmSetStatus(key, 'dismissed');
+  }
+  async function rmRestore(key) { await _rmSetStatus(key, 'todo'); }
+
+  async function _rmSetStatus(key, status) {
+    try {
+      await fetch(_SUPA_URL + '/rest/v1/roadmap_items?key=eq.' + encodeURIComponent(key), {
+        method: 'PATCH',
+        headers: Object.assign({}, _supaHeaders, { 'Prefer': 'return=minimal' }),
+        body: JSON.stringify({ status: status, checked: status === 'done', updated_at: new Date().toISOString() })
+      });
+    } catch(e) { console.warn('Roadmap status save failed', e); }
     renderRoadmapBoard();
   }
 
