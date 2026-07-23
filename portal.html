@@ -5780,6 +5780,234 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }).join('');
   }
 
+  // ── Dialer Script + Call Flow (2026-07-23) ─────────────────────────────────
+  // A branded, stage-based call script embedded in the current-call card,
+  // auto-personalized with the lead's name, orphaned installer, and the rep's
+  // name. Stage switching + collapse update ONLY the panel's own DOM (never a
+  // full re-render) so the rep's typed note and a live AI transcript survive.
+  var bbScriptStage = 'flow';
+  function _bbScriptIsOpen(){ try { return localStorage.getItem('bbScriptOpen') !== '0'; } catch(e){ return true; } }
+  function _bbScriptCtx(lead) {
+    lead = lead || {};
+    return {
+      name: esc((lead.first_name || '').trim() || 'there'),
+      installer: esc(lead.original_installer || ''),
+      rep: esc((typeof bbRepName === 'function' && bbRepName()) || 'your name'),
+      sdcp: !!(extractZip(lead.address||'') && SDCP_ZIPS.has(extractZip(lead.address||'')))
+    };
+  }
+  var BB_SCRIPT_STAGES = [
+    { key:'flow',    label:'🗺 Flow' },
+    { key:'opener',  label:'1 · Opener' },
+    { key:'hook',    label:'2 · Hook' },
+    { key:'qualify', label:'3 · Qualify' },
+    { key:'book',    label:'4 · Book It' },
+    { key:'objections', label:'🛡 Objections' },
+    { key:'vm',      label:'📧 Voicemail' },
+    { key:'callback', label:'🔁 Callback' }
+  ];
+  function _bbSay(t){ return '<div style="background:rgba(141,198,63,0.07);border-left:3px solid #8DC63F;border-radius:0 10px 10px 0;padding:10px 14px;margin-bottom:8px;font-size:0.84rem;line-height:1.65;color:#e8e4da;">'+t+'</div>'; }
+  function _bbTip(t){ return '<div style="font-size:0.68rem;color:#8a8578;line-height:1.5;margin-bottom:10px;">'+t+'</div>'; }
+  function _bbObj(q, a){ return '<div style="margin-bottom:10px;"><div style="font-size:0.74rem;font-weight:700;color:#E8793A;margin-bottom:3px;">&ldquo;'+q+'&rdquo;</div>'+_bbSay(a)+'</div>'; }
+  function _bbFlowNode(color, icon, title, sub){ return '<div style="display:flex;gap:10px;align-items:flex-start;margin-bottom:2px;"><div style="flex-shrink:0;width:26px;height:26px;border-radius:50%;background:'+color+'22;border:1.5px solid '+color+'99;display:flex;align-items:center;justify-content:center;font-size:0.72rem;">'+icon+'</div><div style="padding-top:2px;"><div style="font-size:0.76rem;font-weight:700;color:#ddd;">'+title+'</div>'+(sub?'<div style="font-size:0.66rem;color:#888;line-height:1.5;">'+sub+'</div>':'')+'</div></div>'; }
+  function _bbFlowArrow(){ return '<div style="margin:1px 0 3px 12px;color:#555;font-size:0.7rem;">&darr;</div>'; }
+  function bbScriptBodyHtml(stage, lead) {
+    var c = _bbScriptCtx(lead);
+    var installerHook = c.installer
+      ? 'Our records show your solar was installed by <strong style="color:#ffaa00;">'+c.installer+'</strong> &mdash; and as you may have heard, they&rsquo;ve shut down. That means nobody is servicing the warranty or watching whether the system still produces what it should. We&rsquo;re the local San Diego team that takes care of those systems.'
+      : 'We do independent solar health checks for homeowners in your area &mdash; we&rsquo;re not tied to any installer, so it&rsquo;s a true second opinion on whether your system is producing what it should.';
+    switch (stage) {
+      case 'flow': return (
+        '<div style="font-size:0.66rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#E8793A;margin-bottom:8px;">In-call flow</div>' +
+        _bbFlowNode('#8DC63F','📞','They answer','Opener (10 sec) &rarr; Hook &rarr; Qualify with 2&ndash;3 questions') + _bbFlowArrow() +
+        _bbFlowNode('#8DC63F','✅','Interested &rarr; Book It','Offer two concrete times &mdash; tap <strong>Booked!</strong> and pick the slot while on the phone') + _bbFlowArrow() +
+        _bbFlowNode('#ffaa00','🔁','&ldquo;Call me later&rdquo; &rarr; Callback','Lock a real day + time before hanging up &mdash; tap <strong>Callback</strong> and set it') + _bbFlowArrow() +
+        _bbFlowNode('#E8793A','🔥','Interest but no commitment &rarr; Warm','Note what hooked them &mdash; they stay in Fresh for a follow-up') + _bbFlowArrow() +
+        _bbFlowNode('#ef4444','🚫','Clear no &rarr; Not Interested &middot; &ldquo;Stop calling&rdquo; &rarr; DNC','DNC is mandatory the moment they ask &mdash; no exceptions') +
+        '<div style="font-size:0.66rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#E8793A;margin:14px 0 8px;">Contact cadence (no answer)</div>' +
+        _bbFlowNode('#888','1','Attempt 1 &mdash; call, no voicemail','Disposition: No Answer &mdash; stays in Fresh') + _bbFlowArrow() +
+        _bbFlowNode('#4a9eff','2','Attempt 2 (2&ndash;3 days later) &mdash; call + leave VM + text','Different time of day than attempt 1') + _bbFlowArrow() +
+        _bbFlowNode('#4a9eff','3','Attempt 3 (about a week later) &mdash; call','Evenings and Saturdays reach the most homeowners') + _bbFlowArrow() +
+        _bbFlowNode('#666','💤','After 4&ndash;5 attempts &mdash; rest the lead ~30 days','It rotates back through Fresh automatically')
+      );
+      case 'opener': return (
+        _bbTip('Ten seconds. Warm, unhurried, local. Smile — it carries.') +
+        _bbSay('Hi, is this '+c.name+'? &hellip; Hey '+c.name+', this is '+c.rep+' with <strong>Solar Review</strong> here in San Diego &mdash; I&rsquo;ll be quick, I know I&rsquo;m calling out of the blue.') +
+        _bbTip('Then straight into the Hook — do not pause long enough to invite &ldquo;not interested.&rdquo;')
+      );
+      case 'hook': return (
+        _bbTip(c.installer ? 'Their installer is gone — this is the whole reason for the call. Lead with it.' : 'No installer on file — use the independent-second-opinion angle.') +
+        _bbSay(installerHook) +
+        (c.sdcp ? _bbTip('💡 SDCP territory — if bills come up: &ldquo;you&rsquo;re on San Diego Community Power now, which changed how solar credits work — one more reason to check the numbers.&rdquo;') : '')
+      );
+      case 'qualify': return (
+        _bbTip('Two or three questions, conversational — you&rsquo;re diagnosing, not interrogating. Note answers below; the AI notes catch them too.') +
+        _bbSay('Quick question &mdash; is the system still producing? Any red or blinking lights on the inverter box in the garage?') +
+        _bbSay('How&rsquo;s the electric bill been &mdash; did the true-up surprise you this year?') +
+        _bbSay('If something broke tomorrow&hellip; who would you even call?') +
+        _bbTip('That last one lands hard on orphaned systems — the honest answer is usually &ldquo;nobody.&rdquo;')
+      );
+      case 'book': return (
+        _bbTip('Assume the close. Offer two concrete windows, not &ldquo;sometime.&rdquo;') +
+        _bbSay('Here&rsquo;s what we do: a full evaluation visit &mdash; a tech checks production, panels, and the inverter, and you get a written report of exactly where the system stands. About an hour, and there&rsquo;s no charge for him to come take a look.') +
+        _bbSay('I&rsquo;ve got a morning and an afternoon window this week &mdash; which works better for you?') +
+        _bbTip('Tap <strong style="color:#8DC63F;">Booked!</strong> below and pick the real slot while they&rsquo;re on the phone. Confirm their address: &ldquo;I have you at ' + esc((lead && lead.address) || 'the address on file') + ' — still right?&rdquo;')
+      );
+      case 'objections': return (
+        _bbObj('Is this a sales call?', 'It&rsquo;s a service call &mdash; we diagnose. If everything checks out, you get a clean bill of health in writing. If something&rsquo;s wrong, you&rsquo;ll know exactly what, and you can fix it with whoever you like.') +
+        _bbObj('My system is fine.', (c.installer? 'Most '+c.installer+' owners thought so too &mdash; ':'A lot of folks think so &mdash; ')+'the catch is that failures don&rsquo;t show up on the wall, they show up on your true-up bill a year later. When did you last actually check the production numbers?') +
+        _bbObj('How much does it cost?', 'Having the tech come out and look costs you nothing. If a deeper diagnostic is needed, he goes over that with you on-site before anything happens &mdash; no surprises.') +
+        _bbObj('I&rsquo;m busy right now.', 'Totally get it &mdash; 30 seconds. Mornings or evenings better for a callback? &hellip; <em>(lock a time, tap Callback)</em>') +
+        _bbObj('Take me off your list.', 'Absolutely &mdash; I&rsquo;m marking that right now, you won&rsquo;t hear from us again. Have a good one. <em>(tap DNC — mandatory)</em>')
+      );
+      case 'vm': return (
+        _bbTip('Leave on attempt 2+. Under 20 seconds, say the callback number twice if you can.') +
+        _bbSay('Hi '+c.name+', this is '+c.rep+' with Solar Review in San Diego. '+(c.installer ? 'Your solar was installed by '+c.installer+' &mdash; since they shut down, we&rsquo;ve been helping their customers keep systems running and covered.' : 'We do independent solar system health checks for homeowners in your area.')+' I&rsquo;d love to set up a quick evaluation &mdash; call or text me back at this number. Again &mdash; '+c.rep+', Solar Review. Thanks!') +
+        _bbTip('Then fire a short text from the 💬 Text button: &ldquo;Hi '+c.name+', '+c.rep+' w/ Solar Review — just left you a voicemail about your solar system. Happy to help whenever works. 🙂&rdquo;')
+      );
+      case 'callback': return (
+        _bbTip('They asked for this call — skip the cold opener, go straight to booking.') +
+        _bbSay('Hi '+c.name+', it&rsquo;s '+c.rep+' with Solar Review &mdash; you asked me to give you a ring back about getting your solar checked out. Is now still a good time?') +
+        _bbSay('Great &mdash; let&rsquo;s get that evaluation on the calendar. Morning or afternoon this week?')
+      );
+    }
+    return '';
+  }
+  function bbScriptPanelHtml(lead) {
+    var open = _bbScriptIsOpen();
+    var chips = BB_SCRIPT_STAGES.map(function(s) {
+      var on = s.key === bbScriptStage;
+      return '<button onclick="bbScriptSetStage(\''+s.key+'\')" data-stage="'+s.key+'" style="width:auto;flex-shrink:0;padding:5px 11px;border-radius:100px;font-size:0.66rem;font-weight:700;cursor:pointer;white-space:nowrap;'+(on?'background:rgba(141,198,63,0.16);border:1px solid rgba(141,198,63,0.55);color:#8DC63F;':'background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);color:#888;')+'">'+s.label+'</button>';
+    }).join('');
+    return '<div style="background:rgba(0,0,0,0.28);border:1px solid rgba(141,198,63,0.22);border-radius:12px;margin-bottom:12px;overflow:hidden;">' +
+      '<button onclick="bbScriptToggle(this)" style="width:100%;display:flex;justify-content:space-between;align-items:center;background:none;border:none;cursor:pointer;padding:10px 14px;">' +
+        '<span style="font-size:0.7rem;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;color:#8DC63F;">&#128220; Call Script</span>' +
+        '<span id="bbScriptArrow" style="color:#666;font-size:0.7rem;">'+(open?'&#9662;':'&#9656;')+'</span>' +
+      '</button>' +
+      '<div id="bbScriptInner" style="display:'+(open?'block':'none')+';padding:0 14px 14px;">' +
+        '<div id="bbScriptChips" style="display:flex;gap:5px;overflow-x:auto;padding-bottom:8px;-webkit-overflow-scrolling:touch;">'+chips+'</div>' +
+        '<div id="bbScriptBody">'+bbScriptBodyHtml(bbScriptStage, lead)+'</div>' +
+      '</div>' +
+    '</div>';
+  }
+  window.bbScriptToggle = function(btn) {
+    var inner = document.getElementById('bbScriptInner'); if (!inner) return;
+    var show = inner.style.display === 'none';
+    inner.style.display = show ? 'block' : 'none';
+    var ar = document.getElementById('bbScriptArrow'); if (ar) ar.innerHTML = show ? '&#9662;' : '&#9656;';
+    try { localStorage.setItem('bbScriptOpen', show ? '1' : '0'); } catch(e){}
+  };
+  window.bbScriptSetStage = function(stage) {
+    bbScriptStage = stage;
+    // DOM-local update only — a full re-render would wipe the rep's typed note
+    // and any in-progress AI transcript.
+    var buckets = bbDialBuckets();
+    var lead = bbDialResolveCurrentLead(buckets) || (buckets[bbDialFilter]||[])[0];
+    var body = document.getElementById('bbScriptBody');
+    if (body) body.innerHTML = bbScriptBodyHtml(stage, lead);
+    var chipsWrap = document.getElementById('bbScriptChips');
+    if (chipsWrap) Array.prototype.forEach.call(chipsWrap.children, function(ch) {
+      var on = ch.dataset.stage === stage;
+      ch.style.background = on ? 'rgba(141,198,63,0.16)' : 'rgba(255,255,255,0.04)';
+      ch.style.border = on ? '1px solid rgba(141,198,63,0.55)' : '1px solid rgba(255,255,255,0.1)';
+      ch.style.color = on ? '#8DC63F' : '#888';
+    });
+  };
+
+  // ── AI Transcript / Note-Taker (2026-07-23) ────────────────────────────────
+  // Rep taps 🎙 AI Notes, puts the call on speakerphone, and the browser's
+  // SpeechRecognition transcribes both sides live. Tapping again stops it and
+  // sends the transcript + lead context to dialer-notes.js (server-side Claude),
+  // which returns a crisp CRM note + suggested disposition. The note PREFILLS
+  // the call-note box for the rep to review/edit — it never auto-commits a
+  // disposition (human stays in the loop).
+  var _bbAiRec = null, _bbAiActive = false, _bbAiFinal = '';
+  function _bbAiSetBtn(recording) {
+    var b = document.getElementById('bbAiBtn'); if (!b) return;
+    if (recording) {
+      b.innerHTML = '&#9209; Stop &amp; Summarize';
+      b.style.background = 'rgba(239,68,68,0.14)'; b.style.border = '1px solid rgba(239,68,68,0.5)'; b.style.color = '#f87171';
+    } else {
+      b.innerHTML = '&#127908; AI Notes';
+      b.style.background = 'rgba(155,109,232,0.1)'; b.style.border = '1px solid rgba(155,109,232,0.35)'; b.style.color = '#c4a3f0';
+    }
+  }
+  window.bbAiToggle = function() {
+    if (_bbAiActive) { _bbAiStop(); return; }
+    var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    var panel = document.getElementById('bbAiPanel');
+    if (!SR) {
+      if (panel) { panel.style.display = 'block'; document.getElementById('bbAiTranscript').textContent = 'Voice transcription isn\'t supported in this browser — use Safari (iOS 14.5+) or Chrome. You can still type notes manually below.'; }
+      return;
+    }
+    _bbAiFinal = ''; _bbAiActive = true;
+    if (panel) { panel.style.display = 'block'; }
+    var st = document.getElementById('bbAiStatus'); if (st) st.textContent = '● recording';
+    _bbAiSetBtn(true);
+    _bbAiRec = new SR();
+    _bbAiRec.continuous = true;
+    _bbAiRec.interimResults = true;
+    _bbAiRec.lang = 'en-US';
+    _bbAiRec.onresult = function(ev) {
+      var interim = '';
+      for (var i = ev.resultIndex; i < ev.results.length; i++) {
+        var tr = ev.results[i][0].transcript;
+        if (ev.results[i].isFinal) _bbAiFinal += tr + ' ';
+        else interim += tr;
+      }
+      var box = document.getElementById('bbAiTranscript');
+      if (box) { box.textContent = _bbAiFinal + (interim ? ' ' + interim : ''); box.scrollTop = box.scrollHeight; }
+    };
+    // iOS/Chrome stop recognition after silence — auto-restart while active
+    _bbAiRec.onend = function() { if (_bbAiActive && _bbAiRec) { try { _bbAiRec.start(); } catch(e){} } };
+    _bbAiRec.onerror = function(ev) {
+      if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') {
+        _bbAiActive = false; _bbAiSetBtn(false);
+        var box = document.getElementById('bbAiTranscript');
+        if (box) box.textContent = 'Microphone access was denied — allow the mic for fixmy.energy in browser settings, then try again.';
+      }
+    };
+    try { _bbAiRec.start(); } catch(e) { console.warn('SpeechRecognition start failed:', e); }
+  };
+  function _bbAiStop() {
+    _bbAiActive = false;
+    if (_bbAiRec) { try { _bbAiRec.stop(); } catch(e){} _bbAiRec = null; }
+    _bbAiSetBtn(false);
+    var st = document.getElementById('bbAiStatus');
+    var transcript = _bbAiFinal.trim();
+    if (transcript.length < 25) {
+      if (st) st.textContent = 'too short to summarize — type the note manually';
+      return;
+    }
+    if (st) st.textContent = 'summarizing…';
+    var buckets = bbDialBuckets();
+    var lead = bbDialResolveCurrentLead(buckets) || (buckets[bbDialFilter]||[])[0] || {};
+    fetch('/.netlify/functions/dialer-notes', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        transcript: transcript.slice(0, 12000),
+        lead: {
+          name: ((lead.first_name||'')+' '+(lead.last_name||'')).trim(),
+          installer: lead.original_installer || '',
+          address: lead.address || ''
+        }
+      })
+    }).then(function(r){ return r.json(); }).then(function(data) {
+      if (data.error) throw new Error(data.error);
+      var noteEl = document.getElementById('bbDialNote');
+      if (noteEl && data.note) {
+        noteEl.value = (noteEl.value ? noteEl.value.trim() + '\n' : '') + data.note;
+      }
+      if (st) {
+        var oc = data.suggested_outcome && BB_DIAL_OUTCOMES[data.suggested_outcome];
+        st.innerHTML = '&#10003; note written' + (oc ? ' &middot; suggests: <span style="color:'+oc.color+';font-weight:700;">'+oc.label+'</span>' : '');
+      }
+    }).catch(function(e) {
+      console.warn('AI note summarize failed:', e);
+      if (st) st.textContent = 'summarize failed — transcript kept above, type the note manually';
+    });
+  }
+
   window.renderBBDialerView = function() {
     adminView = 'dialer';
     var isAdminDialer = CURRENT_ROLE === 'admin';
@@ -5950,7 +6178,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px;">';
     h += '<a href="tel:'+ph+'" style="display:inline-flex;align-items:center;gap:8px;padding:12px 26px;background:#8DC63F;color:#1A1A1A;border-radius:100px;font-size:1rem;font-weight:800;text-decoration:none;">&#128222; Call '+phDisplay+'</a>';
     h += '<a href="sms:'+ph+'" style="display:inline-flex;align-items:center;gap:4px;padding:9px 16px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);color:#4a9eff;border-radius:100px;font-size:0.75rem;font-weight:700;text-decoration:none;">&#128172; Text</a>';
+    h += '<button id="bbAiBtn" onclick="bbAiToggle()" title="Listens to the call on speakerphone, transcribes it live, and writes the call note for you when you stop." style="width:auto;display:inline-flex;align-items:center;gap:5px;padding:9px 16px;background:rgba(155,109,232,0.1);border:1px solid rgba(155,109,232,0.35);color:#c4a3f0;border-radius:100px;font-size:0.75rem;font-weight:700;cursor:pointer;">&#127908; AI Notes</button>';
     h += '</div>';
+
+    // AI note-taker panel (hidden until 🎙 is tapped) — live transcript + status
+    h += '<div id="bbAiPanel" style="display:none;margin-bottom:12px;background:rgba(155,109,232,0.06);border:1px solid rgba(155,109,232,0.3);border-radius:12px;padding:12px 14px;">';
+    h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">';
+    h += '<span style="font-size:0.68rem;font-weight:800;text-transform:uppercase;letter-spacing:0.07em;color:#c4a3f0;">&#127908; Listening &mdash; speakerphone picks up both sides</span>';
+    h += '<span id="bbAiStatus" style="font-size:0.66rem;color:#888;"></span>';
+    h += '</div>';
+    h += '<div id="bbAiTranscript" style="max-height:110px;overflow-y:auto;font-size:0.72rem;line-height:1.6;color:#a99cc4;white-space:pre-wrap;"></div>';
+    h += '</div>';
+
+    // Call script + flow panel — personalized to this lead
+    h += bbScriptPanelHtml(lead);
 
     // Satellite roof view — quick visual reference while on the call
     if (lead.address) {
