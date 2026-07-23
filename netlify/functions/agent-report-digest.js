@@ -19,13 +19,14 @@ const DEFAULT_TO = 'dennislarsen29@gmail.com';
 const PORTAL_URL = 'https://fixmy.energy/portal';
 
 const AGENT_META = {
-  marketing:  { emoji: '🎯', label: 'Marketing' },
-  bizdev:     { emoji: '🤝', label: 'Biz Dev' },
-  'crm-dev':  { emoji: '🛠️', label: 'CRM Dev' },
-  seo:        { emoji: '🔎', label: 'SEO' },
-  finance:    { emoji: '💰', label: 'Finance Advisor' },
-  roadmap:    { emoji: '🗺️', label: 'Roadmap & Growth' },
-  socials:    { emoji: '📱', label: 'Social Media' }
+  marketing:        { emoji: '🎯', label: 'Marketing' },
+  bizdev:           { emoji: '🤝', label: 'Biz Dev' },
+  'crm-dev':        { emoji: '🛠️', label: 'CRM Dev' },
+  seo:              { emoji: '🔎', label: 'SEO' },
+  finance:          { emoji: '💰', label: 'Finance Advisor' },
+  roadmap:          { emoji: '🗺️', label: 'Roadmap & Growth' },
+  socials:          { emoji: '📱', label: 'Social Media' },
+  financial_coach:  { emoji: '🧭', label: 'Financial Coach' }
 };
 function agentMeta(a) { return AGENT_META[a] || { emoji: '🤖', label: a || 'Agent' }; }
 
@@ -106,13 +107,33 @@ exports.handler = async function() {
   }
 
   try {
-    // Pull every un-emailed report, oldest first.
+    // Source 1 — the business agent inbox (marketing, bizdev, crm-dev, seo,
+    // socials, finance, roadmap, + any future agent).
     const resp = await fetch(
       SUPA_REST + '/agent_reports?select=id,agent,priority,title,body,created_at&emailed_at=is.null&order=created_at.asc&limit=200',
       { headers: supaHeaders(KEY) }
     );
     if (!resp.ok) throw new Error('agent_reports fetch failed: ' + resp.status + ' ' + await resp.text());
-    const reports = await resp.json();
+    const bizReports = (await resp.json()).map(function(r) { r._src = 'agent_reports'; return r; });
+
+    // Source 2 — the private Financial Coach (personal_coach_reports). Kept out
+    // of the anon-readable inbox for privacy, but it's Dennis's own data going to
+    // Dennis's own inbox, so include it here. Service-role key can read it.
+    let coachReports = [];
+    try {
+      const cResp = await fetch(
+        SUPA_REST + '/personal_coach_reports?select=id,priority,title,body,created_at&emailed_at=is.null&order=created_at.asc&limit=100',
+        { headers: supaHeaders(KEY) }
+      );
+      if (cResp.ok) {
+        coachReports = (await cResp.json()).map(function(r) { r.agent = 'financial_coach'; r._src = 'personal_coach_reports'; return r; });
+      } else {
+        console.warn('[agent-report-digest] coach reports fetch failed (continuing):', cResp.status);
+      }
+    } catch (e) { console.warn('[agent-report-digest] coach reports fetch error (continuing):', e.message); }
+
+    const reports = bizReports.concat(coachReports)
+      .sort(function(a, b) { return String(a.created_at || '').localeCompare(String(b.created_at || '')); });
 
     if (!reports.length) {
       console.log('[agent-report-digest] No new reports — nothing to send.');
@@ -140,14 +161,20 @@ exports.handler = async function() {
     });
     if (!emailResp.ok) throw new Error('Resend send failed: ' + emailResp.status + ' ' + await emailResp.text());
 
-    // Mark them emailed so they never re-send.
-    const ids = reports.map(function(r){ return r.id; });
-    const stampResp = await fetch(SUPA_REST + '/agent_reports?id=in.(' + ids.join(',') + ')', {
-      method: 'PATCH',
-      headers: supaHeaders(KEY, { Prefer: 'return=minimal' }),
-      body: JSON.stringify({ emailed_at: new Date().toISOString() })
-    });
-    if (!stampResp.ok) console.warn('[agent-report-digest] emailed_at stamp failed:', stampResp.status, await stampResp.text());
+    // Mark them emailed so they never re-send — each row in its own table.
+    const nowIso = new Date().toISOString();
+    async function stamp(table, rows) {
+      const ids = rows.map(function(r){ return r.id; });
+      if (!ids.length) return;
+      const sr = await fetch(SUPA_REST + '/' + table + '?id=in.(' + ids.join(',') + ')', {
+        method: 'PATCH',
+        headers: supaHeaders(KEY, { Prefer: 'return=minimal' }),
+        body: JSON.stringify({ emailed_at: nowIso })
+      });
+      if (!sr.ok) console.warn('[agent-report-digest] emailed_at stamp failed for ' + table + ':', sr.status, await sr.text());
+    }
+    await stamp('agent_reports', bizReports);
+    await stamp('personal_coach_reports', coachReports);
 
     console.log('[agent-report-digest] Sent digest of', reports.length, 'reports to', TO);
     return { statusCode: 200, body: JSON.stringify({ sent: reports.length, to: TO }) };
