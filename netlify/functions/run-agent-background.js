@@ -11,6 +11,7 @@ const AGENTS = {
   finance:   require('./finance-agent'),
   personal_coach: require('./personal-finance-agent'),
   roadmap:   require('./roadmap-agent'),
+  coaching:  require('./coaching-agent'),
 };
 
 exports.handler = async function(event) {
