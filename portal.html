@@ -4589,6 +4589,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '<div id="gpNi_'+lead.id+'" style="display:none;margin-top:6px;">';
         h += '<textarea id="gpNt_'+lead.id+'" rows="2" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:8px;font-size:0.78rem;box-sizing:border-box;resize:vertical;" placeholder="Quick note…"></textarea>';
         h += '<button onclick="adminCanvassAddNote(\''+lead.id+'\', document.getElementById(\'gpNt_'+lead.id+'\').value)" style="width:auto;margin-top:4px;padding:5px 14px;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;">Save Note</button>';
+        h += _cvAiControls(lead.id, 'gpNt_'+lead.id);
         h += '</div></div>';
         h += '</div>';
 
@@ -4753,6 +4754,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             h += '<div id="bbNi_'+lead.id+'" style="display:none;margin-top:6px;">';
             h += '<textarea id="bbNt_'+lead.id+'" rows="2" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:#fff;padding:8px;font-size:0.78rem;box-sizing:border-box;resize:vertical;" placeholder="Quick note…"></textarea>';
             h += '<button onclick="adminCanvassAddNote(\''+lead.id+'\', document.getElementById(\'bbNt_'+lead.id+'\').value)" style="width:auto;margin-top:4px;padding:5px 14px;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;">Save Note</button>';
+            h += _cvAiControls(lead.id, 'bbNt_'+lead.id);
             h += '</div>';
             h += '</div>';
 
@@ -5997,6 +5999,73 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       console.warn('AI note summarize failed:', e);
       if (st) st.textContent = 'summarize failed — transcript kept above, type the note manually';
     });
+  }
+
+  // ── Canvass door-knock AI note-taker (2026-07-24) ──────────────────────────
+  // Lead-scoped variant of the dialer's 🎙 AI Notes for the Black Box canvass cards.
+  // One active recorder at a time (you knock one door at a time). On stop it summarizes
+  // via dialer-notes.js and PREFILLS that card's note textarea; the rep taps Save Note to
+  // log it through the same bbLogActivity path (never auto-commits — human stays in loop).
+  var _cvAiRec = null, _cvAiActive = false, _cvAiFinal = '', _cvAiLead = null, _cvAiTarget = '', _cvAiLeadId = '';
+  function _cvAiSetBtn(leadId, recording) {
+    var b = document.getElementById('cvAiBtn_'+leadId); if (!b) return;
+    b.innerHTML = recording ? '&#9209; Stop &amp; Summarize' : '&#127908; AI Notes';
+    b.style.background = recording ? 'rgba(239,68,68,0.14)' : 'rgba(155,109,232,0.1)';
+    b.style.borderColor = recording ? 'rgba(239,68,68,0.5)' : 'rgba(155,109,232,0.35)';
+    b.style.color = recording ? '#f87171' : '#c4a3f0';
+  }
+  // Per-card AI Notes button + live-transcript panel. targetId = the card's note textarea id.
+  function _cvAiControls(leadId, targetId) {
+    return '<button id="cvAiBtn_'+leadId+'" onclick="cvAiToggle(\''+leadId+'\',\''+targetId+'\')" title="Listen at the door (or on speakerphone), transcribe live, and auto-write the note for you." style="width:auto;margin-top:4px;margin-left:6px;padding:5px 12px;background:rgba(155,109,232,0.1);border:1px solid rgba(155,109,232,0.35);color:#c4a3f0;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;">&#127908; AI Notes</button>'+
+      '<div id="cvAiPanel_'+leadId+'" style="display:none;margin-top:6px;background:rgba(155,109,232,0.06);border:1px solid rgba(155,109,232,0.3);border-radius:10px;padding:8px 10px;">'+
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;"><span style="font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#c4a3f0;">&#127908; Live Transcript</span><span id="cvAiStatus_'+leadId+'" style="font-size:0.62rem;color:#888;"></span></div>'+
+        '<div id="cvAiTranscript_'+leadId+'" style="font-size:0.72rem;color:#ddd;line-height:1.4;max-height:120px;overflow-y:auto;white-space:pre-wrap;"></div>'+
+      '</div>';
+  }
+  window.cvAiToggle = function(leadId, targetId) {
+    if (_cvAiActive) { _cvAiStop(); return; }
+    var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    var panel = document.getElementById('cvAiPanel_'+leadId);
+    var box = document.getElementById('cvAiTranscript_'+leadId);
+    if (panel) panel.style.display = 'block';
+    if (!SR) { if (box) box.textContent = 'Voice transcription isn\'t supported here — use Safari (iOS 14.5+) or Chrome. You can still type the note below.'; return; }
+    _cvAiFinal = ''; _cvAiActive = true; _cvAiTarget = targetId; _cvAiLeadId = leadId;
+    _cvAiLead = (adminCustomers||[]).find(function(c){ return c.id === leadId; }) || { id: leadId };
+    var st = document.getElementById('cvAiStatus_'+leadId); if (st) st.textContent = '● recording';
+    _cvAiSetBtn(leadId, true);
+    _cvAiRec = new SR();
+    _cvAiRec.continuous = true; _cvAiRec.interimResults = true; _cvAiRec.lang = 'en-US';
+    _cvAiRec.onresult = function(ev){
+      var interim = '';
+      for (var i = ev.resultIndex; i < ev.results.length; i++) { var tr = ev.results[i][0].transcript; if (ev.results[i].isFinal) _cvAiFinal += tr + ' '; else interim += tr; }
+      if (box) { box.textContent = _cvAiFinal + (interim ? ' ' + interim : ''); box.scrollTop = box.scrollHeight; }
+    };
+    _cvAiRec.onend = function(){ if (_cvAiActive && _cvAiRec) { try { _cvAiRec.start(); } catch(e){} } };
+    _cvAiRec.onerror = function(ev){ if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') { _cvAiActive = false; _cvAiSetBtn(leadId, false); if (box) box.textContent = 'Microphone access denied — allow the mic for fixmy.energy, then try again.'; } };
+    try { _cvAiRec.start(); } catch(e) { console.warn('cv SR start failed:', e); }
+  };
+  function _cvAiStop() {
+    _cvAiActive = false;
+    var leadId = _cvAiLeadId;
+    if (_cvAiRec) { try { _cvAiRec.stop(); } catch(e){} _cvAiRec = null; }
+    _cvAiSetBtn(leadId, false);
+    var st = document.getElementById('cvAiStatus_'+leadId);
+    var transcript = _cvAiFinal.trim();
+    if (transcript.length < 25) { if (st) st.textContent = 'too short to summarize — type the note manually'; return; }
+    if (st) st.textContent = 'summarizing…';
+    var lead = _cvAiLead || {};
+    fetch('/.netlify/functions/dialer-notes', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ transcript: transcript.slice(0, 12000), lead: { name: ((lead.first_name||'')+' '+(lead.last_name||'')).trim(), installer: lead.original_installer || '', address: lead.address || '' } })
+    }).then(function(r){ return r.json(); }).then(function(data){
+      if (data.error) throw new Error(data.error);
+      var noteEl = document.getElementById(_cvAiTarget);
+      if (noteEl && data.note) {
+        noteEl.value = (noteEl.value ? noteEl.value.trim() + '\n' : '') + data.note;
+        var wrap = noteEl.parentNode; if (wrap && wrap.style && wrap.style.display === 'none') wrap.style.display = 'block';
+      }
+      if (st) { var oc = data.suggested_outcome; st.innerHTML = '&#10003; note written' + (oc ? ' &middot; suggests: <span style="color:#c4a3f0;font-weight:700;">'+esc(String(oc))+'</span>' : ''); }
+    }).catch(function(e){ console.warn('cv AI summarize failed:', e); if (st) st.textContent = 'summarize failed — transcript kept above, type the note manually'; });
   }
 
   // ── Email field (2026-07-23) — Black Box leads often arrive without an email
@@ -16028,6 +16097,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             h += '<div id="tgpNi_'+lead.id+'" style="display:none;margin-top:6px;">';
             h += '<textarea id="tgpNt_'+lead.id+'" rows="2" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:8px;font-size:0.78rem;box-sizing:border-box;resize:vertical;" placeholder="Quick note…"></textarea>';
             h += '<button onclick="canvassAddNote(\''+lead.id+'\', document.getElementById(\'tgpNt_'+lead.id+'\').value)" style="margin-top:4px;padding:5px 14px;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;">Save Note</button>';
+            h += _cvAiControls(lead.id, 'tgpNt_'+lead.id);
             h += '</div></div>';
             h += '</div>';
 
