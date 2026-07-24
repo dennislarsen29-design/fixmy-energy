@@ -125,8 +125,10 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
     .pipe-toptier { --pipeline-accent:#9b6de8; --pipeline-bg:rgba(155,109,232,0.06); }
     .pipe-solar   { --pipeline-accent:#4a9eff; --pipeline-bg:rgba(74,158,255,0.06); }
     .pipe-fixmy .lead-card,.pipe-toptier .lead-card,.pipe-solar .lead-card { border-left:3px solid var(--pipeline-accent,rgba(255,255,255,0.07)); }
-    .editor-panel { background:rgba(141,198,63,0.04); border:1px solid rgba(141,198,63,0.2); border-radius:14px; padding:22px; margin-bottom:16px; }
-    .editor-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:18px; }
+    .editor-panel { position:relative; background:rgba(141,198,63,0.04); border:1px solid rgba(141,198,63,0.2); border-radius:14px; padding:22px; margin-bottom:16px; }
+    .editor-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:18px; padding-right:44px; }
+    .editor-close-x { position:absolute; top:12px; right:14px; z-index:5; background:rgba(0,0,0,0.35); border:1px solid rgba(255,255,255,0.12); border-radius:8px; color:#ccc; cursor:pointer; font-size:1.5rem; line-height:1; width:auto; padding:6px 12px; }
+    .editor-close-x:hover { background:rgba(239,68,68,0.2); color:#ef4444; border-color:rgba(239,68,68,0.4); }
     .editor-section-title { font-size:0.65rem; font-weight:700; text-transform:uppercase; letter-spacing:0.1em; color:#555; margin:16px 0 10px; border-top:1px solid rgba(255,255,255,0.06); padding-top:14px; }
     .ed-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
     @media(max-width:520px){ .ed-grid { grid-template-columns:1fr; } }
@@ -3672,7 +3674,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<div class="editor-panel" style="margin-bottom:16px;">'+
       '<div class="editor-header">'+
         '<div style="font-weight:700;color:#8DC63F;font-size:1rem;">'+(id?'Edit':'+ New')+' Marketing Expense</div>'+
-        '<button onclick="closeLeadEditor()" style="background:none;border:none;color:#666;cursor:pointer;font-size:1.1rem;">&#10005;</button>'+
+        '<button onclick="closeLeadEditor()" class="editor-close-x" title="Close" aria-label="Close">&#10005;</button>'+
       '</div>'+
       '<input type="hidden" id="mktExpId" value="'+(id||'')+'"/>'+
       '<div class="editor-section-title">Expense Details</div>'+
@@ -10625,9 +10627,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var _opsN = {'ops1':'Jon Klos','ops2':'John Espinoza','ops3':'Cosmic Solar','ops4':'Axia','dennis':'Dennis'};
     var _assignParts = [];
     if (c.setter_name) _assignParts.push('Set: '+c.setter_name);
-    if (c.rep_id && _repN[c.rep_id]) _assignParts.push('Closed: '+_repN[c.rep_id]);
+    if (c.rep_id && _repN[c.rep_id]) _assignParts.push('Tech: '+_repN[c.rep_id]);
     if (c.assigned_ops && _opsN[c.assigned_ops]) _assignParts.push('Ops: '+_opsN[c.assigned_ops]);
     var assignLine = _assignParts.length ? '<div style="font-size:0.65rem;color:#8DC63F;opacity:0.75;margin-top:3px;">'+_assignParts.join(' &middot; ')+'</div>' : '';
+
+    // Admin-only inline Tech (closer) assign/reassign — sets customers.rep_id directly on the card.
+    var _isAdminCard = (typeof CURRENT_ROLE!=='undefined' && CURRENT_ROLE==='admin');
+    var techAssignHtml = '';
+    if (_isAdminCard) {
+      var _tOpts = '<option value="">&mdash; Assign Tech &mdash;</option>' + TECHS.map(function(t){
+        return '<option value="'+t.id+'"'+(c.rep_id===t.id?' selected':'')+'>'+t.name+'</option>';
+      }).join('');
+      techAssignHtml = '<div style="margin-top:5px;display:flex;align-items:center;gap:6px;">'+
+        '<span style="font-size:0.58rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#666;flex-shrink:0;">Tech</span>'+
+        '<select onchange="assignLeadTech(\''+c.id+'\',this.value)" onclick="event.stopPropagation();" style="width:auto;max-width:190px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.14);border-radius:8px;padding:4px 8px;color:#F3EDE3;font-size:0.7rem;outline:none;cursor:pointer;">'+_tOpts+'</select>'+
+      '</div>';
+    }
 
     // SDCP eligibility badge (San Diego Community Power territory by zip)
     var _zipCode = extractZip(c.address||'');
@@ -10645,6 +10660,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<div class="lead-meta">'+(c.email||'')+(c.phone?' &middot; '+c.phone:'')+(created?' &middot; '+created:'')+'</div>'+
         '<div class="lead-addr">'+(c.address||'No address')+sdcpBadge+'</div>'+
         assignLine+
+        techAssignHtml+
         '<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px;align-items:center;">'+invBadge+agBadge+opsBadge+ttBadge+ttConfBadge+incompleteBadge+'</div></div>'+
       '<div class="lead-card-actions">'+
         '<button class="lead-btn lime" data-id="'+c.id+'" onclick="'+_editFn+'(this.dataset.id)">&#9998; Edit</button>'+
@@ -10658,6 +10674,30 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       _ttCardExtras(c, isTT)+
     '</div>';
   }
+
+  // Admin-only: assign/reassign the Tech (closer) directly from a lead card's dropdown.
+  // Single-lead version of runBulkReassign — writes customers.rep_id, updates the in-memory
+  // record, and re-renders just that card so the "Tech:" summary line stays in sync.
+  window.assignLeadTech = async function(id, repId) {
+    var rec = adminCustomers.find(function(x){ return x.id===id; });
+    if (!rec) return;
+    var prev = rec.rep_id || null;
+    try {
+      var sc = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var {error} = await sc.from('customers').update({rep_id: repId || null}).eq('id', id);
+      if (error) throw error;
+      rec.rep_id = repId || null;
+      var el = document.getElementById('lead-'+id);
+      if (el) { var wrap = document.createElement('div'); wrap.innerHTML = buildLeadCard(rec); if (wrap.firstElementChild) el.replaceWith(wrap.firstElementChild); }
+      if (typeof _propToast === 'function') {
+        var nm = (TECHS.find(function(t){ return t.id===repId; })||{}).name;
+        _propToast(nm ? '✓ Tech set: '+nm : 'Tech cleared');
+      }
+    } catch(e) {
+      rec.rep_id = prev;
+      alert('Assign failed: '+(e.message||e));
+    }
+  };
 
   // ── PROPOSAL SYSTEM ────────────────────────────────────────────────────────
   var _proposalCatalogCache = {};
@@ -12338,7 +12378,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     '<div class="editor-panel" id="editorPanel">'+
       '<div class="editor-header"><div style="font-weight:700;color:'+(isNSEdit?'#4a9eff':isTTEdit?'#9b6de8':'#8DC63F')+';">Editing: '+esc(c.first_name||'')+' '+esc(c.last_name||'')+
         '<span style="font-size:0.7rem;margin-left:8px;padding:2px 8px;border-radius:20px;background:'+(isNSEdit?'rgba(74,158,255,0.15)':isTTEdit?'rgba(155,109,232,0.15)':'rgba(141,198,63,0.15)')+';color:'+(isNSEdit?'#4a9eff':isTTEdit?'#9b6de8':'#8DC63F')+';font-weight:600;">'+(isNSEdit?'New Solar':isTTEdit?'Top Tier':'FixMy.Energy')+'</span></div>'+
-      '<button onclick="closeLeadEditor()" style="background:none;border:none;color:#666;cursor:pointer;font-size:1.1rem;">&#10005;</button></div>'+
+      '<button onclick="closeLeadEditor()" class="editor-close-x" title="Close" aria-label="Close">&#10005;</button></div>'+
       '<input type="hidden" id="edId" value="'+c.id+'"/>'+
 
       // ── In-editor quick actions (Magic Link lives here; Proposal Tools cluster below) ──
@@ -13170,7 +13210,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     slot.innerHTML =
       '<div class="editor-panel" id="newLeadPanel">'+
         '<div class="editor-header"><div style="font-weight:700;color:#8DC63F;font-size:1rem;">+ New Lead</div>'+
-        '<button onclick="closeLeadEditor()" style="background:none;border:none;color:#666;cursor:pointer;font-size:1.1rem;">&#10005;</button></div>'+
+        '<button onclick="closeLeadEditor()" class="editor-close-x" title="Close" aria-label="Close">&#10005;</button></div>'+
         (isSetterForm && !repId ?
           '<div class="editor-section-title">Lead Type</div>'+
           '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">'+
@@ -15139,6 +15179,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var roleLabel = config.roleLabel || 'Sales';
     var showFieldJobs = !!config.showFieldJobs;
 
+    // Make DB-only fields (esp. his_license) authoritative for the whole dashboard,
+    // regardless of how `person` arrived (fresh login, auto-login, or the hardcoded
+    // fallback arrays which carry no his_license). Without this, a licensed rep whose
+    // `person` came from a fallback / stale session shows a false "HIS License Required"
+    // banner because `person.his_license` was undefined. team_members is anon-readable.
+    person = await _refreshTeamMemberFields(person);
+
     // Agreement gate — Supabase is authoritative; localStorage used as offline fallback
     var agreementSigned = !!person.agreementSigned;
     // If rep just signed this session, trust it immediately (avoids Supabase re-check race)
@@ -15323,8 +15370,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '</div>';
       }
 
-      // HIS license warning banner
-      if (!person.his_license) {
+      // HIS license warning banner — show ONLY when the rep is explicitly unlicensed.
+      // (=== false, not falsy: an undefined value means "not loaded", not "unlicensed",
+      // and must never trigger a false nag on a licensed rep like Dennis.)
+      if (person.his_license === false) {
         h += '<div style="background:rgba(251,146,60,0.08);border:1px solid rgba(251,146,60,0.35);border-radius:10px;padding:12px 14px;margin-bottom:14px;display:flex;align-items:flex-start;gap:10px;">' +
           '<span style="font-size:1.1rem;flex-shrink:0;">⚠️</span>' +
           '<div style="flex:1;">' +
@@ -15399,21 +15448,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '</div>'; // end right
         h += '</div>'; // end flex row
         h += '</div>'; // end card
-      })();
-
-      // QR Code card
-      (function(){
-        var qrLink = 'https://fixmy.energy/meet?r=' + encodeURIComponent(person.id);
-        var qrImgUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + encodeURIComponent(qrLink);
-        h += '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:14px;padding:16px;margin-bottom:16px;">';
-        h += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#8DC63F;margin-bottom:10px;">&#128241; My QR Code &mdash; Share with Homeowners</div>';
-        h += '<div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap;">';
-        h += '<img src="'+qrImgUrl+'" style="width:130px;height:130px;border-radius:10px;background:#fff;padding:6px;flex-shrink:0;" />';
-        h += '<div style="flex:1;min-width:140px;">';
-        h += '<p style="font-size:0.75rem;color:#888;margin:0 0 10px;line-height:1.4;">Homeowners who scan this can save Solar Review as a contact and book a free evaluation — you get credit for the lead.</p>';
-        h += '<button onclick="navigator.clipboard.writeText(\''+qrLink+'\')" style="display:block;width:100%;padding:7px 0;background:rgba(141,198,63,0.12);border:1px solid rgba(141,198,63,0.3);color:#8DC63F;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;margin-bottom:6px;">&#128203; Copy Link</button>';
-        h += '<a href="'+qrImgUrl+'&format=png" download="fixmy-qr-'+person.id+'.png" style="display:block;width:100%;padding:7px 0;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);color:#aaa;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;text-align:center;text-decoration:none;">&#8659; Download QR</a>';
-        h += '</div></div></div>';
       })();
 
       // Main view tabs
@@ -15640,6 +15674,21 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;">&#128230; Black Box &mdash; Door Knocking Route</div>';
         h += '<button onclick="salesSetView(\'dialer\')" style="padding:7px 18px;background:rgba(232,121,58,0.14);border:1px solid rgba(232,121,58,0.45);color:#E8793A;border-radius:100px;font-size:0.75rem;font-weight:700;cursor:pointer;">&#128222; Black Box Dialer</button>';
         h += '</div>';
+
+        // QR Code card (moved off the login dashboard — lives here in the Black Box canvass route)
+        (function(){
+          var qrLink = 'https://fixmy.energy/meet?r=' + encodeURIComponent(person.id);
+          var qrImgUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + encodeURIComponent(qrLink);
+          h += '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:14px;padding:16px;margin-bottom:16px;">';
+          h += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#8DC63F;margin-bottom:10px;">&#128241; My QR Code &mdash; Share with Homeowners</div>';
+          h += '<div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap;">';
+          h += '<img src="'+qrImgUrl+'" style="width:130px;height:130px;border-radius:10px;background:#fff;padding:6px;flex-shrink:0;" />';
+          h += '<div style="flex:1;min-width:140px;">';
+          h += '<p style="font-size:0.75rem;color:#888;margin:0 0 10px;line-height:1.4;">Homeowners who scan this can save Solar Review as a contact and book a free evaluation — you get credit for the lead.</p>';
+          h += '<button onclick="navigator.clipboard.writeText(\''+qrLink+'\')" style="display:block;width:100%;padding:7px 0;background:rgba(141,198,63,0.12);border:1px solid rgba(141,198,63,0.3);color:#8DC63F;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;margin-bottom:6px;">&#128203; Copy Link</button>';
+          h += '<a href="'+qrImgUrl+'&format=png" download="fixmy-qr-'+person.id+'.png" style="display:block;width:100%;padding:7px 0;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);color:#aaa;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;text-align:center;text-decoration:none;">&#8659; Download QR</a>';
+          h += '</div></div></div>';
+        })();
 
         // Intel rendered below GPS section — placeholder for inline variable capture
         var _canvassIntelHtml = (function(){
