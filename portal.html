@@ -8240,7 +8240,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     Object.keys(bySrc).forEach(function(s){
       h += '<div class="fin-tile" style="flex:0 1 auto;"><div class="v" style="color:#ddd;font-size:1rem;">'+finMoney(bySrc[s])+'</div><div class="l">'+esc(s)+'</div></div>';
     });
-    h += '<button class="fin-btn no-print" style="margin-left:auto;" onclick="finExportStashed(\'revenue\')">&#8681; Export CSV</button>';
+    h += '<span class="no-print" style="margin-left:auto;display:flex;gap:8px;">'+
+      '<button class="fin-btn" onclick="finRecordCheck()">&#128179; Record Check Payment</button>'+
+      '<button class="fin-btn ghost" onclick="finExportStashed(\'revenue\')">&#8681; Export CSV</button></span>';
     h += '</div>';
 
     // grouped by month with running totals
@@ -8272,6 +8274,59 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '<div style="font-size:0.66rem;color:#555;margin-top:4px;">Revenue = customer payments (payments ledger) + provider override income received by Solar Review Corp. Matches the P&amp;L "Commission Income" line.</div>';
     return h;
   }
+
+  // Record a CHECK payment for any lead/job with an invoice. Checks are offline (they never
+  // hit GHL/Stripe, so no sweep can auto-populate them) — this is what makes a check
+  // "recognized": it writes a payments-ledger row (method=check, source=manual → counts as
+  // revenue in finComputePnl) and flips invoice_status. A fully-paid FixMy lead auto-converts
+  // to a Diagnostic job and opens the scheduling modal, mirroring the lead-editor path.
+  window.finRecordCheck = async function(){
+    var cands = (adminCustomers||[]).filter(function(c){
+      return (parseFloat(c.invoice_amount)||0) > 0 || (c.invoice_status && c.invoice_status !== 'none');
+    });
+    if (!cands.length) { alert('No leads/jobs have an invoice yet. Set an invoice amount on the lead first, then record the check.'); return; }
+    cands.sort(function(a,b){ return String(b.created_at||'').localeCompare(String(a.created_at||'')); });
+    var top = cands.slice(0, 50);
+    var listing = top.map(function(c,i){
+      var nm = ((c.first_name||'')+' '+(c.last_name||'')).trim() || c.address || c.id;
+      var amt = parseFloat(c.invoice_amount)||0;
+      return (i+1)+'. '+nm+(amt?(' — $'+amt.toFixed(2)):'')+' ['+(c.invoice_status||'none')+']';
+    }).join('\n');
+    var pick = parseInt(prompt('Record a CHECK payment for which lead/job?\n\n'+listing+'\n\nEnter number:')||'',10);
+    if (!pick || pick < 1 || pick > top.length) return;
+    var rec = top[pick-1];
+    var def = (parseFloat(rec.invoice_amount)||0) ? String(parseFloat(rec.invoice_amount)) : '';
+    var amt = parseFloat(prompt('Check amount received ($):', def)||'');
+    if (!amt || amt <= 0) return;
+    var note = prompt('Note (optional — e.g. "check #1234", "paid by check at eval"):') || null;
+    try {
+      var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var { error } = await pc.from('payments').insert({
+        customer_id: rec.id, amount: amt, method: 'check', source: 'manual',
+        note: note, recorded_by: 'admin-finance', paid_at: new Date().toISOString()
+      });
+      if (error) throw error;
+      // Recompute invoice_status from the full (revenue) payment total vs the invoice target.
+      var { data: pays } = await pc.from('payments').select('amount,category').eq('customer_id', rec.id);
+      var paidSum = (pays||[]).reduce(function(t,p){ return ((p.category||'revenue')==='revenue') ? t+(parseFloat(p.amount)||0) : t; }, 0);
+      var target = parseFloat(rec.invoice_amount) || 0;
+      var status = (!target || paidSum >= target) ? 'paid' : 'partial';
+      var doConvert = (status === 'paid' && !rec.sold_type && rec.lead_category !== 'new_solar');
+      var upd = { invoice_status: status };
+      if (doConvert) upd.sold_type = 'diagnostic';
+      var { error: uErr } = await pc.from('customers').update(upd).eq('id', rec.id);
+      if (uErr) throw uErr;
+      rec.invoice_status = status; if (doConvert) rec.sold_type = 'diagnostic';
+      finCache = null;
+      if (doConvert && typeof openDiagSchedulingModal === 'function') {
+        alert('✓ Check recorded ('+finMoney(amt)+'). Invoice marked paid — converting to a Diagnostic job. Schedule it next.');
+        openDiagSchedulingModal(rec.id, rec);
+      } else {
+        alert('✓ Check recorded ('+finMoney(amt)+'). Invoice status: '+status+'.');
+        renderFinanceView();
+      }
+    } catch(e) { alert('Could not record check: '+(e.message||e)); }
+  };
 
   // ── Sub Sheet (job costs across all jobs) ───────────────────────────────────
   function finRenderSubSheet(){
