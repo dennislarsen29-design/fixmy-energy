@@ -10975,6 +10975,97 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (typeof openLeadEditor === 'function') openLeadEditor(id);
   };
 
+  // ── Multi-partner BID REQUEST ───────────────────────────────────────────────
+  // Shop a scope of work (e.g. an inverter replacement) to SEVERAL ops partners at once
+  // and collect competing price bids — WITHOUT showing them the customer proposal or any
+  // costs (unlike "Ask Ops for Advice", which surfaces the proposal specs/retail). Each
+  // partner sees only the scope text + the customer's photos and enters their own number.
+  // Rides in customers.proposal.bid_request (no migration; the customer proposal only
+  // renders when it has options, so a bid-only proposal stays invisible to the customer).
+  // Shape: { scope, partner_ids:[], created_at, bids:{ opsId:{amount,note,submitted_at} }, awarded_ops }
+  function _opsBidControl(c){
+    var br = (c.proposal && c.proposal.bid_request) || null;
+    var pids = (br && br.partner_ids) || [];
+    var bids = (br && br.bids) || {};
+    var scope = (br && br.scope) || '';
+    var awarded = br && br.awarded_ops;
+    var checks = OPS_PARTNERS.map(function(p){
+      var on = pids.indexOf(p.id) >= 0;
+      return '<label style="display:inline-flex;align-items:center;gap:5px;font-size:0.75rem;color:#ccc;margin:0 12px 6px 0;cursor:pointer;">'+
+        '<input type="checkbox" class="edBidPartner" value="'+p.id+'"'+(on?' checked':'')+' style="width:auto;"/> '+esc(p.name)+'</label>';
+    }).join('');
+    var h = '<div style="margin-bottom:14px;background:rgba(74,158,255,0.05);border:1px solid rgba(74,158,255,0.25);border-radius:12px;padding:10px 12px;">'+
+      '<div style="font-size:0.64rem;font-weight:600;text-transform:uppercase;letter-spacing:0.07em;color:#4a9eff;margin-bottom:7px;">&#128296; Request Bids &mdash; partners quote the work (no costs shown to them)</div>'+
+      '<textarea id="edBidScope" placeholder="Scope of work (e.g. Inverter replacement — SolarEdge ~7.6kW; see photos)" style="width:100%;box-sizing:border-box;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:8px 10px;font-size:0.78rem;min-height:44px;margin-bottom:8px;">'+esc(scope)+'</textarea>'+
+      '<div style="margin-bottom:8px;">'+checks+'</div>'+
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;">'+
+        '<button type="button" onclick="edSendBidRequest(\''+c.id+'\')" style="width:auto;padding:7px 14px;background:rgba(74,158,255,0.16);border:1px solid rgba(74,158,255,0.5);color:#4a9eff;border-radius:100px;font-size:0.75rem;font-weight:700;cursor:pointer;">'+(br?'Update Bid Request':'Send Bid Request')+'</button>'+
+        (br?'<button type="button" onclick="edClearBidRequest(\''+c.id+'\')" style="width:auto;padding:7px 12px;background:none;border:1px solid rgba(255,255,255,0.15);color:#888;border-radius:100px;font-size:0.72rem;cursor:pointer;">&#10005; Withdraw</button>':'')+
+      '</div>';
+    var bidIds = Object.keys(bids);
+    if (bidIds.length) {
+      // Sort bids low → high so the cheapest is obvious.
+      bidIds.sort(function(a,b){ return (parseFloat(bids[a].amount)||0) - (parseFloat(bids[b].amount)||0); });
+      h += '<div style="margin-top:10px;border-top:1px solid rgba(255,255,255,0.08);padding-top:8px;">'+
+        '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;margin-bottom:6px;">Bids received ('+bidIds.length+')</div>';
+      bidIds.forEach(function(oid, idx){
+        var p = OPS_PARTNERS.find(function(x){ return x.id===oid; }) || {name:oid};
+        var b = bids[oid] || {};
+        var isAward = awarded === oid;
+        var low = idx === 0 && bidIds.length > 1;
+        h += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:5px 0;">'+
+          '<span style="font-size:0.78rem;color:#F3EDE3;min-width:110px;">'+esc(p.name)+(low?' <span style="font-size:0.6rem;color:#8DC63F;font-weight:700;">LOW</span>':'')+'</span>'+
+          '<span style="font-size:0.82rem;font-weight:800;color:#8DC63F;">'+(b.amount!=null?('$'+Number(b.amount).toLocaleString('en-US')):'—')+'</span>'+
+          (b.note?'<span style="font-size:0.68rem;color:#888;">'+esc(b.note)+'</span>':'')+
+          (isAward?'<span style="font-size:0.66rem;font-weight:700;color:#8DC63F;">&#10003; Awarded</span>':'<button type="button" onclick="edAwardBid(\''+c.id+'\',\''+oid+'\')" style="width:auto;padding:4px 12px;background:rgba(141,198,63,0.14);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:100px;font-size:0.68rem;font-weight:700;cursor:pointer;">Award</button>')+
+        '</div>';
+      });
+      h += '</div>';
+    } else if (br) {
+      h += '<div style="font-size:0.68rem;color:#888;margin-top:8px;">Sent to '+pids.length+' partner'+(pids.length!==1?'s':'')+' — waiting on bids.</div>';
+    }
+    h += '</div>';
+    return h;
+  }
+  window.edSendBidRequest = async function(id){
+    var rec = adminCustomers.find(function(x){ return x.id===id; }); if (!rec) return;
+    var scope = ((document.getElementById('edBidScope')||{}).value || '').trim();
+    var pids = Array.prototype.slice.call(document.querySelectorAll('.edBidPartner:checked')).map(function(el){ return el.value; });
+    if (!pids.length) { alert('Pick at least one ops partner to send the bid request to.'); return; }
+    var proposal = Object.assign({}, rec.proposal || {});
+    var prev = proposal.bid_request || {};
+    proposal.bid_request = { scope: scope, partner_ids: pids, created_at: prev.created_at || new Date().toISOString(), bids: prev.bids || {}, awarded_ops: prev.awarded_ops || null };
+    var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var res = await client.from('customers').update({ proposal: proposal }).eq('id', id);
+    if (res.error) { alert('Could not send bid request: '+res.error.message); return; }
+    rec.proposal = proposal;
+    alert('✓ Bid request sent to '+pids.length+' partner'+(pids.length>1?'s':''));
+    if (typeof openLeadEditor === 'function') openLeadEditor(id);
+  };
+  window.edClearBidRequest = async function(id){
+    if (!confirm('Withdraw this bid request? Any submitted bids will be cleared.')) return;
+    var rec = adminCustomers.find(function(x){ return x.id===id; }); if (!rec || !rec.proposal) return;
+    var proposal = Object.assign({}, rec.proposal); delete proposal.bid_request;
+    var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var res = await client.from('customers').update({ proposal: proposal }).eq('id', id);
+    if (res.error) { alert('Could not withdraw: '+res.error.message); return; }
+    rec.proposal = proposal;
+    if (typeof openLeadEditor === 'function') openLeadEditor(id);
+  };
+  window.edAwardBid = async function(id, opsId){
+    var rec = adminCustomers.find(function(x){ return x.id===id; }); if (!rec) return;
+    var p = OPS_PARTNERS.find(function(x){ return x.id===opsId; }) || {name:opsId};
+    if (!confirm('Award this job to '+p.name+'? They become the assigned ops partner.')) return;
+    var proposal = Object.assign({}, rec.proposal||{});
+    if (proposal.bid_request) proposal.bid_request.awarded_ops = opsId;
+    var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var res = await client.from('customers').update({ proposal: proposal, assigned_ops: opsId }).eq('id', id);
+    if (res.error) { alert('Could not award: '+res.error.message); return; }
+    rec.proposal = proposal; rec.assigned_ops = opsId;
+    alert('✓ Awarded to '+p.name+' — they are now the assigned ops partner for this job.');
+    if (typeof openLeadEditor === 'function') openLeadEditor(id);
+  };
+
   // Read-only proposal spec cards for the Ops advice view: option title, equipment
   // (line_items), system specs (prod_data), retail price + savings. Deliberately
   // omits internal redline / rep_commission / gross_commission.
@@ -12855,6 +12946,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '</div>'+
       _proposalToolsRow(c.id, c.address||'', isNSEdit)+
       _opsAdviceControl(c)+
+      _opsBidControl(c)+
 
       // ── Pending action banners ────────────────────────────────────────────
       ((!isNSEdit && !isTTEdit && (c.agreement_status === 'sent' || c.agreement_status === 'pending')) ?
@@ -17312,10 +17404,27 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       adviceLeads = (advResp.data || []).filter(function(l){ return l.proposal && l.proposal.ops_advice && l.proposal.ops_advice.ops_id === ops.id; });
     } catch(e) { adviceLeads = []; }
 
-    // Attach the customer's uploaded job photos to each advice lead (customer-visible
-    // equipment photos) so the ops partner can eyeball the site while advising.
-    for (var _ai = 0; _ai < adviceLeads.length; _ai++) {
-      var _al = adviceLeads[_ai];
+    // "Bid Requests" — this partner was invited to bid a scope of work (proposal.bid_request
+    // .partner_ids includes ops.id) and it isn't already awarded to someone else. Shows the
+    // scope + photos only — never the customer proposal or any cost.
+    var bidLeads = [];
+    try {
+      var bidResp = await client.from('customers')
+        .select('id,first_name,last_name,address,proposal,sold_type')
+        .not('proposal->bid_request', 'is', null)
+        .or('archived.eq.false,archived.is.null')
+        .order('created_at', {ascending:false});
+      bidLeads = (bidResp.data || []).filter(function(l){
+        var br = l.proposal && l.proposal.bid_request;
+        return br && Array.isArray(br.partner_ids) && br.partner_ids.indexOf(ops.id) >= 0 && (!br.awarded_ops || br.awarded_ops === ops.id);
+      });
+    } catch(e) { bidLeads = []; }
+
+    // Attach the customer's uploaded job photos to each advice/bid lead (customer-visible
+    // equipment photos) so the ops partner can eyeball the site while advising or bidding.
+    var _photoTargets = adviceLeads.concat(bidLeads);
+    for (var _ai = 0; _ai < _photoTargets.length; _ai++) {
+      var _al = _photoTargets[_ai];
       _al._photos = [];
       try {
         var _pr = await client.from('job_photos').select('url,label')
@@ -17380,13 +17489,46 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }
       var _opsAdviceHtml = (opsView === 'jobs' && adviceLeads.length) ? opsAdviceSectionHtml() : '';
 
+      // Bid requests — quote your price on the scope; you see scope + photos only, no costs.
+      function opsBidSectionHtml() {
+        var s = '<div style="background:rgba(74,158,255,0.06);border:1px solid rgba(74,158,255,0.25);border-radius:12px;padding:14px;margin-bottom:16px;">';
+        s += '<div style="font-size:0.72rem;font-weight:800;text-transform:uppercase;letter-spacing:0.06em;color:#1d4ed8;margin-bottom:4px;">🔨 Bid Requests (' + bidLeads.length + ')</div>';
+        s += '<div style="font-size:0.7rem;color:#777;margin-bottom:12px;">Quote your price for the work below. You set your own number — other partners\' bids aren\'t shown.</div>';
+        bidLeads.forEach(function(lead) {
+          var nm = ((lead.first_name||'') + ' ' + (lead.last_name||'')).trim() || '—';
+          var br = lead.proposal.bid_request || {};
+          var mine = (br.bids && br.bids[ops.id]) || null;
+          var scopeSafe = String(br.scope || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+          s += '<div style="background:rgba(0,0,0,0.02);border:1px solid rgba(0,0,0,0.08);border-radius:10px;padding:12px;margin-bottom:10px;">';
+          s += '<div style="font-weight:700;font-size:0.9rem;color:#1A1A1A;">' + nm + '</div>';
+          s += '<div style="font-size:0.72rem;color:#777;margin-bottom:8px;">' + (lead.address||'') + '</div>';
+          s += '<div style="background:#fff;border:1px solid rgba(0,0,0,0.1);border-radius:8px;padding:10px;font-size:0.8rem;color:#333;margin-bottom:8px;line-height:1.5;"><b>Scope of work:</b> ' + (scopeSafe || 'See photos below') + '</div>';
+          s += _opsPhotoGridHtml(lead._photos);
+          if (mine) {
+            s += '<div style="font-size:0.78rem;color:#1d4ed8;font-weight:700;margin-top:8px;">✓ Your bid: $' + Number(mine.amount).toLocaleString('en-US') + (mine.note ? ' — ' + String(mine.note).replace(/</g,'&lt;') : '') + '</div>';
+            s += '<button onclick="opsBidEdit(\'' + lead.id + '\')" style="width:auto;margin-top:6px;padding:6px 14px;background:rgba(0,0,0,0.05);border:1px solid rgba(0,0,0,0.15);color:#555;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;">Update bid</button>';
+            s += '<div id="opsBidForm_' + lead.id + '" style="display:none;margin-top:8px;">';
+          } else {
+            s += '<div id="opsBidForm_' + lead.id + '" style="margin-top:8px;">';
+          }
+          s += '<input id="opsBidAmt_' + lead.id + '" type="number" inputmode="decimal" placeholder="Your bid ($)" value="' + (mine && mine.amount!=null ? mine.amount : '') + '" style="width:150px;box-sizing:border-box;background:#fff;border:1px solid rgba(0,0,0,0.15);border-radius:8px;padding:9px 10px;font-size:0.85rem;color:#1A1A1A;"/>';
+          s += '<input id="opsBidNote_' + lead.id + '" type="text" placeholder="Note (optional — e.g. lead time, exclusions)" value="' + (mine && mine.note ? String(mine.note).replace(/"/g,'&quot;') : '') + '" style="width:100%;box-sizing:border-box;margin-top:6px;background:#fff;border:1px solid rgba(0,0,0,0.15);border-radius:8px;padding:9px 10px;font-size:0.8rem;color:#1A1A1A;"/>';
+          s += '<button onclick="opsSubmitBid(\'' + lead.id + '\')" style="width:auto;margin-top:8px;padding:9px 20px;background:#4a9eff;color:#fff;border:none;border-radius:100px;font-size:0.8rem;font-weight:700;cursor:pointer;">' + (mine ? 'Update Bid' : 'Submit Bid') + '</button>';
+          s += '</div>';
+          s += '</div>';
+        });
+        s += '</div>';
+        return s;
+      }
+      var _opsBidHtml = (opsView === 'jobs' && bidLeads.length) ? opsBidSectionHtml() : '';
+
       if (!jobs.length) {
-        h += _opsAdviceHtml;
+        h += _opsAdviceHtml + _opsBidHtml;
         h += '<div class="tech-no-jobs">✅ No jobs assigned yet.<br/>Check back after Admin assigns you a job.</div>';
         document.getElementById('dashBody').innerHTML = h + '</div>';
         return;
       }
-      h += _opsAdviceHtml;
+      h += _opsAdviceHtml + _opsBidHtml;
 
       // ── Revenue Sheet ───────────────────────────────────────────────────────
       if (opsView === 'revenue') {
@@ -17648,6 +17790,30 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       lead.proposal = proposal; lead.notes = newNotes;
       alert('✓ Advice sent to the sales team.');
       renderOps();
+    };
+    window.opsBidEdit = function(id) {
+      var f = document.getElementById('opsBidForm_' + id);
+      if (f) f.style.display = (f.style.display === 'none') ? 'block' : 'none';
+    };
+    window.opsSubmitBid = async function(id) {
+      var amtEl = document.getElementById('opsBidAmt_' + id);
+      var amt = parseFloat((amtEl || {}).value || '');
+      if (!amt || amt <= 0) { alert('Enter your bid amount.'); return; }
+      var note = (document.getElementById('opsBidNote_' + id) || {}).value || '';
+      try {
+        // Re-fetch the proposal right before writing so we never clobber another partner's bid.
+        var r = await client.from('customers').select('proposal').eq('id', id).limit(1);
+        if (r.error) throw r.error;
+        var proposal = (r.data && r.data[0] && r.data[0].proposal) || {};
+        if (!proposal.bid_request) { alert('This bid request was withdrawn by the office.'); renderOps(); return; }
+        proposal.bid_request.bids = proposal.bid_request.bids || {};
+        proposal.bid_request.bids[ops.id] = { amount: amt, note: note, submitted_at: new Date().toISOString() };
+        var up = await client.from('customers').update({ proposal: proposal }).eq('id', id);
+        if (up.error) throw up.error;
+        var ld = bidLeads.find(function(x){ return x.id === id; }); if (ld) ld.proposal = proposal;
+        alert('✓ Bid submitted: $' + amt.toLocaleString('en-US'));
+        renderOps();
+      } catch(e) { alert('Could not submit bid: ' + (e.message || e)); }
     };
     window.opsToggleJob = function(jid) {
       activeJobId = (activeJobId === jid) ? null : jid;
