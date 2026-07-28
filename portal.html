@@ -6862,7 +6862,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         act.arrival_window = _fmtT(_sd) + ' – ' + _fmtT(_ed);
         lead.diagnostic_date = act.diagnostic_date; lead.arrival_window = act.arrival_window;
       }
-      if (CURRENT_ROLE !== 'admin' && window._bbDialerPersonId) act.rep_id = window._bbDialerPersonId; // booked by a rep — assign them the lead
+      if (CURRENT_ROLE !== 'admin' && window._bbDialerPersonId) {
+        act.rep_id = window._bbDialerPersonId;        // booked by a rep — assign them the lead
+        act.setter_name = bbRepName();                // dialer = setter (drives the 20% split if a
+        lead.setter_name = act.setter_name;           // different closer is assigned later; self-gen otherwise)
+      }
       await client.from('customers').update(act).eq('id', lead.id);
       lead.black_box = false;
       if (act.rep_id) lead.rep_id = act.rep_id;
@@ -8217,7 +8221,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (c.status !== 'paid') return;
       var d = c.paid_at || c.sold_at;
       if (c.payee === 'solar_review_corp') add('income', c.line === 'other' ? 'Other Income' : 'Commission Income', d, c.amount);
-      else if (c.kind === 'rep_commission') add('cogs','Incentives - Sales', d, c.amount);
+      else if (c.kind === 'rep_commission' || c.kind === 'setter_commission') add('cogs','Incentives - Sales', d, c.amount);
       else if (c.kind === 'travel_reimbursement') add('expense','Travel Expense', d, c.amount);
     });
     (C.costs||[]).forEach(function(c){ if (c.status === 'paid') add('cogs','Subcontracted Services', c.paid_at || c.created_at, c.amount); });
@@ -8261,7 +8265,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var d = c.paid_at || c.sold_at;
       if (!finInRange(d)) return;
       if (c.payee === 'solar_review_corp') b(finMonthKey(d)).ovr += parseFloat(c.amount)||0;
-      else if (c.kind === 'rep_commission') b(finMonthKey(d)).cogs += parseFloat(c.amount)||0;
+      else if (c.kind === 'rep_commission' || c.kind === 'setter_commission') b(finMonthKey(d)).cogs += parseFloat(c.amount)||0;
       else if (c.kind === 'travel_reimbursement') b(finMonthKey(d)).exp += parseFloat(c.amount)||0;
     });
     (C.costs||[]).forEach(function(c){ var d = c.paid_at || c.created_at; if (c.status==='paid' && finInRange(d)) b(finMonthKey(d)).cogs += parseFloat(c.amount)||0; });
@@ -8725,7 +8729,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var totPaid = sumC(paidNew) + sumC(paidLegacy,'rep_commission');
 
     var lineLbl = { fixmy:'FixMy', top_tier:'Top Tier', new_solar:'New Solar' };
-    var kindLbl = { rep_commission:'commission', override:'override', travel_reimbursement:'travel' };
+    var kindLbl = { rep_commission:'commission', setter_commission:'setter split', override:'override', travel_reimbursement:'travel' };
     finCsvStash.commissions = { name:'solar_review_commissions', header:['Date','Payee','Line','Kind','Customer','Amount','Status'],
       rows: comms.map(function(c){ return [String(c.paid_at||c.sold_at).slice(0,10), c.payee_name||repName(c.payee)||c.payee, lineLbl[c.line]||c.line, kindLbl[c.kind]||c.kind, finCustName(c.customer_id), (parseFloat(c.amount)||0).toFixed(2), c.status]; })
         .concat(legacy.map(function(c){ return [String(c.commission_paid_at||c.created_at).slice(0,10), repName(c.rep_id)||c.rep_id||'—', 'FixMy (legacy)', 'commission', ((c.first_name||'')+' '+(c.last_name||'')).trim(), (parseFloat(c.rep_commission)||0).toFixed(2), c.commission_paid?'paid':'sold']; })) };
@@ -13120,7 +13124,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '</div>'+
       '<div class="editor-section-title">Assignment</div>'+
       '<div class="ed-grid">'+
-        edSelect('Setter (Onboarded Lead)','edSetterName',c.setter_name||'none',[['none','— Unassigned —'],['Ronda','Ronda'],['Dennis Larsen','Dennis Larsen']])+
+        edSelect('Setter / Dialer','edSetterName',c.setter_name||'none',[['none','— Unassigned —'],['Dennis Larsen','Dennis Larsen'],['Ranie','Ranie'],['Michael Smith','Michael Smith'],['Cristina Huang','Cristina Huang'],['Ronda','Ronda'],['Setter','Setter']])+
         edSelect('Assigned Rep','edRepId',c.rep_id||'none',[['none','— Unassigned —'],['tech4','Dennis Larsen'],['tech2','Ranie'],['tech3','Michael Smith'],['tech5','Cristina Huang'],['rep1','Ronda'],['setter1','Setter']])+
         (!isTTEdit ? edSelect('Ops Partner (Installer)','edAssignedOps',c.assigned_ops||'none',[['none','— Unassigned —'],['ops1','Jon Klos'],['ops2','John Espinoza'],['ops3','Cosmic Solar'],['ops4','Axia'],['dennis','Dennis (Self)']]) : '')+
         (!isTTEdit ? edSelect('Ops Payout','edOpsPayout',c.ops_payout_status||'pending',[['pending','Pending'],['paid','Paid']]) : '')+
@@ -13224,23 +13228,51 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         });
         h += '</div>';
 
-        // ── FixMy commission: 40% of (collected − costs), never for Dennis ──
-        // Revenue-category payments only — test/refund rows never feed commissions.
+        // ── FixMy commission: 40% of Net (collected − costs), never for Dennis. When a
+        //    SETTER (dialer) set the deal and differs from the CLOSER, the 40% pool splits
+        //    20% closer / 20% setter (dialer = 20% of net = half the rep's 40%). Self-gen
+        //    (setter == closer, or no setter) → closer keeps the full 40%. Dennis as closer
+        //    earns $0 regardless, but the setter's 20% still pays. Revenue-category only.
         var collected = pays.reduce(function(t,x){ return t + ((x.category||'revenue')==='revenue' ? (parseFloat(x.amount)||0) : 0); }, 0);
         var net = collected - costSum;
-        var commRow = comms.find(function(x){ return x.kind === 'rep_commission'; });
+        var netPos = Math.max(0, net);
+        var custRec = (adminCustomers||[]).find(function(x){ return x.id === cid; }) || {};
+        var setterName = (custRec.setter_name || '').trim();
+        var closerNm = repName(rep);
         var isDennis = rep === 'tech4' || !rep;
+        var hasSetter = !!setterName && setterName.toLowerCase() !== 'none' && setterName.toLowerCase() !== (closerNm||'').toLowerCase();
+        var closerPct = hasSetter ? 0.20 : 0.40;
+        var closerAmt = isDennis ? 0 : Math.round(netPos * closerPct * 100)/100;
+        var setterAmt = hasSetter ? Math.round(netPos * 0.20 * 100)/100 : 0;
+        var commRow = comms.find(function(x){ return x.kind === 'rep_commission'; });
+        var setterRow = comms.find(function(x){ return x.kind === 'setter_commission'; });
+        var _m = function(n){ return '$'+(parseFloat(n)||0).toLocaleString(undefined,{maximumFractionDigits:2}); };
+        var _pill = function(status){ return '<span style="margin-left:6px;padding:2px 9px;border-radius:100px;font-size:0.62rem;font-weight:700;text-transform:uppercase;'+(status==='paid'?'background:rgba(141,198,63,0.1);color:#8DC63F;border:1px solid rgba(141,198,63,0.4);':'background:rgba(255,170,0,0.08);color:#ffaa00;border:1px solid rgba(255,170,0,0.4);')+'">'+(status==='paid'?'PAID':'SOLD — unpaid')+'</span>'; };
         h += '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 12px;">';
-        h += '<div style="font-size:0.66rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#9b6de8;margin-bottom:6px;">&#129297; Rep Commission — 40% of Net</div>';
-        h += '<div style="font-size:0.74rem;color:#aaa;line-height:1.8;">Collected <b style="color:#ddd;">$'+collected.toLocaleString(undefined,{maximumFractionDigits:2})+'</b> &minus; Costs <b style="color:#ddd;">$'+costSum.toLocaleString(undefined,{maximumFractionDigits:2})+'</b> = Net <b style="color:#8DC63F;">$'+net.toLocaleString(undefined,{maximumFractionDigits:2})+'</b></div>';
+        h += '<div style="font-size:0.66rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#9b6de8;margin-bottom:6px;">&#129297; Commission — 40% of Net'+(hasSetter?' · split 20/20':'')+'</div>';
+        h += '<div style="font-size:0.74rem;color:#aaa;line-height:1.8;">Collected <b style="color:#ddd;">'+_m(collected)+'</b> &minus; Costs <b style="color:#ddd;">'+_m(costSum)+'</b> = Net <b style="color:#8DC63F;">'+_m(net)+'</b></div>';
+        if (hasSetter) h += '<div style="font-size:0.7rem;color:#4a9eff;margin-top:2px;">Setter <b>'+esc(setterName)+'</b> &middot; Closer <b>'+esc(closerNm)+'</b></div>';
+        // Closer line
         if (isDennis) {
-          h += '<div style="font-size:0.72rem;color:#777;margin-top:4px;">'+(rep==='tech4'?'Dennis-sold — no commission (SOP).':'No rep assigned — no commission.')+'</div>';
+          h += '<div style="font-size:0.72rem;color:#777;margin-top:4px;">Closer: '+(rep==='tech4'?'Dennis-sold — no closer commission (SOP).':'no rep assigned — no closer commission.')+'</div>';
         } else if (commRow) {
-          h += '<div style="font-size:0.74rem;color:#ddd;margin-top:4px;">'+esc(repName(rep))+': <b>$'+(parseFloat(commRow.amount)||0).toLocaleString(undefined,{maximumFractionDigits:2})+'</b> <span style="padding:2px 9px;border-radius:100px;font-size:0.62rem;font-weight:700;text-transform:uppercase;'+(commRow.status==='paid'?'background:rgba(141,198,63,0.1);color:#8DC63F;border:1px solid rgba(141,198,63,0.4);':'background:rgba(255,170,0,0.08);color:#ffaa00;border:1px solid rgba(255,170,0,0.4);')+'">'+(commRow.status==='paid'?'PAID':'SOLD — unpaid')+'</span></div>';
-        } else {
-          var estComm = Math.max(0, net) * 0.4;
-          h += '<div style="font-size:0.74rem;color:#ddd;margin-top:4px;">'+esc(repName(rep))+' @ 40%: <b style="color:#9b6de8;">$'+estComm.toLocaleString(undefined,{maximumFractionDigits:2})+'</b> <span style="color:#666;font-size:0.68rem;">(accruing — finalize once all costs are entered)</span></div>';
-          if (estComm > 0) h += '<button onclick="edRecordFixmyCommission(\''+cid+'\',\''+rep+'\','+estComm.toFixed(2)+')" style="margin-top:7px;padding:6px 13px;background:rgba(155,109,232,0.1);border:1px solid rgba(155,109,232,0.35);border-radius:100px;color:#9b6de8;font-size:0.7rem;font-weight:700;cursor:pointer;">Lock in as Sold &#8594; Payroll</button>';
+          h += '<div style="font-size:0.74rem;color:#ddd;margin-top:4px;">'+esc(closerNm)+' (closer '+(hasSetter?'20%':'40%')+'): <b>'+_m(commRow.amount)+'</b>'+_pill(commRow.status)+'</div>';
+        } else if (closerAmt > 0) {
+          h += '<div style="font-size:0.74rem;color:#ddd;margin-top:4px;">'+esc(closerNm)+' (closer '+(hasSetter?'20%':'40%')+'): <b style="color:#9b6de8;">'+_m(closerAmt)+'</b> <span style="color:#666;font-size:0.68rem;">(accruing)</span></div>';
+        }
+        // Setter line
+        if (hasSetter) {
+          if (setterRow) {
+            h += '<div style="font-size:0.74rem;color:#ddd;margin-top:2px;">'+esc(setterName)+' (setter 20%): <b>'+_m(setterRow.amount)+'</b>'+_pill(setterRow.status)+'</div>';
+          } else if (setterAmt > 0) {
+            h += '<div style="font-size:0.74rem;color:#ddd;margin-top:2px;">'+esc(setterName)+' (setter 20%): <b style="color:#4a9eff;">'+_m(setterAmt)+'</b> <span style="color:#666;font-size:0.68rem;">(accruing)</span></div>';
+          }
+        }
+        // Lock-in — records whichever payouts aren't recorded yet
+        var _needCloser = !commRow && !isDennis && closerAmt > 0;
+        var _needSetter = hasSetter && !setterRow && setterAmt > 0;
+        if (_needCloser || _needSetter) {
+          h += '<button onclick="edRecordFixmySplit(\''+cid+'\')" style="margin-top:7px;padding:6px 13px;background:rgba(155,109,232,0.1);border:1px solid rgba(155,109,232,0.35);border-radius:100px;color:#9b6de8;font-size:0.7rem;font-weight:700;cursor:pointer;">Lock in as Sold &#8594; Payroll</button>';
         }
         h += '</div>';
       } else {
@@ -13294,15 +13326,44 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     await pc.from('job_costs').delete().eq('id', id);
     edLoadAccounting();
   };
-  window.edRecordFixmyCommission = async function(cid, rep, amount) {
-    if (!confirm('Lock in $' + amount + ' commission for ' + repName(rep) + '? It moves to Payroll as SOLD (unpaid).')) return;
+  function _repIdByName(name){ var n=(name||'').trim().toLowerCase(); if(!n) return null; for (var k in REP_NAMES){ if (REP_NAMES[k].toLowerCase()===n) return k; } return null; }
+  // Lock in the FixMy commission split as SOLD → Payroll. Recomputes net authoritatively at
+  // click time (costs first, then commission — SOP) and inserts whichever payout rows are
+  // missing: closer rep_commission (20% if a setter split applies, else 40%; $0/skip for
+  // Dennis) and, when a distinct setter set the deal, a setter_commission at 20% of net.
+  window.edRecordFixmySplit = async function(cid) {
     var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
-    var { error } = await pc.from('commissions').insert({
-      customer_id: cid, line: 'fixmy', kind: 'rep_commission',
-      payee: rep, payee_name: repName(rep), amount: amount, status: 'sold'
-    });
-    if (error) { alert('Could not record: ' + error.message); return; }
-    edLoadAccounting();
+    var rec = (adminCustomers||[]).find(function(x){ return x.id === cid; }) || {};
+    var rep = rec.rep_id || '';
+    var setterName = (rec.setter_name || '').trim();
+    var closerNm = repName(rep);
+    var isDennis = rep === 'tech4' || !rep;
+    var hasSetter = !!setterName && setterName.toLowerCase() !== 'none' && setterName.toLowerCase() !== (closerNm||'').toLowerCase();
+    try {
+      var [costsRes, paysRes, commRes] = await Promise.all([
+        pc.from('job_costs').select('amount').eq('customer_id', cid),
+        pc.from('payments').select('amount,category').eq('customer_id', cid),
+        pc.from('commissions').select('kind').eq('customer_id', cid)
+      ]);
+      var costSum = (costsRes.data||[]).reduce(function(t,x){ return t+(parseFloat(x.amount)||0); }, 0);
+      var collected = (paysRes.data||[]).reduce(function(t,x){ return t + (((x.category||'revenue')==='revenue') ? (parseFloat(x.amount)||0) : 0); }, 0);
+      var netPos = Math.max(0, collected - costSum);
+      var closerAmt = isDennis ? 0 : Math.round(netPos * (hasSetter?0.20:0.40) * 100)/100;
+      var setterAmt = hasSetter ? Math.round(netPos * 0.20 * 100)/100 : 0;
+      var have = {}; (commRes.data||[]).forEach(function(x){ have[x.kind] = true; });
+      var rows = [];
+      if (!have.rep_commission && closerAmt > 0) rows.push({ customer_id:cid, line:'fixmy', kind:'rep_commission', payee:rep, payee_name:closerNm, amount:closerAmt, status:'sold' });
+      if (hasSetter && !have.setter_commission && setterAmt > 0) {
+        var sid = _repIdByName(setterName);
+        rows.push({ customer_id:cid, line:'fixmy', kind:'setter_commission', payee: sid || setterName, payee_name: setterName, amount: setterAmt, status:'sold' });
+      }
+      if (!rows.length) { alert('Nothing to record — already locked in, or no commissionable amount yet.'); return; }
+      var summary = rows.map(function(r){ return (r.kind==='setter_commission'?'Setter · '+r.payee_name:'Closer · '+r.payee_name)+': $'+r.amount.toLocaleString(undefined,{maximumFractionDigits:2}); }).join('\n');
+      if (!confirm('Lock in as SOLD (unpaid) → Payroll?\n\n'+summary)) return;
+      var { error } = await pc.from('commissions').insert(rows);
+      if (error) throw error;
+      edLoadAccounting();
+    } catch(e) { alert('Could not record: ' + (e.message||e)); }
   };
   window.edAddCommission = async function(cid, cat, rep, kind) {
     var isOverride = kind === 'override';
