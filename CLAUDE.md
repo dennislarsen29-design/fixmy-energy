@@ -202,6 +202,9 @@ Triggered in `saveLeadEditor` when: `!cRec.sold_type && invoice_status === 'paid
 - Books GHL calendar appointment via `ghl-calendar.js`
 - Formats arrival window as "10 AM – 1:30 PM"
 
+## Reschedule modal — "Text Them Options" (2026-07-29)
+`quickReschedule(id, dateField, name, currentISO, currentEnd)` (the Schedule tab's day-view reschedule popup) has a collapsible **"📱 Text Them Options"** section below the normal Save/Cancel buttons — for the common case where the rep doesn't yet know which new slot the customer will take (e.g. a no-show/still-at-work reschedule) and picking one date to save isn't the right first move. Rep types each open window as its own line in a plain textarea ("Tomorrow 9-11am" / "Saturday 9-11am"), taps **Generate**, and `qrBuildTextOptions(id, name)` builds a numbered, reply-with-a-number SMS ("1) Tomorrow 9-11am\n2) Saturday 9-11am\n\nJust reply with the number that works…") — no scheduling link, no page for the customer to load, just a text they reply to. **Copy** puts it on the clipboard; **Text It** opens `sms:<phone>?body=<message>` pre-filled with the lead's phone (falls back to a "No phone on file" note if missing). Once the customer replies, the rep still uses the existing date/time picker in the same modal to actually save the chosen slot — this only solves the "which time works for you" round-trip, not the save step.
+
 ## Pending Action Banners (Lead Editor)
 Red/amber banners at top of editor when:
 - `agreement_status === 'sent'` or `'pending'` → red banner with "View Agreement" + "Resend" button
