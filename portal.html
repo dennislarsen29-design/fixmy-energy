@@ -4824,8 +4824,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         if (distMi) h += '<div style="font-size:0.72rem;color:#888;">'+distMi+'</div>';
         h += '</div>';
         var gpZip = extractZip(lead.address||'');
+        if (!bbOutageZipsLoaded) bbLoadOutageZips(function(){ renderAdminCanvassView(); });
         var gpIsSDCP = gpZip && SDCP_ZIPS.has(gpZip);
-        h += '<div style="font-size:1.05rem;font-weight:700;margin-bottom:4px;">'+esc(lead.address||'No address')+(gpIsSDCP?'<span style="display:inline-block;margin-left:7px;padding:1px 7px;background:rgba(0,150,255,0.15);color:#4AABF7;border-radius:10px;font-size:0.58rem;font-weight:700;vertical-align:middle;">SDCP</span>':'')+(lead.lead_score != null ? leadScoreBadge(lead.lead_score) : '')+'</div>';
+        var gpInOutage = bbOutageHasZip(gpZip);
+        h += '<div style="font-size:1.05rem;font-weight:700;margin-bottom:4px;">'+esc(lead.address||'No address')+(gpIsSDCP?'<span style="display:inline-block;margin-left:7px;padding:1px 7px;background:rgba(0,150,255,0.15);color:#4AABF7;border-radius:10px;font-size:0.58rem;font-weight:700;vertical-align:middle;">SDCP</span>':'')+(gpInOutage?bbOutageBadgeHtml():'')+(lead.lead_score != null ? leadScoreBadge(lead.lead_score) : '')+'</div>';
         if (ownerName) {
           h += '<div style="font-size:0.8rem;font-weight:600;color:#F3EDE3;margin-bottom:2px;">'+esc(ownerName)+'</div>';
         }
@@ -5806,6 +5808,30 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   var bbDialSearchStatus = null;
   var bbDialSearchResults = null;
 
+  // Live SDG&E outage zips — synced every 20 min by outage-sync.js into pipeline_state
+  // (key 'sdge_outages'). Loaded lazily/once per session; feeds the Focus ZIP suggestion
+  // chips and the "⚡ Active Outage" badge on lead cards so reps can lead with the battery-
+  // backup pitch while a homeowner's power is actually out.
+  var bbOutageZips = [];       // [{zip, affected}]
+  var bbOutageZipsLoaded = false;
+  var bbOutageSyncedAt = null;
+  function bbOutageHasZip(zip) { return zip && bbOutageZips.some(function(o){ return o.zip === zip; }); }
+  function bbOutageBadgeHtml() { return '<span style="display:inline-block;margin-left:7px;padding:1px 7px;background:rgba(255,170,0,0.15);color:#ffaa00;border-radius:10px;font-size:0.58rem;font-weight:700;vertical-align:middle;">&#9889; OUTAGE</span>'; }
+  async function bbLoadOutageZips(rerenderFn) {
+    if (bbOutageZipsLoaded) return;
+    bbOutageZipsLoaded = true; // set eagerly — avoid duplicate concurrent loads even if this errors
+    try {
+      var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var { data } = await c.from('pipeline_state').select('value').eq('key','sdge_outages').maybeSingle();
+      if (data && data.value) {
+        var parsed = JSON.parse(data.value);
+        bbOutageZips = Array.isArray(parsed.zips) ? parsed.zips : [];
+        bbOutageSyncedAt = parsed.synced_at || null;
+      }
+    } catch(e) { console.warn('outage zip load failed:', e.message); }
+    if (typeof rerenderFn === 'function') rerenderFn();
+  }
+
   function bbRepName() {
     if (window._bbDialerPersonName) return window._bbDialerPersonName; // set by sales portal
     try { var stored = localStorage.getItem('bbDialerRepName'); if (stored) return stored; } catch(e){}
@@ -6506,6 +6532,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       });
       h += '</div>';
     }
+    // Live SDG&E outage-zip suggestions — lazy-loaded once per session from pipeline_state.
+    if (!bbOutageZipsLoaded) bbLoadOutageZips(function(){ renderBBDialerView(); });
+    if (bbOutageZips.length) {
+      h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;align-items:center;">';
+      h += '<span style="font-size:0.64rem;color:#ffaa00;">&#9889; Active outages:</span>';
+      bbOutageZips.slice(0, 6).forEach(function(o) {
+        var on = o.zip === bbDialFocusZip;
+        h += '<button onclick="bbDialSetFocusZip(\''+o.zip+'\')" title="'+o.affected+' affected — SDG&#39;s live outage feed" style="width:auto;padding:5px 11px;border-radius:100px;font-size:0.68rem;font-weight:600;cursor:pointer;'+(on?'background:rgba(232,121,58,0.16);border:1px solid rgba(232,121,58,0.5);color:#E8793A;':'background:rgba(255,170,0,0.06);border:1px solid rgba(255,170,0,0.25);color:#ffaa00;')+'">'+esc(o.zip)+'</button>';
+      });
+      h += '</div>';
+    }
     h += '</div>';
 
     // Callback-number search — find any lead by phone, regardless of which bucket it's in
@@ -6564,7 +6601,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '</div>';
     var dialZip = extractZip(lead.address||'');
     var dialIsSDCP = dialZip && SDCP_ZIPS.has(dialZip);
-    h += '<div style="font-size:1.15rem;font-weight:800;margin-bottom:2px;">'+esc(name)+(dialIsSDCP?'<span style="display:inline-block;margin-left:7px;padding:1px 7px;background:rgba(0,150,255,0.15);color:#4AABF7;border-radius:10px;font-size:0.58rem;font-weight:700;vertical-align:middle;">SDCP</span>':'')+'</div>';
+    var dialInOutage = bbOutageHasZip(dialZip);
+    h += '<div style="font-size:1.15rem;font-weight:800;margin-bottom:2px;">'+esc(name)+(dialIsSDCP?'<span style="display:inline-block;margin-left:7px;padding:1px 7px;background:rgba(0,150,255,0.15);color:#4AABF7;border-radius:10px;font-size:0.58rem;font-weight:700;vertical-align:middle;">SDCP</span>':'')+(dialInOutage?bbOutageBadgeHtml():'')+'</div>';
     h += '<div style="font-size:0.78rem;color:#888;margin-bottom:6px;">'+esc(lead.address||'—')+'</div>';
     h += bbEmailRowHtml(lead);
     var badges = '';
@@ -16515,8 +16553,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             if (distMi) h += '<div style="font-size:0.72rem;color:#888;">'+distMi+'</div>';
             h += '</div>';
             var tZip = extractZip(lead.address||'');
+            if (!bbOutageZipsLoaded) bbLoadOutageZips(function(){ renderSales(); });
             var tIsSDCP = tZip && SDCP_ZIPS.has(tZip);
-            h += '<div style="font-size:1.05rem;font-weight:700;margin-bottom:4px;">'+esc(lead.address||'No address')+(tIsSDCP?'<span style="display:inline-block;margin-left:7px;padding:1px 7px;background:rgba(0,150,255,0.15);color:#4AABF7;border-radius:10px;font-size:0.58rem;font-weight:700;vertical-align:middle;">SDCP</span>':'')+(lead.lead_score != null ? leadScoreBadge(lead.lead_score) : '')+'</div>';
+            var tInOutage = bbOutageHasZip(tZip);
+            h += '<div style="font-size:1.05rem;font-weight:700;margin-bottom:4px;">'+esc(lead.address||'No address')+(tIsSDCP?'<span style="display:inline-block;margin-left:7px;padding:1px 7px;background:rgba(0,150,255,0.15);color:#4AABF7;border-radius:10px;font-size:0.58rem;font-weight:700;vertical-align:middle;">SDCP</span>':'')+(tInOutage?bbOutageBadgeHtml():'')+(lead.lead_score != null ? leadScoreBadge(lead.lead_score) : '')+'</div>';
             if (lead.dnc) h += '<span style="display:inline-block;margin-bottom:6px;padding:2px 8px;background:rgba(239,68,68,0.15);color:#ef4444;border-radius:10px;font-size:0.62rem;font-weight:700;">DNC</span>';
             if (fullName) h += '<div style="font-size:0.8rem;font-weight:600;color:#F3EDE3;margin-bottom:2px;">'+esc(fullName)+'</div>';
             var tNotePreview = _parseNotes(lead.notes||'').slice(-1)[0];
