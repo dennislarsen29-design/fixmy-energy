@@ -358,7 +358,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <div class="dash-title">Solar<span style="color:#8DC63F">.</span>Review</div>
       <button id="subSheetBtn" onclick="openSubSheet()" style="display:none;padding:5px 11px;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.3);border-radius:100px;color:#8DC63F;font-size:0.62rem;font-weight:700;cursor:pointer;white-space:nowrap;">&#128203; Sub Sheet</button>
     </div>
-    <div style="display:flex;gap:16px;align-items:center;">
+    <div style="display:flex;gap:12px;align-items:center;">
+      <span id="profileSwitch" style="display:none;"></span>
       <span id="userName" style="font-size:0.75rem;color:#aaa;"></span>
       <button class="sign-out" onclick="signOut()">Sign Out</button>
     </div>
@@ -395,6 +396,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     { email: 'dennis@fixmy.energy',   code: 'Solar123!',    name: 'Dennis Larsen',  id: 'tech4', agreementSigned: false },
     { email: 'cristina@fixmy.energy', code: 'cristina2026', name: 'Cristina Huang', id: 'tech5', agreementSigned: false },
   ];
+
+  // The owner works both hats: Admin (books, finance, all leads) and field Tech
+  // (his own rep_id'd leads). This is the tech identity the Admin profile pairs
+  // with in the header profile switcher — see _renderProfileSwitcher below.
+  var OWNER_TECH_ID = 'tech4'; // Dennis Larsen
 
 
   var GHL_WEBHOOK               = 'https://services.leadconnectorhq.com/hooks/gXWwbOVymY0iRfj7c1It/webhook-trigger/032a0503-c92f-4711-89c0-0a4659e8e4ff';
@@ -512,7 +518,150 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     try { localStorage.removeItem('fmUser'); localStorage.removeItem('fmUserExp'); } catch(e){}
     try { sessionStorage.removeItem('user'); } catch(e){}
   }
-  function signOut() { _clearUser(); sessionStorage.clear(); location.reload(); }
+  function signOut() { _clearUser(); _clearProfiles(); sessionStorage.clear(); location.reload(); }
+
+  // ── Dual-profile switching (Admin ⇄ Tech) ───────────────────────────────────
+  // Dennis wears two hats: owner/Admin and field Tech (tech4). Before this,
+  // swapping hats meant signing out and back in under a different code — which
+  // also threw away the 30-day session and every bit of in-page context. Both
+  // identities now ride in one session and swap from the header pill.
+  //
+  // Security model: Admin → Tech is a DE-escalation (strictly less access), so it
+  // needs no re-auth. Tech → Admin IS an escalation, so it costs the admin code
+  // once; the profile then stays unlocked until an explicit Sign Out.
+  var _PROFILE_KEY = 'fmProfiles';
+
+  function _profileState(){
+    try { return JSON.parse(localStorage.getItem(_PROFILE_KEY) || '{}') || {}; }
+    catch(e){ return {}; }
+  }
+  function _saveProfileState(st){
+    try { localStorage.setItem(_PROFILE_KEY, JSON.stringify(st || {})); } catch(e){}
+  }
+  function _clearProfiles(){
+    try { localStorage.removeItem(_PROFILE_KEY); } catch(e){}
+  }
+  function _ownerTech(){
+    return TECHS.find(function(t){ return t.id === OWNER_TECH_ID; }) || null;
+  }
+
+  // Marks a profile as available + active. `identity` is the team-member record
+  // for role-scoped profiles (tech), or omitted for admin.
+  function _profileRegister(role, identity){
+    var st = _profileState();
+    if (identity) st[role] = { id: identity.id, name: identity.name, email: identity.email || null };
+    else st[role] = Object.assign({ unlocked: true }, st[role] || {});
+    st.active = role;
+    _saveProfileState(st);
+  }
+
+  // Called on login so the header knows which hats this person MAY wear.
+  // Admin logging in gets the owner's tech profile attached for free (de-escalation);
+  // the owner-tech logging in gets Admin offered but locked behind the code.
+  function _profileSeed(role, identity){
+    var st = _profileState();
+    if (role === 'admin') {
+      st.admin = { unlocked: true };
+      var ot = _ownerTech();
+      if (ot && !st.tech) st.tech = { id: ot.id, name: ot.name, email: ot.email };
+    } else if (role === 'tech' && identity && identity.id === OWNER_TECH_ID) {
+      st.tech = { id: identity.id, name: identity.name, email: identity.email || null };
+      if (!st.admin) st.offerAdmin = true;
+    } else {
+      // Any other role is single-profile — make sure no stale switcher shows.
+      _clearProfiles();
+      return;
+    }
+    st.active = role;
+    _saveProfileState(st);
+  }
+
+  function _renderProfileSwitcher(){
+    var el = document.getElementById('profileSwitch');
+    if (!el) return;
+    var st = _profileState();
+    var hasTech  = !!st.tech;
+    var hasAdmin = !!st.admin || !!st.offerAdmin;
+    if (!hasTech || !hasAdmin) { el.style.display = 'none'; el.innerHTML = ''; return; }
+    var active = st.active || 'admin';
+    function seg(role, label, locked){
+      var on = (active === role);
+      return '<button onclick="switchProfile(\'' + role + '\')" title="' +
+        (locked ? 'Unlock with the admin access code' : 'Switch to ' + label) + '" ' +
+        'style="width:auto;padding:4px 12px;border:none;border-radius:100px;cursor:pointer;' +
+        'font-size:0.62rem;font-weight:700;white-space:nowrap;transition:background .15s;' +
+        (on ? 'background:#8DC63F;color:#1A1A1A;' : 'background:transparent;color:#8a8a8a;') + '">' +
+        label + (locked ? ' 🔒' : '') + '</button>';
+    }
+    el.style.display = 'inline-flex';
+    el.innerHTML = '<span style="display:inline-flex;gap:2px;padding:2px;background:rgba(255,255,255,0.06);' +
+      'border:1px solid rgba(255,255,255,0.09);border-radius:100px;">' +
+      seg('admin', 'Admin', !st.admin) + seg('tech', 'Tech', false) + '</span>';
+  }
+
+  // Re-opens the admin tab the owner was last on when switching back from Tech.
+  // Only 'dashboard' goes through renderAdminView — every other admin tab is its
+  // own top-level render function, so they're dispatched by name here.
+  var _ADMIN_VIEW_FNS = {
+    dashboard: function(){ renderAdminView('dashboard'); },
+    jobs:      function(){ renderJobsView(); },
+    team:      function(){ renderTeamView(); },
+    schedule:  function(){ renderScheduleView(); },
+    marketing: function(){ renderMarketingView(); },
+    import:    function(){ renderImportView(); },
+    agents:    function(){ renderAgentsView(); },
+    canvass:   function(){ renderAdminCanvassView(); },
+    dialer:    function(){ renderBBDialerView(); },
+    finance:   function(){ renderFinanceView(); },
+    personal:  function(){ renderPersonalView(); }
+  };
+  function _adminRestoreView(){
+    var want = _profileState().adminView || 'dashboard';
+    var fn = _ADMIN_VIEW_FNS[want];
+    if (fn && want !== 'dashboard') {
+      try { fn(); return; }
+      catch(e){ console.warn('[profile] could not restore admin tab "' + want + '":', e.message); }
+    }
+    renderAdminView('dashboard');
+  }
+
+  window.switchProfile = async function(role){
+    var st = _profileState();
+    if (!role || role === (st.active || 'admin')) return;
+
+    if (role === 'admin' && !st.admin) {
+      var code = prompt('Enter the admin access code to unlock the Admin profile:');
+      if (code === null) return;                       // cancelled
+      if (code.trim() !== ADMIN_CODE) { alert('Admin code incorrect.'); return; }
+      st.admin = { unlocked: true };
+      delete st.offerAdmin;
+    }
+
+    // Remember where each profile was so switching back lands on the same tab.
+    // (Tech already persists its own tab in sessionStorage 'salesView_<id>'.)
+    if ((st.active || 'admin') === 'admin' && typeof adminView === 'string') st.adminView = adminView;
+    st.active = role;
+    _saveProfileState(st);
+
+    if (role === 'admin') {
+      _persistUser(JSON.stringify({ isAdmin: true, name: 'Admin', role: 'admin' }));
+      currentUser  = { isAdmin: true, email: ADMIN_EMAIL };
+      CURRENT_ROLE = 'admin';
+      await loadAdminDashboard();
+    } else {
+      var t = Object.assign({}, _ownerTech() || {}, st.tech || {});
+      if (!t.id) { alert('No tech profile is linked to this account.'); return; }
+      if (typeof _refreshTeamMemberFields === 'function') {
+        try { t = await _refreshTeamMemberFields(t); } catch(e){}
+      }
+      _persistUser(JSON.stringify({
+        isTech: true, role: 'tech', name: t.name, id: t.id,
+        his_license: !!t.his_license, his_license_number: t.his_license_number || null
+      }));
+      CURRENT_ROLE = 'tech';
+      await loadTechDashboard(t);
+    }
+  };
 
   function _renderSubSheetHTML() {
     function ssRow(label, val) {
@@ -781,6 +930,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if ((email === ADMIN_EMAIL) || (code === ADMIN_CODE)) {
       if (code === ADMIN_CODE) {
         _persistUser(JSON.stringify({isAdmin:true, name:'Admin', role:'admin'}));
+        _profileSeed('admin');
         CURRENT_ROLE = 'admin';
         loadAdminDashboard(); return;
       } else { showErr('Admin code incorrect.'); btn.textContent = 'Access My Portal'; btn.disabled = false; return; }
@@ -818,6 +968,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // Carry his_license into the persisted session so the HIS banner stays correct
       // after a page reload (auto-login) — not just on the fresh login where tm is full.
       var _lic = { his_license: !!tm.his_license, his_license_number: tm.his_license_number||null };
+      _profileSeed(tm.role, tm);
       if (tm.role==='rep')    { _persistUser(JSON.stringify(Object.assign({isRep:true,name:tm.name,id:tm.id,role:'rep'},_lic))); loadRepDashboard(tm); return; }
       if (tm.role==='tech')   { _persistUser(JSON.stringify(Object.assign({isTech:true,name:tm.name,id:tm.id,role:'tech'},_lic))); try{await loadTechDashboard(tm);}catch(e){showErr('Error: '+e.message);btn.textContent='Access My Portal';btn.disabled=false;} return; }
       if (tm.role==='setter') { _persistUser(JSON.stringify(Object.assign({isSetter:true,name:tm.name,id:tm.id,role:'setter'},_lic))); loadSetterDashboard(tm); return; }
@@ -851,6 +1002,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
                || code===c.access_code || code===c.phone;
       if (!match) { showErr('Access code incorrect.'); btn.textContent = 'Access My Portal'; btn.disabled = false; return; }
       _persistUser(JSON.stringify(c));
+      _clearProfiles(); // customers are single-profile — never show the switcher
       loadCustomerDashboard(c);
     } catch(e) { showErr('Error: '+e.message); btn.textContent = 'Access My Portal'; btn.disabled = false; }
   }
@@ -860,6 +1012,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     document.getElementById('loginBox').style.display = 'none';
     document.getElementById('dashboard').style.display = 'block';
     document.getElementById('userName').textContent = 'Solar Review Admin';
+    _renderProfileSwitcher();
     var _ssb = document.getElementById('subSheetBtn'); if (_ssb) _ssb.style.display = 'inline-flex';
     var _dbEl = document.getElementById('dashBody');
     _dbEl.innerHTML = '<p style="color:#aaa;padding:20px 0;">Loading...</p>';
@@ -883,7 +1036,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     try { var tmResp = await client.from('team_members').select('*').order('created_at',{ascending:true}); adminTeamMembers = tmResp.data || []; } catch(e) { adminTeamMembers = []; }
     try { var mktResp = await client.from('marketing_expenses').select('*').order('expense_date',{ascending:false}); adminMarketingExpenses = mktResp.data || []; } catch(e) { adminMarketingExpenses = []; }
     loadAdminBbStats(); // fire-and-forget — populates adminBlackBoxCustomers for BB tab stats
-    try { renderAdminView('dashboard'); }
+    try { _adminRestoreView(); }
     catch(e) { _dbEl.innerHTML = '<p style="color:#ef4444;">Render error: '+e.message+'. <button onclick="loadAdminDashboard()" style="width:auto;padding:8px 16px;font-size:0.75rem;background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;cursor:pointer;">Retry</button></p>'; console.error('[renderAdminView]', e); }
     showBlackBoxPopup();
     if (!window._hotLeadsPoll) {
@@ -15493,6 +15646,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var _opsMatch = OPS_PARTNERS.find(function(o){ return o.email===_opsEmail && o.code===_opsCode; });
       if(_opsMatch){
         _persistUser(JSON.stringify({isOps:true, name:_opsMatch.name, id:_opsMatch.id, role:'ops'}));
+        _clearProfiles();
         history.replaceState(null,'',location.pathname); // clean URL
         loadOpsDashboard(_opsMatch);
         return;
@@ -15538,6 +15692,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             if (rawUc.toLowerCase() === opsMatch.code.toLowerCase()) {
               mlStatus('');
               _persistUser(JSON.stringify({isOps:true, name:opsMatch.name, id:opsMatch.id, role:'ops'}));
+              _clearProfiles();
               loadOpsDashboard(opsMatch);
             } else {
               showMagicLinkError('Access code incorrect.', 'Check your link or contact admin.');
@@ -15555,6 +15710,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
                 sessionStorage.removeItem('showWelcome_' + cleanEmail);
               }
               _persistUser(JSON.stringify(Object.assign({}, tm, { isTech: tm.role==='tech', isRep: tm.role==='rep', isSetter: tm.role==='setter' })));
+              _profileSeed(tm.role, tm);
               history.replaceState(null, '', location.pathname);
               if (tm.role === 'setter') { loadSetterDashboard(tm); }
               else if (tm.role === 'rep') { loadRepDashboard(tm); }
@@ -15901,6 +16057,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     document.getElementById('loginBox').style.display = 'none';
     document.getElementById('dashboard').style.display = 'block';
     document.getElementById('userName').textContent = person.name + ' \xB7 ' + (agreementSigned ? roleLabel : 'Agreement Review');
+    _renderProfileSwitcher();
     var _ssb = document.getElementById('subSheetBtn'); if (_ssb) _ssb.style.display = 'inline-flex';
     var _ackKey = 'subSheetAck_' + (person.id || '') + '_' + SUB_SHEET_VERSION;
     if (!localStorage.getItem(_ackKey)) { setTimeout(function(){ _showSubSheetAckPopup(_ackKey); }, 600); }
