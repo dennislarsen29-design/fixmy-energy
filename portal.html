@@ -730,6 +730,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
   var SUB_SHEET_VERSION = '2025-06-11';
 
+  // Bump this whenever the Sales Rep Agreement text materially changes (buildRepAgreementHTML) —
+  // reps who already signed an older version are gated back into the signing screen on next
+  // login until they re-sign under the new version, exactly like a brand-new hire.
+  var REP_AGREEMENT_VERSION = '2026-07-30-setter-split';
+
   function _showSubSheetAckPopup(ackKey) {
     var modal = document.createElement('div');
     modal.id = 'subSheetAckModal';
@@ -1634,6 +1639,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (!rec) return '<span style="color:#ef4444;font-size:0.72rem;">&#10007; Not signed</span>';
       var d = rec.signed_at ? new Date(rec.signed_at).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : '';
       var src = rec.source === 'admin' ? ' (admin confirmed)' : '';
+      if (rec.agreement_version !== REP_AGREEMENT_VERSION) {
+        return '<span style="color:#ffaa00;font-size:0.72rem;">&#9888; Needs re-sign &mdash; signed '+d+' on an older version'+src+'</span>';
+      }
       return '<span style="color:#8DC63F;font-size:0.72rem;">&#10003; Signed '+d+(rec.rep_legal_name?' &middot; '+rec.rep_legal_name:'')+src+'</span>';
     }
 
@@ -15864,8 +15872,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // banner because `person.his_license` was undefined. team_members is anon-readable.
     person = await _refreshTeamMemberFields(person);
 
-    // Agreement gate — Supabase is authoritative; localStorage used as offline fallback
+    // Agreement gate — Supabase is authoritative; localStorage used as offline fallback.
+    // Version-aware: a rep is only "signed" if their record matches REP_AGREEMENT_VERSION —
+    // this is what forces existing reps to re-sign after a material terms change (e.g. the
+    // 2026-07-30 Setter/Dialer split) with no separate re-sign flow needed; they just hit this
+    // same gate again on next login, exactly like a brand-new hire.
     var agreementSigned = !!person.agreementSigned;
+    function _localAgVersion(raw) {
+      if (!raw) return null;
+      var parts = raw.split('|');
+      return parts[parts.length - 1];
+    }
     // If rep just signed this session, trust it immediately (avoids Supabase re-check race)
     var justSigned = false;
     try { justSigned = !!sessionStorage.getItem('repAgreementJustSigned_' + person.id); } catch(e) {}
@@ -15874,35 +15891,38 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     } else {
       try {
         var agc = supabase.createClient(SUPA_URL, SUPA_KEY);
-        var agr = await agc.from('rep_agreements').select('id').eq('rep_id', person.id).maybeSingle();
+        var agr = await agc.from('rep_agreements').select('id,agreement_version').eq('rep_id', person.id).maybeSingle();
         if (agr.data) {
-          agreementSigned = true;
-          try { localStorage.setItem('repAgreement_' + person.id, 'supabase'); } catch(e) {}
+          agreementSigned = (agr.data.agreement_version === REP_AGREEMENT_VERSION);
+          if (agreementSigned) { try { localStorage.setItem('repAgreement_' + person.id, 'supabase|' + REP_AGREEMENT_VERSION); } catch(e) {} }
+          else { try { localStorage.removeItem('repAgreement_' + person.id); } catch(e) {} }
         } else if (!agr.error) {
           // Supabase returned no record — check for a local signed record before clearing
           var localRec = null;
           try { localRec = localStorage.getItem('repAgreement_' + person.id); } catch(e) {}
-          if (localRec && localRec !== 'supabase') {
-            // Local signed record exists but not in Supabase — let them through and re-sync
+          if (localRec && localRec !== 'supabase' && _localAgVersion(localRec) === REP_AGREEMENT_VERSION) {
+            // Local signed record exists, matches the current version, but hasn't synced to
+            // Supabase yet — let them through and re-sync
             agreementSigned = true;
             var rParts = localRec.split('|');
-            var rTs = rParts[0], rName = rParts.slice(1).join('|');
+            var rTs = rParts[0], rName = rParts.slice(1, -1).join('|');
             if (rName) {
-              agc.from('rep_agreements').insert({rep_id:person.id, rep_name:person.name, rep_legal_name:rName, signed_at:rTs, source:'resync'}).then(function(res){
-                if (!res.error) { try { localStorage.setItem('repAgreement_'+person.id,'supabase'); } catch(ex){} }
+              agc.from('rep_agreements').insert({rep_id:person.id, rep_name:person.name, rep_legal_name:rName, signed_at:rTs, source:'resync', agreement_version:REP_AGREEMENT_VERSION}).then(function(res){
+                if (!res.error) { try { localStorage.setItem('repAgreement_'+person.id,'supabase|'+REP_AGREEMENT_VERSION); } catch(ex){} }
               });
             }
           } else {
-            // Truly no record (admin reset or never signed) — clear cache
+            // Truly no record, or a stale/older-version local cache — clear cache, require (re-)sign
             agreementSigned = false;
             try { localStorage.removeItem('repAgreement_' + person.id); } catch(e) {}
           }
         } else {
-          // Supabase unreachable — fall back to localStorage so rep isn't locked out offline
-          try { if (localStorage.getItem('repAgreement_' + person.id)) agreementSigned = true; } catch(e) {}
+          // Supabase unreachable — fall back to localStorage so rep isn't locked out offline,
+          // but only if the cached record matches the current agreement version
+          try { if (_localAgVersion(localStorage.getItem('repAgreement_' + person.id)) === REP_AGREEMENT_VERSION) agreementSigned = true; } catch(e) {}
         }
       } catch(e) {
-        try { if (localStorage.getItem('repAgreement_' + person.id)) agreementSigned = true; } catch(e2) {}
+        try { if (_localAgVersion(localStorage.getItem('repAgreement_' + person.id)) === REP_AGREEMENT_VERSION) agreementSigned = true; } catch(e2) {}
       }
     }
 
@@ -15920,17 +15940,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         if (!repName) { alert('Please type your full legal name to sign.'); return; }
         if (!checked) { alert('Please check the box confirming you have read and agree to the terms.'); return; }
         var ts = new Date().toISOString();
-        try { localStorage.setItem('repAgreement_' + person.id, ts + '|' + repName); } catch(e) {}
+        try { localStorage.setItem('repAgreement_' + person.id, ts + '|' + repName + '|' + REP_AGREEMENT_VERSION); } catch(e) {}
         try { sessionStorage.setItem('repAgreementJustSigned_' + person.id, '1'); } catch(e) {} // bypass re-check this session
         try {
           fetch(GHL_WEBHOOK, {method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},
             body:JSON.stringify({firstName:person.name,lastName:repName,source:'Rep Agreement Signed',
-              tags:['rep-agreement-signed'],customField:{rep_id:person.id,rep_legal_name:repName,signed_at:ts}})
+              tags:['rep-agreement-signed'],customField:{rep_id:person.id,rep_legal_name:repName,signed_at:ts,agreement_version:REP_AGREEMENT_VERSION}})
           });
         } catch(e){}
         try {
           var agClient = supabase.createClient(SUPA_URL, SUPA_KEY);
-          var agPayload = {rep_id:person.id, rep_name:person.name, rep_legal_name:repName, signed_at:ts, source:'self-signed'};
+          var agPayload = {rep_id:person.id, rep_name:person.name, rep_legal_name:repName, signed_at:ts, source:'self-signed', agreement_version:REP_AGREEMENT_VERSION};
           var {error: iErr} = await agClient.from('rep_agreements').insert(agPayload);
           if (iErr) {
             console.error('[Agreement] INSERT failed ('+iErr.code+'):', iErr.message);
@@ -15939,10 +15959,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
               console.error('[Agreement] UPDATE also failed ('+uErr.code+'):', uErr.message);
               // Still signed locally via sessionStorage — they can continue this session
             } else {
-              try { localStorage.setItem('repAgreement_' + person.id, 'supabase'); } catch(ex) {}
+              try { localStorage.setItem('repAgreement_' + person.id, 'supabase|' + REP_AGREEMENT_VERSION); } catch(ex) {}
             }
           } else {
-            try { localStorage.setItem('repAgreement_' + person.id, 'supabase'); } catch(ex) {}
+            try { localStorage.setItem('repAgreement_' + person.id, 'supabase|' + REP_AGREEMENT_VERSION); } catch(ex) {}
           }
         } catch(e){ console.warn('[Agreement] Exception:', e); }
         loadSalesDashboard(person, config);
