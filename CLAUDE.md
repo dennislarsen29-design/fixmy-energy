@@ -595,6 +595,8 @@ These companies have NO successor managing service calls. Targeting them is the 
 - System size kW extracted from permit description text via regex when not a dedicated field
 - Mosaic is a LENDER not an installer — leads from Mosaic are homeowners with outstanding loans, not necessarily broken systems
 - Portal Import tab → "Pull Live from PermitStack" button fires `permitstack-pull.js` for each selected installer, deduplicates by address, auto-populates CSV textarea
+- `PERMITSTACK_KEY` — Netlify env var, gates nightly `bb-auto-pipeline-background.js` Phase 1c (city-by-city PermitStack pull for all 16 SD cities). ✅ Set in Netlify.
+- **Phase 1c rotation cursor (fixed 2026-08-01):** Phase 1c has no server-side GROUP BY, so it queries city-by-city per installer within a single 5-minute-per-run budget. The nested loop originally always started fresh at SunPower (6 name variants) × San Diego (highest-volume city) every night, so cities late in the list — Carlsbad (#9 of 16), Encinitas, National City, Vista, San Marcos, Lemon Grove — could go unqueried indefinitely even with the key set, since nothing ever advanced past the first installer/city. Root-caused from a "why does 92008 (Carlsbad) show 0 Black Box leads" report. Fixed by flattening `installer × city` into one ordered array and persisting a rotation cursor in `pipeline_state` (key `phase1c_cursor`, same pattern as `expansion_index`) — each run starts where the previous run left off and wraps around, so every combination gets queried within a few weeks instead of the same handful monopolizing every night. Check the Netlify function logs' `Phase 1c: ... covered N/TOTAL units (cursor X→Y)` line to confirm rotation is progressing.
 
 ## CPUC / SDG&E NEM Data — Public Records Request Draft
 

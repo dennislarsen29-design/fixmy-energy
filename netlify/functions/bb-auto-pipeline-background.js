@@ -239,19 +239,25 @@ exports.handler = async function(event) {
   // ══════════════════════════════════════════════════════════════════════════
   stamp('=== Phase 0: Intelligence + expansion init ===');
   let expansionIndex = 0;
+  // Phase 1c rotation cursor — see Phase 1c below. Persisted the same way as expansionIndex
+  // so the (installer × city) matrix advances night over night instead of restarting at the
+  // same SunPower/San-Diego-first units every run.
+  let phase1cCursor = 0;
   try {
     const stateResp = await fetch(
-      SUPA_REST + '/pipeline_state?key=in.(expansion_index,phase0_insights)&select=key,value',
+      SUPA_REST + '/pipeline_state?key=in.(expansion_index,phase0_insights,phase1c_cursor)&select=key,value',
       { headers: { apikey: supaKey, Authorization: 'Bearer ' + supaKey, Accept: 'application/json' } }
     );
     if (stateResp.ok) {
       const rows = await stateResp.json();
       const idxRow = rows.find(r => r.key === 'expansion_index');
       expansionIndex = idxRow ? (parseInt(idxRow.value, 10) || 0) : 0;
+      const cursorRow = rows.find(r => r.key === 'phase1c_cursor');
+      phase1cCursor = cursorRow ? (parseInt(cursorRow.value, 10) || 0) : 0;
     }
   } catch(e) { stamp('Phase 0: expansion_index fetch error — ' + e.message); }
   activeExpansionZips = new Set(EXPANSION_QUEUE.slice(0, expansionIndex));
-  stamp(`Phase 0: expansion index=${expansionIndex}, active extra zips=${activeExpansionZips.size}`);
+  stamp(`Phase 0: expansion index=${expansionIndex}, active extra zips=${activeExpansionZips.size}, phase1c cursor=${phase1cCursor}`);
   if (expansionIndex < EXPANSION_QUEUE.length) {
     stamp(`Phase 0: next 5 zips tonight — ${EXPANSION_QUEUE.slice(expansionIndex, expansionIndex + 5).join(', ')}`);
   }
@@ -556,6 +562,16 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
   // City-by-city permit pull for 16 San Diego cities. Primary source for SD
   // permits — aggregates DSD + all incorporated city permit portals that
   // Socrata misses. Expected yield: 60k–100k total over multiple nightly runs.
+  //
+  // Rotation cursor (fixed 2026-08-01 — see phase1cCursor in Phase 0): the
+  // (installer × city) matrix is flattened into one ordered array and each run
+  // starts from wherever the PREVIOUS run left off, wrapping around. Without
+  // this, the nested-loop order (SunPower first with 6 name variants, San
+  // Diego first among cities) plus the single 5-minute phase budget meant
+  // late-list cities — Carlsbad (#9 of 16), Encinitas, National City, Vista,
+  // San Marcos, Lemon Grove — could go unqueried indefinitely, every single
+  // night, even with PERMITSTACK_KEY correctly set. Root-caused from a "why
+  // does 92008 have 0 leads" report.
   // ══════════════════════════════════════════════════════════════════════════
   let inserted1c = 0;
   {
@@ -588,75 +604,97 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
         return { street, city, state, zip, fullAddress: full, installYear, systemSizeKw: extractKw(desc) };
       };
 
-      outer1c: for (const installer of sortedInstallers) {
-        if (Date.now() > PHASE1C_DEADLINE || overGlobal()) break;
-        for (const city of SD_PS_CITIES) {
-          if (Date.now() > PHASE1C_DEADLINE || overGlobal()) break outer1c;
-          for (const qname of installer.names) {
-            if (Date.now() > PHASE1C_DEADLINE || overGlobal()) break outer1c;
-            let page = 1;
-            while (page <= 30) {
-              if (Date.now() > PHASE1C_DEADLINE || overGlobal()) break;
-              const url = `${PS_BASE}/permits/search?city=${encodeURIComponent(city)}&keyword=${encodeURIComponent(qname)}&per_page=100&page=${page}`;
-              let resp;
-              try {
-                resp = await fetchWithTimeout(url, { headers: psHeaders }, 10000);
-              } catch(e) {
-                stamp(`  1c ${city}/"${qname}" fetch err: ${e.message}`);
-                break;
-              }
-              if (!resp.ok) {
-                if (resp.status === 429) await sleep(2000);
-                break;
-              }
-              let body;
-              try { body = await resp.json(); } catch(e) { break; }
-              const batch = body.permits || body.results || body.data || [];
-              if (!Array.isArray(batch) || !batch.length) break;
-
-              const batchRecs = [];
-              for (const p of batch) {
-                const { street, fullAddress, installYear, systemSizeKw } =
-                  extractPSAddress1c(p, city);
-                if (!street || !/^\d/.test(street)) continue;
-                const key = normAddr(fullAddress);
-                if (!key || seenLocal1c.has(key) || existingAddrs.has(key)) continue;
-                const candidate = {
-                  address: fullAddress,
-                  lead_category: 'fixmy',
-                  step: 1,
-                  lead_source: 'orphaned_list',
-                  black_box: true,
-                  original_installer: installer.name,
-                  install_year: installYear || null,
-                  system_size: systemSizeKw ? parseFloat(systemSizeKw) : null,
-                  notes: installer.name
-                    + (systemSizeKw ? ' · ' + systemSizeKw + 'kW' : '')
-                    + (installYear ? ' · Installed ' + installYear : '')
-                };
-                if (!qualifyPermit(candidate)) continue;
-                seenLocal1c.add(key);
-                candidate.lead_score = calcLeadScore(candidate);
-                batchRecs.push(candidate);
-              }
-
-              if (batchRecs.length) {
-                const ok = await supaInsertBatch(batchRecs);
-                if (ok) {
-                  inserted1c += batchRecs.length;
-                  batchRecs.forEach(r => existingAddrs.add(normAddr(r.address)));
-                }
-              }
-
-              if (batch.length < 100) break;
-              page++;
-              await sleep(80);
-            }
-          }
-          await sleep(50);
-        }
+      // Flatten installer × city into one ordered rotation matrix — priority installers
+      // (SunPower etc.) still lead the very first pass (cursor 0), but every combination
+      // gets its turn across multiple nightly runs instead of the same handful forever.
+      const phase1cUnits = [];
+      for (const installer of sortedInstallers) {
+        for (const city of SD_PS_CITIES) phase1cUnits.push({ installer, city });
       }
-      stamp(`Phase 1c inserted: ${inserted1c} records`);
+      const startCursor = phase1cUnits.length ? (phase1cCursor % phase1cUnits.length) : 0;
+      stamp(`Phase 1c: ${phase1cUnits.length} (installer×city) units, starting at cursor ${startCursor}`);
+      let unitsCovered = 0;
+      const coveredLabels = [];
+
+      outer1c: for (let u = 0; u < phase1cUnits.length; u++) {
+        if (Date.now() > PHASE1C_DEADLINE || overGlobal()) break;
+        const { installer, city } = phase1cUnits[(startCursor + u) % phase1cUnits.length];
+        for (const qname of installer.names) {
+          if (Date.now() > PHASE1C_DEADLINE || overGlobal()) break outer1c;
+          let page = 1;
+          while (page <= 30) {
+            if (Date.now() > PHASE1C_DEADLINE || overGlobal()) break;
+            const url = `${PS_BASE}/permits/search?city=${encodeURIComponent(city)}&keyword=${encodeURIComponent(qname)}&per_page=100&page=${page}`;
+            let resp;
+            try {
+              resp = await fetchWithTimeout(url, { headers: psHeaders }, 10000);
+            } catch(e) {
+              stamp(`  1c ${city}/"${qname}" fetch err: ${e.message}`);
+              break;
+            }
+            if (!resp.ok) {
+              if (resp.status === 429) await sleep(2000);
+              break;
+            }
+            let body;
+            try { body = await resp.json(); } catch(e) { break; }
+            const batch = body.permits || body.results || body.data || [];
+            if (!Array.isArray(batch) || !batch.length) break;
+
+            const batchRecs = [];
+            for (const p of batch) {
+              const { street, fullAddress, installYear, systemSizeKw } =
+                extractPSAddress1c(p, city);
+              if (!street || !/^\d/.test(street)) continue;
+              const key = normAddr(fullAddress);
+              if (!key || seenLocal1c.has(key) || existingAddrs.has(key)) continue;
+              const candidate = {
+                address: fullAddress,
+                lead_category: 'fixmy',
+                step: 1,
+                lead_source: 'orphaned_list',
+                black_box: true,
+                original_installer: installer.name,
+                install_year: installYear || null,
+                system_size: systemSizeKw ? parseFloat(systemSizeKw) : null,
+                notes: installer.name
+                  + (systemSizeKw ? ' · ' + systemSizeKw + 'kW' : '')
+                  + (installYear ? ' · Installed ' + installYear : '')
+              };
+              if (!qualifyPermit(candidate)) continue;
+              seenLocal1c.add(key);
+              candidate.lead_score = calcLeadScore(candidate);
+              batchRecs.push(candidate);
+            }
+
+            if (batchRecs.length) {
+              const ok = await supaInsertBatch(batchRecs);
+              if (ok) {
+                inserted1c += batchRecs.length;
+                batchRecs.forEach(r => existingAddrs.add(normAddr(r.address)));
+              }
+            }
+
+            if (batch.length < 100) break;
+            page++;
+            await sleep(80);
+          }
+        }
+        unitsCovered++;
+        coveredLabels.push(`${installer.name}/${city}`);
+        await sleep(50);
+      }
+
+      const nextCursor = phase1cUnits.length ? (startCursor + unitsCovered) % phase1cUnits.length : 0;
+      stamp(`Phase 1c inserted: ${inserted1c} records — covered ${unitsCovered}/${phase1cUnits.length} units `
+        + `(cursor ${startCursor}→${nextCursor}): ${coveredLabels.slice(0, 8).join(', ')}${coveredLabels.length > 8 ? ', …' : ''}`);
+      try {
+        await fetch(SUPA_REST + '/pipeline_state', {
+          method: 'POST',
+          headers: { ...supaHeaders, Prefer: 'resolution=merge-duplicates' },
+          body: JSON.stringify({ key: 'phase1c_cursor', value: String(nextCursor), updated_at: new Date().toISOString() })
+        });
+      } catch(e) { stamp('Phase 1c: cursor persist error — ' + e.message); }
     }
   }
 
