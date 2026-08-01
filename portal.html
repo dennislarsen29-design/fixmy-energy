@@ -4775,7 +4775,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (CURRENT_ROLE === 'admin') {
       h += '<div style="font-size:0.66rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#555;margin:2px 0 10px;">&#128202; Dashboard</div>';
       h += '<div id="bbPhase0Panel" style="margin-bottom:12px;"></div>';
-      h += '<div id="bbInsightsPanel" style="margin-bottom:20px;"></div>';
+      h += '<div id="bbInsightsPanel" style="margin-bottom:12px;"></div>';
+      h += '<div id="bbFunnelPanel" style="margin-bottom:20px;"></div>';
       h += '<div style="font-size:0.66rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#555;margin-bottom:14px;">&#128260; Pipeline &mdash; Raw Data &rarr; Enriched Lead</div>';
     }
     // ── STAGE 1 — PERMIT STACK — source new leads ──────────────────────────────
@@ -5153,6 +5154,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     document.getElementById('dashBody').innerHTML = h;
     if (CURRENT_ROLE === 'admin') setTimeout(adminCanvassLoadPhase0Panel, 200);
     if (CURRENT_ROLE === 'admin') setTimeout(adminCanvassLoadInsights, 0);
+    if (CURRENT_ROLE === 'admin') setTimeout(adminCanvassLoadFunnel, 0);
     if (CURRENT_ROLE === 'admin') setTimeout(adminCanvassLoadPullBar, 0);
     setTimeout(adminCanvassLoadEnrichBar, 0);
 
@@ -7745,6 +7747,56 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }
     } catch(e) {
       if (prog) prog.innerHTML = '&#10007; ' + e.message;
+    }
+  };
+
+  // ── Lead Funnel — where leads are stuck or not fully enriched ────────────
+  window.adminCanvassLoadFunnel = async function() {
+    var el = document.getElementById('bbFunnelPanel');
+    if (!el) return;
+    try {
+      var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var base = function() { return c2.from('customers').select('id', { count: 'exact', head: true }).eq('lead_source', 'orphaned_list'); };
+      var results = await Promise.all([
+        base(),
+        base().not('lat', 'is', null),
+        base().not('title_owner', 'is', null),
+        base().not('phone', 'is', null),
+        base().not('email', 'is', null).not('email', 'ilike', '%@pending.fixmy.energy'),
+        base().eq('black_box', false)
+      ]);
+      var stages = [
+        { label: 'Permits Sourced', count: results[0].count || 0 },
+        { label: 'Geocoded',        count: results[1].count || 0 },
+        { label: 'Owner Found',     count: results[2].count || 0 },
+        { label: 'Phone Found',     count: results[3].count || 0 },
+        { label: 'Email Found',     count: results[4].count || 0 },
+        { label: 'Activated',       count: results[5].count || 0 }
+      ];
+      var top = stages[0].count || 1;
+      var h = '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:14px 16px;">';
+      h += '<div style="font-size:0.72rem;font-weight:700;color:#ccc;margin-bottom:2px;">&#128201; Lead Funnel</div>';
+      h += '<div style="font-size:0.64rem;color:#666;margin-bottom:12px;">Where leads are stuck or not yet fully enriched</div>';
+      stages.forEach(function(s, i) {
+        var pct = top ? Math.round(s.count / top * 100) : 0;
+        var dropFromPrev = i > 0 ? stages[i - 1].count - s.count : 0;
+        h += '<div style="margin-bottom:9px;">';
+        h += '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px;">';
+        h += '<span style="font-size:0.72rem;color:#ccc;font-weight:600;">' + s.label + '</span>';
+        h += '<span style="font-size:0.72rem;color:#8DC63F;font-weight:800;">' + s.count.toLocaleString() + '</span>';
+        h += '</div>';
+        h += '<div style="background:rgba(255,255,255,0.06);border-radius:100px;height:7px;overflow:hidden;">';
+        h += '<div style="background:linear-gradient(90deg,#8DC63F,#4a9eff);height:7px;border-radius:100px;width:' + pct + '%;"></div>';
+        h += '</div>';
+        if (i > 0 && dropFromPrev > 0) {
+          h += '<div style="font-size:0.6rem;color:#ef4444;margin-top:2px;">&#8595; ' + dropFromPrev.toLocaleString() + ' dropped off here (' + pct + '% of sourced leads remain)</div>';
+        }
+        h += '</div>';
+      });
+      h += '</div>';
+      el.innerHTML = h;
+    } catch(e) {
+      // Funnel panel is non-critical — fail silently, same pattern as Phase 0 panel
     }
   };
 
