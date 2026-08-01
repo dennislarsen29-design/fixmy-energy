@@ -5834,6 +5834,126 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (typeof rerenderFn === 'function') rerenderFn();
   }
 
+  // Admin Team Dashboard (inside the Black Box Dialer) — per-rep calls/bookings/AI-note
+  // activity with a Day/Week/Month/Year rolling-window toggle. Fetches lead_activity once
+  // (widest range = year) and filters client-side on range switch, so toggling doesn't
+  // refetch. AI insight reuses the weekly coaching_reports pipeline (D2) rather than firing
+  // a fresh Claude call per rep/range — see the plan for the cost rationale.
+  var bbTeamDashOpen = false;
+  var bbTeamDashRange = 'day'; // day | week | month | year — rolling windows
+  var bbTeamDashData = null;   // {rows, coachByRep, at, error?}
+  var bbTeamDashLoading = false;
+  function bbTeamDashRangeStart(range) {
+    var days = range === 'day' ? 1 : range === 'week' ? 7 : range === 'month' ? 30 : 365;
+    return Date.now() - days*24*3600*1000;
+  }
+  async function bbTeamDashLoad() {
+    var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var out = { rows: [], coachByRep: {}, at: Date.now() };
+    try {
+      var start = new Date(bbTeamDashRangeStart('year')).toISOString();
+      var res = await c.from('lead_activity').select('rep_name,channel,outcome,note,created_at').gte('created_at', start).order('created_at',{ascending:false}).limit(5000);
+      if (res.error) throw res.error;
+      out.rows = res.data || [];
+    } catch(e) { out.error = e.message; }
+    try {
+      var cr = await c.from('coaching_reports').select('*').order('created_at',{ascending:false}).limit(60);
+      if (!cr.error && cr.data) cr.data.forEach(function(r){ var k=(r.rep_name||'').toLowerCase(); if(!out.coachByRep[k]) out.coachByRep[k]=r; });
+    } catch(e) { /* coaching_reports optional — table may not be applied yet */ }
+    bbTeamDashData = out;
+    bbTeamDashLoading = false;
+  }
+  window.bbTeamDashToggle = function() {
+    bbTeamDashOpen = !bbTeamDashOpen;
+    if (bbTeamDashOpen && !bbTeamDashData && !bbTeamDashLoading) {
+      bbTeamDashLoading = true;
+      bbTeamDashLoad().then(function(){ renderBBDialerView(); });
+    }
+    renderBBDialerView();
+  };
+  window.bbTeamDashSetRange = function(r) { bbTeamDashRange = r; renderBBDialerView(); };
+  window.bbTeamDashRefresh = function() {
+    bbTeamDashData = null; bbTeamDashLoading = true;
+    bbTeamDashLoad().then(function(){ renderBBDialerView(); });
+    renderBBDialerView();
+  };
+  function bbTeamDashboardHtml() {
+    var seg = function(mode,label){
+      var a = bbTeamDashRange === mode;
+      return '<button onclick="bbTeamDashSetRange(\''+mode+'\')" style="width:auto;margin:0;padding:5px 12px;border:none;border-radius:100px;font-size:0.7rem;font-weight:700;cursor:pointer;background:'+(a?'rgba(141,198,63,0.18)':'transparent')+';color:'+(a?'#8DC63F':'#777')+';">'+label+'</button>';
+    };
+    var h = '<div style="margin-bottom:14px;background:#141414;border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:14px 16px;">';
+    h += '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">';
+    h += '<button onclick="bbTeamDashToggle()" style="width:auto;background:none;border:none;color:#fff;cursor:pointer;display:flex;align-items:center;gap:6px;padding:0;font-size:0.86rem;font-weight:800;">'+(bbTeamDashOpen?'&#9660;':'&#9654;')+' &#128202; Team Dashboard</button>';
+    if (bbTeamDashOpen) {
+      h += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">';
+      h += '<div style="display:flex;gap:2px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:100px;padding:3px;">'+seg('day','Day')+seg('week','Week')+seg('month','Month')+seg('year','Year')+'</div>';
+      h += '<button onclick="bbTeamDashRefresh()" title="Reload activity data" style="width:auto;background:none;border:none;color:#555;cursor:pointer;font-size:0.75rem;">&#8635;</button>';
+      h += '</div>';
+    }
+    h += '</div>';
+    if (!bbTeamDashOpen) { h += '</div>'; return h; }
+
+    if (bbTeamDashLoading || !bbTeamDashData) {
+      h += '<div style="padding:20px;text-align:center;color:#666;font-size:0.8rem;">Loading team activity&hellip;</div></div>';
+      return h;
+    }
+    if (bbTeamDashData.error) {
+      h += '<div style="margin-top:10px;padding:12px 14px;background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.3);border-radius:10px;font-size:0.76rem;color:#ffaa00;">&#9888; Could not load activity: '+esc(bbTeamDashData.error)+'. If lead_activity is missing, run supabase/migrations/20260702_black_box_dialer.sql.</div></div>';
+      return h;
+    }
+
+    var cutoff = bbTeamDashRangeStart(bbTeamDashRange);
+    var rowsInRange = bbTeamDashData.rows.filter(function(r){ var t = r.created_at ? new Date(r.created_at).getTime() : 0; return t >= cutoff; });
+
+    // Roster — DB team members (rep/tech/setter roles) so zero-activity reps still show,
+    // same fallback pattern as renderTeamView's dbMembers.
+    var roster = (adminTeamMembers.length ? adminTeamMembers : TECHS.map(function(t){return Object.assign({},t,{role:'tech'});}))
+      .filter(function(m){ return m.active !== false && ['rep','tech','setter'].indexOf(m.role) > -1 && m.name; })
+      .map(function(m){ return {name:m.name}; });
+    if (!roster.length) roster = TECHS.map(function(t){ return {name:t.name}; });
+
+    var byRep = {};
+    rowsInRange.forEach(function(r){
+      var rep = (r.rep_name && r.rep_name.trim()) || 'Unassigned';
+      var k = rep.toLowerCase();
+      (byRep[k] = byRep[k] || {name:rep, rows:[]}).rows.push(r);
+    });
+    // Include any rep with activity but not in the roster (name mismatch / ad-hoc rep_name).
+    var rosterKeys = {};
+    roster.forEach(function(m){ rosterKeys[(m.name||'').toLowerCase()] = true; });
+    Object.keys(byRep).forEach(function(k){ if (!rosterKeys[k] && k !== 'unassigned') roster.push({name:byRep[k].name}); });
+
+    h += '<div style="margin-top:12px;overflow-x:auto;">';
+    h += '<table style="width:100%;border-collapse:collapse;font-size:0.78rem;">';
+    h += '<thead><tr style="text-align:left;color:#777;font-size:0.64rem;text-transform:uppercase;letter-spacing:0.05em;">'+
+      '<th style="padding:6px 8px;">Rep</th><th style="padding:6px 8px;">Calls</th><th style="padding:6px 8px;">Booked</th>'+
+      '<th style="padding:6px 8px;">AI Notes</th><th style="padding:6px 8px;">Latest AI Note</th><th style="padding:6px 8px;">AI Insight</th></tr></thead><tbody>';
+    roster.forEach(function(m){
+      var k = (m.name||'').toLowerCase();
+      var g = byRep[k] || {rows:[]};
+      var calls = g.rows.filter(function(r){ return r.channel === 'dialer'; }).length;
+      var booked = g.rows.filter(function(r){ return r.outcome === 'booked'; }).length;
+      var aiRows = g.rows.filter(function(r){ return /🎙/.test(r.note||''); });
+      var latest = aiRows[0]; // rows already ordered desc by created_at
+      var rpt = bbTeamDashData.coachByRep[k];
+      var latestTxt = latest ? (latest.note||'').replace(/^🎙\s*/,'') : '';
+      var rptTxt = rpt ? (rpt.summary||'') : '';
+      h += '<tr style="border-top:1px solid rgba(255,255,255,0.06);vertical-align:top;">';
+      h += '<td style="padding:8px;font-weight:700;color:#8DC63F;white-space:nowrap;">'+esc(m.name)+'</td>';
+      h += '<td style="padding:8px;">'+calls+'</td>';
+      h += '<td style="padding:8px;color:'+(booked?'#8DC63F':'#555')+';font-weight:'+(booked?'700':'400')+';">'+booked+'</td>';
+      h += '<td style="padding:8px;">'+aiRows.length+'</td>';
+      h += '<td style="padding:8px;max-width:260px;color:#aaa;">'+(latest ? '<span title="'+esc(latestTxt)+'">'+esc(latestTxt.slice(0,90))+(latestTxt.length>90?'&hellip;':'')+'</span>' : '<span style="color:#444;">&mdash;</span>')+'</td>';
+      h += '<td style="padding:8px;max-width:280px;color:#c4a3f0;">'+(rpt ? ('<span title="'+esc(rptTxt)+'">'+esc(rptTxt.slice(0,100))+(rptTxt.length>100?'&hellip;':'')+'</span><div style="font-size:0.6rem;color:#666;margin-top:2px;">'+(rpt.created_at?new Date(rpt.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric'}):'')+'</div>') : '<span style="color:#444;">No coaching report yet</span>')+'</td>';
+      h += '</tr>';
+    });
+    h += '</tbody></table></div>';
+    h += '<div style="margin-top:10px;"><button onclick="renderTeamView(\'oneonones\')" style="width:auto;padding:6px 14px;background:rgba(155,109,232,0.12);border:1px solid rgba(155,109,232,0.35);color:#c4a3f0;border-radius:100px;font-size:0.7rem;font-weight:700;cursor:pointer;">&#129309; Open 1:1s for fresh AI analysis</button></div>';
+    h += '</div>';
+    return h;
+  }
+
   function bbRepName() {
     if (window._bbDialerPersonName) return window._bbDialerPersonName; // set by sales portal
     try { var stored = localStorage.getItem('bbDialerRepName'); if (stored) return stored; } catch(e){}
@@ -6461,6 +6581,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       h += '<button id="bbGhlSyncBtn" onclick="bbDialSyncGHL()" title="Manually pushes every dialable Black Box lead into GHL as a contact (tag: bb-dialer-lead) so GHL&#39;s Power Dialer can call them. Safe to re-run — duplicates merge. Also runs automatically at 2 AM with the nightly pipeline." style="padding:6px 14px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);color:#4a9eff;border-radius:100px;font-size:0.7rem;font-weight:700;cursor:pointer;">&#8679; Sync Queue to GHL</button>';
     }
     h += '</div>';
+
+    if (CURRENT_ROLE === 'admin') h += bbTeamDashboardHtml();
 
     if (!bbDialLoaded) {
       h += '<div style="text-align:center;padding:48px;color:#888;font-size:0.85rem;">Loading dial queue&hellip;</div></div>';
