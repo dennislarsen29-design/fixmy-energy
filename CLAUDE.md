@@ -577,6 +577,8 @@ These companies have NO successor managing service calls. Targeting them is the 
 | Lumio | Ch. 11 bankruptcy | Mar 2024 | Multi-state (CA included) | "Lumio Inc", "1st Light Energy" |
 | Freedom Forever | Ch. 11 bankruptcy | Apr 15, 2026 | Multi-state | "Freedom Forever LLC" |
 | Mosaic Solar Loans | Ch. 11 (LENDER only) | Jun 6, 2025 | 500,000+ (financed) | N/A — lender, not installer |
+| Infinity Energy | Ceased operations | 2023 | CA only (Rocklin HQ, one of the largest CA installers, PPA-focused) | "Infinity Energy Inc", "Infinity Energy" |
+| Suntuity Renewables | Bankrupt/shut down | ~2024 | Multi-state (NJ/CA/TX) | "Suntuity Renewables", "Suntuity" |
 
 ### Priority 2 — Acquired/Managed (lower priority — successor handling service calls)
 

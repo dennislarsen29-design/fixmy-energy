@@ -29,7 +29,9 @@ const INSTALLERS = [
   { name: 'Kota Energy',           names: ['Kota Energy Group LLC', 'Kota Energy Group', 'Kota Energy'] },
   { name: 'OneRoof Energy',        names: ['OneRoof Energy Inc', 'OneRoof Energy'] },
   { name: 'Sunworks',              names: ['Sunworks Inc', 'Sunworks United Inc'] },
-  { name: 'SunPro Solar',          names: ['SunPro Solar Inc', 'SunPro Solar LLC'] }
+  { name: 'SunPro Solar',          names: ['SunPro Solar Inc', 'SunPro Solar LLC'] },
+  { name: 'Infinity Energy',       names: ['Infinity Energy Inc', 'Infinity Energy'] },
+  { name: 'Suntuity Renewables',   names: ['Suntuity Renewables', 'Suntuity'] }
 ];
 
 const BASE_SD_CITY = 'https://data.sandiego.gov/resource/nt65-c7a7.json';

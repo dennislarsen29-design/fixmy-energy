@@ -46,6 +46,8 @@ const INSTALLER_NAMES = [
   { label: 'Pink Energy',         names: ['Pink Energy'] },
   { label: 'Vision Solar',        names: ['Vision Solar'] },
   { label: 'Lumio',               names: ['Lumio Inc', '1st Light Energy'] },
+  { label: 'Infinity Energy',     names: ['Infinity Energy Inc', 'Infinity Energy'] },
+  { label: 'Suntuity Renewables', names: ['Suntuity Renewables', 'Suntuity'] },
 ];
 
 function csvEsc(v) {
