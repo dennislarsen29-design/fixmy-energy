@@ -28,6 +28,7 @@ exports.handler = async function(event) {
   }
 
   const { first_name, last_name, email, phone, city, zip, sales_experience, why_solar, source } = body;
+  const position = body.position === 'setter' ? 'setter' : 'consultant';
 
   if (!first_name || !email || !phone) {
     return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: 'first_name, email, and phone are required' }) };
@@ -44,7 +45,7 @@ exports.handler = async function(event) {
   const insertResp = await fetch(SUPA_URL + '/rest/v1/candidates', {
     method: 'POST',
     headers: supaHeaders,
-    body: JSON.stringify({ first_name, last_name, email, phone, city, zip, sales_experience, why_solar, source: source || 'website' })
+    body: JSON.stringify({ first_name, last_name, email, phone, city, zip, sales_experience, why_solar, position, source: source || 'website' })
   });
 
   if (!insertResp.ok) {
@@ -77,7 +78,7 @@ exports.handler = async function(event) {
           city:       city        || undefined,
           postalCode: zip         || undefined,
           source:     'careers-page',
-          tags:       ['candidate-applied']
+          tags:       position === 'setter' ? ['candidate-applied', 'candidate-applied-setter'] : ['candidate-applied']
         })
       });
 
