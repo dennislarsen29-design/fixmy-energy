@@ -69,7 +69,23 @@ const EXPANSION_QUEUE = [
   // Hemet / San Jacinto / Perris
   '92543','92544','92545','92570','92571',
   // Coachella Valley / Palm Springs desert
-  '92234','92236','92240','92241','92260','92262','92264','92270'
+  '92234','92236','92240','92241','92260','92262','92264','92270',
+  // San Bernardino County — West Valley (Rancho Cucamonga, Ontario, Fontana, Chino,
+  // Chino Hills, Upland, Montclair) + Redlands/Highland. Added 2026-08-01: county-level
+  // residential solar capacity is 35.0 kW/100 residents — higher than Orange County (24.3)
+  // and LA (10.1), comparable to the already-covered Riverside (46.2) — and it's the direct
+  // geographic continuation of the Riverside zips above. Zip list web-verified per-city
+  // (not exhaustive — San Bernardino County has ~122 zips total; this is a first batch).
+  '92336', // Fontana
+  '91761','91762','91764', // Ontario
+  '92376', // Rialto
+  '91708', // Chino
+  '91709', // Chino Hills
+  '91701','91729','91730','91737','91739', // Rancho Cucamonga
+  '91784','91786', // Upland
+  '91763', // Montclair
+  '92373','92374', // Redlands
+  '92346' // Highland
 ];
 
 exports.handler = async function(event) {
