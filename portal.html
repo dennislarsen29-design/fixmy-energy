@@ -7844,7 +7844,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var lastRunRow = rows.find(function(r){ return r.key === 'last_run_at'; });
       var lastSumRow = rows.find(function(r){ return r.key === 'last_run_summary'; });
       var expIndex = expRow ? (parseInt(expRow.value, 10) || 0) : 0;
-      var totalExpZips = 84; // EXPANSION_QUEUE.length
+      var totalExpZips = (window.BB_EXPANSION_QUEUE || []).reduce(function(sum, grp){ return sum + grp.zips.length; }, 0);
       var h = '';
 
       // ── Last pipeline run timestamp + mini-summary ────────────────────────
@@ -7894,21 +7894,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       h += '</button>';
       if (covOpen) {
         h += '<div style="margin-top:12px;border-top:1px solid rgba(74,158,255,0.15);padding-top:12px;">';
-        h += '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#8DC63F;margin-bottom:8px;">&#127968; Home Territory</div>';
-        h += '<div style="font-size:0.68rem;color:#aaa;margin-bottom:14px;">San Diego County (all zips — core territory, not itemized) &mdash; the permit pull and Regrid/Tracerfy lookups always cover this by default.</div>';
-        h += '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#4a9eff;margin-bottom:8px;">&#128640; Expansion Zips <span style="color:#555;font-weight:400;text-transform:none;">(click a zip to jump to the Dialer focused there)</span></div>';
-        var zipsSeen = 0;
-        window.BB_EXPANSION_QUEUE.forEach(function(grp) {
-          h += '<div style="font-size:0.64rem;color:#888;font-weight:700;margin:8px 0 4px;">' + grp.region + '</div>';
-          h += '<div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:4px;">';
-          grp.zips.forEach(function(z) {
-            var unlocked = zipsSeen < expIndex;
-            zipsSeen++;
-            h += '<button onclick="bbDialSetFocusZip(\'' + z + '\')" title="' + (unlocked ? 'Active — jump to the Dialer focused on ' + z : 'Not yet unlocked — still waiting on nightly expansion') + '" style="width:auto;margin-top:0;padding:3px 9px;border-radius:100px;font-size:0.66rem;font-weight:600;cursor:pointer;' + (unlocked ? 'background:rgba(141,198,63,0.14);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;' : 'background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);color:#555;') + '">' + z + '</button>';
-          });
-          h += '</div>';
-        });
+        h += '<div style="font-size:0.68rem;color:#aaa;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">';
+        h += '<span>San Diego County (blue, core territory) + expansion zips (green = active, gray = queued, amber outline = not in our queue yet — the gaps).</span>';
+        h += '<button onclick="event.stopPropagation();adminCanvassRefreshBoundaries();" style="width:auto;margin-top:0;padding:4px 10px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);color:#4a9eff;border-radius:100px;font-size:0.62rem;font-weight:700;cursor:pointer;white-space:nowrap;">&#128260; Refresh Boundaries</button>';
         h += '</div>';
+        h += '<div id="bbCoverageMap" style="width:100%;height:440px;border-radius:10px;overflow:hidden;background:#0a0a0a;position:relative;">';
+        h += '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#555;font-size:0.72rem;">Loading map…</div>';
+        h += '</div>';
+        h += '</div>';
+        setTimeout(function(){ adminCanvassRenderCoverageMap(expIndex); }, 0);
       }
       h += '</div>';
 
@@ -7949,6 +7943,130 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // Phase 0 panel is non-critical — fail silently
     }
   }
+
+  // ── Coverage map — real ZCTA boundaries, colored by expansion status ──────
+  // Blue = San Diego home territory (regex-matched, mirrors the backend isTarget() pattern).
+  // Green = active expansion zip. Gray = queued expansion zip, not unlocked yet.
+  // Amber outline = a real zip in our OC/Riverside/San Bernardino operating region that isn't
+  // in BB_EXPANSION_QUEUE at all — the literal "what are we missing" gap.
+  function _bbIsHomeZip(z) { return /^919\d{2}$/.test(z) || /^92[012]\d{2}$/.test(z); }
+
+  window.adminCanvassRefreshBoundaries = async function() {
+    var mapEl = document.getElementById('bbCoverageMap');
+    if (mapEl) mapEl.innerHTML = '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#4a9eff;font-size:0.72rem;">Fetching boundaries from Census TIGERweb&hellip; (~10-20s)</div>';
+    try {
+      var resp = await fetch('/.netlify/functions/zip-boundaries');
+      var data = await resp.json();
+      if (!data.ok) {
+        if (mapEl) mapEl.innerHTML = '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#ff8a8a;font-size:0.7rem;text-align:center;padding:20px;">Boundary fetch failed (' + (data.reason || 'unknown') + ') — check Netlify function logs for zip-boundaries.</div>';
+        return;
+      }
+    } catch(e) {
+      if (mapEl) mapEl.innerHTML = '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#ff8a8a;font-size:0.7rem;">Refresh failed — network error.</div>';
+      return;
+    }
+    var expRow = null;
+    try {
+      var c3 = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var { data: er } = await c3.from('pipeline_state').select('value').eq('key','expansion_index').maybeSingle();
+      expRow = er;
+    } catch(e) {}
+    adminCanvassRenderCoverageMap(expRow ? (parseInt(expRow.value, 10) || 0) : 0);
+  };
+
+  window.adminCanvassRenderCoverageMap = async function(expIndex) {
+    var mapEl = document.getElementById('bbCoverageMap');
+    if (!mapEl) return;
+    try {
+      var c4 = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var { data: row } = await c4.from('pipeline_state').select('value').eq('key','zip_boundaries_geojson').maybeSingle();
+      if (!row || !row.value) {
+        mapEl.innerHTML = '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:#888;font-size:0.72rem;text-align:center;padding:20px;">'
+          + '<div>No boundary data cached yet.</div>'
+          + '<button onclick="adminCanvassRefreshBoundaries()" style="width:auto;margin-top:0;padding:6px 14px;background:rgba(74,158,255,0.12);border:1px solid rgba(74,158,255,0.35);color:#4a9eff;border-radius:100px;font-size:0.68rem;font-weight:700;cursor:pointer;">&#128260; Refresh Boundaries</button>'
+          + '</div>';
+        return;
+      }
+      var geojson = JSON.parse(row.value);
+      if (!geojson.features || !geojson.features.length) {
+        mapEl.innerHTML = '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#ff8a8a;font-size:0.7rem;text-align:center;padding:20px;">Cached boundary data is empty — tap Refresh Boundaries, then check the zip-boundaries function logs.</div>';
+        return;
+      }
+
+      // Build lookup sets from the same queue data the old chip-grid used.
+      var unlockedZips = {}, lockedZips = {};
+      var zipsSeen = 0;
+      (window.BB_EXPANSION_QUEUE || []).forEach(function(grp) {
+        grp.zips.forEach(function(z) {
+          if (zipsSeen < expIndex) unlockedZips[z] = true; else lockedZips[z] = true;
+          zipsSeen++;
+        });
+      });
+
+      if (typeof google === 'undefined' || !google.maps) {
+        mapEl.innerHTML = '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#ff8a8a;font-size:0.7rem;">Google Maps failed to load.</div>';
+        return;
+      }
+
+      mapEl.innerHTML = '';
+      var map = new google.maps.Map(mapEl, {
+        center: { lat: 33.55, lng: -117.1 },
+        zoom: 8,
+        disableDefaultUI: true,
+        zoomControl: true,
+        styles: [
+          { elementType: 'geometry', stylers: [{ color: '#1a1a1a' }] },
+          { elementType: 'labels.text.fill', stylers: [{ color: '#8a8a8a' }] },
+          { elementType: 'labels.text.stroke', stylers: [{ color: '#0a0a0a' }] },
+          { featureType: 'administrative', elementType: 'geometry.stroke', stylers: [{ color: '#333' }] },
+          { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#2a2a2a' }] },
+          { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#0d1a22' }] },
+          { featureType: 'poi', stylers: [{ visibility: 'off' }] }
+        ]
+      });
+      map.data.addGeoJson(geojson);
+      map.data.setStyle(function(feature) {
+        var z = feature.getProperty('zip');
+        if (z && _bbIsHomeZip(z)) {
+          return { fillColor: '#4a9eff', fillOpacity: 0.28, strokeColor: '#4a9eff', strokeWeight: 1, clickable: true };
+        }
+        if (z && unlockedZips[z]) {
+          return { fillColor: '#8DC63F', fillOpacity: 0.45, strokeColor: '#8DC63F', strokeWeight: 1.2, clickable: true };
+        }
+        if (z && lockedZips[z]) {
+          return { fillColor: '#888', fillOpacity: 0.22, strokeColor: '#888', strokeWeight: 1, clickable: true };
+        }
+        // In our fetched region but not in the queue at all — the gap.
+        return { fillColor: '#ffaa00', fillOpacity: 0.03, strokeColor: '#ffaa00', strokeWeight: 1.3, clickable: true };
+      });
+
+      var infoWin = new google.maps.InfoWindow();
+      map.data.addListener('click', function(e) {
+        var z = e.feature.getProperty('zip');
+        if (!z) return;
+        if (unlockedZips[z] || lockedZips[z]) {
+          bbDialSetFocusZip(z);
+          return;
+        }
+        var status = (z && _bbIsHomeZip(z)) ? 'San Diego home territory — always covered.' : 'Not in the expansion queue yet.';
+        infoWin.setContent('<div style="font:600 12px sans-serif;color:#222;">' + z + '</div><div style="font:11px sans-serif;color:#555;margin-top:2px;">' + status + '</div>');
+        infoWin.setPosition(e.latLng);
+        infoWin.open(map);
+      });
+
+      // Legend overlay
+      var legend = document.createElement('div');
+      legend.style.cssText = 'position:absolute;bottom:10px;left:10px;background:rgba(10,10,10,0.85);border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:8px 10px;font-size:0.6rem;color:#ccc;line-height:1.6;pointer-events:none;';
+      legend.innerHTML = '<div><span style="display:inline-block;width:9px;height:9px;background:#4a9eff;border-radius:2px;margin-right:5px;"></span>Home territory (SD)</div>'
+        + '<div><span style="display:inline-block;width:9px;height:9px;background:#8DC63F;border-radius:2px;margin-right:5px;"></span>Active expansion zip</div>'
+        + '<div><span style="display:inline-block;width:9px;height:9px;background:#888;border-radius:2px;margin-right:5px;"></span>Queued, not unlocked</div>'
+        + '<div><span style="display:inline-block;width:9px;height:9px;border:1.5px solid #ffaa00;border-radius:2px;margin-right:5px;"></span>Not queued — the gap</div>';
+      mapEl.style.position = 'relative';
+      mapEl.appendChild(legend);
+    } catch(e) {
+      mapEl.innerHTML = '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#ff8a8a;font-size:0.7rem;text-align:center;padding:20px;">Map failed to render — ' + (e.message || 'unknown error') + '</div>';
+    }
+  };
 
   // ── Black Box Lead Insights Dashboard ─────────────────────────────────────
   async function adminCanvassLoadInsights() {
