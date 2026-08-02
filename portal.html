@@ -7224,79 +7224,86 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var bar = document.getElementById('bbEnrichBar');
     if (bar) bar.innerHTML = '<div style="background:rgba(74,158,255,0.07);border:1px solid rgba(74,158,255,0.2);border-radius:10px;padding:10px 14px;" id="bbEnrichProgress"><div style="font-size:0.75rem;color:#4a9eff;font-weight:700;">Counting leads to enrich&hellip;</div></div>';
 
-    var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
-    var PAGE_SIZE = 500;
-    var pageOffset = 0, grandTotal = 0, found = 0, failed = 0, firstDebug = null;
+    try {
+      var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var PAGE_SIZE = 500;
+      var pageOffset = 0, grandTotal = 0, found = 0, failed = 0, firstDebug = null;
 
-    // Get total count for accurate progress bar
-    var { count } = await c2.from('customers')
-      .select('id', { count: 'exact', head: true })
-      .eq('lead_source','orphaned_list').is('sold_type',null).is('title_owner',null).not('address','is',null);
-    grandTotal = count || 0;
+      // Get total count for accurate progress bar
+      var { count } = await c2.from('customers')
+        .select('id', { count: 'exact', head: true })
+        .eq('lead_source','orphaned_list').is('sold_type',null).is('title_owner',null).not('address','is',null);
+      grandTotal = count || 0;
 
-    function updateProgress() {
-      var done = found + failed;
-      var pct = grandTotal ? Math.round(done / grandTotal * 100) : 0;
-      var prog = document.getElementById('bbEnrichProgress');
-      if (prog) prog.innerHTML = '<div style="font-size:0.75rem;color:#4a9eff;font-weight:700;margin-bottom:6px;">Enriching&hellip; '+done+' of '+grandTotal+' &mdash; '+found+' owners found</div>'
-        + '<div style="background:rgba(255,255,255,0.08);border-radius:100px;height:6px;overflow:hidden;">'
-        + '<div style="background:#4a9eff;height:6px;border-radius:100px;width:'+pct+'%;transition:width 0.3s;"></div></div>'
-        + '<div style="font-size:0.65rem;color:#555;margin-top:4px;">'+pct+'% &mdash; keep tab active while enriching</div>'
-        + (firstDebug ? '<div style="font-size:0.6rem;color:#555;margin-top:3px;word-break:break-all;">⚠ Last miss: '+firstDebug+'</div>' : '');
-    }
-
-    // Paginate through ALL unenriched leads
-    while (true) {
-      if (!_bbEnrichRunning) break; // allow cancel
-      var { data: leads } = await c2.from('customers')
-        .select('id,address,lat,lng')
-        .eq('lead_source','orphaned_list').is('sold_type',null).is('title_owner',null)
-        .not('address','is',null).order('created_at',{ascending:true})
-        .range(pageOffset, pageOffset + PAGE_SIZE - 1);
-      leads = leads || [];
-      if (!leads.length) break;
-
-      for (var i = 0; i < leads.length; i++) {
-        if (!_bbEnrichRunning) break;
-        var lead = leads[i];
-        try {
-          var body = { address: lead.address };
-          if (lead.lat) body.lat = lead.lat;
-          if (lead.lng) body.lng = lead.lng;
-          var resp = await fetch('/.netlify/functions/regrid-lookup', {
-            method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
-          });
-          var data = await resp.json();
-          if (data.owner) {
-            found++;
-            var upd = { title_owner: data.owner, apn: data.apn || null };
-            if (data.assessed_value) upd.assessed_value = data.assessed_value;
-            if (data.tax_delinquent != null) upd.tax_delinquent = data.tax_delinquent;
-            if (data.lat != null) upd.lat = data.lat;
-            if (data.lng != null) upd.lng = data.lng;
-            await c2.from('customers').update(upd).eq('id', lead.id);
-            var cached = adminCustomers.find(function(r){ return r.id === lead.id; });
-            if (cached) Object.assign(cached, upd);
-          } else {
-            failed++;
-            if (!firstDebug && data.debug) firstDebug = lead.address.split(',')[0] + ' → ' + data.debug;
-          }
-        } catch(e) { failed++; }
-        updateProgress();
-        await new Promise(function(r){ setTimeout(r, 350); });
+      function updateProgress() {
+        var done = found + failed;
+        var pct = grandTotal ? Math.round(done / grandTotal * 100) : 0;
+        var prog = document.getElementById('bbEnrichProgress');
+        if (prog) prog.innerHTML = '<div style="font-size:0.75rem;color:#4a9eff;font-weight:700;margin-bottom:6px;">Enriching&hellip; '+done+' of '+grandTotal+' &mdash; '+found+' owners found</div>'
+          + '<div style="background:rgba(255,255,255,0.08);border-radius:100px;height:6px;overflow:hidden;">'
+          + '<div style="background:#4a9eff;height:6px;border-radius:100px;width:'+pct+'%;transition:width 0.3s;"></div></div>'
+          + '<div style="font-size:0.65rem;color:#555;margin-top:4px;">'+pct+'% &mdash; keep tab active while enriching</div>'
+          + (firstDebug ? '<div style="font-size:0.6rem;color:#555;margin-top:3px;word-break:break-all;">⚠ Last miss: '+firstDebug+'</div>' : '');
       }
 
-      pageOffset += PAGE_SIZE;
-      if (leads.length < PAGE_SIZE) break; // last page
-    }
+      // Paginate through ALL unenriched leads
+      while (true) {
+        if (!_bbEnrichRunning) break; // allow cancel
+        var { data: leads } = await c2.from('customers')
+          .select('id,address,lat,lng')
+          .eq('lead_source','orphaned_list').is('sold_type',null).is('title_owner',null)
+          .not('address','is',null).order('created_at',{ascending:true})
+          .range(pageOffset, pageOffset + PAGE_SIZE - 1);
+        leads = leads || [];
+        if (!leads.length) break;
 
-    _bbEnrichRunning = false;
-    var bar2 = document.getElementById('bbEnrichBar');
-    if (bar2) bar2.innerHTML = '<div style="background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.2);border-radius:10px;padding:10px 14px;font-size:0.75rem;color:#8DC63F;font-weight:700;">'
-      + '&#10003; Free enrichment done: '+found+' owner names added &mdash; run Skip Trace to add phone &amp; email'
-      + (firstDebug ? '<div style="font-size:0.65rem;color:#888;font-weight:400;margin-top:4px;">Missed: '+firstDebug+'</div>' : '')
-      + '</div>';
-    setTimeout(adminCanvassLoadEnrichBar, 1200);
+        for (var i = 0; i < leads.length; i++) {
+          if (!_bbEnrichRunning) break;
+          var lead = leads[i];
+          try {
+            var body = { address: lead.address };
+            if (lead.lat) body.lat = lead.lat;
+            if (lead.lng) body.lng = lead.lng;
+            var resp = await fetch('/.netlify/functions/regrid-lookup', {
+              method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
+            });
+            var data = await resp.json();
+            if (data.owner) {
+              found++;
+              var upd = { title_owner: data.owner, apn: data.apn || null };
+              if (data.assessed_value) upd.assessed_value = data.assessed_value;
+              if (data.tax_delinquent != null) upd.tax_delinquent = data.tax_delinquent;
+              if (data.lat != null) upd.lat = data.lat;
+              if (data.lng != null) upd.lng = data.lng;
+              await c2.from('customers').update(upd).eq('id', lead.id);
+              var cached = adminCustomers.find(function(r){ return r.id === lead.id; });
+              if (cached) Object.assign(cached, upd);
+            } else {
+              failed++;
+              if (!firstDebug && data.debug) firstDebug = lead.address.split(',')[0] + ' → ' + data.debug;
+            }
+          } catch(e) { failed++; }
+          updateProgress();
+          await new Promise(function(r){ setTimeout(r, 350); });
+        }
+
+        pageOffset += PAGE_SIZE;
+        if (leads.length < PAGE_SIZE) break; // last page
+      }
+
+      var bar2 = document.getElementById('bbEnrichBar');
+      if (bar2) bar2.innerHTML = '<div style="background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.2);border-radius:10px;padding:10px 14px;font-size:0.75rem;color:#8DC63F;font-weight:700;">'
+        + '&#10003; Free enrichment done: '+found+' owner names added &mdash; run Skip Trace to add phone &amp; email'
+        + (firstDebug ? '<div style="font-size:0.65rem;color:#888;font-weight:400;margin-top:4px;">Missed: '+firstDebug+'</div>' : '')
+        + '</div>';
+      setTimeout(adminCanvassLoadEnrichBar, 1200);
+    } catch(e) {
+      var barErr = document.getElementById('bbEnrichBar');
+      if (barErr) barErr.innerHTML = '<div style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.25);border-radius:10px;padding:10px 14px;font-size:0.75rem;color:#ff8a8a;font-weight:700;">'
+        + '&#9888; Owner lookup failed: ' + (e && e.message ? e.message : 'unknown error') + ' &mdash; tap Run Owner Lookup to retry.</div>';
+    } finally {
+      _bbEnrichRunning = false;
+    }
   };
 
   window.adminCanvassSubmitSkipTrace = async function(missingCount) {
@@ -7974,6 +7981,32 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     adminCanvassRenderCoverageMap(expRow ? (parseInt(expRow.value, 10) || 0) : 0);
   };
 
+  // Real per-zip lead counts — reuses the Lead Insights cache when already populated this
+  // session (same zip-extraction pattern adminCanvassLoadInsights() uses), else does its own
+  // lightweight address-only paginated fetch. Recomputed fresh on every map open/refresh —
+  // no long-lived cache — matching the existing Lead Insights refetch-on-reopen behavior.
+  async function _bbGetZipLeadCounts() {
+    var counts = {};
+    var source = window._bbInsightsCache;
+    if (!source) {
+      var c5 = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var all = [], off = 0;
+      while (true) {
+        var res = await c5.from('customers').select('address').eq('lead_source','orphaned_list').range(off, off + 999);
+        if (res.error || !res.data || !res.data.length) break;
+        all = all.concat(res.data);
+        if (res.data.length < 1000) break;
+        off += 1000;
+      }
+      source = all;
+    }
+    source.forEach(function(c) {
+      var zm = (c.address || '').match(/\b(\d{5})\b/);
+      if (zm) counts[zm[1]] = (counts[zm[1]] || 0) + 1;
+    });
+    return counts;
+  }
+
   window.adminCanvassRenderCoverageMap = async function(expIndex) {
     var mapEl = document.getElementById('bbCoverageMap');
     if (!mapEl) return;
@@ -8003,6 +8036,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         });
       });
 
+      var zipCounts = await _bbGetZipLeadCounts();
+      var maxCount = 1;
+      Object.keys(zipCounts).forEach(function(z){ if (zipCounts[z] > maxCount) maxCount = zipCounts[z]; });
+
       if (typeof google === 'undefined' || !google.maps) {
         mapEl.innerHTML = '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#ff8a8a;font-size:0.7rem;">Google Maps failed to load.</div>';
         return;
@@ -8024,17 +8061,25 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           { featureType: 'poi', stylers: [{ visibility: 'off' }] }
         ]
       });
+      // Real lead count drives fill strength: 0 leads → hollow/near-empty, more leads → more
+      // solid, capped so one huge zip doesn't wash out the rest. Fixes zips like 92008 reading
+      // as "active" when nothing has actually been sourced there yet.
+      function _bbDensity(cnt) {
+        return cnt > 0 ? Math.min(0.15 + (cnt / maxCount) * 0.55, 0.7) : 0.04;
+      }
+
       map.data.addGeoJson(geojson);
       map.data.setStyle(function(feature) {
         var z = feature.getProperty('zip');
+        var cnt = (z && zipCounts[z]) || 0;
         if (z && _bbIsHomeZip(z)) {
-          return { fillColor: '#4a9eff', fillOpacity: 0.28, strokeColor: '#4a9eff', strokeWeight: 1, clickable: true };
+          return { fillColor: '#4a9eff', fillOpacity: _bbDensity(cnt), strokeColor: '#4a9eff', strokeWeight: cnt > 0 ? 1.2 : 0.8, clickable: true };
         }
         if (z && unlockedZips[z]) {
-          return { fillColor: '#8DC63F', fillOpacity: 0.45, strokeColor: '#8DC63F', strokeWeight: 1.2, clickable: true };
+          return { fillColor: '#8DC63F', fillOpacity: _bbDensity(cnt), strokeColor: '#8DC63F', strokeWeight: cnt > 0 ? 1.3 : 0.8, clickable: true };
         }
         if (z && lockedZips[z]) {
-          return { fillColor: '#888', fillOpacity: 0.22, strokeColor: '#888', strokeWeight: 1, clickable: true };
+          return { fillColor: '#888', fillOpacity: 0.18, strokeColor: '#888', strokeWeight: 1, clickable: true };
         }
         // In our fetched region but not in the queue at all — the gap.
         return { fillColor: '#ffaa00', fillOpacity: 0.03, strokeColor: '#ffaa00', strokeWeight: 1.3, clickable: true };
@@ -8044,11 +8089,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       map.data.addListener('click', function(e) {
         var z = e.feature.getProperty('zip');
         if (!z) return;
+        var cnt = zipCounts[z] || 0;
+        var leadsText = cnt > 0 ? (cnt.toLocaleString() + ' lead' + (cnt === 1 ? '' : 's') + ' sourced.') : '0 leads sourced yet.';
         if (unlockedZips[z] || lockedZips[z]) {
           bbDialSetFocusZip(z);
           return;
         }
-        var status = (z && _bbIsHomeZip(z)) ? 'San Diego home territory — always covered.' : 'Not in the expansion queue yet.';
+        var status = (z && _bbIsHomeZip(z)) ? 'San Diego home territory — always covered. ' + leadsText : 'Not in the expansion queue yet. ' + leadsText;
         infoWin.setContent('<div style="font:600 12px sans-serif;color:#222;">' + z + '</div><div style="font:11px sans-serif;color:#555;margin-top:2px;">' + status + '</div>');
         infoWin.setPosition(e.latLng);
         infoWin.open(map);
@@ -8060,7 +8107,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       legend.innerHTML = '<div><span style="display:inline-block;width:9px;height:9px;background:#4a9eff;border-radius:2px;margin-right:5px;"></span>Home territory (SD)</div>'
         + '<div><span style="display:inline-block;width:9px;height:9px;background:#8DC63F;border-radius:2px;margin-right:5px;"></span>Active expansion zip</div>'
         + '<div><span style="display:inline-block;width:9px;height:9px;background:#888;border-radius:2px;margin-right:5px;"></span>Queued, not unlocked</div>'
-        + '<div><span style="display:inline-block;width:9px;height:9px;border:1.5px solid #ffaa00;border-radius:2px;margin-right:5px;"></span>Not queued — the gap</div>';
+        + '<div><span style="display:inline-block;width:9px;height:9px;border:1.5px solid #ffaa00;border-radius:2px;margin-right:5px;"></span>Not queued — the gap</div>'
+        + '<div style="margin-top:4px;color:#666;">Fill strength = real leads sourced; hollow = 0 leads yet</div>';
       mapEl.style.position = 'relative';
       mapEl.appendChild(legend);
     } catch(e) {
