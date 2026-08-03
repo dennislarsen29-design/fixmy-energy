@@ -6083,15 +6083,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // NOT from the dnc/archived checks, which stay strict for safety) so they still
     // surface in bbDialBuckets()'s Worked bucket + the Recent Calls sidebar.
     var recentCutoff = new Date(Date.now() - 7*24*3600*1000).toISOString();
-    var filters = 'phone=not.is.null&phone=neq.'
-      + '&and=(or(sold_type.is.null,dialed_at.gt.' + recentCutoff + '),'
+    // Dialable predicate, shared by the main window query and the Focus-ZIP query below.
+    var dialableAnd = '&and=(or(sold_type.is.null,dialed_at.gt.' + recentCutoff + '),'
       + 'or(black_box.eq.true,lead_source.eq.orphaned_list,dialed_at.gt.' + recentCutoff + '),'
-      + 'or(dnc.is.null,dnc.eq.false),or(archived.is.null,archived.eq.false))'
-      + '&limit=2000';
+      + 'or(dnc.is.null,dnc.eq.false),or(archived.is.null,archived.eq.false))';
+    // ORDER matters: there are far more dialable leads (~13k) than this 2000-row cap, and
+    // PostgREST without an explicit order returns an arbitrary slice — so the same handful
+    // of leads loaded every time and the rest of the pool was effectively invisible.
+    // Highest lead_score first makes the window the *best* 2000 instead of a random 2000.
+    var filters = 'phone=not.is.null&phone=neq.' + dialableAnd
+      + '&order=lead_score.desc.nullslast&limit=2000';
     var filtersBase = 'sold_type=is.null' // pre-migration fallback: no dialed_at column to relax against
       + '&phone=not.is.null&phone=neq.'
       + '&and=(or(black_box.eq.true,lead_source.eq.orphaned_list),or(dnc.is.null,dnc.eq.false),or(archived.is.null,archived.eq.false))'
-      + '&limit=2000';
+      + '&order=lead_score.desc.nullslast&limit=2000';
     var lastErr = null;
     var q = async function(sel, f) {
       var resp = await fetch(SUPA_URL + '/rest/v1/customers?select=' + sel + '&' + f, {
@@ -6103,10 +6108,31 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       return data;
     };
     bbDialLoadError = null;
+    var usedSel = BB_DIAL_SEL_FULL, usedAnd = dialableAnd;
     var data = await q(BB_DIAL_SEL_FULL, filters);
-    if (!data) data = await q(BB_DIAL_SEL_BASE, filtersBase); // dialer columns not migrated yet
+    if (!data) { // dialer columns not migrated yet
+      usedSel = BB_DIAL_SEL_BASE;
+      usedAnd = '&and=(or(black_box.eq.true,lead_source.eq.orphaned_list),or(dnc.is.null,dnc.eq.false),or(archived.is.null,archived.eq.false))';
+      data = await q(BB_DIAL_SEL_BASE, filtersBase);
+    }
     if (!data) bbDialLoadError = lastErr || 'Unknown error';
     bbDialQueue = data || [];
+
+    // Focus ZIP is a *sort* key over the loaded window, not a query — so a zip whose leads
+    // all fall outside the 2000-row window read as "0 in <zip>" even with real dialable
+    // leads there (reported for 92078/San Marcos). Pull that zip's leads explicitly and
+    // merge them in, so focusing a zip always surfaces everything actually callable in it.
+    if (bbDialFocusZip && data) {
+      var zipFilters = (usedSel === BB_DIAL_SEL_BASE ? 'sold_type=is.null&' : '')
+        + 'phone=not.is.null&phone=neq.' + usedAnd
+        + '&address=ilike.*' + encodeURIComponent(bbDialFocusZip) + '*&limit=1000';
+      var zipData = await q(usedSel, zipFilters);
+      if (zipData && zipData.length) {
+        var seenIds = {};
+        bbDialQueue.forEach(function(l){ seenIds[l.id] = true; });
+        zipData.forEach(function(l){ if (!seenIds[l.id]) { seenIds[l.id] = true; bbDialQueue.push(l); } });
+      }
+    }
     bbDialLoaded = true;
   }
 
@@ -6964,6 +6990,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     z = (z||'').replace(/\D/g,'').slice(0,5);
     bbDialFocusZip = z;
     try { if (z) sessionStorage.setItem('bbDialFocusZip', z); else sessionStorage.removeItem('bbDialFocusZip'); } catch(e){}
+    // Force a queue reload so bbDialLoadQueue() can run its targeted fetch for this zip —
+    // without this the view just re-sorts the already-loaded window and a zip outside it
+    // keeps showing 0.
+    bbDialLoaded = false;
     renderBBDialerView();
   };
   window.bbDialClearFocusZip = function() { window.bbDialSetFocusZip(''); };

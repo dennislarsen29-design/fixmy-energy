@@ -220,12 +220,20 @@ exports.handler = async function(event) {
 
   async function supaFetch(path, opts) {
     try {
-      const resp = await fetchWithTimeout(SUPA_REST + path, { headers: supaHeaders, ...opts }, 12000);
+      // Merge (not replace) headers — callers pass extra headers like Prefer: count=exact,
+      // and a bare spread would drop the apikey/Authorization and 401 the request.
+      const { headers: extraHeaders, ...restOpts } = (opts || {});
+      const resp = await fetchWithTimeout(SUPA_REST + path, {
+        headers: { ...supaHeaders, ...(extraHeaders || {}) },
+        ...restOpts
+      }, 12000);
       const text = await resp.text();
       const data = text ? JSON.parse(text) : null;
-      return { ok: resp.ok, status: resp.status, data };
+      // Content-Range carries the exact total when Prefer: count=exact is requested
+      // (format "0-999/22202") — needed to page through a pool larger than the row cap.
+      return { ok: resp.ok, status: resp.status, data, contentRange: resp.headers.get('content-range') || '' };
     } catch(e) {
-      return { ok: false, status: 0, data: null, err: e.message };
+      return { ok: false, status: 0, data: null, contentRange: '', err: e.message };
     }
   }
 
@@ -259,9 +267,13 @@ exports.handler = async function(event) {
   // so the (installer × city) matrix advances night over night instead of restarting at the
   // same SunPower/San-Diego-first units every run.
   let phase1cCursor = 0;
+  // Phase 2 rotation offset — see Phase 2 below. Same problem/solution as phase1cCursor:
+  // the owner-enrichment query is capped well below the size of the unenriched pool, so
+  // without a moving offset it retried the same leads every single night forever.
+  let phase2Offset = 0;
   try {
     const stateResp = await fetch(
-      SUPA_REST + '/pipeline_state?key=in.(expansion_index,phase0_insights,phase1c_cursor)&select=key,value',
+      SUPA_REST + '/pipeline_state?key=in.(expansion_index,phase0_insights,phase1c_cursor,phase2_offset)&select=key,value',
       { headers: { apikey: supaKey, Authorization: 'Bearer ' + supaKey, Accept: 'application/json' } }
     );
     if (stateResp.ok) {
@@ -270,6 +282,8 @@ exports.handler = async function(event) {
       expansionIndex = idxRow ? (parseInt(idxRow.value, 10) || 0) : 0;
       const cursorRow = rows.find(r => r.key === 'phase1c_cursor');
       phase1cCursor = cursorRow ? (parseInt(cursorRow.value, 10) || 0) : 0;
+      const p2Row = rows.find(r => r.key === 'phase2_offset');
+      phase2Offset = p2Row ? (parseInt(p2Row.value, 10) || 0) : 0;
     }
   } catch(e) { stamp('Phase 0: expansion_index fetch error — ' + e.message); }
   activeExpansionZips = new Set(EXPANSION_QUEUE.slice(0, expansionIndex));
@@ -933,13 +947,32 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
 
   const PHASE2_DEADLINE = Date.now() + ((enrichOnly ? 10 : 6) * 60 * 1000);
 
-  // Fetch leads needing owner lookup — include already-geocoded leads so SANDAG can be retried
+  // Fetch leads needing owner lookup — include already-geocoded leads so SANDAG can be retried.
+  //
+  // ⚠️ This query MUST be ordered + offset. It is capped at 2000 rows against a pool of
+  // ~22k unenriched leads, and PostgREST with no `order` returns an arbitrary (in practice
+  // stable, physical-order) slice — so every nightly run re-fetched the SAME first 2000
+  // leads, which are precisely the ones that had already failed lookup on every previous
+  // night. That's why Phase 2 kept reporting a handful of owners added (e.g. "P2: 6 owners")
+  // while ~22k leads sat unenriched indefinitely. A persisted rotating offset (same pattern
+  // as phase1c_cursor) walks the whole pool a page at a time instead.
+  const P2_PAGE = 2000;
+  const p2CountRes = await supaFetch(
+    '/customers?lead_source=eq.orphaned_list&title_owner=is.null&select=id&limit=1',
+    { headers: { Prefer: 'count=exact' } }
+  );
+  const p2Total = parseInt(
+    String((p2CountRes.contentRange || '')).split('/')[1] || '0', 10
+  ) || 0;
+  const p2Start = p2Total > 0 ? (phase2Offset % Math.max(p2Total, 1)) : 0;
   const unenrichedRes = await supaFetch(
-    '/customers?lead_source=eq.orphaned_list&title_owner=is.null&select=id,address,lat,lng&limit=2000'
+    '/customers?lead_source=eq.orphaned_list&title_owner=is.null&select=id,address,lat,lng'
+    + `&order=id.asc&offset=${p2Start}&limit=${P2_PAGE}`
   );
   const toEnrich = (Array.isArray(unenrichedRes.data) ? unenrichedRes.data : [])
     .filter(r => r.address && addressQualityScore(r.address) >= 4);
-  stamp(`Phase 2: ${toEnrich.length} leads need geocoding/owner lookup`);
+  stamp(`Phase 2: ${toEnrich.length} of ${unenrichedRes.data && unenrichedRes.data.length || 0} fetched leads qualify `
+    + `(pool ${p2Total}, offset ${p2Start})`);
 
   const regridKey = process.env.REGRID_KEY;
   // Rate-limit state for Regrid (shared across all lookupOwner calls in this run)
@@ -1126,6 +1159,20 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
   }
 
   stamp(`Phase 2 done: ${enriched} owner names added, ${geoSaved} coordinates saved`);
+
+  // Advance the rotation offset so the next run works a different slice of the unenriched
+  // pool. Wraps at the pool size; leads that get an owner drop out of the pool naturally,
+  // so the window keeps moving over genuinely-unenriched leads rather than re-grinding the
+  // same permanently-unresolvable ones every night.
+  try {
+    const nextP2 = p2Total > 0 ? ((p2Start + P2_PAGE) % Math.max(p2Total, 1)) : 0;
+    await fetch(SUPA_REST + '/pipeline_state', {
+      method: 'POST',
+      headers: { ...supaHeaders, Prefer: 'resolution=merge-duplicates' },
+      body: JSON.stringify({ key: 'phase2_offset', value: String(nextP2), updated_at: new Date().toISOString() })
+    });
+    stamp(`Phase 2: offset ${p2Start}→${nextP2} (pool ${p2Total})`);
+  } catch(e) { stamp('Phase 2: offset persist error — ' + e.message); }
 
   // ══════════════════════════════════════════════════════════════════════════
   // PHASE 3 — TRACERFY SKIP-TRACE
