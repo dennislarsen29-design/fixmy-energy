@@ -7188,6 +7188,65 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
   var _bbEnrichRunning = false;
 
+  // ── Owner-lookup progress overlay + screen wake lock ──────────────────────
+  // The enrich run writes its status into #bbEnrichBar, which lives down in pipeline
+  // Stage 3. When the run is kicked off from the Lead Funnel's "Run Owner Lookup" CTA
+  // (far above it on the page) every bit of feedback landed off-screen, so the button
+  // looked completely dead even though it was working. This overlay is position:fixed,
+  // so progress is visible no matter where the admin is scrolled to.
+  var _bbWakeLock = null;
+
+  async function _bbAcquireWakeLock() {
+    try {
+      if ('wakeLock' in navigator && navigator.wakeLock.request) {
+        _bbWakeLock = await navigator.wakeLock.request('screen');
+        // iOS/Safari drop the lock whenever the tab is backgrounded — re-acquire on return
+        // so a long run survives the admin switching apps and coming back.
+        document.addEventListener('visibilitychange', _bbReacquireWakeLock);
+        return true;
+      }
+    } catch(e) { /* denied or unsupported — run continues, screen may just sleep */ }
+    return false;
+  }
+  async function _bbReacquireWakeLock() {
+    if (!_bbEnrichRunning) return;
+    if (document.visibilityState !== 'visible') return;
+    try {
+      if ('wakeLock' in navigator && navigator.wakeLock.request) {
+        _bbWakeLock = await navigator.wakeLock.request('screen');
+      }
+    } catch(e) {}
+  }
+  function _bbReleaseWakeLock() {
+    document.removeEventListener('visibilitychange', _bbReacquireWakeLock);
+    try { if (_bbWakeLock) _bbWakeLock.release(); } catch(e) {}
+    _bbWakeLock = null;
+  }
+
+  function _bbEnrichOverlay(innerHtml) {
+    var box = document.getElementById('bbEnrichOverlay');
+    if (!box) {
+      box = document.createElement('div');
+      box.id = 'bbEnrichOverlay';
+      box.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:16px;z-index:99999;'
+        + 'width:min(440px,calc(100vw - 24px));background:#12161c;border:1px solid rgba(74,158,255,0.45);'
+        + 'border-radius:12px;padding:12px 14px;box-shadow:0 10px 34px rgba(0,0,0,0.6);color:#ddd;';
+      document.body.appendChild(box);
+    }
+    box.innerHTML = innerHtml;
+    return box;
+  }
+  window._bbEnrichOverlayClose = function() {
+    var box = document.getElementById('bbEnrichOverlay');
+    if (box && box.parentNode) box.parentNode.removeChild(box);
+  };
+  // Cancels the run — the enrich loop checks _bbEnrichRunning between leads.
+  window.bbStopEnrich = function() {
+    _bbEnrichRunning = false;
+    var s = document.getElementById('bbEnrichOvStatus');
+    if (s) s.textContent = 'Stopping after the current lead…';
+  };
+
   window.adminCanvassLoadEnrichBar = async function() {
     var bar = document.getElementById('bbEnrichBar');
     if (!bar) return;
@@ -7249,8 +7308,18 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   };
 
   window.adminCanvassEnrichAll = async function() {
-    if (_bbEnrichRunning) return;
+    if (_bbEnrichRunning) {
+      // Already running — surface the existing progress instead of silently no-oping,
+      // which is indistinguishable from a dead button.
+      var ov = document.getElementById('bbEnrichOverlay');
+      if (ov) ov.scrollIntoView({ block: 'nearest' });
+      return;
+    }
     _bbEnrichRunning = true;
+    // Immediate feedback, before any await — the click must never look like nothing happened.
+    _bbEnrichOverlay('<div style="font-size:0.78rem;font-weight:800;color:#4a9eff;margin-bottom:4px;">&#128269; Owner Lookup</div>'
+      + '<div id="bbEnrichOvStatus" style="font-size:0.72rem;color:#bbb;">Counting leads to enrich&hellip;</div>');
+    var keptAwake = await _bbAcquireWakeLock();
     var bar = document.getElementById('bbEnrichBar');
     if (bar) bar.innerHTML = '<div style="background:rgba(74,158,255,0.07);border:1px solid rgba(74,158,255,0.2);border-radius:10px;padding:10px 14px;" id="bbEnrichProgress"><div style="font-size:0.75rem;color:#4a9eff;font-weight:700;">Counting leads to enrich&hellip;</div></div>';
 
@@ -7264,16 +7333,30 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         .select('id', { count: 'exact', head: true })
         .eq('lead_source','orphaned_list').is('sold_type',null).is('title_owner',null).not('address','is',null);
       grandTotal = count || 0;
+      if (!grandTotal) {
+        _bbEnrichOverlay('<div style="font-size:0.78rem;font-weight:800;color:#8DC63F;margin-bottom:4px;">&#10003; Owner Lookup</div>'
+          + '<div style="font-size:0.72rem;color:#bbb;">Nothing to enrich &mdash; every lead with a usable address already has an owner name.</div>'
+          + '<div style="margin-top:8px;text-align:right;"><a href="#" onclick="_bbEnrichOverlayClose();return false;" style="color:#4a9eff;font-size:0.7rem;">Dismiss</a></div>');
+        return;
+      }
 
+      function progressHtml(done, pct, compact) {
+        return '<div style="font-size:0.75rem;color:#4a9eff;font-weight:700;margin-bottom:6px;">Enriching&hellip; '+done+' of '+grandTotal+' &mdash; '+found+' owners found</div>'
+          + '<div style="background:rgba(255,255,255,0.08);border-radius:100px;height:6px;overflow:hidden;">'
+          + '<div style="background:#4a9eff;height:6px;border-radius:100px;width:'+pct+'%;transition:width 0.3s;"></div></div>'
+          + '<div style="font-size:0.65rem;color:#555;margin-top:4px;">'+pct+'% &mdash; '
+          + (keptAwake ? 'screen kept awake &#9989;' : 'keep this tab open')
+          + (compact ? ' &middot; <a href="#" onclick="bbStopEnrich();return false;" style="color:#ff8a8a;">Stop</a>' : '')
+          + '</div>'
+          + (firstDebug ? '<div style="font-size:0.6rem;color:#555;margin-top:3px;word-break:break-all;">⚠ Last miss: '+firstDebug+'</div>' : '');
+      }
       function updateProgress() {
         var done = found + failed;
         var pct = grandTotal ? Math.round(done / grandTotal * 100) : 0;
         var prog = document.getElementById('bbEnrichProgress');
-        if (prog) prog.innerHTML = '<div style="font-size:0.75rem;color:#4a9eff;font-weight:700;margin-bottom:6px;">Enriching&hellip; '+done+' of '+grandTotal+' &mdash; '+found+' owners found</div>'
-          + '<div style="background:rgba(255,255,255,0.08);border-radius:100px;height:6px;overflow:hidden;">'
-          + '<div style="background:#4a9eff;height:6px;border-radius:100px;width:'+pct+'%;transition:width 0.3s;"></div></div>'
-          + '<div style="font-size:0.65rem;color:#555;margin-top:4px;">'+pct+'% &mdash; keep tab active while enriching</div>'
-          + (firstDebug ? '<div style="font-size:0.6rem;color:#555;margin-top:3px;word-break:break-all;">⚠ Last miss: '+firstDebug+'</div>' : '');
+        if (prog) prog.innerHTML = progressHtml(done, pct, false);
+        var ovBox = document.getElementById('bbEnrichOverlay');
+        if (ovBox) ovBox.innerHTML = progressHtml(done, pct, true);
       }
 
       // Paginate through ALL unenriched leads
@@ -7321,18 +7404,29 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         if (leads.length < PAGE_SIZE) break; // last page
       }
 
+      var stopped = !_bbEnrichRunning; // user hit Stop
+      var doneMsg = (stopped ? 'Stopped: ' : 'Done: ') + found + ' owner names added'
+        + (failed ? ' &middot; ' + failed + ' had no match' : '');
       var bar2 = document.getElementById('bbEnrichBar');
       if (bar2) bar2.innerHTML = '<div style="background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.2);border-radius:10px;padding:10px 14px;font-size:0.75rem;color:#8DC63F;font-weight:700;">'
-        + '&#10003; Free enrichment done: '+found+' owner names added &mdash; run Skip Trace to add phone &amp; email'
+        + '&#10003; Free enrichment ' + doneMsg + ' &mdash; run Skip Trace to add phone &amp; email'
         + (firstDebug ? '<div style="font-size:0.65rem;color:#888;font-weight:400;margin-top:4px;">Missed: '+firstDebug+'</div>' : '')
         + '</div>';
+      _bbEnrichOverlay('<div style="font-size:0.78rem;font-weight:800;color:#8DC63F;margin-bottom:4px;">&#10003; Owner Lookup ' + (stopped ? 'stopped' : 'complete') + '</div>'
+        + '<div style="font-size:0.72rem;color:#bbb;">' + doneMsg + '</div>'
+        + '<div style="margin-top:8px;text-align:right;"><a href="#" onclick="_bbEnrichOverlayClose();return false;" style="color:#4a9eff;font-size:0.7rem;">Dismiss</a></div>');
       setTimeout(adminCanvassLoadEnrichBar, 1200);
     } catch(e) {
+      var msg = (e && e.message ? e.message : 'unknown error');
       var barErr = document.getElementById('bbEnrichBar');
       if (barErr) barErr.innerHTML = '<div style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.25);border-radius:10px;padding:10px 14px;font-size:0.75rem;color:#ff8a8a;font-weight:700;">'
-        + '&#9888; Owner lookup failed: ' + (e && e.message ? e.message : 'unknown error') + ' &mdash; tap Run Owner Lookup to retry.</div>';
+        + '&#9888; Owner lookup failed: ' + msg + ' &mdash; tap Run Owner Lookup to retry.</div>';
+      _bbEnrichOverlay('<div style="font-size:0.78rem;font-weight:800;color:#ff8a8a;margin-bottom:4px;">&#9888; Owner Lookup failed</div>'
+        + '<div style="font-size:0.72rem;color:#bbb;word-break:break-word;">' + msg + '</div>'
+        + '<div style="margin-top:8px;text-align:right;"><a href="#" onclick="_bbEnrichOverlayClose();return false;" style="color:#4a9eff;font-size:0.7rem;">Dismiss</a></div>');
     } finally {
       _bbEnrichRunning = false;
+      _bbReleaseWakeLock();
     }
   };
 
