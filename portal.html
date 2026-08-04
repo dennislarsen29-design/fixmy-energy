@@ -1505,6 +1505,62 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }
     } catch(e) { /* table not present yet — fine */ }
 
+    // ── Metrics inputs ──────────────────────────────────────────────────────
+    // The notes query above is deliberately note-only (that's what renders). Volume and
+    // time metrics need EVERY activity row, including dispositions logged without a note,
+    // so this is a separate wider fetch over the last 30 days.
+    var since30 = new Date(Date.now() - 30*24*3600*1000).toISOString();
+    var actAll = [];
+    try {
+      var aa = await sc.from('lead_activity')
+        .select('rep_name,channel,outcome,call_duration,created_at')
+        .gte('created_at', since30).order('created_at',{ascending:false}).limit(5000);
+      if (!aa.error) actAll = aa.data || [];
+    } catch(e) { /* non-fatal — metrics just render as zero */ }
+
+    // Shift clock (optional table — 20260803_setter_database.sql)
+    var shiftsByRep = {};
+    try {
+      var sh = await sc.from('rep_shifts').select('rep_name,started_at,ended_at')
+        .gte('started_at', since30).limit(2000);
+      if (!sh.error && sh.data) {
+        sh.data.forEach(function(s){
+          var k = (s.rep_name||'').toLowerCase();
+          if (!s.started_at) return;
+          // An un-ended shift is counted only up to now, so a rep who forgot to clock out
+          // doesn't accrue phantom hours forever.
+          var end = s.ended_at ? new Date(s.ended_at).getTime() : Date.now();
+          var mins = Math.max(0, (end - new Date(s.started_at).getTime()) / 60000);
+          if (mins > 16*60) return; // clearly forgotten clock-out — exclude rather than distort
+          shiftsByRep[k] = (shiftsByRep[k] || 0) + mins;
+        });
+      }
+    } catch(e) { /* table not applied yet */ }
+
+    // 1:1 meeting history (optional table — 20260803_setter_database.sql)
+    var oneOnOnesByRep = {};
+    try {
+      var oo = await sc.from('one_on_one_notes').select('*').order('meeting_date',{ascending:false}).limit(200);
+      if (!oo.error && oo.data) {
+        oo.data.forEach(function(r){ var k=(r.rep_name||'').toLowerCase(); (oneOnOnesByRep[k] = oneOnOnesByRep[k] || []).push(r); });
+      }
+    } catch(e) { /* table not applied yet */ }
+    window._oneOnOnesByRep = oneOnOnesByRep;
+
+    // Per-rep rollup: volume, contact/booking rate, hours, dials-per-hour, avg talk time.
+    var metricsByRep = {};
+    actAll.forEach(function(r){
+      var k = (r.rep_name||'').toLowerCase();
+      var m = metricsByRep[k] = metricsByRep[k] || { dials:0, contacts:0, booked:0, knocks:0, talkSecs:0, talkN:0, outcomes:{} };
+      if (r.channel === 'door_knock') m.knocks++; else m.dials++;
+      if (r.outcome) {
+        m.outcomes[r.outcome] = (m.outcomes[r.outcome] || 0) + 1;
+        if (['warm','booked','not_interested','callback','dnc'].indexOf(r.outcome) >= 0) m.contacts++;
+        if (r.outcome === 'booked') m.booked++;
+      }
+      if (r.call_duration > 0) { m.talkSecs += r.call_duration; m.talkN++; }
+    });
+
     var nameById = {};
     (adminCustomers||[]).forEach(function(c){ nameById[c.id] = ((c.first_name||'')+' '+(c.last_name||'')).trim() || c.address || 'Lead'; });
 
@@ -1548,6 +1604,33 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             '<span style="font-size:0.66rem;font-weight:700;background:rgba(155,109,232,0.15);color:#b794f6;border-radius:100px;padding:3px 10px;">&#127897; '+aiRows.length+' AI</span>'+
           '</div>'+
         '</div>';
+
+      // ── Metrics strip — inputs + time, the 30-day picture for this 1:1 ──────
+      var M = metricsByRep[rk] || { dials:0, contacts:0, booked:0, knocks:0, talkSecs:0, talkN:0, outcomes:{} };
+      var hrs = (shiftsByRep[rk] || 0) / 60;
+      var perHr = hrs > 0.05 ? (M.dials / hrs) : null;
+      var avgTalk = M.talkN ? Math.round(M.talkSecs / M.talkN) : null;
+      var contactRate = M.dials ? Math.round(M.contacts / M.dials * 100) : 0;
+      var tile = function(val, label, color) {
+        return '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.07);border-radius:9px;padding:8px 6px;text-align:center;">'
+          + '<div style="font-size:0.95rem;font-weight:800;color:'+color+';">'+val+'</div>'
+          + '<div style="font-size:0.58rem;color:#777;text-transform:uppercase;letter-spacing:0.04em;margin-top:1px;">'+label+'</div></div>';
+      };
+      h += '<div style="font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#666;margin-bottom:5px;">Last 30 days</div>';
+      h += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(72px,1fr));gap:6px;margin-bottom:10px;">'
+        + tile(M.dials.toLocaleString(), 'Dials', '#E8793A')
+        + tile(M.contacts.toLocaleString(), 'Contacts', '#4a9eff')
+        + tile(M.booked.toLocaleString(), 'Booked', '#8DC63F')
+        + tile(contactRate + '%', 'Contact rate', '#4a9eff')
+        + tile(hrs >= 0.05 ? hrs.toFixed(1) + 'h' : '—', 'Hours', '#c4a3f0')
+        + tile(perHr != null ? perHr.toFixed(1) : '—', 'Dials/hr', '#c4a3f0')
+        + tile(avgTalk != null ? (avgTalk >= 60 ? Math.floor(avgTalk/60)+'m '+(avgTalk%60)+'s' : avgTalk+'s') : '—', 'Avg call', '#ffaa00')
+        + (M.knocks ? tile(M.knocks.toLocaleString(), 'Doors', '#8DC63F') : '')
+        + '</div>';
+      if (hrs < 0.05 && M.dials > 0) {
+        h += '<div style="font-size:0.62rem;color:#666;margin:-4px 0 10px;">No shift hours logged &mdash; hours and dials/hour populate once they use Start Shift in the dialer.</div>';
+      }
+
       if (rpt) {
         var _arr = function(v){ return Array.isArray(v) ? v : []; };
         var objs = _arr(rpt.objections), pats = _arr(rpt.patterns), flags = _arr(rpt.coaching_flags);
@@ -1587,10 +1670,66 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if ((aiRows.length ? aiRows : rows).length > 8) {
         h += '<div style="font-size:0.68rem;color:#555;margin-top:8px;">+ '+((aiRows.length?aiRows:rows).length-8)+' more notes</div>';
       }
+
+      // ── 1:1 meeting record — what was discussed and committed to ───────────
+      var oo = oneOnOnesByRep[rk] || [];
+      var slug = rk.replace(/[^a-z0-9]/g, '');
+      h += '<div style="border-top:1px solid rgba(255,255,255,0.08);margin-top:12px;padding-top:10px;">';
+      h += '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;">'
+        + '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#8DC63F;">&#129309; 1:1 Record</div>'
+        + '<button onclick="teamToggle1on1Form(\''+slug+'\')" style="width:auto;padding:4px 12px;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.35);color:#8DC63F;border-radius:100px;font-size:0.66rem;font-weight:700;cursor:pointer;">+ Log 1:1</button>'
+        + '</div>';
+      h += '<div id="oo_form_'+slug+'" style="display:none;background:rgba(141,198,63,0.05);border:1px solid rgba(141,198,63,0.2);border-radius:10px;padding:10px;margin-bottom:8px;">'
+        + '<textarea id="oo_notes_'+slug+'" placeholder="What did you discuss? (wins, blockers, coaching given)" style="width:100%;box-sizing:border-box;background:#111;border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:#eee;padding:8px;font-size:0.76rem;min-height:64px;font-family:inherit;"></textarea>'
+        + '<textarea id="oo_goals_'+slug+'" placeholder="What did they commit to before the next 1:1?" style="width:100%;box-sizing:border-box;margin-top:6px;background:#111;border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:#eee;padding:8px;font-size:0.76rem;min-height:44px;font-family:inherit;"></textarea>'
+        + '<div style="display:flex;gap:6px;margin-top:6px;">'
+        + '<button onclick="teamSave1on1(\''+slug+'\',\''+escN(rep).replace(/'/g,"\\'")+'\')" style="width:auto;padding:6px 16px;background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;font-size:0.7rem;font-weight:800;cursor:pointer;">Save</button>'
+        + '<button onclick="teamToggle1on1Form(\''+slug+'\')" style="width:auto;padding:6px 12px;background:none;border:1px solid rgba(255,255,255,0.12);color:#888;border-radius:100px;font-size:0.7rem;cursor:pointer;">Cancel</button>'
+        + '<span id="oo_saved_'+slug+'" style="display:none;font-size:0.68rem;color:#8DC63F;align-self:center;">&#10003; Saved</span>'
+        + '</div></div>';
+      if (!oo.length) {
+        h += '<div style="font-size:0.68rem;color:#555;">No 1:1s logged yet.</div>';
+      } else {
+        oo.slice(0, 4).forEach(function(m){
+          h += '<div style="border-left:2px solid rgba(141,198,63,0.35);padding:2px 0 2px 10px;margin-bottom:8px;">'
+            + '<div style="font-size:0.64rem;color:#777;">'+escN(m.meeting_date||'')+(m.created_by?' &middot; '+escN(m.created_by):'')+'</div>'
+            + (m.notes ? '<div style="font-size:0.76rem;color:#ccc;line-height:1.45;white-space:pre-wrap;margin-top:2px;">'+escN(m.notes)+'</div>' : '')
+            + (m.goals ? '<div style="font-size:0.72rem;color:#9fd45f;line-height:1.45;white-space:pre-wrap;margin-top:3px;">&#9873; '+escN(m.goals)+'</div>' : '')
+            + '</div>';
+        });
+        if (oo.length > 4) h += '<div style="font-size:0.66rem;color:#555;">+ '+(oo.length-4)+' earlier 1:1s</div>';
+      }
+      h += '</div>';
+
       h += '</div>';
     });
     return h;
   }
+
+  window.teamToggle1on1Form = function(slug) {
+    var el = document.getElementById('oo_form_'+slug);
+    if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+  };
+
+  window.teamSave1on1 = async function(slug, repName) {
+    var notes = ((document.getElementById('oo_notes_'+slug)||{}).value || '').trim();
+    var goals = ((document.getElementById('oo_goals_'+slug)||{}).value || '').trim();
+    if (!notes && !goals) { alert('Add some notes or a goal before saving.'); return; }
+    try {
+      var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var r = await c.from('one_on_one_notes').insert({
+        rep_name: repName, notes: notes || null, goals: goals || null,
+        meeting_date: new Date().toISOString().slice(0,10),
+        created_by: (function(){ try { var u = JSON.parse(_readUser()||'{}'); return u.name || 'Admin'; } catch(e) { return 'Admin'; } })()
+      });
+      if (r.error) throw new Error(r.error.message);
+      var ok = document.getElementById('oo_saved_'+slug);
+      if (ok) ok.style.display = 'inline';
+      setTimeout(function(){ renderTeamView('oneonones'); }, 700);
+    } catch(e) {
+      alert('Could not save the 1:1: ' + e.message + '\n\nIf this persists, run supabase/migrations/20260803_setter_database.sql.');
+    }
+  };
 
   // Kick the weekly coaching agent on demand (same background dispatcher as the other agents).
   window.teamRunCoaching = async function(btn){
@@ -1819,6 +1958,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (subTab === 'team') {
 
     h += '<div class="admin-header-row"><h2 style="font-size:1.1rem;font-weight:700;">Team &amp; Credentials</h2>'+
+      '<button onclick="adminShowOnboard()" title="Creates the login, sends the welcome email with their portal credentials, and includes the Gusto link for 1099 payment setup." style="padding:6px 14px;background:rgba(155,109,232,0.15);border:1px solid rgba(155,109,232,0.45);color:#c4a3f0;border-radius:100px;font-size:0.75rem;font-weight:700;cursor:pointer;margin-right:6px;">&#128640; Onboard New Hire</button>'+
       '<button onclick="adminShowAddMember()" style="padding:6px 14px;background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;font-size:0.75rem;font-weight:700;cursor:pointer;">+ Add Member</button></div>';
     h += '<div id="addMemberSlot"></div>';
     if (teamFetchError) h += '<div style="padding:10px 14px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.25);border-radius:8px;font-size:0.72rem;color:#ef4444;margin-bottom:12px;">&#9888; '+teamFetchError+'</div>';
@@ -2252,6 +2392,76 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '<button class="lead-btn ghost" style="padding:10px 16px;" onclick="document.getElementById(\'addMemberSlot\').innerHTML=\'\'">Cancel</button>'+
           '<span id="amSaved" style="display:none;font-size:0.72rem;color:#8DC63F;margin-left:10px;">&#10003; Added</span>'+
         '</div></div>';
+    };
+
+    // ── Onboard New Hire ────────────────────────────────────────────────────
+    // Wraps rep-onboard.js, which was already built (creates the team_members row +
+    // access code, upserts to GHL, sends the Resend welcome email) but had only ever
+    // been reachable from the public onboarding.html page — never from admin.
+    window.adminShowOnboard = function() {
+      var slot = document.getElementById('addMemberSlot');
+      if (!slot) return;
+      var savedGusto = '';
+      try { savedGusto = localStorage.getItem('gustoOnboardUrl') || ''; } catch(e) {}
+      slot.innerHTML =
+        '<div class="editor-panel" style="margin-bottom:16px;">'+
+        '<div class="editor-header"><div style="font-weight:700;color:#c4a3f0;font-size:1rem;">&#128640; Onboard New Hire</div>'+
+        '<button onclick="document.getElementById(\'addMemberSlot\').innerHTML=\'\'" style="background:none;border:none;color:#666;cursor:pointer;font-size:1.1rem;">&#10005;</button></div>'+
+        '<div style="font-size:0.72rem;color:#888;padding:0 2px 10px;line-height:1.5;">Creates their portal login, emails them their credentials, and includes the Gusto link so they can complete their 1099 payment info.</div>'+
+        '<div class="ed-grid">'+
+          '<div><label class="ed-label">Full Name *</label><input type="text" id="obName" class="ed-input" placeholder="Jane Smith"/></div>'+
+          '<div><label class="ed-label">Email *</label><input type="email" id="obEmail" class="ed-input" placeholder="jane@example.com"/></div>'+
+          '<div><label class="ed-label">Phone *</label><input type="tel" id="obPhone" class="ed-input" placeholder="619-555-0100"/></div>'+
+          '<div><label class="ed-label">Role *</label><select id="obRole" class="ed-input">'+
+            '<option value="setter">Setter / Black Box Dialer</option>'+
+            '<option value="tech">Tech / Sales Rep</option>'+
+          '</select></div>'+
+          '<div><label class="ed-label">Market</label><input type="text" id="obMarket" class="ed-input" value="San Diego"/></div>'+
+          '<div><label class="ed-label">Start Date</label><input type="date" id="obStart" class="ed-input" value="'+new Date().toISOString().slice(0,10)+'"/></div>'+
+        '</div>'+
+        '<div style="margin-top:10px;"><label class="ed-label">Gusto contractor invite link</label>'+
+        '<input type="url" id="obGusto" class="ed-input" placeholder="https://app.gusto.com/..." value="'+String(savedGusto).replace(/"/g,'&quot;')+'"/>'+
+        '<div style="font-size:0.66rem;color:#666;margin-top:3px;">Saved on this device and reused for every hire. Leave blank to skip the Gusto section in the email.</div></div>'+
+        '<div class="editor-footer">'+
+          '<button class="lead-btn lime" style="padding:10px 24px;" onclick="adminRunOnboard(this)">Create &amp; Send Welcome Email</button>'+
+          '<button class="lead-btn ghost" style="padding:10px 16px;" onclick="document.getElementById(\'addMemberSlot\').innerHTML=\'\'">Cancel</button>'+
+          '<span id="obStatus" style="font-size:0.72rem;color:#888;margin-left:10px;"></span>'+
+        '</div></div>';
+    };
+
+    window.adminRunOnboard = async function(btn) {
+      var v = function(id){ return ((document.getElementById(id)||{}).value || '').trim(); };
+      var name = v('obName'), email = v('obEmail').toLowerCase(), phone = v('obPhone');
+      var role = v('obRole'), market = v('obMarket') || 'San Diego', gusto = v('obGusto'), start = v('obStart');
+      var st = document.getElementById('obStatus');
+      if (!name || !email || !phone) { alert('Name, email, and phone are required.'); return; }
+      try { if (gusto) localStorage.setItem('gustoOnboardUrl', gusto); } catch(e) {}
+      if (btn) { btn.disabled = true; btn.textContent = 'Creating…'; }
+      if (st) { st.style.color = '#888'; st.textContent = 'Creating login and sending welcome email…'; }
+      try {
+        var resp = await fetch('/.netlify/functions/rep-onboard', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            full_name: name, email: email, phone: phone, market: market,
+            role: role, role_type: role === 'setter' ? 'Setter' : 'Sales Rep',
+            source: 'admin-onboard', gusto_url: gusto || undefined, start_date: start || undefined
+          })
+        });
+        var data = await resp.json();
+        if (!resp.ok || data.error) throw new Error(data.error || ('HTTP ' + resp.status));
+        if (st) { st.style.color = '#8DC63F'; st.innerHTML = '&#10003; Created — access code <strong>' + (data.code||'') + '</strong>. Welcome email sent to ' + email + '.'; }
+        if (btn) btn.textContent = 'Done';
+        // Refresh the roster so the new hire shows up immediately.
+        try {
+          var rc = supabase.createClient(SUPA_URL, SUPA_KEY);
+          var tm = await rc.from('team_members').select('*').order('created_at',{ascending:true});
+          if (!tm.error) adminTeamMembers = tm.data || adminTeamMembers;
+        } catch(e) {}
+        setTimeout(function(){ renderTeamView('team'); }, 2500);
+      } catch(e) {
+        if (st) { st.style.color = '#ff8a8a'; st.textContent = 'Failed: ' + e.message; }
+        if (btn) { btn.disabled = false; btn.textContent = 'Create & Send Welcome Email'; }
+      }
     };
 
     window.adminAddMember = async function() {
@@ -6010,6 +6220,88 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
   // Shared activity logger — single write path for dialer dispositions, door
   // knock outcomes, and quick notes so both crews see the same feed on a lead.
+  // ── Shift clock ───────────────────────────────────────────────────────────
+  // A setter taps Start Shift when they sit down and End Shift when they're done; one
+  // rep_shifts row per shift. Paired with lead_activity this is what turns "12 dials"
+  // into "12 dials in 3.5 hours" — the number a 1:1 actually turns on. Degrades silently
+  // if 20260803_setter_database.sql hasn't been applied yet (dialing is never blocked).
+  var _bbShift = null;          // open shift row, or null
+  var _bbShiftChecked = false;
+
+  async function bbShiftLoad() {
+    if (_bbShiftChecked) return _bbShift;
+    _bbShiftChecked = true;
+    try {
+      var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var r = await c.from('rep_shifts').select('*')
+        .eq('rep_name', bbRepName()).is('ended_at', null)
+        .order('started_at', { ascending: false }).limit(1);
+      if (!r.error && r.data && r.data.length) _bbShift = r.data[0];
+    } catch(e) { /* table not applied yet — shift clock just stays hidden */ }
+    return _bbShift;
+  }
+
+  window.bbShiftStart = async function() {
+    try {
+      var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var row = { rep_id: bbRepId(), rep_name: bbRepName(), started_at: new Date().toISOString(), source: 'dialer' };
+      var r = await c.from('rep_shifts').insert(row).select();
+      if (r.error) throw new Error(r.error.message);
+      _bbShift = (r.data && r.data[0]) || row;
+      renderBBDialerView();
+    } catch(e) { alert('Could not start shift: ' + e.message + '\n\nIf this persists, run supabase/migrations/20260803_setter_database.sql.'); }
+  };
+
+  window.bbShiftEnd = async function() {
+    if (!_bbShift) return;
+    if (!confirm('End your shift? Your dials and hours are saved to your record.')) return;
+    try {
+      var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var r = await c.from('rep_shifts').update({ ended_at: new Date().toISOString() }).eq('id', _bbShift.id);
+      if (r.error) throw new Error(r.error.message);
+      _bbShift = null;
+      renderBBDialerView();
+    } catch(e) { alert('Could not end shift: ' + e.message); }
+  };
+
+  function _bbShiftElapsed() {
+    if (!_bbShift || !_bbShift.started_at) return '';
+    var mins = Math.max(0, Math.round((Date.now() - new Date(_bbShift.started_at).getTime()) / 60000));
+    return Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm';
+  }
+
+  function bbShiftControlHtml() {
+    if (_bbShift) {
+      return '<div style="display:flex;align-items:center;gap:8px;">'
+        + '<span style="font-size:0.7rem;color:#8DC63F;font-weight:700;">&#128337; On shift &middot; ' + _bbShiftElapsed() + '</span>'
+        + '<button onclick="bbShiftEnd()" style="width:auto;padding:5px 12px;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.35);color:#ff8a8a;border-radius:100px;font-size:0.68rem;font-weight:700;cursor:pointer;">End Shift</button>'
+        + '</div>';
+    }
+    return '<button onclick="bbShiftStart()" title="Starts your shift clock. Your hours are paired with your dials so your 1:1 shows real dials-per-hour." style="width:auto;padding:5px 12px;background:rgba(141,198,63,0.12);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:100px;font-size:0.68rem;font-weight:700;cursor:pointer;">&#9654; Start Shift</button>';
+  }
+
+  // ── Call timing ───────────────────────────────────────────────────────────
+  // Stamped when the rep taps Call; consumed by bbDialCommit when they disposition,
+  // giving a real per-call duration (lead_activity.call_duration existed since the
+  // original dialer migration but was never written to). Kept per-lead so switching
+  // leads mid-call can't attribute the time to the wrong record.
+  var _bbCallStart = null;   // { leadId, at }
+  window.bbCallStarted = function(leadId) { _bbCallStart = { leadId: leadId, at: Date.now() }; };
+  function _bbCallDurationFor(leadId) {
+    if (!_bbCallStart || _bbCallStart.leadId !== leadId) return null;
+    var secs = Math.round((Date.now() - _bbCallStart.at) / 1000);
+    _bbCallStart = null;
+    // Guard against a stale stamp (rep tapped Call, wandered off, dispositioned an hour
+    // later) — anything over 2h is noise, not a call.
+    return (secs > 0 && secs < 7200) ? secs : null;
+  }
+
+  // The true person id when a rep is signed in (set by the sales portal). CURRENT_ROLE is
+  // a role string like 'setter'/'admin', so using it as rep_id — as this did originally —
+  // made per-person history impossible to query reliably; rep_name string-matching was the
+  // only handle. Falls back to the role so admin-side logging still records something.
+  function bbRepId() { return window._bbDialerPersonId || CURRENT_ROLE; }
+
   async function bbLogActivity(id, channel, outcome, note, opts) {
     opts = opts || {};
     var client = supabase.createClient(SUPA_URL, SUPA_KEY);
@@ -6019,7 +6311,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     try {
       var ins = await client.from('lead_activity').insert({
         customer_id: id, channel: channel, outcome: outcome || null, note: note || null,
-        rep_id: CURRENT_ROLE, rep_name: rep,
+        rep_id: bbRepId(), rep_name: rep,
         callback_at: opts.callback_at || null, call_duration: opts.call_duration || null
       });
       if (ins.error) console.warn('lead_activity insert skipped:', ins.error.message);
@@ -6686,6 +6978,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var buckets = bbDialBuckets();
     var sess = bbDialSession();
 
+    // Shift clock — lazily checks for an open shift on first render, then re-renders.
+    if (!_bbShiftChecked) { bbShiftLoad().then(function(){ renderBBDialerView(); }); }
+    h += '<div style="display:flex;justify-content:flex-end;margin-bottom:8px;">' + bbShiftControlHtml() + '</div>';
+
     // Session stats
     h += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px;">';
     h += '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:10px;text-align:center;"><div style="font-size:1.2rem;font-weight:800;color:#E8793A;">'+sess.dials+'</div><div style="font-size:0.68rem;color:#888;">Dials Today</div></div>';
@@ -6826,7 +7122,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (badges) h += '<div style="margin-bottom:10px;">'+badges+'</div>';
 
     h += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px;">';
-    h += '<a href="tel:'+ph+'" style="display:inline-flex;align-items:center;gap:8px;padding:12px 26px;background:#8DC63F;color:#1A1A1A;border-radius:100px;font-size:1rem;font-weight:800;text-decoration:none;">&#128222; Call '+phDisplay+'</a>';
+    h += '<a href="tel:'+ph+'" onclick="bbCallStarted(\''+lead.id+'\')" style="display:inline-flex;align-items:center;gap:8px;padding:12px 26px;background:#8DC63F;color:#1A1A1A;border-radius:100px;font-size:1rem;font-weight:800;text-decoration:none;">&#128222; Call '+phDisplay+'</a>';
     h += '<a href="sms:'+ph+'" style="display:inline-flex;align-items:center;gap:4px;padding:9px 16px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);color:#4a9eff;border-radius:100px;font-size:0.75rem;font-weight:700;text-decoration:none;">&#128172; Text</a>';
     h += '<button id="bbAiBtn" onclick="bbAiToggle()" title="Listens to the call on speakerphone, transcribes it live, and writes the call note for you when you stop." style="width:auto;display:inline-flex;align-items:center;gap:5px;padding:9px 16px;background:rgba(155,109,232,0.1);border:1px solid rgba(155,109,232,0.35);color:#c4a3f0;border-radius:100px;font-size:0.75rem;font-weight:700;cursor:pointer;">&#127908; AI Notes</button>';
     h += '</div>';
@@ -7145,7 +7441,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     lead.dial_attempts = (lead.dial_attempts||0)+1; lead.callback_at = callbackIso || null;
     if (outcome === 'dnc') lead.dnc = true;
 
-    await bbLogActivity(lead.id, 'dialer', outcome, note, { callback_at: callbackIso || null });
+    await bbLogActivity(lead.id, 'dialer', outcome, note, {
+      callback_at: callbackIso || null,
+      call_duration: _bbCallDurationFor(lead.id)
+    });
 
     var sess = bbDialSession();
     sess.dials++;

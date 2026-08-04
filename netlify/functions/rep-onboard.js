@@ -38,6 +38,12 @@ exports.handler = async function(event) {
 
   const { full_name, preferred_name, email, phone, market, role_type, source, ec_name, ec_phone, _test } = body;
 
+  // Gusto contractor self-onboarding link. Gusto's provisioning API is partner-gated, so
+  // rather than creating the contractor programmatically we send them Gusto's own invite
+  // link and they complete their own W-9 / 1099-NEC details. Caller can pass it per-onboard
+  // (the admin modal remembers it); GUSTO_ONBOARD_URL is the fallback default.
+  const gustoUrl = (body.gusto_url || process.env.GUSTO_ONBOARD_URL || '').trim();
+
   if (!full_name || !email || !phone || !market) {
     return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: 'full_name, email, phone, and market are required' }) };
   }
@@ -76,14 +82,20 @@ exports.handler = async function(event) {
       name:       full_name,
       email:      email,
       code:       repCode,
-      role:       'tech',
+      // Setters get the setter role so they land in the dialer-first dashboard rather
+      // than the field-tech view; everyone else keeps the original 'tech' default.
+      role:       body.role === 'setter' ? 'setter' : 'tech',
       active:     true,
       phone:      phone,
       market:     market,
       role_type:  role_type,
       source:     source || 'onboarding',
       ec_name:    ec_name  || null,
-      ec_phone:   ec_phone || null
+      ec_phone:   ec_phone || null,
+      onboarded_at:  new Date().toISOString(),
+      start_date:    body.start_date || null,
+      gusto_status:  gustoUrl ? 'sent' : null,
+      gusto_sent_at: gustoUrl ? new Date().toISOString() : null
     })
   });
 
@@ -94,7 +106,7 @@ exports.handler = async function(event) {
     const retryResp = await fetch(SUPA_URL + '/rest/v1/team_members', {
       method:  'POST',
       headers: supaHeaders,
-      body:    JSON.stringify({ id: repId, name: full_name, email, code: repCode, role: 'tech', active: true })
+      body:    JSON.stringify({ id: repId, name: full_name, email, code: repCode, role: body.role === 'setter' ? 'setter' : 'tech', active: true })
     });
     if (!retryResp.ok) {
       const retryErr = await retryResp.text();
@@ -243,6 +255,14 @@ exports.handler = async function(event) {
               <a href="https://fixmy.energy/portal" style="display:inline-block;background:#8DC63F;color:#0f0f0f;font-weight:700;font-size:15px;text-decoration:none;padding:14px 40px;border-radius:8px;letter-spacing:0.03em;">Log In to Your Portal →</a>
             </td></tr>
           </table>
+${gustoUrl ? `
+          <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;background:#151a12;border:1px solid #2f3d21;border-radius:10px;">
+            <tr><td style="padding:18px 20px;">
+              <p style="margin:0 0 6px;font-size:11px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#8DC63F;">Required before your first payout</p>
+              <p style="margin:0 0 14px;font-size:14px;line-height:1.6;color:#ccc;">Set up your contractor payment profile in Gusto. You're paid as a 1099 contractor, so we need your W-9 details on file before any commission can be released. It takes about 5 minutes.</p>
+              <a href="${gustoUrl}" style="display:inline-block;background:#1f2a17;color:#8DC63F;border:1px solid #3d5129;font-weight:700;font-size:14px;text-decoration:none;padding:11px 26px;border-radius:8px;">Set Up Gusto Payment Info →</a>
+            </td></tr>
+          </table>` : ''}
 
           <p style="margin:0 0 8px;font-size:13px;color:#555;line-height:1.6;">Questions? Call or text: <a href="tel:8012328301" style="color:#8DC63F;text-decoration:none;">801-232-8301</a> or email <a href="mailto:info@fixmy.energy" style="color:#8DC63F;text-decoration:none;">info@fixmy.energy</a></p>
           <p style="margin:0;font-size:12px;color:#333;">Solar Review Corp · FixMy.Energy</p>
