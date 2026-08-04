@@ -7283,8 +7283,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       bar.innerHTML = '<div style="background:rgba(255,170,0,0.07);border:1px solid rgba(255,170,0,0.2);border-radius:10px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">'
         + '<div><div style="font-size:0.75rem;font-weight:700;color:#ffaa00;">'+noOwner+' leads missing owner name</div>'
         + '<div style="font-size:0.68rem;color:#888;margin-top:1px;">All leads have phone/email &mdash; run Regrid owner lookup to fill the remaining '+noOwner+' title owners</div></div>'
+        + '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
+        + '<button onclick="bbDiagnoseOwnerLookup(10)" title="Runs the real owner lookup against 10 sample leads and reports exactly which step of the chain is failing. ~20 seconds." style="width:auto;margin-top:0;background:none;border:1px solid rgba(74,158,255,0.35);border-radius:100px;color:#4a9eff;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#129658; Diagnose</button>'
         + '<button onclick="adminCanvassEnrichAll()" title="FREE — looks up missing property owner names via SANDAG/Regrid parcel GIS data and fills title_owner on every lead missing one. No per-lead cost." style="width:auto;margin-top:0;background:rgba(255,170,0,0.12);color:#ffaa00;border:1px solid rgba(255,170,0,0.35);border-radius:100px;padding:8px 18px;font-size:0.78rem;font-weight:800;cursor:pointer;white-space:nowrap;">&#128269; Run Owner Lookup</button>'
-        + '</div>';
+        + '</div></div>';
     } else {
       var resetFn = queueInfo && queueInfo.fromPipeline
         ? 'supabase.createClient(SUPA_URL,SUPA_KEY).from(\'pipeline_state\').delete().eq(\'key\',\'tracerfy_pending_queue\').then(function(){adminCanvassLoadEnrichBar();})'
@@ -7298,12 +7300,113 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         : '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
           + '<button onclick="adminCanvassEnrichAll()" title="FREE — looks up missing property owner names via SANDAG/Regrid parcel GIS data. No per-lead cost. Run this before paying for skip trace." style="width:auto;margin-top:0;background:#8DC63F;color:#000;border:none;border-radius:100px;padding:8px 16px;font-size:0.75rem;font-weight:800;cursor:pointer;white-space:nowrap;">&#128269; Free: Owners</button>'
           + '<button onclick="adminCanvassSubmitSkipTrace('+noContact+')" title="PAID — submits all no-contact leads to Tracerfy skip trace (billed per lead) to find phone numbers and emails. Results auto-apply when ready." style="width:auto;margin-top:0;background:#4a9eff;color:#fff;border:none;border-radius:100px;padding:8px 16px;font-size:0.75rem;font-weight:800;cursor:pointer;white-space:nowrap;">&#128222; Skip Trace</button>'
+          + '<button onclick="bbDiagnoseOwnerLookup(10)" title="Runs the real owner lookup against 10 sample leads and reports exactly which step of the chain (Regrid / Census / SANDAG / SD City) is failing, and how often. ~20 seconds — use this before committing to a full multi-hour run." style="width:auto;margin-top:0;background:none;border:1px solid rgba(74,158,255,0.35);border-radius:100px;color:#4a9eff;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#129658; Diagnose</button>'
           + '<button onclick="bbShowTracerfyPaste()" title="Manually paste a Tracerfy results CSV if the automatic fetch fails — parses it and applies contact info to matching leads by address." style="width:auto;margin-top:0;background:none;border:1px solid rgba(255,255,255,0.12);border-radius:100px;color:#888;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#128196; Paste CSV</button>'
           + '</div>';
       bar.innerHTML = '<div style="background:rgba(239,68,68,0.07);border:1px solid rgba(239,68,68,0.2);border-radius:10px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">'
         + '<div><div style="font-size:0.75rem;font-weight:700;color:#ef4444;">'+noContact+' leads have no contact info</div>'
         + '<div style="font-size:0.68rem;color:#888;margin-top:1px;">'+(total-noContact)+' of '+total+' have phone or email &mdash; GIS owner lookup is free &middot; skip-trace adds phone/email (paid)</div></div>'
         + actionBtn + '</div>';
+    }
+  };
+
+  // Groups a regrid-lookup `debug` chain ("regrid_latlon:403 Forbidden | sandag:ok_no_data")
+  // into stable tally keys ("regrid_latlon:403", "sandag:ok_no_data") so failures can be
+  // counted across many leads instead of only ever showing the first one.
+  function _bbFailKeys(debugStr) {
+    return String(debugStr || '').split('|').map(function(part) {
+      var t = part.trim();
+      if (!t) return null;
+      var seg = t.split(':');
+      var key = seg[0] + (seg[1] ? ':' + String(seg[1]).split(' ')[0] : '');
+      return key.slice(0, 40);
+    }).filter(Boolean);
+  }
+  function _bbTallyHtml(tally, title) {
+    var keys = Object.keys(tally).sort(function(a, b){ return tally[b] - tally[a]; });
+    if (!keys.length) return '';
+    var h = '<div style="font-size:0.66rem;color:#888;font-weight:700;margin-top:8px;margin-bottom:3px;">' + title + '</div>';
+    h += '<div style="max-height:150px;overflow:auto;">';
+    keys.slice(0, 12).forEach(function(k) {
+      // Colour the line by what it actually tells us: auth/credit problems vs. plain no-match.
+      var bad = /:(4\d\d|5\d\d|err)/.test(k);
+      h += '<div style="display:flex;justify-content:space-between;gap:8px;font-size:0.64rem;padding:1px 0;">'
+        + '<span style="color:' + (bad ? '#ff8a8a' : '#999') + ';word-break:break-all;">' + k + '</span>'
+        + '<span style="color:#ccc;font-weight:700;">' + tally[k] + '</span></div>';
+    });
+    h += '</div>';
+    return h;
+  }
+
+  // Fast probe: runs the real lookup against a small sample and reports exactly which step
+  // in the chain is failing. A full run over ~22k leads takes hours, so this is the tool for
+  // answering "why is the hit rate so low" in ~20 seconds instead.
+  window.bbDiagnoseOwnerLookup = async function(sampleSize) {
+    var N = sampleSize || 10;
+    _bbEnrichOverlay('<div style="font-size:0.78rem;font-weight:800;color:#4a9eff;margin-bottom:4px;">&#129658; Owner Lookup Diagnostic</div>'
+      + '<div id="bbEnrichOvStatus" style="font-size:0.72rem;color:#bbb;">Sampling ' + N + ' unenriched leads&hellip;</div>');
+    try {
+      var dc = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var { data: leads } = await dc.from('customers')
+        .select('id,address,lat,lng')
+        .eq('lead_source','orphaned_list').is('sold_type',null).is('title_owner',null)
+        .not('address','is',null).limit(N);
+      leads = leads || [];
+      if (!leads.length) {
+        _bbEnrichOverlay('<div style="font-size:0.78rem;font-weight:800;color:#8DC63F;">&#10003; Nothing unenriched to sample.</div>'
+          + '<div style="margin-top:8px;text-align:right;"><a href="#" onclick="_bbEnrichOverlayClose();return false;" style="color:#4a9eff;font-size:0.7rem;">Dismiss</a></div>');
+        return;
+      }
+      var hits = 0, tally = {}, bySource = {}, lines = [];
+      for (var i = 0; i < leads.length; i++) {
+        var ld = leads[i];
+        var st = document.getElementById('bbEnrichOvStatus');
+        if (st) st.textContent = 'Testing ' + (i+1) + ' of ' + leads.length + '…';
+        try {
+          var body = { address: ld.address };
+          if (ld.lat) body.lat = ld.lat;
+          if (ld.lng) body.lng = ld.lng;
+          var r = await fetch('/.netlify/functions/regrid-lookup', {
+            method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
+          });
+          var d = await r.json();
+          if (d.owner) {
+            hits++;
+            bySource[d.source || 'unknown'] = (bySource[d.source || 'unknown'] || 0) + 1;
+            lines.push({ ok: true, addr: (ld.address||'').split(',')[0], info: 'via ' + (d.source||'?') });
+          } else {
+            _bbFailKeys(d.debug).forEach(function(k){ tally[k] = (tally[k] || 0) + 1; });
+            lines.push({ ok: false, addr: (ld.address||'').split(',')[0], info: d.debug || 'no debug returned' });
+          }
+        } catch(e) {
+          tally['fetch_error'] = (tally['fetch_error'] || 0) + 1;
+          lines.push({ ok: false, addr: (ld.address||'').split(',')[0], info: 'fetch error: ' + e.message });
+        }
+      }
+      var pct = Math.round(hits / leads.length * 100);
+      var h = '<div style="font-size:0.78rem;font-weight:800;color:#4a9eff;margin-bottom:5px;">&#129658; Owner Lookup Diagnostic</div>';
+      h += '<div style="font-size:0.74rem;color:' + (hits ? '#8DC63F' : '#ff8a8a') + ';font-weight:700;margin-bottom:2px;">'
+        + hits + ' of ' + leads.length + ' resolved (' + pct + '%)</div>';
+      if (Object.keys(bySource).length) {
+        h += '<div style="font-size:0.64rem;color:#888;">Worked via: '
+          + Object.keys(bySource).map(function(k){ return k + ' ×' + bySource[k]; }).join(', ') + '</div>';
+      }
+      h += _bbTallyHtml(tally, 'Why the rest failed (step:reason × count)');
+      h += '<details style="margin-top:6px;"><summary style="font-size:0.64rem;color:#4a9eff;cursor:pointer;">Per-lead detail</summary>'
+        + '<div style="max-height:160px;overflow:auto;margin-top:4px;">'
+        + lines.map(function(l){
+            return '<div style="font-size:0.6rem;padding:2px 0;border-bottom:1px solid rgba(255,255,255,0.05);">'
+              + '<span style="color:' + (l.ok ? '#8DC63F' : '#ff8a8a') + ';">' + (l.ok ? '&#10003;' : '&#10007;') + '</span> '
+              + '<span style="color:#bbb;">' + l.addr + '</span> '
+              + '<span style="color:#666;word-break:break-all;">' + l.info + '</span></div>';
+          }).join('')
+        + '</div></details>';
+      h += '<div style="margin-top:8px;text-align:right;"><a href="#" onclick="_bbEnrichOverlayClose();return false;" style="color:#4a9eff;font-size:0.7rem;">Dismiss</a></div>';
+      _bbEnrichOverlay(h);
+    } catch(e) {
+      _bbEnrichOverlay('<div style="font-size:0.78rem;font-weight:800;color:#ff8a8a;margin-bottom:4px;">&#9888; Diagnostic failed</div>'
+        + '<div style="font-size:0.72rem;color:#bbb;">' + (e && e.message ? e.message : 'unknown error') + '</div>'
+        + '<div style="margin-top:8px;text-align:right;"><a href="#" onclick="_bbEnrichOverlayClose();return false;" style="color:#4a9eff;font-size:0.7rem;">Dismiss</a></div>');
     }
   };
 
@@ -7327,6 +7430,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
       var PAGE_SIZE = 500;
       var pageOffset = 0, grandTotal = 0, found = 0, failed = 0, firstDebug = null;
+      var failTally = {}, srcTally = {};
 
       // Get total count for accurate progress bar
       var { count } = await c2.from('customers')
@@ -7383,6 +7487,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             var data = await resp.json();
             if (data.owner) {
               found++;
+              srcTally[data.source || 'unknown'] = (srcTally[data.source || 'unknown'] || 0) + 1;
               var upd = { title_owner: data.owner, apn: data.apn || null };
               if (data.assessed_value) upd.assessed_value = data.assessed_value;
               if (data.tax_delinquent != null) upd.tax_delinquent = data.tax_delinquent;
@@ -7393,9 +7498,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
               if (cached) Object.assign(cached, upd);
             } else {
               failed++;
+              _bbFailKeys(data.debug).forEach(function(k){ failTally[k] = (failTally[k] || 0) + 1; });
               if (!firstDebug && data.debug) firstDebug = lead.address.split(',')[0] + ' → ' + data.debug;
             }
-          } catch(e) { failed++; }
+          } catch(e) { failed++; failTally['fetch_error'] = (failTally['fetch_error'] || 0) + 1; }
           updateProgress();
           await new Promise(function(r){ setTimeout(r, 350); });
         }
@@ -7412,8 +7518,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         + '&#10003; Free enrichment ' + doneMsg + ' &mdash; run Skip Trace to add phone &amp; email'
         + (firstDebug ? '<div style="font-size:0.65rem;color:#888;font-weight:400;margin-top:4px;">Missed: '+firstDebug+'</div>' : '')
         + '</div>';
+      var srcLine = Object.keys(srcTally).length
+        ? '<div style="font-size:0.64rem;color:#888;margin-top:2px;">Worked via: '
+          + Object.keys(srcTally).map(function(k){ return k + ' &times;' + srcTally[k]; }).join(', ') + '</div>'
+        : '';
       _bbEnrichOverlay('<div style="font-size:0.78rem;font-weight:800;color:#8DC63F;margin-bottom:4px;">&#10003; Owner Lookup ' + (stopped ? 'stopped' : 'complete') + '</div>'
         + '<div style="font-size:0.72rem;color:#bbb;">' + doneMsg + '</div>'
+        + srcLine
+        + _bbTallyHtml(failTally, 'Why the rest failed (step:reason &times; count)')
         + '<div style="margin-top:8px;text-align:right;"><a href="#" onclick="_bbEnrichOverlayClose();return false;" style="color:#4a9eff;font-size:0.7rem;">Dismiss</a></div>');
       setTimeout(adminCanvassLoadEnrichBar, 1200);
     } catch(e) {
