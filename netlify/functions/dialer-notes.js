@@ -83,7 +83,18 @@ exports.handler = async function (event) {
       })
     });
     const data = await resp.json();
-    if (!resp.ok) throw new Error((data.error && data.error.message) || ('Anthropic HTTP ' + resp.status));
+    if (!resp.ok) {
+      const upstream = (data.error && data.error.message) || ('Anthropic HTTP ' + resp.status);
+      const err = new Error(upstream);
+      // Classify so the client can show reps a neutral message while still letting an
+      // admin see the real cause. Billing/credit text in particular must never reach a
+      // setter's screen mid-call.
+      err.code = /credit balance|billing|quota|insufficient/i.test(upstream) ? 'credit'
+        : resp.status === 429 ? 'rate_limit'
+        : (resp.status === 401 || resp.status === 403) ? 'auth'
+        : 'upstream';
+      throw err;
+    }
 
     let raw = ((data.content && data.content[0] && data.content[0].text) || '').trim()
       .replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
@@ -95,6 +106,17 @@ exports.handler = async function (event) {
     const outcome = OUTCOMES.indexOf(parsed.suggested_outcome) >= 0 ? parsed.suggested_outcome : null;
     return { statusCode: 200, headers: cors, body: JSON.stringify({ note: '🎙 ' + note, suggested_outcome: outcome }) };
   } catch (e) {
-    return { statusCode: 500, headers: cors, body: JSON.stringify({ error: e.message }) };
+    // `error` is rep-safe and deliberately generic. `detail` carries the real upstream
+    // text and is only ever rendered for admins client-side.
+    console.error('dialer-notes failed:', e.code || 'unknown', e.message);
+    return {
+      statusCode: 500,
+      headers: cors,
+      body: JSON.stringify({
+        error: 'AI summary unavailable',
+        code: e.code || 'unknown',
+        detail: e.message
+      })
+    };
   }
 };

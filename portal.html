@@ -6467,6 +6467,24 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     };
     try { _bbAiRec.start(); } catch(e) { console.warn('SpeechRecognition start failed:', e); }
   };
+  // Rep-facing failure text for the AI note-taker. Reps (setters especially) must never
+  // see raw Anthropic API text — a billing/credit message on screen mid-call is confusing
+  // and looks broken to them, and it's not something they can act on. They get a neutral
+  // "type it manually" prompt; only an admin sees the real cause so it can be fixed.
+  function _aiNoteFailText(data, err) {
+    var isAdmin = (typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE === 'admin');
+    var code = (data && data.code) || '';
+    var detail = (data && data.detail) || (err && err.message) || '';
+    if (isAdmin) {
+      var adminHint = code === 'credit' ? 'Anthropic credit balance is empty — top up at console.anthropic.com → Plans & Billing.'
+        : code === 'rate_limit' ? 'Anthropic rate limit hit — retry shortly.'
+        : code === 'auth' ? 'ANTHROPIC_KEY rejected — check the Netlify env var.'
+        : detail || 'unknown error';
+      return '⚠ AI summary unavailable (admin: ' + adminHint + ') — transcript kept above, type the note manually';
+    }
+    return 'AI summary unavailable right now — your transcript is saved above, just type the note below.';
+  }
+
   function _bbAiStop() {
     _bbAiActive = false;
     if (_bbAiRec) { try { _bbAiRec.stop(); } catch(e){} _bbAiRec = null; }
@@ -6491,7 +6509,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         }
       })
     }).then(function(r){ return r.json(); }).then(async function(data) {
-      if (data.error) throw new Error(data.error);
+      if (data.error) { var _e = new Error(data.error); _e._data = data; throw _e; }
       var noteEl = document.getElementById('bbDialNote');
       if (noteEl && data.note) {
         noteEl.value = (noteEl.value ? noteEl.value.trim() + '\n' : '') + data.note;
@@ -6505,9 +6523,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         st.innerHTML = '&#10003; saved to lead' + (oc ? ' &middot; suggests: <span style="color:'+oc.color+';font-weight:700;">'+oc.label+'</span>' : '');
       }
     }).catch(function(e) {
-      console.warn('AI note summarize failed:', e);
-      var reason = (e && e.message) ? e.message : 'unknown error';
-      if (st) st.textContent = 'summarize failed (' + reason + ') — transcript kept above, type the note manually';
+      console.warn('AI note summarize failed:', e && e._data ? e._data : e);
+      if (st) st.textContent = _aiNoteFailText(e && e._data, e);
     });
   }
 
@@ -6568,7 +6585,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ transcript: transcript.slice(0, 12000), lead: { name: ((lead.first_name||'')+' '+(lead.last_name||'')).trim(), installer: lead.original_installer || '', address: lead.address || '' } })
     }).then(function(r){ return r.json(); }).then(async function(data){
-      if (data.error) throw new Error(data.error);
+      if (data.error) { var _e = new Error(data.error); _e._data = data; throw _e; }
       var noteEl = document.getElementById(_cvAiTarget);
       if (noteEl && data.note) {
         noteEl.value = (noteEl.value ? noteEl.value.trim() + '\n' : '') + data.note;
@@ -6577,7 +6594,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // Auto-save to the lead immediately — see _bbAiStop for the same fix + rationale.
       if (data.note && leadId) { try { await bbLogActivity(leadId, 'door_knock', null, data.note); } catch(e) {} }
       if (st) { var oc = data.suggested_outcome; st.innerHTML = '&#10003; saved to lead' + (oc ? ' &middot; suggests: <span style="color:#c4a3f0;font-weight:700;">'+esc(String(oc))+'</span>' : ''); }
-    }).catch(function(e){ console.warn('cv AI summarize failed:', e); var reason = (e && e.message) ? e.message : 'unknown error'; if (st) st.textContent = 'summarize failed (' + reason + ') — transcript kept above, type the note manually'; });
+    }).catch(function(e){ console.warn('cv AI summarize failed:', e && e._data ? e._data : e); if (st) st.textContent = _aiNoteFailText(e && e._data, e); });
   }
 
   // ── Email field (2026-07-23) — Black Box leads often arrive without an email
