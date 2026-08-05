@@ -7828,11 +7828,32 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       + '<div id="bbEnrichOvStatus" style="font-size:0.72rem;color:#bbb;">Sampling ' + N + ' unenriched leads&hellip;</div>');
     try {
       var dc = supabase.createClient(SUPA_URL, SUPA_KEY);
+      // Sample from a RANDOM offset. An unordered limit() returns the same arbitrary rows
+      // every time — which for unenriched leads means re-testing the exact leads that have
+      // already failed on every previous run, making the sample unrepresentative.
+      var { count: poolN } = await dc.from('customers').select('id',{count:'exact',head:true})
+        .eq('lead_source','orphaned_list').is('sold_type',null).is('title_owner',null).not('address','is',null);
+      var offA = Math.max(0, Math.floor(Math.random() * Math.max(1, (poolN || N) - N)));
       var { data: leads } = await dc.from('customers')
         .select('id,address,lat,lng')
         .eq('lead_source','orphaned_list').is('sold_type',null).is('title_owner',null)
-        .not('address','is',null).limit(N);
+        .not('address','is',null).order('id', { ascending: true }).range(offA, offA + N - 1);
       leads = leads || [];
+
+      // CONTROL GROUP — leads that ALREADY have an owner, i.e. the parcel services
+      // resolved them at some point. Re-running those is what separates "the upstream
+      // service changed/broke" from "these particular leads are just hard". If the
+      // controls also come back empty, the problem is the service, not the data.
+      var ctrl = [];
+      try {
+        var { count: ctrlN } = await dc.from('customers').select('id',{count:'exact',head:true})
+          .eq('lead_source','orphaned_list').not('title_owner','is',null).not('lat','is',null);
+        var offB = Math.max(0, Math.floor(Math.random() * Math.max(1, (ctrlN || 5) - 5)));
+        var cr = await dc.from('customers').select('id,address,lat,lng')
+          .eq('lead_source','orphaned_list').not('title_owner','is',null).not('lat','is',null)
+          .order('id', { ascending: true }).range(offB, offB + 4);
+        if (!cr.error) ctrl = cr.data || [];
+      } catch(e) { /* control is optional */ }
       if (!leads.length) {
         _bbEnrichOverlay('<div style="font-size:0.78rem;font-weight:800;color:#8DC63F;">&#10003; Nothing unenriched to sample.</div>'
           + '<div style="margin-top:8px;text-align:right;"><a href="#" onclick="_bbEnrichOverlayClose();return false;" style="color:#4a9eff;font-size:0.7rem;">Dismiss</a></div>');
@@ -7864,6 +7885,24 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           lines.push({ ok: false, addr: (ld.address||'').split(',')[0], info: 'fetch error: ' + e.message });
         }
       }
+      // Re-run the control group — leads the services ALREADY resolved once.
+      var ctrlHits = 0;
+      for (var ci = 0; ci < ctrl.length; ci++) {
+        var cl = ctrl[ci];
+        var stc = document.getElementById('bbEnrichOvStatus');
+        if (stc) stc.textContent = 'Control check ' + (ci+1) + ' of ' + ctrl.length + '…';
+        try {
+          var cbody = { address: cl.address };
+          if (cl.lat) cbody.lat = cl.lat;
+          if (cl.lng) cbody.lng = cl.lng;
+          var cr2 = await fetch('/.netlify/functions/regrid-lookup', {
+            method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(cbody)
+          });
+          var cd = await cr2.json();
+          if (cd.owner) ctrlHits++;
+        } catch(e) {}
+      }
+
       var pct = Math.round(hits / leads.length * 100);
       var h = '<div style="font-size:0.78rem;font-weight:800;color:#4a9eff;margin-bottom:5px;">&#129658; Owner Lookup Diagnostic</div>';
       h += '<div style="font-size:0.74rem;color:' + (hits ? '#8DC63F' : '#ff8a8a') + ';font-weight:700;margin-bottom:2px;">'
@@ -7871,6 +7910,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (Object.keys(bySource).length) {
         h += '<div style="font-size:0.64rem;color:#888;">Worked via: '
           + Object.keys(bySource).map(function(k){ return k + ' ×' + bySource[k]; }).join(', ') + '</div>';
+      }
+      // The control verdict is the single most useful line here: it says whether the
+      // upstream parcel services still work at all.
+      if (ctrl.length) {
+        var ctrlOk = ctrlHits > 0;
+        h += '<div style="margin-top:6px;padding:6px 8px;border-radius:6px;background:' + (ctrlOk ? 'rgba(141,198,63,0.10)' : 'rgba(239,68,68,0.10)')
+          + ';border:1px solid ' + (ctrlOk ? 'rgba(141,198,63,0.3)' : 'rgba(239,68,68,0.3)') + ';">'
+          + '<div style="font-size:0.66rem;font-weight:700;color:' + (ctrlOk ? '#8DC63F' : '#ff8a8a') + ';">'
+          + 'Control: ' + ctrlHits + ' of ' + ctrl.length + ' known-good leads re-resolved</div>'
+          + '<div style="font-size:0.62rem;color:#999;margin-top:2px;">'
+          + (ctrlOk
+              ? 'Parcel services still work &mdash; the misses above are genuinely hard leads (outside SD County, imprecise point, or redacted).'
+              : '&#9888; Leads that resolved before now return nothing. The upstream service has changed or is blocking us &mdash; not a data problem.')
+          + '</div></div>';
       }
       h += _bbTallyHtml(tally, 'Why the rest failed (step:reason × count)');
       h += '<details style="margin-top:6px;"><summary style="font-size:0.64rem;color:#4a9eff;cursor:pointer;">Per-lead detail</summary>'
