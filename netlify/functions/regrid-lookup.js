@@ -136,40 +136,6 @@ exports.handler = async function(event) {
   const addrUpper = address.toUpperCase().replace(/,.*/, '').trim();
   const addrParts = addrUpper.split(' ').slice(0, 4).join(' ');
 
-  // ── 3.5. Census Bureau geocoder — always run for SANDAG spatial accuracy ────
-  // Input lat/lng may be Google Maps street-centerline coords (from permit import).
-  // Street-centerline points fall OUTSIDE parcel polygons → SANDAG spatial query misses.
-  // Census Bureau geocoder returns address-matched coordinates that land inside parcels.
-  // Always geocode fresh; fall back to input coords only if Census can't resolve.
-  //
-  // Permit addresses stored as "CITY, CA, 92001" (extra comma before zip).
-  // Census geocoder expects "CA 92001" — normalize before calling.
-  const censusAddress = address.replace(/, ([A-Z]{2}), (\d{5})/, ', $1 $2');
-  let resolvedLat = null, resolvedLng = null;
-  try {
-    const geocodeUrl = 'https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?'
-      + 'address=' + encodeURIComponent(censusAddress)
-      + '&benchmark=Public_AR_Current&format=json';
-    const geocodeResp = await fetch(geocodeUrl, { headers: { 'Accept': 'application/json' } });
-    if (geocodeResp.ok) {
-      const geocodeData = await geocodeResp.json();
-      const matches = geocodeData.result && geocodeData.result.addressMatches;
-      if (Array.isArray(matches) && matches.length) {
-        resolvedLat = matches[0].coordinates.y;
-        resolvedLng = matches[0].coordinates.x;
-        tried.push('census_geocode:ok:' + resolvedLat.toFixed(4) + ',' + resolvedLng.toFixed(4));
-      } else {
-        tried.push('census_geocode:no_match');
-      }
-    } else {
-      tried.push('census_geocode:' + geocodeResp.status);
-    }
-  } catch(e) {
-    tried.push('census_geocode:err:' + e.message);
-  }
-  // Fall back to caller-supplied coords only when Census can't resolve
-  if (resolvedLat == null) { resolvedLat = lat; resolvedLng = lng; }
-
   // ── Helper: extract owner from any SANDAG-style attributes object ────────
   function parseSandagOwner(attr) {
     return attr.OWN_NAME1 || attr.OWNER_NAME || attr.OWNER || attr.OWN_NAME ||
@@ -179,94 +145,122 @@ exports.handler = async function(event) {
     return attr.APN_8 || attr.APN || attr.PARCEL_NBR || attr.ASSESSOR_PARCEL_NUMBER || null;
   }
 
-  // ── 4. SANDAG geo.sandag.org — spatial only, outFields=* to avoid field-name errors ─
-  if (resolvedLat != null && resolvedLng != null) try {
-    const baseUrl = 'https://geo.sandag.org/server/rest/services/Hosted/Parcels/FeatureServer/0/query?';
-    const query = 'where=1%3D1' + arcgisPointParams(resolvedLat, resolvedLng, '*');
-    const resp = await fetch(baseUrl + query, {
-      headers: { 'Accept': 'application/json', 'Referer': 'https://sdgis.sandag.org/' }
-    });
-    if (resp.ok) {
-      const data = await resp.json();
-      if (data.error) {
-        tried.push('sandag:arcgis_err:' + data.error.code + ':' + String(data.error.message||'').slice(0,40));
-      } else if (data.features && data.features.length) {
-        const attr = data.features[0].attributes;
-        const owner = parseSandagOwner(attr);
-        const apn   = parseSandagApn(attr);
-        if (owner) {
-          return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner, apn, assessed_value: null, tax_delinquent: null, lat: resolvedLat, lng: resolvedLng, source: 'sandag' }) };
+  // ── San Diego County parcel services, run for ONE coordinate pair ─────────
+  // Every one of these is a point-in-polygon query, so the accuracy of the coordinate
+  // decides whether it hits at all. `tag` labels which coordinate source produced the
+  // attempt so the debug chain stays readable (e.g. "sandag@geo:ok_no_data").
+  const SD_SERVICES = [
+    { name: 'sandag',       url: 'https://geo.sandag.org/server/rest/services/Hosted/Parcels/FeatureServer/0/query?',       fields: '*', referer: 'https://sdgis.sandag.org/' },
+    { name: 'sandag_south', url: 'https://geo.sandag.org/server/rest/services/Hosted/Parcels_South/FeatureServer/0/query?', fields: '*', referer: 'https://sdgis.sandag.org/' },
+    { name: 'sd_city',      url: 'https://webmaps.sandiego.gov/arcgis/rest/services/GeocoderMerged/MapServer/1/query?',     fields: 'SITUS_STREET,OWN_NAME1,APN_8' }
+  ];
+
+  async function trySdParcels(qlat, qlng, tag) {
+    for (const svc of SD_SERVICES) {
+      const label = svc.name + '@' + tag;
+      try {
+        const headers = { 'Accept': 'application/json' };
+        if (svc.referer) headers['Referer'] = svc.referer;
+        const resp = await fetch(svc.url + 'where=1%3D1' + arcgisPointParams(qlat, qlng, svc.fields), { headers });
+        if (!resp.ok) { tried.push(label + ':' + resp.status); continue; }
+        const data = await resp.json();
+        if (data.error) {
+          tried.push(label + ':arcgis_err:' + data.error.code + ':' + String(data.error.message||'').slice(0,40));
+        } else if (data.features && data.features.length) {
+          const attr = data.features[0].attributes;
+          const owner = parseSandagOwner(attr);
+          if (owner) return { owner, apn: parseSandagApn(attr), lat: qlat, lng: qlng, source: svc.name };
+          // Features returned but no owner field — that's the California owner-name
+          // redaction (Gov Code 6254.21), not a coordinate problem. Log the field list
+          // so it's distinguishable from a genuine miss.
+          tried.push(label + ':ok_no_owner:fields=' + Object.keys(attr).join(',').slice(0, 80));
+        } else {
+          tried.push(label + ':ok_no_data');
         }
-        tried.push('sandag:ok_no_owner:fields=' + Object.keys(attr).join(',').slice(0, 80));
-      } else {
-        tried.push('sandag:ok_no_data');
+      } catch(e) {
+        tried.push(label + ':err:' + e.message);
       }
-    } else {
-      tried.push('sandag:' + resp.status);
     }
-  } catch(e) {
-    tried.push('sandag:err:' + e.message);
-    console.error('SANDAG error:', e.message);
+    return null;
   }
 
-  // ── 5. SANDAG Parcels_South — spatial only ───────────────────────────────
-  if (resolvedLat != null && resolvedLng != null) try {
-    const baseUrl = 'https://geo.sandag.org/server/rest/services/Hosted/Parcels_South/FeatureServer/0/query?';
-    const query = 'where=1%3D1' + arcgisPointParams(resolvedLat, resolvedLng, '*');
-    const resp = await fetch(baseUrl + query, {
-      headers: { 'Accept': 'application/json', 'Referer': 'https://sdgis.sandag.org/' }
-    });
-    if (resp.ok) {
-      const data = await resp.json();
-      if (data.error) {
-        tried.push('sandag_south:arcgis_err:' + data.error.code + ':' + String(data.error.message||'').slice(0,40));
-      } else if (data.features && data.features.length) {
-        const attr = data.features[0].attributes;
-        const owner = parseSandagOwner(attr);
-        const apn   = parseSandagApn(attr);
-        if (owner) {
-          return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner, apn, assessed_value: null, tax_delinquent: null, lat: resolvedLat, lng: resolvedLng, source: 'sandag_south' }) };
-        }
-        tried.push('sandag_south:ok_no_owner');
-      } else {
-        tried.push('sandag_south:ok_no_data');
-      }
-    } else {
-      tried.push('sandag_south:' + resp.status);
-    }
-  } catch(e) {
-    tried.push('sandag_south:err:' + e.message);
+  // ── 4. Parcel lookup — stored coords FIRST, Census only as a fallback ─────
+  // The portal geocodes every lead through Google before this ever runs, and Google
+  // returns rooftop-accurate points that land INSIDE the parcel polygon. The previous
+  // version always re-geocoded through Census and let that result OVERRIDE the stored
+  // coords — but Census returns street-interpolated points that frequently fall outside
+  // the parcel, producing the census_geocode:no_match → sandag:ok_no_data chain seen in
+  // production. Trying the stored coords first also skips the Census round-trip entirely
+  // whenever they hit, which makes the whole run faster.
+  let hit = null;
+  if (lat != null && lng != null) {
+    hit = await trySdParcels(lat, lng, 'geo');
+  } else {
+    tried.push('geo:no_stored_coords');
   }
 
-  // ── 6. City of SD — webmaps.sandiego.gov GeocoderMerged — spatial if lat/lng ──
-  try {
-    const baseUrl = 'https://webmaps.sandiego.gov/arcgis/rest/services/GeocoderMerged/MapServer/1/query?';
-    const query = (resolvedLat != null && resolvedLng != null)
-      ? 'where=1%3D1' + arcgisPointParams(resolvedLat, resolvedLng, 'SITUS_STREET,OWN_NAME1,APN_8')
-      : 'where=' + encodeURIComponent("SITUS_STREET LIKE '" + addrParts + "%'") + '&outFields=SITUS_STREET,OWN_NAME1,APN_8&f=json&resultRecordCount=1';
-    const url = baseUrl + query;
+  // Census fallback — only pay for it when the stored coords missed.
+  // Permit addresses are stored as "CITY, CA, 92001" (extra comma before the zip);
+  // the Census geocoder expects "CA 92001", so normalize first.
+  if (!hit) {
+    const censusAddress = address.replace(/, ([A-Z]{2}), (\d{5})/, ', $1 $2');
+    let cLat = null, cLng = null;
+    try {
+      const geocodeUrl = 'https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?'
+        + 'address=' + encodeURIComponent(censusAddress)
+        + '&benchmark=Public_AR_Current&format=json';
+      const geocodeResp = await fetch(geocodeUrl, { headers: { 'Accept': 'application/json' } });
+      if (geocodeResp.ok) {
+        const geocodeData = await geocodeResp.json();
+        const matches = geocodeData.result && geocodeData.result.addressMatches;
+        if (Array.isArray(matches) && matches.length) {
+          cLat = matches[0].coordinates.y;
+          cLng = matches[0].coordinates.x;
+          tried.push('census_geocode:ok:' + cLat.toFixed(4) + ',' + cLng.toFixed(4));
+        } else {
+          tried.push('census_geocode:no_match');
+        }
+      } else {
+        tried.push('census_geocode:' + geocodeResp.status);
+      }
+    } catch(e) {
+      tried.push('census_geocode:err:' + e.message);
+    }
+    // Only worth a second round of parcel queries if Census landed somewhere materially
+    // different from the coords we already tried (~10m+).
+    if (cLat != null && (lat == null || Math.abs(cLat - lat) > 0.0001 || Math.abs(cLng - lng) > 0.0001)) {
+      hit = await trySdParcels(cLat, cLng, 'census');
+    } else if (cLat != null) {
+      tried.push('census_geocode:same_as_stored');
+    }
+  }
+
+  // Last resort: SD City street-name LIKE match, which needs no coordinates at all.
+  if (!hit) try {
+    const url = 'https://webmaps.sandiego.gov/arcgis/rest/services/GeocoderMerged/MapServer/1/query?'
+      + 'where=' + encodeURIComponent("SITUS_STREET LIKE '" + addrParts + "%'")
+      + '&outFields=SITUS_STREET,OWN_NAME1,APN_8&f=json&resultRecordCount=1';
     const resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
     if (resp.ok) {
       const data = await resp.json();
-      if (data.error) {
-        tried.push('sd_city:arcgis_err:' + data.error.code + ':' + String(data.error.message||'').slice(0,40));
-      } else if (data.features && data.features.length) {
+      if (data.features && data.features.length && data.features[0].attributes.OWN_NAME1) {
         const attr = data.features[0].attributes;
-        const owner = attr.OWN_NAME1 || null;
-        const apn   = attr.APN_8 || null;
-        if (owner) {
-          return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner, apn, assessed_value: null, tax_delinquent: null, lat: resolvedLat, lng: resolvedLng, source: 'sd_city' }) };
-        }
-        tried.push('sd_city:ok_no_owner');
+        hit = { owner: attr.OWN_NAME1, apn: attr.APN_8 || null, lat: lat || null, lng: lng || null, source: 'sd_city_addr' };
       } else {
-        tried.push('sd_city:ok_no_data');
+        tried.push('sd_city_addr:ok_no_data');
       }
     } else {
-      tried.push('sd_city:' + resp.status);
+      tried.push('sd_city_addr:' + resp.status);
     }
   } catch(e) {
-    tried.push('sd_city:err:' + e.message);
-    console.error('SD City GIS error:', e.message);
+    tried.push('sd_city_addr:err:' + e.message);
+  }
+
+  if (hit) {
+    return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({
+      owner: hit.owner, apn: hit.apn, assessed_value: null, tax_delinquent: null,
+      lat: hit.lat, lng: hit.lng, source: hit.source
+    }) };
   }
 
   console.error('regrid-lookup: no owner found for "' + address.slice(0, 60) + '" — tried: ' + tried.join(' | '));
