@@ -5377,6 +5377,24 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
   }
 
+  // ── Canvass proximity search ──────────────────────────────────────────────
+  // Postgres/PostgREST can't ORDER BY a computed great-circle distance without PostGIS,
+  // so proximity is done as a bounding-box query + client-side sort. The trap (hit in both
+  // canvass paths) is that a wide box plus a row LIMIT and no ORDER returns an ARBITRARY
+  // slice of the box — the client then sorts only what it happened to receive, so the
+  // "closest" door can be miles away while nearer leads were never fetched. The fix is to
+  // start with a small box and widen only when the near ring is genuinely thin, with a
+  // limit high enough to return the whole box rather than a sample of it.
+  var CANVASS_BOX_STEPS = [0.02, 0.05, 0.10, 0.25]; // ≈ 1.4 / 3.5 / 7 / 17 miles
+  function _canvassBoxSteps() { return CANVASS_BOX_STEPS; }
+  function _canvassGeoBox(lat, lng, dLat) {
+    // A degree of longitude shrinks with latitude — at San Diego's ~33°N it's ~0.84 of a
+    // degree of latitude. Using the same delta for both makes the box ~19% too wide
+    // east-west, which pulls in farther leads before nearer ones.
+    var dLng = dLat / Math.max(0.2, Math.cos(lat * Math.PI / 180));
+    return { latMin: lat - dLat, latMax: lat + dLat, lngMin: lng - dLng, lngMax: lng + dLng };
+  }
+
   window.adminCanvassInit = async function() {
     adminCanvassGpsStatus = 'loading';
     renderAdminCanvassView();
@@ -5391,16 +5409,24 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       renderAdminCanvassView();
       return;
     }
-    var D = 0.10; // ~7-mile bounding box — only pre-geocoded leads, instant query
     var adminSEL = 'id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,original_installer,install_year';
-    var adminParams = 'lead_source=eq.orphaned_list&sold_type=is.null&lat=not.is.null&select=' + adminSEL
-      + '&lat=gte.' + (adminCanvassUserLat - D) + '&lat=lte.' + (adminCanvassUserLat + D)
-      + '&lng=gte.' + (adminCanvassUserLng - D) + '&lng=lte.' + (adminCanvassUserLng + D)
-      + '&limit=100';
-    var adminResp = await fetch(SUPA_URL + '/rest/v1/customers?' + adminParams, {
-      headers: { 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY }
-    });
-    var rawLeads = adminResp.ok ? await adminResp.json() : null;
+    // Progressive box + full-box fetch — see _canvassGeoBox above for why a single wide
+    // box with a row limit and no order can't produce a correct "nearest door".
+    var rawLeads = null;
+    var _steps = _canvassBoxSteps();
+    for (var _bi = 0; _bi < _steps.length; _bi++) {
+      var _bx = _canvassGeoBox(adminCanvassUserLat, adminCanvassUserLng, _steps[_bi]);
+      var adminParams = 'lead_source=eq.orphaned_list&sold_type=is.null&lat=not.is.null&select=' + adminSEL
+        + '&lat=gte.' + _bx.latMin + '&lat=lte.' + _bx.latMax
+        + '&lng=gte.' + _bx.lngMin + '&lng=lte.' + _bx.lngMax
+        + '&limit=1000';
+      var adminResp = await fetch(SUPA_URL + '/rest/v1/customers?' + adminParams, {
+        headers: { 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY }
+      });
+      rawLeads = adminResp.ok ? await adminResp.json() : null;
+      if (!Array.isArray(rawLeads)) break;
+      if (rawLeads.length >= 60) break; // enough to build a full route
+    }
     if (!Array.isArray(rawLeads)) { adminCanvassGpsStatus = 'error'; renderAdminCanvassView(); return; }
     rawLeads.forEach(function(l) {
       var isHot = l.knock_status === 'callback' || l.knock_status === 'interested';
@@ -5414,7 +5440,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (!a.knock_status && b.knock_status) return -1;
       return a._distMi - b._distMi;
     });
-    adminCanvassLeads = rawLeads.filter(function(l){ return adminCanvassSkipIds.indexOf(l.id) < 0; });
+    // Cap AFTER the distance sort so the trim keeps the nearest doors, not an arbitrary slice.
+    adminCanvassLeads = rawLeads.filter(function(l){ return adminCanvassSkipIds.indexOf(l.id) < 0; }).slice(0, 100);
     adminCanvassGpsStatus = 'ready';
     renderAdminCanvassView();
   };
@@ -18234,22 +18261,34 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var SEL = 'id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,original_installer,install_year';
       var client = supabase.createClient(SUPA_URL, SUPA_KEY);
 
-      var query = client.from('customers').select(SEL)
-        .eq('lead_source', 'orphaned_list')
-        .is('sold_type', null);
-
+      var result;
       if (userLat && userLng) {
-        var D = 0.10; // ~7-mile bounding box
-        query = query
-          .not('lat', 'is', null)
-          .gte('lat', userLat - D).lte('lat', userLat + D)
-          .gte('lng', userLng - D).lte('lng', userLng + D);
+        // Start tight and widen only if the near ring is thin. The old version used a single
+        // ~7-mile box with limit(80) and NO order — PostgREST then returns an arbitrary 80 of
+        // however many thousand leads sit in that box, and the client-side distance sort can
+        // only order the arbitrary 80 it received. That's how "next door" ended up 6.3 miles
+        // away while unfetched leads sat on the rep's own street. Fetching the whole (small)
+        // box and sorting locally is what actually guarantees the nearest door.
+        var boxes = _canvassBoxSteps();
+        for (var bi = 0; bi < boxes.length; bi++) {
+          var bx = _canvassGeoBox(userLat, userLng, boxes[bi]);
+          result = await client.from('customers').select(SEL)
+            .eq('lead_source', 'orphaned_list')
+            .is('sold_type', null)
+            .not('lat', 'is', null)
+            .gte('lat', bx.latMin).lte('lat', bx.latMax)
+            .gte('lng', bx.lngMin).lte('lng', bx.lngMax)
+            .limit(1000);
+          if (result.error) break;
+          if ((result.data || []).length >= 60) break; // enough to build a full route
+        }
       } else {
-        query = query.order('lead_score', { ascending: false });
+        result = await client.from('customers').select(SEL)
+          .eq('lead_source', 'orphaned_list')
+          .is('sold_type', null)
+          .order('lead_score', { ascending: false })
+          .limit(80);
       }
-      query = query.limit(80);
-
-      var result = await query;
       if (result.error) {
         canvassErrMsg = 'Supabase: ' + result.error.message +
           (result.error.details ? ' | ' + result.error.details : '') +
@@ -18279,6 +18318,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           if (!a.knock_status && b.knock_status) return -1;
           return a._distMi - b._distMi;
         });
+        // Trim to a route-sized list AFTER the true-distance sort, so the cap keeps the
+        // nearest doors instead of an arbitrary slice of the box.
+        leads = leads.slice(0, 80);
       }
 
       // If GPS filter returned nothing, reload without geo constraint
