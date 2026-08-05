@@ -7763,6 +7763,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         + '<div style="font-size:0.68rem;color:#888;margin-top:1px;">All leads have phone/email &mdash; run Regrid owner lookup to fill the remaining '+noOwner+' title owners</div></div>'
         + '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
         + '<button onclick="bbDiagnoseOwnerLookup(10)" title="Runs the real owner lookup against 10 sample leads and reports exactly which step of the chain is failing. ~20 seconds." style="width:auto;margin-top:0;background:none;border:1px solid rgba(74,158,255,0.35);border-radius:100px;color:#4a9eff;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#129658; Diagnose</button>'
+        + '<button onclick="bbShowParcelImport()" title="Bulk-import owner names from the SanGIS county parcel file (the $25 data drive). Reads the CSV on this device only — nothing is uploaded. Matches on APN, then street+zip." style="width:auto;margin-top:0;background:none;border:1px solid rgba(74,158,255,0.35);border-radius:100px;color:#4a9eff;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#128230; County File</button>'
         + '<button onclick="adminCanvassEnrichAll()" title="FREE — looks up missing property owner names via SANDAG/Regrid parcel GIS data and fills title_owner on every lead missing one. No per-lead cost." style="width:auto;margin-top:0;background:rgba(255,170,0,0.12);color:#ffaa00;border:1px solid rgba(255,170,0,0.35);border-radius:100px;padding:8px 18px;font-size:0.78rem;font-weight:800;cursor:pointer;white-space:nowrap;">&#128269; Run Owner Lookup</button>'
         + '</div></div>';
     } else {
@@ -7782,6 +7783,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var actionBtn = '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
         + '<button onclick="adminCanvassEnrichAll()" title="FREE — looks up missing property owner names via SANDAG parcel GIS data. No per-lead cost." style="width:auto;margin-top:0;background:#8DC63F;color:#000;border:none;border-radius:100px;padding:8px 16px;font-size:0.75rem;font-weight:800;cursor:pointer;white-space:nowrap;">&#128269; Free: Owners</button>'
         + '<button onclick="bbDiagnoseOwnerLookup(10)" title="Runs the real owner lookup against 10 sample leads and reports exactly which step of the chain is failing, and how often. ~20 seconds — use this before committing to a full multi-hour run." style="width:auto;margin-top:0;background:none;border:1px solid rgba(74,158,255,0.35);border-radius:100px;color:#4a9eff;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#129658; Diagnose</button>'
+        + '<button onclick="bbShowParcelImport()" title="Bulk-import owner names from the SanGIS county parcel file (the $25 data drive). Reads the CSV on this device only — nothing is uploaded. Matches on APN, then street+zip." style="width:auto;margin-top:0;background:none;border:1px solid rgba(74,158,255,0.35);border-radius:100px;color:#4a9eff;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#128230; County File</button>'
         + traceBtns
         + '</div>';
       bar.innerHTML = '<div style="background:rgba(239,68,68,0.07);border:1px solid rgba(239,68,68,0.2);border-radius:10px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">'
@@ -8238,6 +8240,281 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
     return map;
   }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // SanGIS county parcel-file import (owner name + APN, bulk)
+  // ══════════════════════════════════════════════════════════════════════════
+  // California AB 1785 bars SanGIS from publishing owner names in any public
+  // online location — that's why every free spatial lookup returns ok_no_data
+  // for the owner and why Regrid has never returned a CA owner name. The one
+  // legal route SanGIS offers is a direct data-drive handoff ($25 + $5 mail,
+  // refreshed weekly). That drive is an Esri File Geodatabase; exported to CSV
+  // it carries owner name, mailing address and APN for ~1,000,000 parcels.
+  //
+  // The file is far too large to paste or upload, so this reads it LOCALLY —
+  // File.slice + FileReader, streamed in chunks, matched in the browser against
+  // the lead index. The county file itself is never transmitted anywhere.
+  //
+  // ⚠️ SanGIS licence condition: "ownership information must not be publicly
+  // displayed." Owner names may only ever surface in staff-authenticated views.
+  var _bbParcelRunning = false;
+  var PARCEL_CHUNK = 4 * 1024 * 1024;   // 4MB slices
+
+  function _bbNormApn(v) {
+    return String(v || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  }
+
+  // Column auto-detection. Seeded with the field names SanGIS actually ships
+  // (OWN_NAME1 / APN / SITUS_* are already proven against their GeocoderMerged
+  // service in regrid-lookup.js), but matched loosely so a schema revision or a
+  // differently-configured export doesn't silently import nothing.
+  function _bbDetectParcelCols(headers) {
+    var h = headers.map(function(x){ return String(x||'').toUpperCase().replace(/[^A-Z0-9]/g,''); });
+    function find(cands, contains) {
+      for (var i = 0; i < cands.length; i++) {
+        var idx = h.indexOf(cands[i]);
+        if (idx !== -1) return idx;
+      }
+      if (contains) {
+        for (var j = 0; j < h.length; j++) {
+          if (contains.every(function(frag){ return h[j].indexOf(frag) !== -1; })) return j;
+        }
+      }
+      return -1;
+    }
+    return {
+      owner:   find(['OWNNAME1','OWNERNAME','OWNER','OWNNAME'], ['OWN','NAME']),
+      owner2:  find(['OWNNAME2'], null),
+      apn:     find(['APN','APN8','PARCELAPN','APNNUMBER'], ['APN']),
+      situs:   find(['SITUSADDRESS','SITUSADDR','SITEADDRESS','ADDRESS'], ['SITUS','ADDR']),
+      stNum:   find(['SITUSSTREETNUMBER','SITUSNUM','STRNUM','HOUSENUMBER'], ['SITUS','NUM']),
+      stName:  find(['SITUSSTREET','STREETNAME','SITUSSTREETNAME'], ['SITUS','STREET']),
+      stSuf:   find(['SITUSSUFFIX','STREETSUFFIX','SITUSSTREETSUFFIX'], ['SITUS','SUFFIX']),
+      zip:     find(['SITUSZIP','SITUSZIPCODE','ZIP','ZIPCODE'], ['SITUS','ZIP'])
+    };
+  }
+
+  // Compose the situs street ("14044 HORSE CREEK TRL") from whichever shape the
+  // export used — one combined column, or number/street/suffix split apart.
+  function _bbParcelStreet(vals, cols) {
+    if (cols.situs !== -1 && vals[cols.situs]) return _bbNormStreet(vals[cols.situs]);
+    var parts = [];
+    if (cols.stNum !== -1)  parts.push(vals[cols.stNum] || '');
+    if (cols.stName !== -1) parts.push(vals[cols.stName] || '');
+    if (cols.stSuf !== -1)  parts.push(vals[cols.stSuf] || '');
+    return _bbNormStreet(parts.join(' '));
+  }
+
+  // Index of leads still missing an owner, keyed by APN and by street+zip.
+  // Street-only keys that collide across zips are dropped rather than guessed —
+  // "123 MAIN ST" exists in a dozen San Diego cities.
+  async function _bbBuildParcelIndex(statusEl) {
+    var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var byApn = {}, byStreetZip = {}, streetOnly = {}, streetDupe = {}, off = 0, n = 0;
+    while (true) {
+      var r = await c.from('customers').select('id,address,apn')
+        .is('title_owner', null).not('address', 'is', null)
+        .order('id', { ascending: true }).range(off, off + 999);
+      if (r.error || !r.data || !r.data.length) break;
+      r.data.forEach(function(l) {
+        n++;
+        if (l.apn) { var ak = _bbNormApn(l.apn); if (ak) byApn[ak] = l.id; }
+        var st = _bbNormStreet(l.address);
+        if (!st) return;
+        var zip = extractZip(l.address);
+        if (zip) { var k = st + '|' + zip; if (!byStreetZip[k]) byStreetZip[k] = l.id; }
+        if (streetOnly[st] && streetOnly[st] !== l.id) streetDupe[st] = true;
+        else streetOnly[st] = l.id;
+      });
+      if (statusEl) statusEl.textContent = 'Indexing leads without an owner… ' + n.toLocaleString();
+      if (r.data.length < 1000) break;
+      off += 1000;
+    }
+    Object.keys(streetDupe).forEach(function(k){ delete streetOnly[k]; });
+    return { byApn: byApn, byStreetZip: byStreetZip, streetOnly: streetOnly, total: n };
+  }
+
+  window.bbShowParcelImport = function() {
+    var existing = document.getElementById('bbParcelBox');
+    if (existing) { existing.remove(); return; }
+    var bar = document.getElementById('bbEnrichBar');
+    if (!bar) return;
+    var box = document.createElement('div');
+    box.id = 'bbParcelBox';
+    box.style.cssText = 'background:rgba(74,158,255,0.06);border:1px solid rgba(74,158,255,0.25);border-radius:12px;padding:14px;margin-top:10px;';
+    box.innerHTML = '<div style="font-size:0.75rem;font-weight:700;color:#4a9eff;margin-bottom:6px;">&#128230; Import SanGIS County Parcel File</div>'
+      + '<div style="font-size:0.68rem;color:#999;line-height:1.5;margin-bottom:10px;">'
+      + 'Export the parcel layer from the SanGIS data drive to CSV (QGIS: right-click the layer &rarr; Export &rarr; Save Features As &rarr; CSV), then pick it here. '
+      + 'The file is read on this device only &mdash; nothing is uploaded. Matches on APN first, then street&nbsp;+&nbsp;zip.'
+      + '<br><span style="color:#ffaa00;">Licence condition: owner data is for internal use and must never be shown publicly.</span></div>'
+      + '<input type="file" id="bbParcelFile" accept=".csv,.txt" style="width:100%;font-size:0.72rem;color:#bbb;margin-bottom:10px;">'
+      + '<div style="display:flex;gap:8px;flex-wrap:wrap;">'
+      + '<button onclick="bbRunParcelImport()" style="width:auto;margin-top:0;background:#4a9eff;color:#fff;border:none;border-radius:100px;padding:7px 18px;font-size:0.78rem;font-weight:800;cursor:pointer;">&#9889; Match &amp; Import</button>'
+      + '<button onclick="bbShowParcelImport()" style="width:auto;margin-top:0;background:none;border:1px solid rgba(255,255,255,0.15);border-radius:100px;color:#888;font-size:0.75rem;cursor:pointer;padding:7px 16px;">Cancel</button>'
+      + '</div>'
+      + '<div id="bbParcelStatus" style="font-size:0.7rem;color:#888;margin-top:8px;"></div>';
+    bar.appendChild(box);
+  };
+
+  window.bbStopParcelImport = function() { _bbParcelRunning = false; };
+
+  window.bbRunParcelImport = async function() {
+    if (_bbParcelRunning) return;
+    var fileEl = document.getElementById('bbParcelFile');
+    var file = fileEl && fileEl.files && fileEl.files[0];
+    var statusEl = document.getElementById('bbParcelStatus');
+    function say(msg) { if (statusEl) statusEl.innerHTML = msg; }
+    if (!file) { say('Pick the exported CSV first.'); return; }
+
+    _bbParcelRunning = true;
+    var keptAwake = await _bbAcquireWakeLock();
+    _bbEnrichOverlay('<div style="font-size:0.78rem;font-weight:800;color:#4a9eff;margin-bottom:4px;">&#128230; County Parcel Import</div>'
+      + '<div id="bbEnrichOvStatus" style="font-size:0.72rem;color:#bbb;">Indexing leads&hellip;</div>');
+
+    try {
+      var idx = await _bbBuildParcelIndex(document.getElementById('bbEnrichOvStatus'));
+      if (!idx.total) {
+        _bbEnrichOverlay('<div style="font-size:0.78rem;font-weight:800;color:#8DC63F;">&#10003; Every lead already has an owner name.</div>'
+          + '<div style="margin-top:8px;text-align:right;"><a href="#" onclick="_bbEnrichOverlayClose();return false;" style="color:#4a9eff;font-size:0.7rem;">Dismiss</a></div>');
+        return;
+      }
+
+      var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var cols = null, headerCount = 0, rows = 0, matched = 0, written = 0, failedWrites = 0;
+      var byApnHits = 0, byZipHits = 0, byStreetHits = 0;
+      var claimed = {};                 // lead id -> true, so one lead is written once
+      var offset = 0, remainder = '';
+
+      function parseLine(line) {
+        var out = [], cur = '', inQ = false;
+        for (var i = 0; i < line.length; i++) {
+          var ch = line[i];
+          if (ch === '"') {
+            if (inQ && line[i+1] === '"') { cur += '"'; i++; }
+            else inQ = !inQ;
+          } else if (ch === ',' && !inQ) { out.push(cur); cur = ''; }
+          else cur += ch;
+        }
+        out.push(cur);
+        return out.map(function(v){ return v.trim(); });
+      }
+
+      function readSlice(start) {
+        return new Promise(function(resolve, reject) {
+          var fr = new FileReader();
+          fr.onload = function(){ resolve(fr.result); };
+          fr.onerror = function(){ reject(fr.error || new Error('read failed')); };
+          fr.readAsText(file.slice(start, start + PARCEL_CHUNK));
+        });
+      }
+
+      function progress() {
+        var pct = Math.min(100, Math.round(offset / file.size * 100));
+        var html = '<div style="font-size:0.75rem;color:#4a9eff;font-weight:700;margin-bottom:6px;">'
+          + 'Scanning county file&hellip; ' + rows.toLocaleString() + ' parcels read &mdash; ' + written.toLocaleString() + ' owners written</div>'
+          + '<div style="background:rgba(255,255,255,0.08);border-radius:100px;height:6px;overflow:hidden;">'
+          + '<div style="background:#4a9eff;height:6px;border-radius:100px;width:' + pct + '%;transition:width 0.3s;"></div></div>'
+          + '<div style="font-size:0.65rem;color:#555;margin-top:4px;">' + pct + '% &mdash; '
+          + (keptAwake ? 'screen kept awake &#9989;' : 'keep this tab open')
+          + ' &middot; <a href="#" onclick="bbStopParcelImport();return false;" style="color:#ff8a8a;">Stop</a></div>';
+        var ov = document.getElementById('bbEnrichOverlay');
+        if (ov) ov.innerHTML = html;
+        say(rows.toLocaleString() + ' parcels read · ' + written.toLocaleString() + ' owners written');
+      }
+
+      var pending = [];
+      async function flush() {
+        for (var i = 0; i < pending.length; i++) {
+          var p = pending[i];
+          var res = await c2.from('customers').update(p.upd).eq('id', p.id);
+          if (res.error) failedWrites++;
+          else {
+            written++;
+            var cached = adminCustomers.find(function(r){ return r.id === p.id; });
+            if (cached) Object.assign(cached, p.upd);
+          }
+        }
+        pending = [];
+      }
+
+      while (offset < file.size && _bbParcelRunning) {
+        var text = remainder + (await readSlice(offset));
+        offset += PARCEL_CHUNK;
+        var lines = text.split(/\r?\n/);
+        // The final line of a slice is almost certainly cut mid-row — hold it back
+        // and prepend it to the next slice. Only the very last slice keeps it.
+        remainder = (offset < file.size) ? lines.pop() : '';
+
+        for (var li = 0; li < lines.length; li++) {
+          var line = lines[li];
+          if (!line || !line.trim()) continue;
+          var vals = parseLine(line);
+          if (!cols) {
+            cols = _bbDetectParcelCols(vals);
+            headerCount = vals.length;
+            if (cols.owner === -1) throw new Error('No owner-name column found in this CSV. Columns seen: ' + vals.slice(0, 12).join(', '));
+            if (cols.apn === -1 && cols.situs === -1 && cols.stName === -1)
+              throw new Error('No APN or situs-address column found — nothing to match on.');
+            continue;
+          }
+          rows++;
+          var owner = (vals[cols.owner] || '').trim();
+          if (!owner) continue;
+          if (cols.owner2 !== -1 && vals[cols.owner2]) owner += ' & ' + vals[cols.owner2].trim();
+
+          var apnRaw = cols.apn !== -1 ? vals[cols.apn] : '';
+          var apnKey = _bbNormApn(apnRaw);
+          // Possessory-interest (76x) and mobile-home (77x) APNs are not real
+          // parcels — per the SanGIS metadata they share the underlying parent
+          // parcel's polygon, so matching on them would attach the wrong owner.
+          if (apnKey && /^7[67]/.test(apnKey)) continue;
+
+          var leadId = null;
+          if (apnKey && idx.byApn[apnKey]) { leadId = idx.byApn[apnKey]; byApnHits++; }
+          if (!leadId) {
+            var st = _bbParcelStreet(vals, cols);
+            if (st) {
+              var zip = cols.zip !== -1 ? String(vals[cols.zip] || '').match(/\d{5}/) : null;
+              if (zip && idx.byStreetZip[st + '|' + zip[0]]) { leadId = idx.byStreetZip[st + '|' + zip[0]]; byZipHits++; }
+              else if (idx.streetOnly[st]) { leadId = idx.streetOnly[st]; byStreetHits++; }
+            }
+          }
+          if (!leadId || claimed[leadId]) continue;
+          claimed[leadId] = true;
+          matched++;
+          var upd = { title_owner: owner };
+          if (apnRaw) upd.apn = apnRaw;
+          pending.push({ id: leadId, upd: upd });
+          if (pending.length >= 25) { await flush(); progress(); }
+        }
+        progress();
+        await new Promise(function(r){ setTimeout(r, 0); });   // let the UI paint
+      }
+      await flush();
+
+      var stopped = !_bbParcelRunning;
+      var h = '<div style="font-size:0.78rem;font-weight:800;color:' + (stopped ? '#ffaa00' : '#8DC63F') + ';margin-bottom:5px;">'
+        + (stopped ? '&#9209; Import stopped' : '&#10003; County parcel import complete') + '</div>'
+        + '<div style="font-size:0.72rem;color:#bbb;">' + rows.toLocaleString() + ' parcels read &middot; '
+        + '<b style="color:#8DC63F;">' + written.toLocaleString() + '</b> owner names written'
+        + (failedWrites ? ' &middot; <span style="color:#ff8a8a;">' + failedWrites + ' write errors</span>' : '') + '</div>'
+        + '<div style="font-size:0.64rem;color:#888;margin-top:4px;">Matched via &mdash; APN: ' + byApnHits.toLocaleString()
+        + ' &middot; street+zip: ' + byZipHits.toLocaleString() + ' &middot; street only: ' + byStreetHits.toLocaleString() + '</div>'
+        + '<div style="font-size:0.62rem;color:#666;margin-top:4px;">' + (idx.total - matched).toLocaleString()
+        + ' leads still have no owner &mdash; mostly parcels outside San Diego County.</div>'
+        + '<div style="margin-top:8px;text-align:right;"><a href="#" onclick="_bbEnrichOverlayClose();return false;" style="color:#4a9eff;font-size:0.7rem;">Dismiss</a></div>';
+      _bbEnrichOverlay(h);
+      say('Done — ' + written.toLocaleString() + ' owner names written.');
+    } catch(e) {
+      _bbEnrichOverlay('<div style="font-size:0.78rem;font-weight:800;color:#ff8a8a;margin-bottom:4px;">&#9888; Parcel import failed</div>'
+        + '<div style="font-size:0.72rem;color:#bbb;">' + (e && e.message ? e.message : 'unknown error') + '</div>'
+        + '<div style="margin-top:8px;text-align:right;"><a href="#" onclick="_bbEnrichOverlayClose();return false;" style="color:#4a9eff;font-size:0.7rem;">Dismiss</a></div>');
+      say('Failed: ' + (e && e.message ? e.message : 'unknown error'));
+    } finally {
+      _bbParcelRunning = false;
+      _bbReleaseWakeLock();
+    }
+  };
 
   window.bbShowTracerfyPaste = function() {
     var existing = document.getElementById('bbTracerfyPasteBox');
