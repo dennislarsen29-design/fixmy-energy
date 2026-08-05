@@ -33,6 +33,11 @@ exports.handler = async function(event) {
 
   const tried = [];
   const regridHeaders = { 'Authorization': 'Bearer ' + key, 'Accept': 'application/json' };
+  // Regrid's v1 API conventionally authenticates with a `token` QUERY PARAMETER; the
+  // Bearer header alone returns 401 {"status":"error","message":"Invalid token"} against
+  // some key types. Sending both costs nothing and removes an auth-mechanism mismatch as
+  // a possible cause — if it still 401s, the key itself is genuinely bad/expired.
+  const regridTok = key ? '&token=' + encodeURIComponent(key) : '';
 
   function parseRegridFeature(feat) {
     if (!feat) return null;
@@ -51,7 +56,7 @@ exports.handler = async function(event) {
   if (key && lat != null && lng != null) {
     try {
       const url = 'https://app.regrid.com/api/v1/search.json?lat=' + lat +
-        '&lon=' + lng + '&radius=0';
+        '&lon=' + lng + '&radius=0' + regridTok;
       const resp = await fetch(url, { headers: regridHeaders });
       if (resp.ok) {
         const data = await resp.json();
@@ -77,7 +82,7 @@ exports.handler = async function(event) {
   // ── 2. Regrid address search ───────────────────────────────────────────────
   if (key) try {
     const url = 'https://app.regrid.com/api/v1/search.json?query=' +
-      encodeURIComponent(address) + '&limit=3';
+      encodeURIComponent(address) + '&limit=3' + regridTok;
     const resp = await fetch(url, { headers: regridHeaders });
     if (resp.ok) {
       const data = await resp.json();
@@ -102,7 +107,7 @@ exports.handler = async function(event) {
   // ── 3. Regrid typeahead fallback ──────────────────────────────────────────
   if (key) try {
     const url = 'https://app.regrid.com/api/v1/typeahead.json?query=' +
-      encodeURIComponent(address) + '&limit=3';
+      encodeURIComponent(address) + '&limit=3' + regridTok;
     const resp = await fetch(url, { headers: regridHeaders });
     if (resp.ok) {
       const data = await resp.json();

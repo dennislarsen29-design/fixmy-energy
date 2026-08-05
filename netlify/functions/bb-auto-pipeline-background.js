@@ -1009,6 +1009,9 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
     }
     function sandagApn(a) { return a.APN_8 || a.APN || a.PARCEL_NBR || a.ASSESSOR_PARCEL_NUMBER || null; }
     const regridHdrs = { Authorization: 'Bearer ' + regridKey, Accept: 'application/json' };
+    // Regrid v1 conventionally authenticates via a `token` query param; sending it
+    // alongside the Bearer header rules out an auth-mechanism mismatch (see regrid-lookup.js).
+    const regridTok = regridKey ? '&token=' + encodeURIComponent(regridKey) : '';
 
     // Step 1: Census geocode — skip if caller already has coords from a prior run
     const censusAddr = address.replace(/, ([A-Z]{2}), (\d{5})/, ', $1 $2');
@@ -1035,7 +1038,7 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
       lastRegridAt = Date.now();
       try {
         const r = await fetchWithTimeout(
-          'https://app.regrid.com/api/v1/search.json?lat=' + lat + '&lon=' + lng + '&radius=0',
+          'https://app.regrid.com/api/v1/search.json?lat=' + lat + '&lon=' + lng + '&radius=0' + regridTok,
           { headers: regridHdrs }, 8000);
         if (r.ok) {
           const d = await r.json();
@@ -1060,7 +1063,7 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
       lastRegridAt = Date.now();
       try {
         const r = await fetchWithTimeout(
-          'https://app.regrid.com/api/v1/search.json?query=' + encodeURIComponent(address) + '&limit=3',
+          'https://app.regrid.com/api/v1/search.json?query=' + encodeURIComponent(address) + '&limit=3' + regridTok,
           { headers: regridHdrs }, 8000);
         if (r.ok) {
           const d = await r.json();
