@@ -5007,7 +5007,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '<button onclick="window._geocodeStop=true;" style="background:none;border:1px solid rgba(239,68,68,0.4);color:#ef4444;border-radius:6px;padding:3px 10px;font-size:0.72rem;cursor:pointer;">Stop</button>';
         h += '</div>';
       } else {
+        h += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">';
         h += '<button onclick="adminBatchGeocode()" title="Converts lead addresses into map coordinates so GPS door-knock routing can find them. Run this after importing new leads. Uses Google Maps geocoding." style="width:auto;margin-top:0;background:none;border:1px solid rgba(255,255,255,0.12);color:#666;border-radius:100px;padding:5px 14px;font-size:0.72rem;cursor:pointer;">&#9632; Geocode Missing Leads</button>';
+        h += '<button onclick="adminRepairAddresses()" title="Re-geocodes leads whose address has no zip. Those resolve owners at ~2% vs ~20% for complete addresses — not because they lack coordinates, but because coordinates derived from an incomplete address land outside the parcel polygon. Writes back the completed address AND sharper coordinates, then re-run Owner Lookup." style="width:auto;margin-top:0;background:rgba(74,158,255,0.12);border:1px solid rgba(74,158,255,0.35);color:#4a9eff;border-radius:100px;padding:5px 14px;font-size:0.72rem;font-weight:700;cursor:pointer;">&#128295; Repair Incomplete Addresses</button>';
+        h += '</div>';
+        h += '<div style="font-size:0.66rem;color:#666;margin-top:6px;">&#9888; ~28% of leads have no zip in the address. Repair them first &mdash; owner lookup can\'t hit a parcel from an imprecise point.</div>';
       }
       h += _bbStageClose();
     }
@@ -5492,6 +5496,130 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
     window._geocodeRunning = false;
     renderAdminCanvassView();
+  };
+
+  // ── Address repair ────────────────────────────────────────────────────────
+  // Leads whose stored address has no trailing zip resolve owners at ~2% versus ~20%
+  // for complete addresses. They aren't missing coordinates — they have them — but the
+  // coordinates were derived from an incomplete address, so they're imprecise and fall
+  // OUTSIDE the parcel polygon. Since every parcel lookup is point-in-polygon, an
+  // imprecise point is an automatic miss no matter which service is queried.
+  //
+  // This re-geocodes those leads against Google (which returns a canonical formatted
+  // address plus a precision class), then writes back BOTH the completed address and the
+  // sharper coordinates. Only ROOFTOP / RANGE_INTERPOLATED results are trusted —
+  // APPROXIMATE means Google fell back to a city or zip centroid, which would be worse
+  // than what's already stored.
+  function _addrHasZip(a) { return /\b\d{5}(-\d{4})?\s*$/.test(String(a || '').trim()); }
+
+  async function _geocodeFull(address) {
+    var r = await fetch('https://maps.googleapis.com/maps/api/geocode/json?address='
+      + encodeURIComponent(address) + '&key=' + GKEY);
+    var d = await r.json();
+    if (d.status !== 'OK' || !d.results || !d.results[0]) return { status: d.status || 'ERR' };
+    var res = d.results[0];
+    var lt = (res.geometry && res.geometry.location_type) || '';
+    // Google returns "…, CA 92101, USA". Drop the country suffix so the stored address
+    // matches the existing "STREET, CITY, CA ZIP" shape — and so the trailing-zip test
+    // (used both here and by extractZip) actually sees the zip.
+    var fmt = (res.formatted_address || '').replace(/,\s*(USA|United States)\s*$/i, '').trim();
+    return {
+      status: 'OK',
+      precision: lt,
+      formatted: fmt,
+      lat: res.geometry.location.lat,
+      lng: res.geometry.location.lng
+    };
+  }
+
+  window.bbStopRepair = function() {
+    window._bbRepairRunning = false;
+    var s = document.getElementById('bbEnrichOvStatus');
+    if (s) s.textContent = 'Stopping after the current address…';
+  };
+
+  window.adminRepairAddresses = async function() {
+    if (window._bbRepairRunning) {
+      var ov = document.getElementById('bbEnrichOverlay');
+      if (ov) ov.scrollIntoView({ block: 'nearest' });
+      return;
+    }
+    window._bbRepairRunning = true;
+    _bbEnrichOverlay('<div style="font-size:0.78rem;font-weight:800;color:#4a9eff;margin-bottom:4px;">&#128295; Address Repair</div>'
+      + '<div id="bbEnrichOvStatus" style="font-size:0.72rem;color:#bbb;">Finding incomplete addresses&hellip;</div>');
+    var keptAwake = await _bbAcquireWakeLock();
+    var scanned = 0, needing = 0, fixed = 0, skipped = 0, failed = 0, lastNote = '';
+    try {
+      var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var offset = 0, PAGE = 1000;
+      while (window._bbRepairRunning) {
+        // Only leads still missing an owner are worth repairing — a lead that already
+        // resolved doesn't need better coordinates.
+        var res = await c.from('customers').select('id,address')
+          .eq('lead_source','orphaned_list').is('sold_type', null).is('title_owner', null)
+          .not('address','is',null)
+          .order('id', { ascending: true }).range(offset, offset + PAGE - 1);
+        if (res.error) throw new Error(res.error.message);
+        var rows = res.data || [];
+        if (!rows.length) break;
+        offset += rows.length;
+        scanned += rows.length;
+
+        var targets = rows.filter(function(r){ return !_addrHasZip(r.address); });
+        needing += targets.length;
+
+        for (var i = 0; i < targets.length; i++) {
+          if (!window._bbRepairRunning) break;
+          var lead = targets[i];
+          try {
+            var g = await _geocodeFull(lead.address);
+            if (g.status !== 'OK') {
+              failed++; lastNote = lead.address + ' → ' + g.status;
+            } else if (g.precision === 'ROOFTOP' || g.precision === 'RANGE_INTERPOLATED') {
+              var upd = { lat: g.lat, lng: g.lng };
+              // Only overwrite the address when Google actually returned a zip — never
+              // replace a real address with something vaguer than what's stored.
+              if (_addrHasZip(g.formatted)) upd.address = g.formatted;
+              await c.from('customers').update(upd).eq('id', lead.id);
+              fixed++;
+              var cached = adminCustomers.find(function(x){ return x.id === lead.id; });
+              if (cached) Object.assign(cached, upd);
+            } else {
+              // APPROXIMATE — a city/zip centroid, worse than the stored point.
+              skipped++; lastNote = lead.address + ' → ' + g.precision;
+            }
+          } catch(e) { failed++; lastNote = 'error: ' + e.message; }
+
+          var ovBox = document.getElementById('bbEnrichOverlay');
+          if (ovBox) ovBox.innerHTML =
+            '<div style="font-size:0.75rem;color:#4a9eff;font-weight:700;margin-bottom:6px;">Repairing&hellip; '
+              + fixed + ' fixed &middot; ' + skipped + ' too vague &middot; ' + failed + ' failed</div>'
+            + '<div style="font-size:0.65rem;color:#555;">scanned ' + scanned.toLocaleString() + ' &middot; '
+              + needing.toLocaleString() + ' need repair &middot; '
+              + (keptAwake ? 'screen kept awake &#9989;' : 'keep this tab open')
+              + ' &middot; <a href="#" onclick="bbStopRepair();return false;" style="color:#ff8a8a;">Stop</a></div>'
+            + (lastNote ? '<div style="font-size:0.6rem;color:#555;margin-top:3px;word-break:break-all;">Last: ' + lastNote + '</div>' : '');
+          await new Promise(function(r){ setTimeout(r, 120); }); // ~8/sec, well under Google's limit
+        }
+        if (rows.length < PAGE) break;
+      }
+
+      var stopped = !window._bbRepairRunning;
+      _bbEnrichOverlay('<div style="font-size:0.78rem;font-weight:800;color:#8DC63F;margin-bottom:4px;">&#10003; Address Repair '
+          + (stopped ? 'stopped' : 'complete') + '</div>'
+        + '<div style="font-size:0.72rem;color:#bbb;">' + fixed + ' addresses repaired'
+          + (skipped ? ' &middot; ' + skipped + ' too vague to trust' : '')
+          + (failed ? ' &middot; ' + failed + ' failed' : '') + '</div>'
+        + '<div style="font-size:0.64rem;color:#888;margin-top:4px;">Now re-run Owner Lookup on these &mdash; sharper coordinates are what let the parcel services hit.</div>'
+        + '<div style="margin-top:8px;text-align:right;"><a href="#" onclick="_bbEnrichOverlayClose();return false;" style="color:#4a9eff;font-size:0.7rem;">Dismiss</a></div>');
+    } catch(e) {
+      _bbEnrichOverlay('<div style="font-size:0.78rem;font-weight:800;color:#ff8a8a;margin-bottom:4px;">&#9888; Address Repair failed</div>'
+        + '<div style="font-size:0.72rem;color:#bbb;word-break:break-word;">' + (e && e.message ? e.message : 'unknown error') + '</div>'
+        + '<div style="margin-top:8px;text-align:right;"><a href="#" onclick="_bbEnrichOverlayClose();return false;" style="color:#4a9eff;font-size:0.7rem;">Dismiss</a></div>');
+    } finally {
+      window._bbRepairRunning = false;
+      _bbReleaseWakeLock();
+    }
   };
 
   window.adminCanvassKnock = async function(id, knockStatus) {
