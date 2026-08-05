@@ -8104,33 +8104,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var recs = data.records || [];
       var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
 
-      // Build street → id map for address-based fallback matching
-      // (Tracerfy may not pass lead_id back through the results CSV)
-      var streetMap = {};
-      var { data: allLeads } = await c2.from('customers')
-        .select('id,address').eq('lead_source','orphaned_list').is('sold_type',null).limit(1000);
-      (allLeads || []).forEach(function(l) {
-        if (l.address) {
-          var street = l.address.split(',')[0].trim().toLowerCase();
-          streetMap[street] = l.id;
-        }
-      });
+      // Street → id map for address-based fallback matching (Tracerfy does not echo back
+      // our lead_id). Built from the DATABASE — this previously declared streetMap TWICE,
+      // and the second build (from adminCustomers, which excludes Black Box leads) silently
+      // overwrote the first, so virtually nothing matched.
+      var streetMap = await _bbBuildStreetMap(document.getElementById('bbEnrichBar') ? null : null);
 
       var updated = 0;
-
-      // Build street → customer ID map for address-based fallback
-      // (Tracerfy advanced trace does not echo back our custom lead_id column)
-      var streetMap = {};
-      adminCustomers.filter(function(x){ return x.lead_source === 'orphaned_list'; }).forEach(function(l) {
-        if (l.address) streetMap[l.address.split(',')[0].trim().toLowerCase()] = l.id;
-      });
 
       for (var i = 0; i < recs.length; i++) {
         var r = recs[i];
         if (!r.phone && !r.email && !r.owner_name) continue;
         var resolvedId = r.lead_id;
         if (!resolvedId && r.street_address) {
-          resolvedId = streetMap[r.street_address.trim().toLowerCase()];
+          resolvedId = streetMap[_bbNormStreet(r.street_address)];
         }
         if (!resolvedId) continue;
         var upd = {};
@@ -8158,6 +8145,39 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   };
 
   // ── Black Box: Paste Tracerfy CSV fallback ──────────────────────────────────
+  // ── Skip-trace result matching ────────────────────────────────────────────
+  // Tracerfy echoes back the situs address, not our lead id, so results are matched on
+  // street. Both matchers used to build that map from `adminCustomers` — which is loaded
+  // with `.or('black_box.is.null,black_box.eq.false')` and therefore contains almost NO
+  // Black Box leads, i.e. precisely the leads skip-trace runs on. Nearly every result hit
+  // `if (!resolvedId) continue;` and was silently discarded, including the owner names
+  // Tracerfy returns (first_name/last_name) that California blocks the free parcel
+  // sources from providing. This builds the map from the database instead, paginated so
+  // it covers the whole orphaned list rather than an arbitrary first page.
+  function _bbNormStreet(addr) {
+    return String(addr || '').split(',')[0]
+      .toUpperCase().replace(/[^A-Z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
+  }
+
+  async function _bbBuildStreetMap(statusEl) {
+    var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var map = {}, off = 0, n = 0;
+    while (true) {
+      var r = await c.from('customers').select('id,address')
+        .eq('lead_source', 'orphaned_list')
+        .order('id', { ascending: true }).range(off, off + 999);
+      if (r.error || !r.data || !r.data.length) break;
+      r.data.forEach(function(l) {
+        var k = _bbNormStreet(l.address);
+        if (k && !map[k]) { map[k] = l.id; n++; }   // first wins; duplicate streets are rare
+      });
+      if (statusEl) statusEl.textContent = 'Indexing leads for matching… (' + n.toLocaleString() + ')';
+      if (r.data.length < 1000) break;
+      off += 1000;
+    }
+    return map;
+  }
+
   window.bbShowTracerfyPaste = function() {
     var existing = document.getElementById('bbTracerfyPasteBox');
     if (existing) { existing.remove(); return; }
@@ -8240,18 +8260,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (!records.length) { if (statusEl) statusEl.textContent = 'No usable records found in CSV.'; return; }
     if (statusEl) statusEl.textContent = 'Matching ' + records.length + ' records to leads…';
 
-    // Build street map for fallback matching
-    var streetMap = {};
-    adminCustomers.filter(function(x){ return x.lead_source === 'orphaned_list'; }).forEach(function(l){
-      if (l.address) streetMap[l.address.split(',')[0].trim().toLowerCase()] = l.id;
-    });
+    // Street map built from the DATABASE — adminCustomers excludes Black Box leads.
+    var streetMap = await _bbBuildStreetMap(statusEl);
 
     var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
     var updated = 0, skipped = 0;
     for (var ri = 0; ri < records.length; ri++) {
       var r = records[ri];
       var resolvedId = r.lead_id;
-      if (!resolvedId && r.street_address) resolvedId = streetMap[r.street_address.trim().toLowerCase()];
+      if (!resolvedId && r.street_address) resolvedId = streetMap[_bbNormStreet(r.street_address)];
       if (!resolvedId) { skipped++; continue; }
       var upd = { dnc: r.dnc || false };
       if (r.owner_name) upd.title_owner = r.owner_name;
