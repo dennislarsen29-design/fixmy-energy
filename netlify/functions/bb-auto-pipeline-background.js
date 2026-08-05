@@ -1164,11 +1164,13 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
   stamp(`Phase 2 done: ${enriched} owner names added, ${geoSaved} coordinates saved`);
 
   // Advance the rotation offset so the next run works a different slice of the unenriched
-  // pool. Wraps at the pool size; leads that get an owner drop out of the pool naturally,
-  // so the window keeps moving over genuinely-unenriched leads rather than re-grinding the
-  // same permanently-unresolvable ones every night.
+  // pool. ⚠️ Advance by the number of leads that STAYED in the pool, not by P2_PAGE — the
+  // query filters on `title_owner is null`, so every lead enriched this run leaves the pool
+  // immediately. Stepping a fixed 2000 would jump 2000 rows into an already-shorter list and
+  // skip every lead the removals shifted forward (at an 80% hit rate, ~4 of every 5).
   try {
-    const nextP2 = p2Total > 0 ? ((p2Start + P2_PAGE) % Math.max(p2Total, 1)) : 0;
+    const p2Stayed = Math.max(0, (unenrichedRes.data && unenrichedRes.data.length || 0) - enriched);
+    const nextP2 = p2Total > 0 ? ((p2Start + p2Stayed) % Math.max(p2Total, 1)) : 0;
     await fetch(SUPA_REST + '/pipeline_state', {
       method: 'POST',
       headers: { ...supaHeaders, Prefer: 'resolution=merge-duplicates' },

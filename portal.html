@@ -7997,9 +7997,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         if (ovBox) ovBox.innerHTML = progressHtml(done, pct, true);
       }
 
-      // Paginate through ALL unenriched leads
+      // Paginate through ALL unenriched leads.
+      // ⚠️ The cursor advances by the number of leads that STAYED unenriched, not by
+      // PAGE_SIZE. The query filters on `title_owner is null`, so every lead that
+      // resolves leaves the result set immediately — advancing a fixed 500 would step
+      // past 500 rows of an already-shrunken set and silently skip every lead that got
+      // pushed forward. At the ~80% hit rate the Diagnose control now shows, that meant
+      // roughly 4 out of every 5 leads were never visited at all.
       while (true) {
         if (!_bbEnrichRunning) break; // allow cancel
+        var pageStayed = 0;
         var { data: leads } = await c2.from('customers')
           .select('id,address,lat,lng')
           .eq('lead_source','orphaned_list').is('sold_type',null).is('title_owner',null)
@@ -8032,6 +8039,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
               if (cached) Object.assign(cached, upd);
             } else {
               failed++;
+              pageStayed++;   // still matches `title_owner is null` — cursor must step over it
               _bbFailKeys(data.debug).forEach(function(k){ failTally[k] = (failTally[k] || 0) + 1; });
               // Always overwrite: this is labelled "Last miss", and pinning it to the FIRST
               // miss made it stale and actively misleading — during the Regrid 401 outage it
@@ -8039,12 +8047,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
               // it and owners were resolving again.
               if (data.debug) firstDebug = lead.address.split(',')[0] + ' → ' + data.debug;
             }
-          } catch(e) { failed++; failTally['fetch_error'] = (failTally['fetch_error'] || 0) + 1; }
+          } catch(e) { failed++; pageStayed++; failTally['fetch_error'] = (failTally['fetch_error'] || 0) + 1; }
           updateProgress();
           await new Promise(function(r){ setTimeout(r, 350); });
         }
 
-        pageOffset += PAGE_SIZE;
+        pageOffset += pageStayed;
         if (leads.length < PAGE_SIZE) break; // last page
       }
 
