@@ -439,6 +439,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   var adminCanvassLeads = [];
   var adminCanvassUserLat = null, adminCanvassUserLng = null;
   var adminCanvassGpsStatus = 'idle';
+  var adminCanvassBoxMiles = null;  // radius the progressive search settled on
   var adminCanvassSkipIds = [];
   var currentJobId = null;
   var upgradeItems = [];
@@ -5412,7 +5413,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var adminSEL = 'id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,original_installer,install_year';
     // Progressive box + full-box fetch — see _canvassGeoBox above for why a single wide
     // box with a row limit and no order can't produce a correct "nearest door".
-    var rawLeads = null;
+    // Accumulate across steps — see the rep-side loader for why a wider box can't simply
+    // replace a tighter one (its own limit truncates and would drop the near doors).
+    var rawLeads = null, _seen = {}, _acc = [], _hadOk = false;
     var _steps = _canvassBoxSteps();
     for (var _bi = 0; _bi < _steps.length; _bi++) {
       var _bx = _canvassGeoBox(adminCanvassUserLat, adminCanvassUserLng, _steps[_bi]);
@@ -5423,10 +5426,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var adminResp = await fetch(SUPA_URL + '/rest/v1/customers?' + adminParams, {
         headers: { 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY }
       });
-      rawLeads = adminResp.ok ? await adminResp.json() : null;
-      if (!Array.isArray(rawLeads)) break;
-      if (rawLeads.length >= 60) break; // enough to build a full route
+      var _page = adminResp.ok ? await adminResp.json() : null;
+      if (!Array.isArray(_page)) break;
+      _hadOk = true;
+      _page.forEach(function(row){ if (!_seen[row.id]) { _seen[row.id] = 1; _acc.push(row); } });
+      adminCanvassBoxMiles = _steps[_bi] * 69;
+      if (_acc.length >= 60) break; // enough to build a full route
     }
+    rawLeads = _hadOk ? _acc : null;
     if (!Array.isArray(rawLeads)) { adminCanvassGpsStatus = 'error'; renderAdminCanvassView(); return; }
     rawLeads.forEach(function(l) {
       var isHot = l.knock_status === 'callback' || l.knock_status === 'interested';
@@ -17549,6 +17556,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           h += '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:10px;text-align:center;"><div style="font-size:1.2rem;font-weight:800;color:#4a9eff;">'+visited.length+'</div><div style="font-size:0.65rem;color:#888;">Knocked</div></div>';
           h += '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:10px;text-align:center;"><div style="font-size:1.2rem;font-weight:800;color:#ffaa00;">'+interested+'</div><div style="font-size:0.65rem;color:#888;">Interested</div></div>';
           h += '</div>';
+          // Show the radius the search settled on — when the nearest door is genuinely far,
+          // this explains why instead of leaving it looking like a bug.
+          if (canvassBoxMiles) {
+            h += '<div style="font-size:0.66rem;color:#666;text-align:center;margin:-6px 0 10px;">Searched within ~'+Math.round(canvassBoxMiles)+' mi'+(canvassBoxMiles > 3 ? ' &mdash; widened because few leads are nearby' : '')+'</div>';
+          }
 
           if (unvisited.length >= 2) {
             h += '<button onclick="canvassBatchRoute(5)" style="width:100%;margin-bottom:14px;padding:10px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);border-radius:10px;color:#4a9eff;font-size:0.8rem;font-weight:700;cursor:pointer;">🗺 Route Next 5 Houses in Google Maps</button>';
@@ -18182,6 +18194,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var canvassLeads = [];
     var canvassUserLat = null, canvassUserLng = null;
     var canvassGpsStatus = 'idle';
+    var canvassBoxMiles = null;  // radius the progressive search settled on
     var canvassErrMsg = '';
     var canvassGpsFailed = false; // true = GPS denied/timeout, false = network/query error
     var canvassSkipIds = [];
@@ -18269,19 +18282,26 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         // only order the arbitrary 80 it received. That's how "next door" ended up 6.3 miles
         // away while unfetched leads sat on the rep's own street. Fetching the whole (small)
         // box and sorting locally is what actually guarantees the nearest door.
-        var boxes = _canvassBoxSteps();
+        // Results ACCUMULATE across steps — a wider box is geographically a superset, but
+        // its own limit=1000 can truncate arbitrarily (a 17-mile box over San Diego holds
+        // far more than 1000 leads), which would throw away the near doors the tight box
+        // already found. Merging by id guarantees nearby leads survive the widening.
+        var boxes = _canvassBoxSteps(), seen = {}, acc = [], lastErr = null;
         for (var bi = 0; bi < boxes.length; bi++) {
           var bx = _canvassGeoBox(userLat, userLng, boxes[bi]);
-          result = await client.from('customers').select(SEL)
+          var r = await client.from('customers').select(SEL)
             .eq('lead_source', 'orphaned_list')
             .is('sold_type', null)
             .not('lat', 'is', null)
             .gte('lat', bx.latMin).lte('lat', bx.latMax)
             .gte('lng', bx.lngMin).lte('lng', bx.lngMax)
             .limit(1000);
-          if (result.error) break;
-          if ((result.data || []).length >= 60) break; // enough to build a full route
+          if (r.error) { lastErr = r.error; break; }
+          (r.data || []).forEach(function(row){ if (!seen[row.id]) { seen[row.id] = 1; acc.push(row); } });
+          canvassBoxMiles = boxes[bi] * 69;   // surfaced in the UI so a far "next door" is explainable
+          if (acc.length >= 60) break;        // enough to build a full route
         }
+        result = { data: acc, error: acc.length ? null : lastErr };
       } else {
         result = await client.from('customers').select(SEL)
           .eq('lead_source', 'orphaned_list')
