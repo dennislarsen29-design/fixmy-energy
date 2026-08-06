@@ -123,7 +123,11 @@ function parseResultsCsv(csvText) {
     const dnc = ['true', 'yes', '1', 'y'].includes(dncRaw.toLowerCase().trim());
 
     if (phone || email || ownerName) {
-      records.push({ lead_id: leadId, street_address: streetAddr, phone, email, owner_name: ownerName, dnc });
+      // zip is carried through so the client can match on street+zip — street alone is
+      // ambiguous across a multi-county batch.
+      records.push({ lead_id: leadId, street_address: streetAddr,
+                     zip: row['zip'] || row['zip_code'] || row['zipcode'] || '',
+                     phone, email, owner_name: ownerName, dnc });
     }
   }
   return records;

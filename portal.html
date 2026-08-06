@@ -8533,7 +8533,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         if (!r.phone && !r.email && !r.owner_name) continue;
         var resolvedId = r.lead_id;
         if (!resolvedId && r.street_address) {
-          resolvedId = streetMap[_bbNormStreet(r.street_address)];
+          resolvedId = _bbMatchLead(streetMap, r.street_address, r.zip);
         }
         if (!resolvedId) continue;
         var upd = {};
@@ -8575,9 +8575,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       .toUpperCase().replace(/[^A-Z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
   }
 
+  // Index leads for skip-trace matching. Keyed by street+zip FIRST, with street-only as a
+  // fallback that is dropped entirely when the same street exists in more than one zip.
+  // Street alone is not a safe key across a multi-county list — a Tracerfy batch spanning
+  // Anaheim and San Diego can easily carry the same street name twice, and "first wins"
+  // would then write one homeowner's phone and email onto a different homeowner's lead.
   async function _bbBuildStreetMap(statusEl) {
     var c = supabase.createClient(SUPA_URL, SUPA_KEY);
-    var map = {}, off = 0, n = 0;
+    var byStreetZip = {}, streetOnly = {}, dupe = {}, off = 0, n = 0;
     while (true) {
       var r = await c.from('customers').select('id,address')
         .eq('lead_source', 'orphaned_list')
@@ -8585,13 +8590,29 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (r.error || !r.data || !r.data.length) break;
       r.data.forEach(function(l) {
         var k = _bbNormStreet(l.address);
-        if (k && !map[k]) { map[k] = l.id; n++; }   // first wins; duplicate streets are rare
+        if (!k) return;
+        n++;
+        var z = extractZip(l.address);
+        if (z && !byStreetZip[k + '|' + z]) byStreetZip[k + '|' + z] = l.id;
+        if (streetOnly[k] && streetOnly[k] !== l.id) dupe[k] = true;
+        else streetOnly[k] = l.id;
       });
       if (statusEl) statusEl.textContent = 'Indexing leads for matching… (' + n.toLocaleString() + ')';
       if (r.data.length < 1000) break;
       off += 1000;
     }
-    return map;
+    Object.keys(dupe).forEach(function(k){ delete streetOnly[k]; });
+    return { byStreetZip: byStreetZip, streetOnly: streetOnly, ambiguous: Object.keys(dupe).length };
+  }
+
+  // Resolve one skip-trace row to a lead id. Tracerfy exports zips as floats ("92028.0"),
+  // so the zip is normalised to its 5 digits before use.
+  function _bbMatchLead(map, street, zipRaw) {
+    var k = _bbNormStreet(street);
+    if (!k) return null;
+    var z = String(zipRaw == null ? '' : zipRaw).match(/\d{5}/);
+    if (z && map.byStreetZip[k + '|' + z[0]]) return map.byStreetZip[k + '|' + z[0]];
+    return map.streetOnly[k] || null;   // ambiguous street names were dropped from this map
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -8944,7 +8965,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var dncRaw = row['do_not_call'] || row['dnc'] || row['primary_phone_dnc'] || row['mobile_1_dnc'] || row['phone_dnc'] || '';
       var dnc = ['true','yes','1','y'].includes(dncRaw.toLowerCase().trim());
       if (phone || email || ownerName) {
-        records.push({ lead_id: leadId, street_address: streetAddr, phone: phone||null, email: email||null, owner_name: ownerName||null, dnc: dnc });
+        records.push({ lead_id: leadId, street_address: streetAddr, zip: row['zip'] || row['zip_code'] || row['zipcode'] || '',
+                       phone: phone||null, email: email||null, owner_name: ownerName||null, dnc: dnc });
       }
     }
 
@@ -8959,7 +8981,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     for (var ri = 0; ri < records.length; ri++) {
       var r = records[ri];
       var resolvedId = r.lead_id;
-      if (!resolvedId && r.street_address) resolvedId = streetMap[_bbNormStreet(r.street_address)];
+      if (!resolvedId && r.street_address) resolvedId = _bbMatchLead(streetMap, r.street_address, r.zip);
       if (!resolvedId) { skipped++; continue; }
       var upd = { dnc: r.dnc || false };
       if (r.owner_name) upd.title_owner = r.owner_name;
