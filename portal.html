@@ -1754,11 +1754,21 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // for AI-generated). D2's coaching-agent.js writes coaching_reports (pattern/objection
   // analysis + a Quoya-KB-ready export); this renders both, degrading gracefully when the
   // coaching_reports table isn't present yet.
+  window._oooRange = window._oooRange || 'month';
+  window.teamSetOooRange = function(r) { window._oooRange = r; renderTeamView('oneonones'); };
+  function _oooRangeMeta(r) {
+    var days = r === 'day' ? 1 : r === 'week' ? 7 : r === 'month' ? 30 : 365;
+    var lbl  = r === 'day' ? 'Last 24 hours' : r === 'week' ? 'Last 7 days'
+             : r === 'month' ? 'Last 30 days' : 'Last 12 months';
+    return { days: days, label: lbl, since: new Date(Date.now() - days*24*3600*1000).toISOString() };
+  }
+
   async function _team1on1sHtml() {
     var sc = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var _rng = _oooRangeMeta(window._oooRange || 'month');
     var actRes, repRows = [];
     try {
-      actRes = await sc.from('lead_activity').select('customer_id,rep_name,channel,outcome,note,created_at').not('note','is',null).order('created_at',{ascending:false}).limit(500);
+      actRes = await sc.from('lead_activity').select('customer_id,rep_name,channel,outcome,note,created_at').not('note','is',null).gte('created_at', _rng.since).order('created_at',{ascending:false}).limit(500);
       if (actRes.error) throw actRes.error;
       repRows = actRes.data || [];
     } catch(e) {
@@ -1776,8 +1786,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // ── Metrics inputs ──────────────────────────────────────────────────────
     // The notes query above is deliberately note-only (that's what renders). Volume and
     // time metrics need EVERY activity row, including dispositions logged without a note,
-    // so this is a separate wider fetch over the last 30 days.
-    var since30 = new Date(Date.now() - 30*24*3600*1000).toISOString();
+    // so this is a separate wider fetch over the selected range.
+    var since30 = _rng.since;
     var actAll = [];
     try {
       var aa = await sc.from('lead_activity')
@@ -1837,7 +1847,24 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var rep = _repCanonical(r.rep_name) || 'Unassigned';
       (groups[rep] = groups[rep] || []).push(r);
     });
-    var repNames = Object.keys(groups).sort(function(a,b){ return groups[b].length - groups[a].length; });
+    // Roster = the dialing team from team_members UNION anyone with notes. Grouping by
+    // notes alone silently dropped every rep who hadn't logged one yet — which is exactly
+    // the person a 1:1 is for. Reps with activity sort first; the rest go alphabetical.
+    var repNames = [], _seenRep = {};
+    function _addRep(n) {
+      var c = _repCanonical(n);
+      if (!c || c.toLowerCase() === 'unassigned') return;
+      var k = c.toLowerCase();
+      if (_seenRep[k]) return;
+      _seenRep[k] = true; repNames.push(c);
+    }
+    Object.keys(groups).sort(function(a,b){ return groups[b].length - groups[a].length; }).forEach(_addRep);
+    var _dbRoster = (adminTeamMembers && adminTeamMembers.length ? adminTeamMembers
+        : TECHS.map(function(t){ return Object.assign({}, t, {role:'tech'}); }))
+      .filter(function(m){ return m.active !== false && ['rep','tech','setter','dialer'].indexOf(m.role) > -1 && m.name; })
+      .map(function(m){ return m.name; })
+      .sort(function(a,b){ return String(a).localeCompare(String(b)); });
+    _dbRoster.forEach(_addRep);
 
     // The org-wide Quoya KB export is identical across reps' latest reports — grab any.
     var _quoyaKb = '';
@@ -1853,18 +1880,60 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '</div>'+
     '</div>';
 
+    // Range pills — carried over from the old Black Box Team Dashboard, which this view
+    // now replaces. Everything below (summary table, per-rep metrics, notes) respects it.
+    var _pst = 'width:auto;margin:0;padding:6px 16px;border:none;border-radius:100px;font-size:0.74rem;font-weight:700;cursor:pointer;white-space:nowrap;';
+    h += '<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;">'
+      + [['day','Day'],['week','Week'],['month','Month'],['year','Year']].map(function(p){
+          var on = (window._oooRange || 'month') === p[0];
+          return '<button onclick="teamSetOooRange(\''+p[0]+'\')" style="'+_pst+'background:'+(on?'#8DC63F':'rgba(255,255,255,0.07)')+';color:'+(on?'#1A1A1A':'#888')+';">'+p[1]+'</button>';
+        }).join('')
+      + '<button onclick="renderTeamView(\'oneonones\')" style="'+_pst+'background:rgba(255,255,255,0.07);color:#888;">&#8635; Refresh</button>'
+      + '</div>';
+
     if (!repNames.length) {
-      h += '<div style="background:#141414;border:1px solid rgba(255,255,255,0.07);border-radius:16px;padding:28px;text-align:center;color:#555;font-size:0.88rem;">No AI notes captured yet. Reps generate these with the &#127897; AI Notes button in the Black Box dialer and door-knock canvass.</div>';
+      h += '<div style="background:#141414;border:1px solid rgba(255,255,255,0.07);border-radius:16px;padding:28px;text-align:center;color:#555;font-size:0.88rem;">No dialing roster yet. Add setters or techs under the <b>Team</b> tab and they will appear here.</div>';
       return h;
     }
 
     var escN = function(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); };
+
+    // ── At-a-glance table (absorbed from the Black Box Team Dashboard) ──────
+    // One scannable row per rep before the elaborate per-rep cards below.
+    h += '<div style="background:#141414;border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:6px 4px 4px;margin-bottom:16px;overflow-x:auto;">'
+      + '<table style="width:100%;border-collapse:collapse;font-size:0.78rem;min-width:620px;">'
+      + '<thead><tr style="color:#777;font-size:0.64rem;text-transform:uppercase;letter-spacing:0.05em;text-align:left;">'
+      + '<th style="padding:9px 10px;">Rep</th><th style="padding:9px 10px;">Calls</th><th style="padding:9px 10px;">Booked</th>'
+      + '<th style="padding:9px 10px;">AI Notes</th><th style="padding:9px 10px;">Latest AI Note</th><th style="padding:9px 10px;">AI Insight</th>'
+      + '</tr></thead><tbody>';
     repNames.forEach(function(rep){
-      var rows = groups[rep];
+      var rk = rep.toLowerCase();
+      var rws = groups[rep] || [];
+      var M0 = metricsByRep[rk] || { dials:0, booked:0 };
+      var ai = rws.filter(function(r){ return /\u{1F399}/u.test(r.note||''); });
+      var latest = ai[0];
+      var rpt0 = coachByRep[rk];
+      var lt = latest ? (latest.note||'').replace(/^\u{1F399}\s*/u,'') : '';
+      var rt = rpt0 ? (rpt0.summary||'') : '';
+      var none = !M0.dials && !ai.length;
+      h += '<tr style="border-top:1px solid rgba(255,255,255,0.06);vertical-align:top;' + (none ? 'opacity:0.55;' : '') + '">'
+        + '<td style="padding:9px 10px;font-weight:700;color:#8DC63F;white-space:nowrap;"><a href="#ooo_'+rk.replace(/[^a-z0-9]/g,'_')+'" style="color:#8DC63F;text-decoration:none;">'+escN(rep)+'</a></td>'
+        + '<td style="padding:9px 10px;color:'+(M0.dials?'#F3EDE3':'#ff8a8a')+';font-weight:700;">'+M0.dials+'</td>'
+        + '<td style="padding:9px 10px;color:'+(M0.booked?'#8DC63F':'#555')+';font-weight:'+(M0.booked?'700':'400')+';">'+M0.booked+'</td>'
+        + '<td style="padding:9px 10px;color:#aaa;">'+ai.length+'</td>'
+        + '<td style="padding:9px 10px;max-width:260px;color:#aaa;">'+(latest ? '<span title="'+escN(lt)+'">'+escN(lt.slice(0,90))+(lt.length>90?'&hellip;':'')+'</span>' : '<span style="color:#444;">&mdash;</span>')+'</td>'
+        + '<td style="padding:9px 10px;max-width:280px;color:#c4a3f0;">'+(rpt0 ? ('<span title="'+escN(rt)+'">'+escN(rt.slice(0,100))+(rt.length>100?'&hellip;':'')+'</span>') : '<span style="color:#444;">No coaching report yet</span>')+'</td>'
+        + '</tr>';
+    });
+    h += '</tbody></table></div>';
+
+    repNames.forEach(function(rep){
+      var rows = groups[rep] || [];
       var aiRows = rows.filter(function(r){ return /🎙/.test(r.note||''); });
       var rk = rep.toLowerCase();
       var rpt = coachByRep[rk];
-      h += '<div style="background:#141414;border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:18px 20px;margin-bottom:12px;">'+
+      var _hasAny = (metricsByRep[rk] && (metricsByRep[rk].dials || metricsByRep[rk].knocks)) || rows.length;
+      h += '<div id="ooo_'+rk.replace(/[^a-z0-9]/g,'_')+'" style="background:#141414;border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:18px 20px;margin-bottom:12px;">'+
         '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px;">'+
           '<div style="font-size:1rem;font-weight:800;color:#8DC63F;">'+escN(rep)+'</div>'+
           '<div style="display:flex;gap:6px;flex-wrap:wrap;">'+
@@ -1884,7 +1953,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           + '<div style="font-size:0.95rem;font-weight:800;color:'+color+';">'+val+'</div>'
           + '<div style="font-size:0.58rem;color:#777;text-transform:uppercase;letter-spacing:0.04em;margin-top:1px;">'+label+'</div></div>';
       };
-      h += '<div style="font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#666;margin-bottom:5px;">Last 30 days</div>';
+      h += '<div style="font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#666;margin-bottom:5px;">'+_rng.label+'</div>';
       h += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(72px,1fr));gap:6px;margin-bottom:10px;">'
         + tile(M.dials.toLocaleString(), 'Dials', '#E8793A')
         + tile(M.contacts.toLocaleString(), 'Contacts', '#4a9eff')
@@ -7398,7 +7467,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
     h += '</div>';
 
-    if (CURRENT_ROLE === 'admin') h += bbTeamDashboardHtml();
+    // The Black Box Team Dashboard was consolidated into Team -> 1:1s (2026-08-06), which
+    // now carries its Day/Week/Month/Year range and at-a-glance table alongside the
+    // per-rep coaching detail. One place for per-rep performance instead of two.
+    if (CURRENT_ROLE === 'admin') {
+      h += '<div style="margin-bottom:14px;background:#141414;border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:12px 16px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">'
+        + '<div style="font-size:0.78rem;color:#888;">&#128202; Per-rep performance now lives in <b style="color:#F3EDE3;">Team &rarr; 1:1s</b> (Day/Week/Month/Year) and <b style="color:#F3EDE3;">Team &rarr; Dialers</b>.</div>'
+        + '<div style="display:flex;gap:8px;flex-wrap:wrap;">'
+        + '<button onclick="renderTeamView(\'oneonones\')" style="width:auto;margin:0;padding:6px 14px;background:rgba(155,109,232,0.12);border:1px solid rgba(155,109,232,0.35);color:#c4a3f0;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;white-space:nowrap;">&#129309; Open 1:1s</button>'
+        + '<button onclick="renderTeamView(\'dialers\')" style="width:auto;margin:0;padding:6px 14px;background:rgba(74,158,255,0.12);border:1px solid rgba(74,158,255,0.35);color:#4a9eff;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;white-space:nowrap;">&#128266; Open Dialers</button>'
+        + '</div></div>';
+    }
 
     if (!bbDialLoaded) {
       h += '<div style="text-align:center;padding:48px;color:#888;font-size:0.85rem;">Loading dial queue&hellip;</div></div>';
