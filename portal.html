@@ -1494,6 +1494,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // only lists people with activity hides exactly the person you need to see.
   window._dialRange = window._dialRange || 'today';
 
+  // The admin seat is a person, not a role — it's always Dennis. Older activity rows
+  // were stamped with the generic role string, so every per-rep report split his
+  // dialing into two rows. This folds those aliases back into the one identity at
+  // read time (no data migration needed) and bbRepName() stamps the real name going
+  // forward. Add to REP_ALIASES if another generic label ever shows up in the data.
+  var ADMIN_DIALER_NAME = 'Dennis Larsen';
+  var REP_ALIASES = { 'admin': ADMIN_DIALER_NAME, 'solar review admin': ADMIN_DIALER_NAME,
+                      'dennis': ADMIN_DIALER_NAME, 'tech4': ADMIN_DIALER_NAME };
+  function _repCanonical(name) {
+    var n = String(name == null ? '' : name).trim();
+    return REP_ALIASES[n.toLowerCase()] || n;
+  }
+
   window.teamSetDialRange = function(r) {
     window._dialRange = r;
     renderTeamView('dialers');
@@ -1548,8 +1561,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // ── Roster: team_members ∪ anyone with activity ─────────────────────────
     var stats = {};   // lowercased name -> row
     function row(name) {
-      var k = (name || 'Unassigned').toLowerCase();
-      if (!stats[k]) stats[k] = { name: name || 'Unassigned', dials:0, contacts:0, booked:0,
+      var canon = _repCanonical(name) || 'Unassigned';
+      var k = canon.toLowerCase();
+      if (!stats[k]) stats[k] = { name: canon, dials:0, contacts:0, booked:0,
         knocks:0, talkSecs:0, talkN:0, mins:0, onShiftSince:null, last:null, outcomes:{} };
       return stats[k];
     }
@@ -1779,7 +1793,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         .gte('started_at', since30).limit(2000);
       if (!sh.error && sh.data) {
         sh.data.forEach(function(s){
-          var k = (s.rep_name||'').toLowerCase();
+          var k = _repCanonical(s.rep_name).toLowerCase();
           if (!s.started_at) return;
           // An un-ended shift is counted only up to now, so a rep who forgot to clock out
           // doesn't accrue phantom hours forever.
@@ -1804,7 +1818,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // Per-rep rollup: volume, contact/booking rate, hours, dials-per-hour, avg talk time.
     var metricsByRep = {};
     actAll.forEach(function(r){
-      var k = (r.rep_name||'').toLowerCase();
+      var k = _repCanonical(r.rep_name).toLowerCase();
       var m = metricsByRep[k] = metricsByRep[k] || { dials:0, contacts:0, booked:0, knocks:0, talkSecs:0, talkN:0, outcomes:{} };
       if (r.channel === 'door_knock') m.knocks++; else m.dials++;
       if (r.outcome) {
@@ -1820,7 +1834,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
     var groups = {};
     repRows.forEach(function(r){
-      var rep = (r.rep_name && r.rep_name.trim()) || 'Unassigned';
+      var rep = _repCanonical(r.rep_name) || 'Unassigned';
       (groups[rep] = groups[rep] || []).push(r);
     });
     var repNames = Object.keys(groups).sort(function(a,b){ return groups[b].length - groups[a].length; });
@@ -6589,7 +6603,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
     var byRep = {};
     rowsInRange.forEach(function(r){
-      var rep = (r.rep_name && r.rep_name.trim()) || 'Unassigned';
+      var rep = _repCanonical(r.rep_name) || 'Unassigned';
       var k = rep.toLowerCase();
       (byRep[k] = byRep[k] || {name:rep, rows:[]}).rows.push(r);
     });
@@ -6631,7 +6645,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   function bbRepName() {
     if (window._bbDialerPersonName) return window._bbDialerPersonName; // set by sales portal
     try { var stored = localStorage.getItem('bbDialerRepName'); if (stored) return stored; } catch(e){}
-    if (CURRENT_ROLE === 'admin') return 'Admin';
+    // The admin seat is Dennis and only Dennis. Stamping the generic role string here
+    // split his own dialing across two rows on every per-rep report ("Dennis Larsen"
+    // when he dialed from the sales portal, "Admin" when from the admin portal).
+    if (CURRENT_ROLE === 'admin') return ADMIN_DIALER_NAME;
     var n = prompt('Your name (shown on call notes):') || 'Rep';
     try { localStorage.setItem('bbDialerRepName', n); } catch(e){}
     return n;
