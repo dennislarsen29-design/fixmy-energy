@@ -1438,7 +1438,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // Personal tab; Webhooks + Credentials + 1:1s promoted to their own pills.
   function teamSubBar(active) {
     var st = 'width:auto;margin:0;padding:6px 16px;border:none;border-radius:100px;font-size:0.75rem;font-weight:700;cursor:pointer;transition:all 0.15s;white-space:nowrap;';
-    var tabs = [['team','&#128101; Team'],['hiring','&#127919; Hiring'],['oneonones','&#129309; 1:1s'],['webhooks','&#127380; Webhooks'],['credentials','&#128273; Credentials'],['pages','&#128279; Pages']];
+    var tabs = [['team','&#128101; Team'],['dialers','&#128266; Dialers'],['hiring','&#127919; Hiring'],['oneonones','&#129309; 1:1s'],['webhooks','&#127380; Webhooks'],['credentials','&#128273; Credentials'],['pages','&#128279; Pages']];
     return '<div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;">'+tabs.map(function(t){
       var on = active === t[0];
       return '<button onclick="renderTeamView(\''+t[0]+'\')" style="'+st+'background:'+(on?'#8DC63F':'rgba(255,255,255,0.07)')+';color:'+(on?'#1A1A1A':'#888')+';">'+t[1]+'</button>';
@@ -1482,6 +1482,259 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<div id="ghlTestResult" style="font-size:0.75rem;min-height:20px;color:#666;"></div>'+
     '</div>';
   }
+  // ══════════════════════════════════════════════════════════════════════════
+  // Dialer Accountability — admin scoreboard for the dialing team
+  // ══════════════════════════════════════════════════════════════════════════
+  // Deliberately different from the 1:1s view: that one is qualitative (what reps
+  // are hearing, coaching patterns). This is the numbers — who is on the phones
+  // right now, who dialed how much, and who is converting dials into bookings.
+  //
+  // The roster is built from team_members UNION everyone with activity, so a
+  // dialer who did nothing still appears with a row of zeros. A scoreboard that
+  // only lists people with activity hides exactly the person you need to see.
+  window._dialRange = window._dialRange || 'today';
+
+  window.teamSetDialRange = function(r) {
+    window._dialRange = r;
+    renderTeamView('dialers');
+  };
+
+  function _dialRangeStart(r) {
+    var d = new Date();
+    if (r === 'today') { d.setHours(0,0,0,0); return d; }
+    var days = r === '7d' ? 7 : 30;
+    return new Date(Date.now() - days*24*3600*1000);
+  }
+
+  function _dialHrs(mins) {
+    if (!mins) return '—';
+    var h = Math.floor(mins/60), m = Math.round(mins%60);
+    return h ? (h + 'h ' + (m ? m + 'm' : '') ).trim() : m + 'm';
+  }
+  function _dialAgo(ts) {
+    if (!ts) return '—';
+    var mins = Math.floor((Date.now() - new Date(ts).getTime()) / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return mins + 'm ago';
+    var h = Math.floor(mins/60);
+    if (h < 24) return h + 'h ago';
+    return Math.floor(h/24) + 'd ago';
+  }
+
+  async function _teamDialersHtml() {
+    var sc = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var range = window._dialRange || 'today';
+    var since = _dialRangeStart(range).toISOString();
+
+    // ── Activity (this is the table that always exists) ─────────────────────
+    var acts = [], actErr = '';
+    try {
+      var ar = await sc.from('lead_activity')
+        .select('rep_name,rep_id,channel,outcome,call_duration,created_at')
+        .gte('created_at', since).order('created_at', { ascending: false }).limit(20000);
+      if (ar.error) throw ar.error;
+      acts = ar.data || [];
+    } catch(e) { actErr = e.message || 'could not load activity'; }
+
+    // ── Shift clock (optional — 20260803_setter_database.sql) ───────────────
+    var shifts = [], shiftsMissing = false;
+    try {
+      var sr = await sc.from('rep_shifts').select('rep_name,rep_id,started_at,ended_at')
+        .gte('started_at', new Date(Date.now() - 31*24*3600*1000).toISOString()).limit(3000);
+      if (sr.error) throw sr.error;
+      shifts = sr.data || [];
+    } catch(e) { shiftsMissing = true; }
+
+    // ── Roster: team_members ∪ anyone with activity ─────────────────────────
+    var stats = {};   // lowercased name -> row
+    function row(name) {
+      var k = (name || 'Unassigned').toLowerCase();
+      if (!stats[k]) stats[k] = { name: name || 'Unassigned', dials:0, contacts:0, booked:0,
+        knocks:0, talkSecs:0, talkN:0, mins:0, onShiftSince:null, last:null, outcomes:{} };
+      return stats[k];
+    }
+    (adminTeamMembers || []).forEach(function(m) {
+      if (m.active === false) return;
+      var r = String(m.role || '').toLowerCase();
+      if (r === 'setter' || r === 'tech' || r === 'dialer') row(m.name || m.email);
+    });
+
+    acts.forEach(function(a) {
+      var m = row(a.rep_name);
+      var isKnock = a.channel === 'door_knock';
+      if (isKnock) m.knocks++; else m.dials++;
+      if (!m.last || new Date(a.created_at) > new Date(m.last)) m.last = a.created_at;
+      // Contacts, bookings and talk time count DIALS ONLY. A door knock is a contact
+      // in its own right, but folding it in here would put knocks in the numerator
+      // while the denominator (dials) excludes them — inflating contact rate for
+      // whoever also knocks. Knocks stay a separate count on this phone scoreboard.
+      if (isKnock) return;
+      if (a.outcome) {
+        m.outcomes[a.outcome] = (m.outcomes[a.outcome] || 0) + 1;
+        if (['warm','booked','not_interested','callback','dnc'].indexOf(a.outcome) >= 0) m.contacts++;
+        if (a.outcome === 'booked') m.booked++;
+      }
+      if (a.call_duration > 0) { m.talkSecs += a.call_duration; m.talkN++; }
+    });
+
+    var rangeStartMs = _dialRangeStart(range).getTime();
+    shifts.forEach(function(s) {
+      if (!s.started_at) return;
+      var m = row(s.rep_name);
+      var st = new Date(s.started_at).getTime();
+      var en = s.ended_at ? new Date(s.ended_at).getTime() : Date.now();
+      if (!s.ended_at) m.onShiftSince = s.started_at;
+      // Judge the forgotten-clock-out guard on the FULL shift, before clipping. A shift
+      // left open two days ago clips to a plausible-looking 6h inside "today" and would
+      // otherwise sail past a guard applied to the clipped value.
+      if ((en - st) / 60000 > 16*60) return;
+      // Clip to the selected range so "today" doesn't inherit yesterday's hours.
+      var clipped = Math.max(st, rangeStartMs);
+      if (en <= clipped) return;
+      m.mins += (en - clipped) / 60000;
+    });
+
+    var reps = Object.keys(stats).map(function(k){ return stats[k]; })
+      .filter(function(r){ return r.name !== 'Unassigned' || r.dials || r.knocks; })
+      .sort(function(a,b){ return (b.dials + b.knocks) - (a.dials + a.knocks); });
+
+    var T = { dials:0, contacts:0, booked:0, knocks:0, mins:0, talkSecs:0, talkN:0 };
+    reps.forEach(function(r){ T.dials+=r.dials; T.contacts+=r.contacts; T.booked+=r.booked;
+      T.knocks+=r.knocks; T.mins+=r.mins; T.talkSecs+=r.talkSecs; T.talkN+=r.talkN; });
+
+    var rangeLbl = range === 'today' ? 'Today' : (range === '7d' ? 'Last 7 days' : 'Last 30 days');
+    var h = '<div style="margin-bottom:14px;">'
+      + '<h2 style="font-size:1.1rem;font-weight:700;margin-bottom:4px;">&#128266; Dialer Accountability</h2>'
+      + '<div style="font-size:0.78rem;color:#888;line-height:1.5;max-width:640px;">Who is on the phones, how much they dialed, and what it turned into. Everyone on the dialing roster appears &mdash; a rep with no activity shows a row of zeros rather than disappearing.</div>'
+      + '</div>';
+
+    // Range pills
+    var pst = 'width:auto;margin:0;padding:6px 16px;border:none;border-radius:100px;font-size:0.74rem;font-weight:700;cursor:pointer;white-space:nowrap;';
+    h += '<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;">'
+      + [['today','Today'],['7d','7 days'],['30d','30 days']].map(function(p){
+          var on = range === p[0];
+          return '<button onclick="teamSetDialRange(\''+p[0]+'\')" style="'+pst+'background:'+(on?'#4a9eff':'rgba(255,255,255,0.07)')+';color:'+(on?'#fff':'#888')+';">'+p[1]+'</button>';
+        }).join('')
+      + '<button onclick="renderTeamView(\'dialers\')" style="'+pst+'background:rgba(255,255,255,0.07);color:#888;">&#8635; Refresh</button>'
+      + '</div>';
+
+    if (actErr) {
+      h += '<div style="padding:12px 14px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.3);border-radius:10px;font-size:0.76rem;color:#ff8a8a;margin-bottom:12px;">&#9888; Could not load call activity &mdash; ' + actErr + '</div>';
+    }
+    if (shiftsMissing) {
+      h += '<div style="padding:12px 14px;background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.3);border-radius:10px;font-size:0.76rem;color:#ffaa00;margin-bottom:12px;line-height:1.5;">'
+        + '&#9888; <b>Shift clock not active.</b> Dials, contacts and bookings below are real, but hours and dials/hour need <code style="color:#ffd28a;">supabase/migrations/20260803_setter_database.sql</code> run in the SQL Editor.</div>';
+    }
+
+    // ── On shift right now ──────────────────────────────────────────────────
+    var live = reps.filter(function(r){ return r.onShiftSince; });
+    if (live.length) {
+      h += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#8DC63F;margin-bottom:8px;">&#128308; On shift right now</div>'
+        + '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px;">';
+      live.forEach(function(r) {
+        var elapsed = (Date.now() - new Date(r.onShiftSince).getTime()) / 60000;
+        var idleMins = r.last ? (Date.now() - new Date(r.last).getTime()) / 60000 : elapsed;
+        // On the clock but nothing logged in a while — the one thing worth surfacing live.
+        var stale = idleMins > 25;
+        h += '<div style="background:#141414;border:1px solid ' + (stale ? 'rgba(255,170,0,0.4)' : 'rgba(141,198,63,0.3)') + ';border-radius:14px;padding:14px 16px;min-width:190px;">'
+          + '<div style="font-size:0.9rem;font-weight:700;color:#F3EDE3;">' + r.name + '</div>'
+          + '<div style="font-size:0.7rem;color:#888;margin-top:2px;">On shift ' + _dialHrs(elapsed) + ' &middot; ' + r.dials + ' dials</div>'
+          + '<div style="font-size:0.7rem;margin-top:4px;color:' + (stale ? '#ffaa00' : '#8DC63F') + ';font-weight:700;">'
+          + (stale ? '&#9888; nothing logged ' + _dialAgo(r.last) : '&#9679; last dial ' + _dialAgo(r.last)) + '</div>'
+          + '</div>';
+      });
+      h += '</div>';
+    } else if (!shiftsMissing) {
+      h += '<div style="padding:12px 14px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:10px;font-size:0.76rem;color:#777;margin-bottom:16px;">Nobody is clocked in right now.</div>';
+    }
+
+    // ── Team totals ─────────────────────────────────────────────────────────
+    function tile(label, val, sub, color) {
+      return '<div style="flex:1;min-width:120px;background:#141414;border:1px solid rgba(255,255,255,0.07);border-radius:14px;padding:14px 16px;">'
+        + '<div style="font-size:1.35rem;font-weight:800;color:' + (color||'#F3EDE3') + ';">' + val + '</div>'
+        + '<div style="font-size:0.68rem;color:#888;margin-top:2px;">' + label + '</div>'
+        + (sub ? '<div style="font-size:0.63rem;color:#666;margin-top:2px;">' + sub + '</div>' : '')
+        + '</div>';
+    }
+    var tContact = T.dials ? Math.round(T.contacts / T.dials * 100) : 0;
+    var tBook = T.contacts ? Math.round(T.booked / T.contacts * 100) : 0;
+    h += '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px;">'
+      + tile('Dials &mdash; ' + rangeLbl, T.dials.toLocaleString(), T.knocks ? T.knocks + ' doors knocked' : '', '#4a9eff')
+      + tile('Contacts', T.contacts.toLocaleString(), tContact + '% of dials', '#8DC63F')
+      + tile('Booked', T.booked.toLocaleString(), tBook + '% of contacts', '#ffaa00')
+      + tile('Hours on shift', shiftsMissing ? '—' : _dialHrs(T.mins), (!shiftsMissing && T.mins) ? (Math.round(T.dials / (T.mins/60)) + ' dials/hr') : '')
+      + '</div>';
+
+    if (!reps.length) {
+      h += '<div style="background:#141414;border:1px solid rgba(255,255,255,0.07);border-radius:16px;padding:28px;text-align:center;color:#555;font-size:0.88rem;">No dialing activity in this range yet.</div>';
+      return h;
+    }
+
+    // ── Per-rep scoreboard ──────────────────────────────────────────────────
+    var avgContact = T.dials ? (T.contacts / T.dials) : 0;
+    var maxDials = Math.max.apply(null, reps.map(function(r){ return r.dials + r.knocks; }).concat([1]));
+
+    h += '<div style="background:#141414;border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:6px 4px 4px;overflow-x:auto;">'
+      + '<table style="width:100%;border-collapse:collapse;font-size:0.78rem;min-width:640px;">'
+      + '<thead><tr style="color:#777;font-size:0.66rem;text-transform:uppercase;letter-spacing:0.06em;">'
+      + ['Dialer','Dials','Contacts','Contact %','Booked','Hours','Dials/hr','Avg call','Last activity']
+          .map(function(c,i){ return '<th style="text-align:' + (i?'right':'left') + ';padding:10px 12px;font-weight:700;">' + c + '</th>'; }).join('')
+      + '</tr></thead><tbody>';
+
+    reps.forEach(function(r) {
+      var total = r.dials + r.knocks;
+      var cRate = r.dials ? (r.contacts / r.dials) : 0;
+      // Compare to the team average rather than an invented benchmark — with a brand
+      // new team there is no external number worth measuring against yet.
+      var cColor = !r.dials ? '#555' : (cRate >= avgContact * 1.15 ? '#8DC63F' : (cRate < avgContact * 0.7 ? '#ff8a8a' : '#bbb'));
+      var dph = r.mins > 0 ? Math.round(r.dials / (r.mins/60)) : null;
+      var avgCall = r.talkN ? Math.round(r.talkSecs / r.talkN) : 0;
+      var idle = !total;
+      h += '<tr style="border-top:1px solid rgba(255,255,255,0.05);' + (idle ? 'opacity:0.55;' : '') + '">'
+        + '<td style="padding:11px 12px;">'
+          + '<div style="font-weight:700;color:#F3EDE3;">' + r.name + (r.onShiftSince ? ' <span style="color:#8DC63F;font-size:0.68rem;">&#9679; on shift</span>' : '') + '</div>'
+          + '<div style="margin-top:4px;background:rgba(255,255,255,0.06);border-radius:100px;height:4px;width:130px;overflow:hidden;">'
+          + '<div style="background:' + (idle ? '#444' : '#4a9eff') + ';height:4px;width:' + Math.round(total/maxDials*100) + '%;"></div></div>'
+        + '</td>'
+        + '<td style="text-align:right;padding:11px 12px;font-weight:700;color:' + (idle ? '#ff8a8a' : '#F3EDE3') + ';">' + (idle ? '0' : total.toLocaleString()) + (r.knocks ? '<div style="font-size:0.62rem;color:#666;font-weight:400;">' + r.dials + ' calls · ' + r.knocks + ' doors</div>' : '') + '</td>'
+        + '<td style="text-align:right;padding:11px 12px;color:#bbb;">' + r.contacts + '</td>'
+        + '<td style="text-align:right;padding:11px 12px;color:' + cColor + ';font-weight:700;">' + (r.dials ? Math.round(cRate*100) + '%' : '—') + '</td>'
+        + '<td style="text-align:right;padding:11px 12px;color:' + (r.booked ? '#ffaa00' : '#666') + ';font-weight:700;">' + r.booked + '</td>'
+        + '<td style="text-align:right;padding:11px 12px;color:#999;">' + (shiftsMissing ? '—' : _dialHrs(r.mins)) + '</td>'
+        + '<td style="text-align:right;padding:11px 12px;color:#999;">' + (dph != null ? dph : '—') + '</td>'
+        + '<td style="text-align:right;padding:11px 12px;color:#999;">' + (avgCall ? (Math.floor(avgCall/60) + ':' + String(avgCall%60).padStart(2,'0')) : '—') + '</td>'
+        + '<td style="text-align:right;padding:11px 12px;color:' + (idle ? '#ff8a8a' : '#777') + ';font-size:0.72rem;">' + (idle ? 'no activity' : _dialAgo(r.last)) + '</td>'
+        + '</tr>';
+    });
+    h += '</tbody></table></div>';
+
+    // ── Outcome mix — where the dials are actually landing ──────────────────
+    var allOut = {};
+    reps.forEach(function(r){ Object.keys(r.outcomes).forEach(function(o){ allOut[o] = (allOut[o]||0) + r.outcomes[o]; }); });
+    var outKeys = Object.keys(allOut).sort(function(a,b){ return allOut[b]-allOut[a]; });
+    if (outKeys.length) {
+      var OUT_LBL = { no_answer:'No answer', left_vm:'Left voicemail', callback:'Callback set', warm:'Warm',
+        booked:'Booked', not_interested:'Not interested', wrong_number:'Wrong number', dnc:'DNC' };
+      h += '<div style="margin-top:16px;background:#141414;border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:16px 18px;">'
+        + '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#888;margin-bottom:10px;">Outcome mix &mdash; ' + rangeLbl + '</div>'
+        + '<div style="display:flex;gap:8px;flex-wrap:wrap;">'
+        + outKeys.map(function(o) {
+            var pct = T.dials ? Math.round(allOut[o]/T.dials*100) : 0;
+            var col = o === 'booked' ? '#ffaa00' : (o === 'warm' ? '#8DC63F' : (o === 'dnc' || o === 'not_interested' ? '#ff8a8a' : '#888'));
+            return '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:100px;padding:6px 14px;font-size:0.72rem;color:' + col + ';">'
+              + (OUT_LBL[o] || o) + ' <b>' + allOut[o] + '</b> <span style="color:#666;">' + pct + '%</span></div>';
+          }).join('')
+        + '</div></div>';
+    }
+
+    h += '<div style="margin-top:12px;font-size:0.68rem;color:#666;line-height:1.6;">'
+      + 'Contact = a real conversation (warm, booked, not interested, callback, DNC). Contact&nbsp;% is coloured against the <b>team average</b>, not a fixed target &mdash; with a new team there is no benchmark worth measuring against yet. '
+      + 'A shift left open is counted only up to now, and anything over 16 hours is dropped as a forgotten clock-out. '
+      + 'For what reps are actually <i>hearing</i> on these calls, use <a href="#" onclick="renderTeamView(\'oneonones\');return false;" style="color:#4a9eff;">1:1s</a>.'
+      + '</div>';
+    return h;
+  }
+
   // 1:1s coaching view — grouped AI/field notes per rep + the latest coaching report.
   // The AI notes come from the dialer/canvass note-taker (lead_activity.note, 🎙 prefix
   // for AI-generated). D2's coaching-agent.js writes coaching_reports (pattern/objection
@@ -2029,6 +2282,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
       h += _teamOpsLinksHtml();
       h += '<div style="margin-top:14px;font-size:0.72rem;color:#666;line-height:1.6;">Per-rep login codes are managed on each member card under the <strong style="color:#8DC63F;">Team</strong> tab.</div>';
+
+    } else if (subTab === 'dialers') {
+
+      h += await _teamDialersHtml();
 
     } else if (subTab === 'oneonones') {
 
