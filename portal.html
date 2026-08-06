@@ -8903,7 +8903,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       + '<span style="font-size:0.78rem;color:#ffaa00;font-weight:700;">&#128193; Choose CSV File</span>'
       + '<span id="bbTracerfyFileName" style="font-size:0.7rem;color:#666;">No file chosen</span>'
       + '<input type="file" accept=".csv,text/csv" onchange="bbLoadTracerfyFile(this)" style="display:none;"></label>'
-      + '<textarea id="bbTracerfyRaw" style="width:100%;height:100px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:#ccc;font-size:0.7rem;padding:8px;font-family:monospace;resize:vertical;" placeholder="Or paste CSV content here…"></textarea>'
+      + '<textarea id="bbTracerfyRaw" style="width:100%;height:100px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:#ccc;font-size:0.7rem;padding:8px;font-family:monospace;resize:vertical;" placeholder="…or paste the Tracerfy download link, or the CSV text itself"></textarea>'
+      + '<div style="font-size:0.64rem;color:#777;margin-top:5px;line-height:1.5;">Any of the three works: choose the downloaded file, paste the Tracerfy link (https://tracerfy&hellip;.csv), or paste the raw CSV.</div>'
       + '<div style="display:flex;gap:8px;margin-top:8px;align-items:center;">'
       + '<button onclick="bbProcessTracerfyCsv()" style="width:auto;margin-top:0;background:#ffaa00;color:#1A1A1A;border:none;border-radius:100px;padding:7px 18px;font-size:0.78rem;font-weight:800;cursor:pointer;">&#9889; Process CSV</button>'
       + '<span id="bbTracerfyPasteStatus" style="font-size:0.72rem;color:#888;"></span>'
@@ -8926,10 +8927,34 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     reader.readAsText(file);
   };
 
+  // A pasted Tracerfy link is resolved server-side (their CDN sends no CORS headers, so
+  // the browser can't fetch it directly). Keeps the flow to one paste instead of
+  // download -> find the file -> upload.
+  async function _bbResolveCsvInput(raw, statusEl) {
+    var t = String(raw || '').trim();
+    if (!/^https?:\/\/\S+$/i.test(t)) return t;          // already CSV text
+    if (statusEl) statusEl.textContent = 'Downloading from Tracerfy…';
+    var r = await fetch('/.netlify/functions/fetch-csv', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: t })
+    });
+    var d = await r.json().catch(function(){ return {}; });
+    if (!r.ok || d.error) throw new Error(d.error || ('Download failed (' + r.status + ')'));
+    if (statusEl) statusEl.textContent = 'Downloaded ' + Math.round((d.bytes||0)/1024) + ' KB — parsing…';
+    return d.csv || '';
+  }
+
   window.bbProcessTracerfyCsv = async function() {
     var raw = (document.getElementById('bbTracerfyRaw')||{}).value || '';
     var statusEl = document.getElementById('bbTracerfyPasteStatus');
-    if (!raw.trim()) { if (statusEl) statusEl.textContent = 'Paste CSV first.'; return; }
+    if (!raw.trim()) { if (statusEl) statusEl.textContent = 'Choose a file, or paste the Tracerfy link or CSV text.'; return; }
+    try {
+      raw = await _bbResolveCsvInput(raw, statusEl);
+    } catch (e) {
+      if (statusEl) statusEl.innerHTML = '<span style="color:#ff8a8a;">' + (e && e.message ? e.message : 'Could not load that link.') + '</span>';
+      return;
+    }
+    if (!raw.trim()) { if (statusEl) statusEl.textContent = 'That link returned an empty file.'; return; }
     if (statusEl) statusEl.textContent = 'Parsing…';
 
     var lines = raw.trim().split('\n').map(function(l){ return l.trim(); }).filter(Boolean);
