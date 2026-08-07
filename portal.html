@@ -8971,7 +8971,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var keptAwake = await _bbAcquireWakeLock();
     var groups = _bbDupGroups;
     var total = groups.reduce(function(n, g){ return n + g.losers.length; }, 0);
-    var merged = 0, enriched = 0, moved = 0, failed = 0, done = 0;
+    var merged = 0, enriched = 0, moved = 0, failed = 0, blocked = 0, done = 0, blockedMsg = '';
     var c = supabase.createClient(SUPA_URL, SUPA_KEY);
 
     function paint() {
@@ -9001,12 +9001,18 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           // Move call history onto the survivor BEFORE removing the row, so nothing a
           // setter did is lost.
           if (g.acted[loser.id]) {
-            var mr = await c.from('lead_activity').update({ customer_id: g.keeper.id }).eq('customer_id', loser.id);
-            if (!mr.error) moved++;
-            else { failed++; continue; }   // history could not be moved — leave the row alone
+            var mr = await c.from('lead_activity').update({ customer_id: g.keeper.id })
+              .eq('customer_id', loser.id).select('id');
+            if (mr.error || !mr.data || !mr.data.length) { failed++; continue; }   // history could not be moved — leave the row alone
+            moved++;
           }
-          var dr = await c.from('customers').delete().eq('id', loser.id);
-          if (dr.error) { failed++; continue; }
+          // ⚠️ .select() is what makes this honest. Under RLS a forbidden DELETE returns
+          // SUCCESS WITH ZERO ROWS — no error — so counting a bare delete() as a merge
+          // reports thousands of merges while Postgres discards every one. Verify a row
+          // actually came back.
+          var dr = await c.from('customers').delete().eq('id', loser.id).select('id');
+          if (dr.error) { failed++; blockedMsg = blockedMsg || dr.error.message; continue; }
+          if (!dr.data || !dr.data.length) { blocked++; continue; }
           merged++;
           adminCustomers = adminCustomers.filter(function(x){ return x.id !== loser.id; });
         }
@@ -9020,8 +9026,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         + '<b style="color:#8DC63F;">' + merged.toLocaleString() + '</b> duplicate rows merged away<br>'
         + '<b>' + enriched.toLocaleString() + '</b> survivors gained missing data<br>'
         + (moved ? '<b>' + moved.toLocaleString() + '</b> call-history rows moved to the survivor<br>' : '')
-        + (failed ? '<span style="color:#ff8a8a;">' + failed + ' skipped (left untouched)</span>' : '')
+        + (failed ? '<span style="color:#ff8a8a;">' + failed + ' skipped (left untouched)</span><br>' : '')
         + '</div>'
+        + (blocked ? '<div style="margin-top:8px;padding:9px 11px;background:rgba(239,68,68,0.10);border:1px solid rgba(239,68,68,0.35);border-radius:8px;font-size:0.68rem;color:#ff8a8a;line-height:1.6;">'
+            + '&#9888; <b>' + blocked.toLocaleString() + ' rows could not be removed.</b> The database accepted the delete but kept the row &mdash; that is what a missing Row Level Security DELETE policy on <code>customers</code> looks like. The survivors still gained their merged data, so nothing was lost, but the duplicates are still there. Fix the policy (or run the merge server-side) and re-run this scan.'
+            + (blockedMsg ? '<div style="color:#c88;margin-top:4px;">' + blockedMsg + '</div>' : '')
+            + '</div>' : '')
         + '<div style="margin-top:8px;text-align:right;"><a href="#" onclick="_bbEnrichOverlayClose();return false;" style="color:#4a9eff;font-size:0.7rem;">Dismiss</a></div>');
       _bbDupGroups = null;
     } catch(e) {
