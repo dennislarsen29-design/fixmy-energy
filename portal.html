@@ -5481,10 +5481,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         if (gpNotePreview) h += '<div style="font-size:0.7rem;color:#666;margin-top:10px;font-style:italic;border-top:1px solid rgba(255,255,255,0.06);padding-top:8px;">'+esc(gpNotePreview.by)+': '+esc(gpNotePreview.text.slice(0,80))+(gpNotePreview.text.length>80?'…':'')+'</div>';
         h += '<div style="margin-top:8px;">';
         h += '<button onclick="(function(w){var el=w.getElementById(\'gpNi_'+lead.id+'\');el.style.display=el.style.display===\'none\'?\'block\':\'none\';})(window)" style="width:auto;margin-top:0;background:none;border:none;color:#555;cursor:pointer;font-size:0.7rem;padding:0;text-decoration:underline;">&#128221; Add Note</button>';
+        // AI Notes sits OUTSIDE the collapsed note box — buried inside it, a rep at the
+        // door never saw the feature existed.
+        h += _cvAiControls(lead.id, 'gpNt_'+lead.id);
         h += '<div id="gpNi_'+lead.id+'" style="display:none;margin-top:6px;">';
         h += '<textarea id="gpNt_'+lead.id+'" rows="2" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:8px;font-size:0.78rem;box-sizing:border-box;resize:vertical;" placeholder="Quick note…"></textarea>';
         h += '<button onclick="adminCanvassAddNote(\''+lead.id+'\', document.getElementById(\'gpNt_'+lead.id+'\').value)" style="width:auto;margin-top:4px;padding:5px 14px;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;">Save Note</button>';
-        h += _cvAiControls(lead.id, 'gpNt_'+lead.id);
         h += '</div></div>';
         h += '</div>';
 
@@ -5648,10 +5650,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             // ── Add Note ────────────────────────────────────────────────────────
             h += '<div style="padding:6px 12px 10px;border-top:1px solid rgba(255,255,255,0.04);">';
             h += '<button onclick="(function(w){var el=w.getElementById(\'bbNi_'+lead.id+'\');el.style.display=el.style.display===\'none\'?\'block\':\'none\';})(window)" style="width:auto;margin-top:0;background:none;border:none;color:#444;cursor:pointer;font-size:0.68rem;padding:0;text-decoration:underline;">&#128221; Add Note</button>';
+            h += _cvAiControls(lead.id, 'bbNt_'+lead.id);
             h += '<div id="bbNi_'+lead.id+'" style="display:none;margin-top:6px;">';
             h += '<textarea id="bbNt_'+lead.id+'" rows="2" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:#fff;padding:8px;font-size:0.78rem;box-sizing:border-box;resize:vertical;" placeholder="Quick note…"></textarea>';
             h += '<button onclick="adminCanvassAddNote(\''+lead.id+'\', document.getElementById(\'bbNt_'+lead.id+'\').value)" style="width:auto;margin-top:4px;padding:5px 14px;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;">Save Note</button>';
-            h += _cvAiControls(lead.id, 'bbNt_'+lead.id);
             h += '</div>';
             h += '</div>';
 
@@ -6791,7 +6793,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var r = await c.from('rep_shifts').insert(row).select();
       if (r.error) throw new Error(r.error.message);
       _bbShift = (r.data && r.data[0]) || row;
-      renderBBDialerView();
+      _bbShiftRerender();
     } catch(e) { alert('Could not start shift: ' + e.message + '\n\nIf this persists, run supabase/migrations/20260803_setter_database.sql.'); }
   };
 
@@ -6803,7 +6805,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var r = await c.from('rep_shifts').update({ ended_at: new Date().toISOString() }).eq('id', _bbShift.id);
       if (r.error) throw new Error(r.error.message);
       _bbShift = null;
-      renderBBDialerView();
+      _bbShiftRerender();
     } catch(e) { alert('Could not end shift: ' + e.message); }
   };
 
@@ -6822,6 +6824,133 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
     return '<button onclick="bbShiftStart()" title="Starts your shift clock. Your hours are paired with your dials so your 1:1 shows real dials-per-hour." style="width:auto;padding:5px 12px;background:rgba(141,198,63,0.12);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:100px;font-size:0.68rem;font-weight:700;cursor:pointer;">&#9654; Start Shift</button>';
   }
+
+  // The shift control now renders on BOTH prospecting screens, so start/end must redraw
+  // whichever one is open — hard-calling renderBBDialerView() from Doors would blank the
+  // route out from under the rep.
+  function _bbShiftRerender() {
+    if (typeof window._bbShiftRerenderFn === 'function') {
+      try { window._bbShiftRerenderFn(); return; } catch(e) {}
+    }
+    renderBBDialerView();
+  }
+
+  // ── Doors / Dialing ───────────────────────────────────────────────────────
+  // Two prospecting motions, one product: Doors = service door-to-door, Dialing = phone.
+  // Rep portal only — the admin Black Box screen stays the pipeline/ops view, so its
+  // dialer keeps a plain "back" affordance instead of a mode switch.
+  function _bbModeToggleHtml(mode) {
+    var isRep = typeof window.salesSetView === 'function';
+    if (!isRep) {
+      return '<button onclick="renderAdminCanvassView()" style="width:auto;margin-top:0;background:none;border:none;color:#555;cursor:pointer;font-size:0.75rem;padding:0;">&#8592; Back to Black Box</button>';
+    }
+    function pill(id, label, active, colour) {
+      return '<button onclick="salesSetView(\''+id+'\')" style="width:auto;margin-top:0;padding:7px 18px;border-radius:100px;font-size:0.75rem;font-weight:700;cursor:pointer;white-space:nowrap;'
+        + (active ? 'background:'+colour+';border:1px solid '+colour+';color:#1A1A1A;'
+                  : 'background:transparent;border:1px solid rgba(255,255,255,0.14);color:#888;')
+        + '">'+label+'</button>';
+    }
+    return '<div style="display:inline-flex;gap:6px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:100px;padding:4px;">'
+      + pill('canvass', '&#128682; Doors',  mode === 'doors',   '#8DC63F')
+      + pill('dialer',  '&#128222; Dialing', mode === 'dialing', '#E8793A')
+      + '</div>';
+  }
+
+  // ── Doors satellite map ───────────────────────────────────────────────────
+  // Live position + clickable lead pins over satellite imagery, so a rep can see which
+  // house is which before walking up. Uses the Maps JS already loaded globally for the
+  // Coverage map — deliberately the classic google.maps.Marker rather than
+  // AdvancedMarkerElement, which would require adding libraries=marker + a mapId to the
+  // one <script> tag half the portal depends on.
+  var _cvMapObj = null, _cvMapEl = null, _cvMapMarkers = [], _cvMapInfo = null;
+  var _CV_PIN = {
+    '':                 { c:'#8DC63F', t:'Not knocked yet' },
+    'not_home':         { c:'#8a8a8a', t:'Not home' },
+    'not_interested':   { c:'#ef4444', t:'Not interested' },
+    'interested':       { c:'#f59e0b', t:'Interested' },
+    'already_customer': { c:'#4a9eff', t:'Already a customer' },
+    'callback':         { c:'#f59e0b', t:'Callback' }
+  };
+  window._cvRenderDoorsMap = function(elId, leads, userLat, userLng) {
+    var el = document.getElementById(elId);
+    if (!el) return;
+    if (typeof google === 'undefined' || !google.maps) {
+      el.innerHTML = '<div style="padding:22px;text-align:center;color:#666;font-size:0.75rem;">Map unavailable &mdash; Google Maps didn\'t load. The route list below still works.</div>';
+      return;
+    }
+    leads = (leads || []).filter(function(l){ return l.lat != null && l.lng != null; });
+    var center = (userLat != null && userLng != null) ? { lat: +userLat, lng: +userLng }
+               : (leads.length ? { lat: +leads[0].lat, lng: +leads[0].lng } : null);
+    if (!center) {
+      el.innerHTML = '<div style="padding:22px;text-align:center;color:#666;font-size:0.75rem;">No position or mapped leads yet &mdash; tap Get My Location.</div>';
+      return;
+    }
+    // renderSales() replaces dashBody wholesale, so a re-render hands us a brand-new
+    // element. Rebuilding only when the element actually changed keeps pan/zoom sticky
+    // across the GPS ticks that re-sort the route every few seconds.
+    if (!_cvMapObj || _cvMapEl !== el) {
+      _cvMapObj = new google.maps.Map(el, {
+        center: center, zoom: 18, mapTypeId: 'hybrid', tilt: 0,
+        streetViewControl: false, mapTypeControl: false, fullscreenControl: true,
+        gestureHandling: 'greedy'
+      });
+      _cvMapEl = el;
+      _cvMapInfo = new google.maps.InfoWindow();
+    }
+    _cvMapMarkers.forEach(function(m){ m.setMap(null); });
+    _cvMapMarkers = [];
+
+    if (userLat != null && userLng != null) {
+      _cvMapMarkers.push(new google.maps.Marker({
+        position: center, map: _cvMapObj, title: 'You', zIndex: 999,
+        icon: { path: google.maps.SymbolPath.CIRCLE, scale: 8, fillColor: '#4a9eff',
+                fillOpacity: 1, strokeColor: '#fff', strokeWeight: 3 }
+      }));
+    }
+
+    // Only the near ring gets pinned — dropping 80 markers over a whole city turns the
+    // map into confetti and hides the doors actually within walking distance.
+    var near = leads.slice(0, 40);
+    var bounds = new google.maps.LatLngBounds();
+    bounds.extend(center);
+    near.forEach(function(l, i) {
+      var pin = _CV_PIN[l.knock_status || ''] || _CV_PIN[''];
+      var pos = { lat: +l.lat, lng: +l.lng };
+      bounds.extend(pos);
+      var mk = new google.maps.Marker({
+        position: pos, map: _cvMapObj, title: l.address || '',
+        zIndex: l.knock_status ? 1 : 10,
+        icon: { path: google.maps.SymbolPath.CIRCLE, scale: l.knock_status ? 6 : 8,
+                fillColor: pin.c, fillOpacity: l.knock_status ? 0.55 : 0.95,
+                strokeColor: '#111', strokeWeight: 1.5 }
+      });
+      mk.addListener('click', function() {
+        var owner = l.title_owner || ((l.first_name||'')+' '+(l.last_name||'')).trim();
+        var body = '<div style="font-family:system-ui,sans-serif;color:#111;min-width:170px;">'
+          + '<div style="font-weight:700;font-size:0.82rem;">'+esc(l.address||'No address')+'</div>'
+          + (owner ? '<div style="font-size:0.74rem;color:#555;margin-top:2px;">'+esc(owner)+'</div>' : '')
+          + (l.original_installer ? '<div style="font-size:0.7rem;color:#777;margin-top:2px;">'+esc(l.original_installer)+(l.install_year?' &middot; '+esc(String(l.install_year)):'')+'</div>' : '')
+          + '<div style="font-size:0.7rem;color:'+pin.c+';font-weight:700;margin-top:4px;">'+pin.t+'</div>'
+          + (typeof window.canvassPrioritize === 'function'
+              ? '<button onclick="window.canvassPrioritize(\''+l.id+'\')" style="margin-top:8px;padding:5px 12px;background:#8DC63F;border:none;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;">Go here next</button>'
+              : '')
+          + '</div>';
+        _cvMapInfo.setContent(body);
+        _cvMapInfo.open(_cvMapObj, mk);
+      });
+      _cvMapMarkers.push(mk);
+    });
+
+    // Frame the walkable cluster, but never zoom past street level on a lone pin.
+    if (near.length) {
+      _cvMapObj.fitBounds(bounds, 40);
+      google.maps.event.addListenerOnce(_cvMapObj, 'idle', function() {
+        if (_cvMapObj.getZoom() > 19) _cvMapObj.setZoom(19);
+      });
+    } else {
+      _cvMapObj.setCenter(center);
+    }
+  };
 
   // ── Call timing ───────────────────────────────────────────────────────────
   // Stamped when the rep taps Call; consumed by bbDialCommit when they disposition,
@@ -7493,15 +7622,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button>'+
       '<a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a>'+
     '</div>' : '';
-    var backFn = isAdminDialer ? 'renderAdminCanvassView()'
-               : (typeof window.salesSetView === 'function' ? 'salesSetView(\'canvass\')' : 'renderAdminCanvassView()');
     var h = portalNav + '<div style="padding:4px 0 16px;">';
 
-    // Header
+    // Header — the rep portal gets the Doors/Dialing toggle; admin keeps a back link.
+    window._bbShiftRerenderFn = renderBBDialerView;
     h += '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:14px;">';
-    h += '<div style="display:flex;align-items:center;gap:10px;">';
-    h += '<button onclick="'+backFn+'" style="background:none;border:none;color:#555;cursor:pointer;font-size:0.75rem;padding:0;">&#8592; Back to Black Box</button>';
-    h += '<div style="font-size:0.78rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#E8793A;">&#128222; Black Box Dialer</div>';
+    h += '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">';
+    h += isAdminDialer
+      ? '<button onclick="renderAdminCanvassView()" style="background:none;border:none;color:#555;cursor:pointer;font-size:0.75rem;padding:0;">&#8592; Back to Black Box</button>'
+      : _bbModeToggleHtml('dialing');
+    h += '<div style="font-size:0.78rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#E8793A;">&#128222; Dialing</div>';
     h += '</div>';
     if (CURRENT_ROLE === 'admin') {
       h += '<button id="bbGhlSyncBtn" onclick="bbDialSyncGHL()" title="Manually pushes every dialable Black Box lead into GHL as a contact (tag: bb-dialer-lead) so GHL&#39;s Power Dialer can call them. Safe to re-run — duplicates merge. Also runs automatically at 2 AM with the nightly pipeline." style="padding:6px 14px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);color:#4a9eff;border-radius:100px;font-size:0.7rem;font-weight:700;cursor:pointer;">&#8679; Sync Queue to GHL</button>';
@@ -18821,8 +18951,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         window._bbDialerPersonName = person.name || null;
         window._bbDialerPersonId = person.id || null;
         h += '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px;">';
-        h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;">&#128230; Black Box &mdash; Door Knocking Route</div>';
-        h += '<button onclick="salesSetView(\'dialer\')" style="padding:7px 18px;background:rgba(232,121,58,0.14);border:1px solid rgba(232,121,58,0.45);color:#E8793A;border-radius:100px;font-size:0.75rem;font-weight:700;cursor:pointer;">&#128222; Black Box Dialer</button>';
+        h += '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">';
+        h += _bbModeToggleHtml('doors');
+        h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#8DC63F;">&#128682; Doors &mdash; Prospecting Route</div>';
+        h += '</div>';
+        // Shift clock — same control the Dialing side has. The clock already opens itself
+        // on the first knock (bbLogActivity -> _bbAutoShiftOnActivity); this just makes it
+        // visible so a rep can see they're on the clock.
+        window._bbShiftRerenderFn = renderSales;
+        if (!_bbShiftChecked) { bbShiftLoad().then(function(){ renderSales(); }); }
+        h += bbShiftControlHtml();
         h += '</div>';
 
         // QR Code card (moved off the login dashboard — lives here in the Black Box canvass route)
@@ -18921,11 +19059,33 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           var visited = canvassLeads.filter(function(l){ return !!l.knock_status; });
           var interested = canvassLeads.filter(function(l){ return l.knock_status === 'interested'; }).length;
 
-          // Location pill
-          h += '<div style="font-size:0.68rem;color:#555;margin-bottom:12px;display:flex;align-items:center;gap:6px;">';
-          h += '<span style="background:rgba(141,198,63,0.12);color:#8DC63F;border:1px solid rgba(141,198,63,0.25);border-radius:100px;padding:3px 10px;">📍 GPS Active</span>';
-          h += '<button onclick="canvassInit()" style="background:none;border:none;color:#555;cursor:pointer;font-size:0.7rem;padding:0;">↻ Refresh</button>';
+          // Location pill — now states when the route last re-centered and which way the
+          // rep is pointing, so a genuinely-far next door reads as sparse coverage rather
+          // than the stale-set bug this used to be.
+          h += '<div style="font-size:0.68rem;color:#555;margin-bottom:10px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">';
+          h += '<span style="background:rgba(141,198,63,0.12);color:#8DC63F;border:1px solid rgba(141,198,63,0.25);border-radius:100px;padding:3px 10px;">📍 GPS Active'
+             + (_cvFetchAt ? ' &middot; re-centered ' + _cvAgo(_cvFetchAt) : '')
+             + (_cvHeading != null ? ' &middot; heading ' + _cvCompass(_cvHeading) : '')
+             + '</span>';
+          if (_cvRefetching) h += '<span style="color:#4a9eff;">finding doors around you…</span>';
+          h += '<button onclick="canvassRecenter()" title="Re-query doors around where you are standing right now." style="width:auto;background:none;border:none;color:#4a9eff;cursor:pointer;font-size:0.7rem;padding:0;text-decoration:underline;">📍 Re-center here</button>';
+          h += '<button onclick="canvassInit()" style="width:auto;background:none;border:none;color:#555;cursor:pointer;font-size:0.7rem;padding:0;">↻ Refresh</button>';
           h += '</div>';
+
+          // Territory controls — SDCP prioritise + add a door that isn't in the system.
+          (function(){
+            var sdcpCount = canvassLeads.filter(function(l){
+              var z = extractZip(l.address||''); return z && SDCP_ZIPS.has(z) && !l.knock_status;
+            }).length;
+            h += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px;">';
+            h += '<button onclick="canvassToggleSdcp()" title="Sorts San Diego Community Power doors to the top of your route. Nothing is hidden — a non-SDCP door you are standing next to still shows." style="width:auto;margin-top:0;padding:5px 13px;border-radius:100px;font-size:0.7rem;font-weight:700;cursor:pointer;'
+              + (_cvSdcpFocus ? 'background:rgba(0,150,255,0.16);border:1px solid rgba(0,150,255,0.5);color:#4AABF7;'
+                              : 'background:transparent;border:1px solid rgba(255,255,255,0.14);color:#666;')
+              + '">' + (_cvSdcpFocus ? '&#10003; ' : '') + 'SDCP first</button>';
+            h += '<span style="font-size:0.68rem;color:#555;">'+sdcpCount+' SDCP door'+(sdcpCount===1?'':'s')+' in range</span>';
+            h += '<button onclick="canvassAddDoor()" title="Add a house that is not in the system — including one whose installer is still in business (Sunrun, Tesla, etc.)." style="width:auto;margin-top:0;margin-left:auto;padding:5px 13px;background:rgba(141,198,63,0.12);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:100px;font-size:0.7rem;font-weight:700;cursor:pointer;">&#43; Add a Door</button>';
+            h += '</div>';
+          })();
 
           h += '<div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;">';
 
@@ -18947,6 +19107,23 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           if (unvisited.length >= 2) {
             h += '<button onclick="canvassBatchRoute(5)" style="width:100%;margin-bottom:14px;padding:10px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);border-radius:10px;color:#4a9eff;font-size:0.8rem;font-weight:700;cursor:pointer;">🗺 Route Next 5 Houses in Google Maps</button>';
           }
+
+          // ── Satellite map — where you are + the doors around you ────────────────
+          h += '<div style="margin-bottom:14px;">';
+          h += '<button onclick="canvassToggleMap()" style="width:auto;margin-top:0;background:none;border:none;color:#666;cursor:pointer;font-size:0.72rem;padding:0;text-decoration:underline;">'
+             + (_cvMapOpen ? '&#9650; Hide map' : '&#9660; &#128506; Show satellite map') + '</button>';
+          if (_cvMapOpen) {
+            h += '<div id="cvDoorsMap" style="height:300px;border-radius:12px;overflow:hidden;border:1px solid rgba(255,255,255,0.12);margin-top:8px;background:#111;"></div>';
+            h += '<div style="display:flex;gap:10px;flex-wrap:wrap;font-size:0.62rem;color:#666;margin-top:6px;">'
+               + '<span><span style="color:#4a9eff;">&#9679;</span> You</span>'
+               + '<span><span style="color:#8DC63F;">&#9679;</span> Not knocked</span>'
+               + '<span><span style="color:#f59e0b;">&#9679;</span> Interested</span>'
+               + '<span><span style="color:#8a8a8a;">&#9679;</span> Not home</span>'
+               + '<span><span style="color:#ef4444;">&#9679;</span> Not interested</span>'
+               + '<span style="color:#555;">Tap a pin &rarr; go there next</span>'
+               + '</div>';
+          }
+          h += '</div>';
 
           if (!canvassLeads.length) {
             h += '<div style="text-align:center;padding:40px 20px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:14px;">';
@@ -19016,11 +19193,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             h += '</div>';
             // Inline note input
             h += '<div style="margin-top:10px;border-top:1px solid rgba(255,255,255,0.06);padding-top:8px;">';
-            h += '<button onclick="(function(w){var el=w.getElementById(\'tgpNi_'+lead.id+'\');el.style.display=el.style.display===\'none\'?\'block\':\'none\';})(window)" style="background:none;border:none;color:#555;cursor:pointer;font-size:0.7rem;padding:0;text-decoration:underline;">📝 Add Note</button>';
+            h += '<button onclick="(function(w){var el=w.getElementById(\'tgpNi_'+lead.id+'\');el.style.display=el.style.display===\'none\'?\'block\':\'none\';})(window)" style="width:auto;background:none;border:none;color:#555;cursor:pointer;font-size:0.7rem;padding:0;text-decoration:underline;">📝 Add Note</button>';
+            // Visible on the card, not buried inside the collapsed note box.
+            h += _cvAiControls(lead.id, 'tgpNt_'+lead.id);
             h += '<div id="tgpNi_'+lead.id+'" style="display:none;margin-top:6px;">';
             h += '<textarea id="tgpNt_'+lead.id+'" rows="2" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:8px;font-size:0.78rem;box-sizing:border-box;resize:vertical;" placeholder="Quick note…"></textarea>';
-            h += '<button onclick="canvassAddNote(\''+lead.id+'\', document.getElementById(\'tgpNt_'+lead.id+'\').value)" style="margin-top:4px;padding:5px 14px;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;">Save Note</button>';
-            h += _cvAiControls(lead.id, 'tgpNt_'+lead.id);
+            h += '<button onclick="canvassAddNote(\''+lead.id+'\', document.getElementById(\'tgpNt_'+lead.id+'\').value)" style="width:auto;margin-top:4px;padding:5px 14px;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;">Save Note</button>';
             h += '</div></div>';
             h += '</div>';
 
@@ -19182,6 +19360,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
       h += '<div style="text-align:center;padding:20px 0 6px;"><button onclick="window.openRepChat()" style="background:none;border:none;color:#444;font-size:0.68rem;cursor:pointer;text-decoration:underline;text-underline-offset:3px;">&#128172; Rep Assistant</button></div>';
       document.getElementById('dashBody').innerHTML = h;
+      // Doors satellite map — mounted after the HTML lands, since renderSales() replaces
+      // dashBody wholesale and the container has to exist first.
+      if (salesView === 'canvass' && _cvMapOpen && document.getElementById('cvDoorsMap')) {
+        setTimeout(function(){
+          try { window._cvRenderDoorsMap('cvDoorsMap', canvassLeads, canvassUserLat, canvassUserLng); }
+          catch(e) { console.warn('doors map failed:', e); }
+        }, 0);
+      }
     }
 
     window.setTrainingTab = function(v) { sessionStorage.setItem('trainingTab_'+person.id,v); salesView='training'; renderSales(); };
@@ -19583,6 +19769,235 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var _canvassLoadProgress = '';
     var _canvassWatchId = null; // live GPS watch handle
 
+    // ── Doors: territory + movement state ──────────────────────────────────────
+    // The route used to be fetched ONCE, around wherever the rep tapped "Get My Location",
+    // and watchPosition only re-sorted that same array. Drive to an appointment and the
+    // "nearest" door is still five miles back at the starting point, pointing the wrong
+    // way. These track where the set was actually fetched from and which way the rep is
+    // moving so the route can follow them.
+    var _cvFetchLat = null, _cvFetchLng = null, _cvFetchAt = null;
+    var _cvRefetching = false;
+    var _cvHeading = null;                 // degrees, only when genuinely moving
+    var CV_REFETCH_MI = 1.5;               // move this far from the fetch point ⇒ re-query
+    var CV_MOVING_MPS = 2.2;               // ~5 mph — below this, heading is noise
+    var CV_BEHIND_DEG = 100;               // more than this off your heading = behind you
+    var _cvSdcpFocus = (function(){ try { return sessionStorage.getItem('cvSdcpFocus') === '1'; } catch(e){ return false; } })();
+    var _cvMapOpen   = (function(){ try { return localStorage.getItem('cvMapOpen') !== '0'; } catch(e){ return true; } })();
+
+    function _cvAgo(ts) {
+      var m = Math.round((Date.now() - ts) / 60000);
+      return m < 1 ? 'just now' : m < 60 ? m + 'm ago' : Math.floor(m/60) + 'h ago';
+    }
+    function _cvCompass(deg) {
+      var dirs = ['N','NE','E','SE','S','SW','W','NW'];
+      return dirs[Math.round(((deg % 360) + 360) % 360 / 45) % 8];
+    }
+    function _cvBearing(lat1, lng1, lat2, lng2) {
+      var φ1 = lat1*Math.PI/180, φ2 = lat2*Math.PI/180, Δλ = (lng2-lng1)*Math.PI/180;
+      var y = Math.sin(Δλ)*Math.cos(φ2);
+      var x = Math.cos(φ1)*Math.sin(φ2) - Math.sin(φ1)*Math.cos(φ2)*Math.cos(Δλ);
+      return (Math.atan2(y, x)*180/Math.PI + 360) % 360;
+    }
+    function _cvAngDiff(a, b) { var d = Math.abs(a - b) % 360; return d > 180 ? 360 - d : d; }
+
+    function _cvIsSdcp(l) {
+      var z = extractZip(l.address || '');
+      return !!(z && SDCP_ZIPS.has(z));
+    }
+
+    // Marks each lead as behind-you or not, given the current heading. Only meaningful
+    // while actually driving — a stationary phone reports garbage headings, so when
+    // _cvHeading is null nothing is marked and the sort stays pure nearest-first.
+    function _cvMarkBehind() {
+      var useHeading = _cvHeading != null && canvassUserLat != null && canvassUserLng != null;
+      canvassLeads.forEach(function(l) {
+        l._behind = false;
+        if (!useHeading || l.lat == null || l.lng == null) return;
+        // A door 200ft away is "on the way" no matter which way it sits — only start
+        // discarding what's behind you once it's far enough to be a real detour.
+        if (l._distMi != null && l._distMi < 0.15) return;
+        l._behind = _cvAngDiff(_cvBearing(canvassUserLat, canvassUserLng, l.lat, l.lng), _cvHeading) > CV_BEHIND_DEG;
+      });
+    }
+
+    // One comparator for the whole route so the three places that re-sort can't drift.
+    // Order: hot leads, then unknocked before knocked, then ahead-of-you before behind,
+    // then SDCP first when focused, then plain distance.
+    function _cvRouteCmp(a, b) {
+      if (a._hot && !b._hot) return -1;
+      if (!a._hot && b._hot) return 1;
+      if (a.knock_status && !b.knock_status) return 1;
+      if (!a.knock_status && b.knock_status) return -1;
+      if (!!a._behind !== !!b._behind) return a._behind ? 1 : -1;
+      if (_cvSdcpFocus) {
+        var sa = _cvIsSdcp(a), sb = _cvIsSdcp(b);
+        if (sa !== sb) return sa ? -1 : 1;
+      }
+      return (a._distMi != null ? a._distMi : 9999) - (b._distMi != null ? b._distMi : 9999);
+    }
+    function _cvSortRoute() { _cvMarkBehind(); canvassLeads.sort(_cvRouteCmp); }
+
+    window.canvassToggleSdcp = function() {
+      _cvSdcpFocus = !_cvSdcpFocus;
+      try { sessionStorage.setItem('cvSdcpFocus', _cvSdcpFocus ? '1' : '0'); } catch(e){}
+      _cvSortRoute();
+      renderSales();
+    };
+    window.canvassToggleMap = function() {
+      _cvMapOpen = !_cvMapOpen;
+      try { localStorage.setItem('cvMapOpen', _cvMapOpen ? '1' : '0'); } catch(e){}
+      renderSales();
+    };
+    // ── Add a door that isn't in the system ────────────────────────────────────
+    // Covers the two cases a permit-sourced list can't: a house we simply never sourced,
+    // and one whose installer is still in business (Sunrun, Tesla) so it was never an
+    // "orphaned account" to begin with. Where it lands is the rep's call at save time.
+    function _cvStreetKey(addr) {
+      var SUF = { LANE:'LN', ROAD:'RD', STREET:'ST', DRIVE:'DR', AVENUE:'AVE', COURT:'CT',
+                  PLACE:'PL', BOULEVARD:'BLVD', CIRCLE:'CIR', TERRACE:'TER', TRAIL:'TRL',
+                  PARKWAY:'PKWY', HIGHWAY:'HWY', SQUARE:'SQ', NORTH:'N', SOUTH:'S', EAST:'E', WEST:'W' };
+      var street = String(addr||'').split(',')[0].toUpperCase().replace(/[^A-Z0-9 ]/g,'')
+        .replace(/\s+/g,' ').trim().split(' ').map(function(w){ return SUF[w] || w; }).join(' ');
+      return street + '|' + (extractZip(addr||'') || '');
+    }
+
+    window.canvassAddDoor = function() {
+      var slot = document.getElementById('editorSlot');
+      if (!slot) return;
+      var f = function(id, label, ph, type) {
+        return '<div style="margin-bottom:9px;"><label style="display:block;font-size:0.65rem;text-transform:uppercase;letter-spacing:0.06em;color:#777;margin-bottom:3px;">'+label+'</label>'
+          + '<input id="'+id+'" type="'+(type||'text')+'" placeholder="'+ph+'" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:9px 11px;font-size:0.85rem;box-sizing:border-box;"/></div>';
+      };
+      slot.innerHTML = '<div style="position:fixed;inset:0;background:rgba(0,0,0,0.82);z-index:9000;overflow-y:auto;padding:20px 12px;">'
+        + '<div style="max-width:440px;margin:0 auto;background:#181818;border:1px solid rgba(255,255,255,0.12);border-radius:16px;padding:18px;">'
+        + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">'
+          + '<div style="font-size:0.9rem;font-weight:800;color:#8DC63F;">&#128682; Add a Door</div>'
+          + '<button onclick="canvassCloseAddDoor()" style="width:auto;margin-top:0;background:none;border:none;color:#888;font-size:1.4rem;line-height:1;cursor:pointer;padding:0 4px;">&times;</button>'
+        + '</div>'
+        + '<div style="font-size:0.7rem;color:#777;margin-bottom:14px;line-height:1.45;">Works for any house &mdash; including one whose installer is still in business. The address is geocoded so it drops straight into your route.</div>'
+        + f('cvAdAddr', 'Address *', '1234 Main St, San Diego, CA 92101')
+        + '<div style="display:flex;gap:8px;">'
+          + '<div style="flex:1;">' + f('cvAdFirst', 'First name', 'Optional') + '</div>'
+          + '<div style="flex:1;">' + f('cvAdLast',  'Last name',  'Optional') + '</div>'
+        + '</div>'
+        + '<div style="display:flex;gap:8px;">'
+          + '<div style="flex:1;">' + f('cvAdPhone', 'Phone', 'Optional', 'tel') + '</div>'
+          + '<div style="flex:1;">' + f('cvAdEmail', 'Email', 'Optional', 'email') + '</div>'
+        + '</div>'
+        + f('cvAdInstaller', 'Original installer', 'e.g. Sunrun, Tesla, unknown')
+        + '<div style="margin-bottom:12px;"><label style="display:block;font-size:0.65rem;text-transform:uppercase;letter-spacing:0.06em;color:#777;margin-bottom:3px;">Note</label>'
+          + '<textarea id="cvAdNote" rows="2" placeholder="What did you see / what did they say?" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:9px 11px;font-size:0.85rem;box-sizing:border-box;resize:vertical;"></textarea></div>'
+        + '<div id="cvAdStatus" style="font-size:0.72rem;color:#888;min-height:18px;margin-bottom:10px;"></div>'
+        + '<button onclick="canvassSaveDoor(\'blackbox\')" style="width:100%;margin-bottom:8px;padding:12px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.16);color:#ccc;border-radius:100px;font-size:0.82rem;font-weight:700;cursor:pointer;">&#128230; Save to Black Box</button>'
+        + '<div style="font-size:0.64rem;color:#666;text-align:center;margin-bottom:12px;">Sits in the prospecting queue &mdash; knock or dial it later.</div>'
+        + '<button onclick="canvassSaveDoor(\'lead\')" style="width:100%;padding:12px;background:#8DC63F;border:none;color:#1A1A1A;border-radius:100px;font-size:0.82rem;font-weight:800;cursor:pointer;">&#10003; Save to My Leads</button>'
+        + '<div style="font-size:0.64rem;color:#666;text-align:center;margin-top:6px;">Real pipeline, assigned to you, opens the editor.</div>'
+        + '</div></div>';
+    };
+    window.canvassCloseAddDoor = function() {
+      var slot = document.getElementById('editorSlot');
+      if (slot) slot.innerHTML = '';
+    };
+
+    window.canvassSaveDoor = async function(dest) {
+      var st = document.getElementById('cvAdStatus');
+      var val = function(id){ return (document.getElementById(id) || {}).value || ''; };
+      var addr = val('cvAdAddr').trim();
+      if (!addr) { if (st) { st.style.color = '#ef4444'; st.textContent = 'Address is required.'; } return; }
+
+      if (st) { st.style.color = '#888'; st.textContent = 'Looking up the address…'; }
+
+      // Geocode first — a lead with no coordinates can never enter a GPS route, which is
+      // the whole point of adding it from the field.
+      var geo = null;
+      try {
+        if (typeof google === 'undefined' || !google.maps) throw new Error('Maps not loaded');
+        geo = await new Promise(function(resolve, reject) {
+          new google.maps.Geocoder().geocode({ address: addr }, function(res, status) {
+            if (status === 'OK' && res && res[0]) resolve(res[0]); else reject(new Error(status || 'not found'));
+          });
+        });
+      } catch(e) {
+        if (st) { st.style.color = '#ef4444'; st.textContent = 'Could not find that address — check the street, city and zip.'; }
+        return;
+      }
+      var full = String(geo.formatted_address || addr).replace(/,\s*USA$/i, '');
+      var lat = geo.geometry.location.lat(), lng = geo.geometry.location.lng();
+
+      // Dedupe on normalized street+zip — the same key the Black Box merge and skip-trace
+      // matchers use, so "1249 Shadowcrest Ln" and "1249 SHADOWCREST LANE" are one house.
+      var key = _cvStreetKey(full);
+      var dupe = canvassLeads.find(function(l){ return _cvStreetKey(l.address||'') === key; });
+      if (!dupe) {
+        try {
+          var c0 = supabase.createClient(SUPA_URL, SUPA_KEY);
+          var street = full.split(',')[0].trim();
+          var q = await c0.from('customers').select('id,address,first_name,last_name')
+            .ilike('address', street + '%').limit(20);
+          if (!q.error && q.data) dupe = q.data.find(function(r){ return _cvStreetKey(r.address||'') === key; });
+        } catch(e) { /* a failed dupe check must not block adding a real door */ }
+      }
+      if (dupe) {
+        if (st) { st.style.color = '#f59e0b'; st.innerHTML = '&#9888; Already in the system: ' + esc(dupe.address || full) + ' — not adding a duplicate.'; }
+        return;
+      }
+
+      if (st) { st.style.color = '#888'; st.textContent = 'Saving…'; }
+      var now = new Date().toISOString();
+      var base = {
+        first_name: val('cvAdFirst').trim() || null,
+        last_name:  val('cvAdLast').trim()  || null,
+        phone:      val('cvAdPhone').trim() || null,
+        email:      val('cvAdEmail').trim() || null,
+        address:    full,
+        lat: lat, lng: lng,
+        original_installer: val('cvAdInstaller').trim() || null,
+        created_at: now
+      };
+      var rec = (dest === 'lead')
+        ? Object.assign({}, base, { lead_category: 'fixmy', step: 1, sold_type: null,
+            rep_id: person.id, lead_source: 'self_generated', black_box: false })
+        : Object.assign({}, base, { black_box: true, lead_source: 'orphaned_list', sold_type: null });
+
+      try {
+        var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+        var ins = await c.from('customers').insert(rec).select();
+        if (ins.error) throw new Error(ins.error.message);
+        var saved = (ins.data && ins.data[0]) || null;
+        if (!saved) throw new Error('No row returned');
+
+        var note = val('cvAdNote').trim();
+        if (note) { try { await bbLogActivity(saved.id, 'door_knock', null, note, { rep_name: person.name || person.id, rec: saved }); } catch(e){} }
+
+        if (dest === 'lead') {
+          if (Array.isArray(allRecords)) allRecords.push(saved);
+          window.canvassCloseAddDoor();
+          salesSetView('leads');
+          setTimeout(function(){ if (typeof window.salesEditLead === 'function') window.salesEditLead(saved.id); }, 120);
+        } else {
+          if (canvassUserLat != null && canvassUserLng != null) {
+            saved._distMi = canvassHaversine(canvassUserLat, canvassUserLng, lat, lng);
+          }
+          canvassLeads.push(saved);
+          _cvSortRoute();
+          window.canvassCloseAddDoor();
+          renderSales();
+        }
+      } catch(e) {
+        if (st) { st.style.color = '#ef4444'; st.textContent = 'Could not save: ' + e.message; }
+      }
+    };
+
+    window.canvassPrioritize = function(id) {
+      var i = canvassLeads.findIndex(function(l){ return l.id === id; });
+      if (i < 0) return;
+      var pick = canvassLeads.splice(i, 1)[0];
+      pick.knock_status = pick.knock_status || null;
+      canvassLeads.unshift(pick);
+      renderSales();
+      try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch(e){}
+    };
+
     // Restore leads from local cache (< 60 min old) to survive re-login / page reloads
     (function() {
       try {
@@ -19647,6 +20062,86 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }
     };
 
+    // The progressive-box query, factored out of the initial load so the same code can
+    // re-run around the rep's new position as they move. Widening ACCUMULATES rather than
+    // replaces — a wider box carries its own limit=1000 and would otherwise truncate away
+    // the near doors the tight box already found.
+    async function _canvassFetchBox(client, SEL, lat, lng) {
+      var boxes = _canvassBoxSteps(), seen = {}, acc = [], lastErr = null, miles = null;
+      for (var bi = 0; bi < boxes.length; bi++) {
+        var bx = _canvassGeoBox(lat, lng, boxes[bi]);
+        var r = await client.from('customers').select(SEL)
+          .eq('lead_source', 'orphaned_list')
+          .is('sold_type', null)
+          .not('lat', 'is', null)
+          .gte('lat', bx.latMin).lte('lat', bx.latMax)
+          .gte('lng', bx.lngMin).lte('lng', bx.lngMax)
+          .limit(1000);
+        if (r.error) { lastErr = r.error; break; }
+        (r.data || []).forEach(function(row){ if (!seen[row.id]) { seen[row.id] = 1; acc.push(row); } });
+        miles = boxes[bi] * 69;   // surfaced in the UI so a far "next door" is explainable
+        if (acc.length >= 60) break;        // enough to build a full route
+      }
+      return { rows: acc, error: lastErr, miles: miles };
+    }
+
+    // Re-query around where the rep is NOW and merge into the live route. Merging (rather
+    // than replacing) preserves knock_status and any in-flight card state for doors that
+    // are in both sets, and keeps doors just outside the new box from vanishing mid-shift.
+    async function _canvassRefetchAround(lat, lng) {
+      if (_cvRefetching) return;
+      _cvRefetching = true;
+      renderSales();
+      try {
+        var SEL = 'id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,original_installer,install_year';
+        var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+        var res = await _canvassFetchBox(client, SEL, lat, lng);
+        if (res.rows.length) {
+          var have = {};
+          canvassLeads.forEach(function(l){ have[l.id] = l; });
+          res.rows.forEach(function(row) {
+            if (canvassSkipIds.indexOf(row.id) >= 0) return;
+            if (have[row.id]) {
+              // Keep whatever the rep has already done to this door in this session.
+              var cur = have[row.id];
+              if (!cur.knock_status && row.knock_status) cur.knock_status = row.knock_status;
+            } else {
+              canvassLeads.push(row);
+            }
+          });
+          if (res.miles) canvassBoxMiles = res.miles;
+          _cvFetchLat = lat; _cvFetchLng = lng; _cvFetchAt = Date.now();
+          _canvassRescore();
+          try { localStorage.setItem('bbLeadsCache', JSON.stringify({ts: Date.now(), leads: canvassLeads, lat: canvassUserLat, lng: canvassUserLng, skipIds: canvassSkipIds})); } catch(e) {}
+        }
+      } catch(e) {
+        console.warn('canvass re-center failed:', e);
+      } finally {
+        _cvRefetching = false;
+        renderSales();
+      }
+    }
+
+    // Recompute distances against the current position, then re-sort the whole route.
+    function _canvassRescore() {
+      if (canvassUserLat == null || canvassUserLng == null) return;
+      canvassLeads.forEach(function(l) {
+        if (l.lat != null && l.lng != null) l._distMi = canvassHaversine(canvassUserLat, canvassUserLng, l.lat, l.lng);
+        l._hot = l.knock_status === 'callback' || l.knock_status === 'interested';
+      });
+      _cvSortRoute();
+    }
+
+    window.canvassRecenter = function() {
+      if (!navigator.geolocation) return;
+      navigator.geolocation.getCurrentPosition(function(pos) {
+        canvassUserLat = pos.coords.latitude;
+        canvassUserLng = pos.coords.longitude;
+        _canvassRefetchAround(canvassUserLat, canvassUserLng);
+      }, function(){ alert('Could not read your location. Check location permission for fixmy.energy.'); },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 });
+    };
+
     async function _canvassLoadLeads(userLat, userLng) {
       canvassGpsStatus = 'loading';
       canvassUserLat = userLat;
@@ -19668,22 +20163,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         // its own limit=1000 can truncate arbitrarily (a 17-mile box over San Diego holds
         // far more than 1000 leads), which would throw away the near doors the tight box
         // already found. Merging by id guarantees nearby leads survive the widening.
-        var boxes = _canvassBoxSteps(), seen = {}, acc = [], lastErr = null;
-        for (var bi = 0; bi < boxes.length; bi++) {
-          var bx = _canvassGeoBox(userLat, userLng, boxes[bi]);
-          var r = await client.from('customers').select(SEL)
-            .eq('lead_source', 'orphaned_list')
-            .is('sold_type', null)
-            .not('lat', 'is', null)
-            .gte('lat', bx.latMin).lte('lat', bx.latMax)
-            .gte('lng', bx.lngMin).lte('lng', bx.lngMax)
-            .limit(1000);
-          if (r.error) { lastErr = r.error; break; }
-          (r.data || []).forEach(function(row){ if (!seen[row.id]) { seen[row.id] = 1; acc.push(row); } });
-          canvassBoxMiles = boxes[bi] * 69;   // surfaced in the UI so a far "next door" is explainable
-          if (acc.length >= 60) break;        // enough to build a full route
-        }
-        result = { data: acc, error: acc.length ? null : lastErr };
+        var boxRes = await _canvassFetchBox(client, SEL, userLat, userLng);
+        result = { data: boxRes.rows, error: boxRes.rows.length ? null : boxRes.error };
       } else {
         result = await client.from('customers').select(SEL)
           .eq('lead_source', 'orphaned_list')
@@ -19713,16 +20194,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           l._distMi = canvassHaversine(userLat, userLng, l.lat, l.lng);
           l._hot = l.knock_status === 'callback' || l.knock_status === 'interested';
         });
-        leads.sort(function(a, b) {
-          if (a._hot && !b._hot) return -1;
-          if (!a._hot && b._hot) return 1;
-          if (a.knock_status && !b.knock_status) return 1;
-          if (!a.knock_status && b.knock_status) return -1;
-          return a._distMi - b._distMi;
-        });
+        leads.sort(_cvRouteCmp);   // _behind is unset on a cold load — pure nearest-first
         // Trim to a route-sized list AFTER the true-distance sort, so the cap keeps the
         // nearest doors instead of an arbitrary slice of the box.
         leads = leads.slice(0, 80);
+        _cvFetchLat = userLat; _cvFetchLng = userLng; _cvFetchAt = Date.now();
       }
 
       // If GPS filter returned nothing, reload without geo constraint
@@ -19747,17 +20223,25 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         _canvassWatchId = navigator.geolocation.watchPosition(function(pos) {
           canvassUserLat = pos.coords.latitude;
           canvassUserLng = pos.coords.longitude;
-          canvassLeads.forEach(function(l) {
-            if (l.lat && l.lng) l._distMi = canvassHaversine(canvassUserLat, canvassUserLng, l.lat, l.lng);
-          });
-          canvassLeads.sort(function(a, b) {
-            if (a._hot && !b._hot) return -1;
-            if (!a._hot && b._hot) return 1;
-            if (a.knock_status && !b.knock_status) return 1;
-            if (!a.knock_status && b.knock_status) return -1;
-            return (a._distMi || 999) - (b._distMi || 999);
-          });
+
+          // Heading is only trustworthy while genuinely moving — a stationary phone
+          // reports whatever the magnetometer feels like. Below walking-to-driving speed
+          // we drop it entirely rather than sorting the route by noise.
+          var sp = pos.coords.speed;
+          _cvHeading = (sp != null && sp > CV_MOVING_MPS && pos.coords.heading != null && !isNaN(pos.coords.heading))
+            ? pos.coords.heading : null;
+
+          _canvassRescore();
           renderSales();
+
+          // Follow the rep. Without this the route stays anchored to wherever they first
+          // tapped Get My Location — the actual cause of "next door is 5 miles away and
+          // in the opposite direction" while driving to an appointment.
+          if (_cvFetchLat == null || _cvFetchLng == null) {
+            _cvFetchLat = canvassUserLat; _cvFetchLng = canvassUserLng; _cvFetchAt = Date.now();
+          } else if (canvassHaversine(canvassUserLat, canvassUserLng, _cvFetchLat, _cvFetchLng) > CV_REFETCH_MI) {
+            _canvassRefetchAround(canvassUserLat, canvassUserLng);
+          }
         }, null, { enableHighAccuracy: true, maximumAge: 15000, timeout: 30000 });
       }
     }
@@ -19780,14 +20264,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         localStorage.setItem('bbKnockHistory', JSON.stringify(hist));
       } catch(e){}
       if (window.fieldLogKnock) window.fieldLogKnock(person.id);
-      // Re-sort: knocked leads go to end
-      canvassLeads.sort(function(a, b) {
-        if (a.knock_status && !b.knock_status) return 1;
-        if (!a.knock_status && b.knock_status) return -1;
-        var dA = a._distMi != null ? a._distMi : 9999;
-        var dB = b._distMi != null ? b._distMi : 9999;
-        return dA - dB;
-      });
+      _cvSortRoute();   // knocked doors fall to the end; same comparator as everywhere else
       if (knockStatus === 'interested') {
         // Assign this lead to the current rep and advance step
         var updates = { rep_id: person.id, step: 1, lead_category: 'fixmy', sold_type: null };
