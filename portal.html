@@ -3655,7 +3655,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           var owner = [r.first_name, r.last_name].filter(Boolean).join(' ') || null;
           return { owner: owner, apn: null };
         });
-        document.getElementById('importParseStatus').textContent = stRows.length + ' skip-trace records parsed.';
+        document.getElementById('importParseStatus').innerHTML = stRows.length + ' skip-trace records parsed.'
+          + '<div style="margin-top:8px;padding:10px 12px;background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.35);border-radius:8px;color:#ffaa00;font-size:0.72rem;line-height:1.6;">'
+          + '&#9888; <b>This is a Tracerfy skip-trace file.</b> Importing here creates <b>new</b> Black Box leads. '
+          + 'To attach these phones, emails and owner names to the leads you <i>already have</i>, use '
+          + '<b>Black Box &rarr; Stage 3 &rarr; &#128196; Paste CSV</b> instead &mdash; that matches on street+zip and updates in place.'
+          + '<div style="margin-top:6px;"><button onclick="renderAdminCanvassView()" style="width:auto;margin:0;padding:5px 12px;background:rgba(255,170,0,0.15);border:1px solid rgba(255,170,0,0.45);border-radius:100px;color:#ffaa00;font-size:0.7rem;font-weight:700;cursor:pointer;">Take me there</button></div>'
+          + '</div>';
         renderImportPreview(true);
         return;
       }
@@ -3824,7 +3830,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       });
     };
 
-    window.importSelectedLeads = function() {
+    window.importSelectedLeads = async function() {
       var rows = window.importRows;
       var selected = [];
       rows.forEach(function(r, i) {
@@ -3864,14 +3870,32 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         return rec;
       });
 
-      // Deduplicate against already-loaded leads (in-memory) and within the batch itself
+      // ── Deduplicate ──────────────────────────────────────────────────────
+      // ⚠️ This used to compare only against `adminCustomers`, which is loaded with
+      // `.or('black_box.is.null,black_box.eq.false')` and therefore contains almost NO
+      // Black Box leads — while every record here is inserted with black_box=true. So the
+      // check could never catch a duplicate of an existing Black Box lead, and a
+      // re-imported list quietly doubled the queue. It also compared raw address strings,
+      // which never match anyway once city/state/zip are re-joined in a different shape
+      // ("…, CA, 92028.0" vs "…, CA 92028").
+      // Now: query the real Black Box pool and match on normalized street+zip.
+      if (statusEl) statusEl.textContent = 'Checking for duplicates…';
+      var dbMap = { byStreetZip: {}, streetOnly: {} };
+      try { dbMap = await _bbBuildStreetMap(statusEl); } catch(e) { /* fall back to in-memory only */ }
       var existingAddrs = new Set(adminCustomers.map(function(c){ return (c.address||'').toLowerCase().replace(/\s+/g,' ').trim(); }));
+      var seenStreet = {};
       var dupeCount = 0;
       records = records.filter(function(r) {
-        var key = (r.address||'').toLowerCase().replace(/\s+/g,' ').trim();
+        var addr = r.address || '';
+        var key = addr.toLowerCase().replace(/\s+/g,' ').trim();
         if (!key) return true;
         if (existingAddrs.has(key)) { dupeCount++; return false; }
-        existingAddrs.add(key); // block intra-batch dupes too
+        var zipM = addr.match(/\b(\d{5})(?:\.\d+)?\b(?!.*\b\d{5}\b)/);
+        if (_bbMatchLead(dbMap, addr, zipM ? zipM[1] : '')) { dupeCount++; return false; }
+        var sk = _bbNormStreet(addr) + '|' + (zipM ? zipM[1] : '');
+        if (seenStreet[sk]) { dupeCount++; return false; }   // intra-batch
+        seenStreet[sk] = true;
+        existingAddrs.add(key);
         return true;
       });
       if (dupeCount > 0) {
