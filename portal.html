@@ -6745,6 +6745,45 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return _bbShift;
   }
 
+  // ── Automatic shift clock ─────────────────────────────────────────────────
+  // "I forgot to clock in" stops being an excuse when hours are derived from the work
+  // itself. Any logged activity opens a shift if one isn't already open, and a stale
+  // shift is closed at the LAST thing the rep actually did — never at the moment the
+  // page happened to notice. The manual buttons still exist for anyone who wants to
+  // clock in before their first dial, but nothing depends on them being pressed.
+  var AUTO_SHIFT_IDLE_MIN = 45;   // no activity for this long ⇒ the shift is over
+
+  async function _bbAutoShiftOnActivity(atIso) {
+    try {
+      var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var name = bbRepName();
+      var openR = await c.from('rep_shifts').select('id,started_at')
+        .eq('rep_name', name).is('ended_at', null)
+        .order('started_at', { ascending: false }).limit(1);
+      if (openR.error) return;                       // table missing — degrade silently
+      var open = (openR.data || [])[0];
+
+      if (open) {
+        // An open shift that has been idle past the threshold belongs to an earlier
+        // session — close it at its last activity and start a fresh one now.
+        var idleFrom = _bbShiftLastSeen[open.id];
+        if (idleFrom && (Date.now() - new Date(idleFrom).getTime()) > AUTO_SHIFT_IDLE_MIN * 60000) {
+          await c.from('rep_shifts').update({ ended_at: idleFrom, note: 'auto-closed after inactivity' }).eq('id', open.id);
+        } else {
+          _bbShiftLastSeen[open.id] = atIso;
+          return;
+        }
+      }
+      var row = { rep_id: bbRepId(), rep_name: name, started_at: atIso, source: 'auto' };
+      var ins = await c.from('rep_shifts').insert(row).select();
+      if (!ins.error && ins.data && ins.data[0]) {
+        _bbShift = ins.data[0];
+        _bbShiftLastSeen[_bbShift.id] = atIso;
+      }
+    } catch(e) { /* never block a disposition on the clock */ }
+  }
+  var _bbShiftLastSeen = {};
+
   window.bbShiftStart = async function() {
     try {
       var c = supabase.createClient(SUPA_URL, SUPA_KEY);
@@ -6810,6 +6849,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     opts = opts || {};
     var client = supabase.createClient(SUPA_URL, SUPA_KEY);
     var rep = opts.rep_name || bbRepName();
+    // Clock the rep in off their own work — see _bbAutoShiftOnActivity. Deliberately not
+    // awaited: the disposition must never wait on (or fail because of) the shift clock.
+    if (channel === 'dialer' || channel === 'door_knock') _bbAutoShiftOnActivity(new Date().toISOString());
 
     // 1. Structured row — tolerated if the lead_activity table isn't created yet
     try {

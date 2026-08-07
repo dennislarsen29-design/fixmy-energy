@@ -1241,22 +1241,63 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
       const vals = parseLine(lines[li]);
       const row = {};
       hdrs.forEach((h, idx) => { row[h] = (vals[idx] || '').trim(); });
+      // ⚠️ Tracerfy does NOT echo back the lead_id we submit — their advanced trace drops
+      // custom columns. This used to `continue` on every row, so the nightly run spent
+      // skip-trace credits, downloaded the results, and applied exactly zero of them.
+      // tracerfy-results.js already matched on address; this now does the same.
       const leadId = row['lead_id'] || null;
-      if (!leadId) continue;
+      const streetAddr = (row['street_address'] || row['address'] || '').trim();
+      if (!leadId && !streetAddr) continue;
       const phone = row['primary_phone'] || row['mobile_1'] || row['landline_1'] || null;
-      const email = row['email_1'] || null;
+      const email = row['email_1'] || row['email'] || null;
       const firstName = row['first_name'] || row['owner_1_first_name'] || '';
       const lastName  = row['last_name']  || row['owner_1_last_name']  || '';
       const ownerName = [firstName, lastName].filter(Boolean).join(' ') || null;
       const dncRaw = row['do_not_call'] || row['dnc'] || row['primary_phone_dnc'] || '';
       const dnc = ['true', 'yes', '1', 'y'].includes((dncRaw || '').toLowerCase().trim());
-      if (phone || email || ownerName) updateQueue.push({ leadId, phone, email, ownerName, dnc });
+      if (phone || email || ownerName) {
+        updateQueue.push({ leadId, streetAddr, zip: row['zip'] || row['zip_code'] || '', phone, email, ownerName, dnc });
+      }
     }
-    stamp(`Phase 3: applying ${updateQueue.length} results from queue_id=${queueId}...`);
+
+    // Resolve the rows that came back without a lead_id, by street+zip. Built once, and
+    // only when it is actually needed.
+    const unmatched = updateQueue.filter(u => !u.leadId);
+    if (unmatched.length) {
+      stamp(`Phase 3: ${unmatched.length} result rows have no lead_id — matching on street+zip`);
+      const idx = {}, ambiguous = {};
+      let aOff = 0;
+      while (true) {
+        const ar = await supaFetch('/customers?lead_source=eq.orphaned_list&select=id,address'
+          + `&order=id.asc&limit=1000&offset=${aOff}`);
+        if (!ar.ok || !Array.isArray(ar.data) || !ar.data.length) break;
+        for (const row2 of ar.data) {
+          const st = normStreet(row2.address), z = normZip(row2.address);
+          if (!st) continue;
+          if (z) { const k = st + '|' + z; if (!idx[k]) idx[k] = row2.id; }
+          if (idx[st] && idx[st] !== row2.id) ambiguous[st] = true; else if (!idx[st]) idx[st] = row2.id;
+        }
+        if (ar.data.length < 1000) break;
+        aOff += 1000;
+      }
+      // A street name that exists in more than one zip cannot be resolved without one.
+      for (const k of Object.keys(ambiguous)) delete idx[k];
+      let resolved = 0;
+      for (const u of unmatched) {
+        const st = normStreet(u.streetAddr);
+        if (!st) continue;
+        const zm = String(u.zip || '').match(/\d{5}/);
+        const hit = (zm && idx[st + '|' + zm[0]]) || idx[st] || null;
+        if (hit) { u.leadId = hit; resolved++; }
+      }
+      stamp(`Phase 3: resolved ${resolved} of ${unmatched.length} by address`);
+    }
+    stamp(`Phase 3: ${updateQueue.length} usable result rows from queue_id=${queueId}`);
     let applied = 0;
-    for (let ui = 0; ui < updateQueue.length; ui += 10) {
+    const writable = updateQueue.filter(u => u.leadId);
+    for (let ui = 0; ui < writable.length; ui += 10) {
       if (overGlobal()) break;
-      const chunk = updateQueue.slice(ui, ui + 10);
+      const chunk = writable.slice(ui, ui + 10);
       const writes = chunk.map(u => {
         const upd = { enrichment_source: 'tracerfy' };
         if (u.phone) upd.phone = u.phone;
