@@ -171,7 +171,30 @@ exports.handler = async function(event) {
     return { street, city, state, zip, fullAddress: full, installYear, systemSizeKw: extractKw(desc) };
   }
 
-  function normAddr(a) { return String(a || '').toLowerCase().replace(/\s+/g, ' ').trim(); }
+  // Dedup key for "is this the same house". Compares STREET + ZIP, not the whole address.
+  // ⚠️ This used to be the entire lowercased string, which meant a single formatting
+  // difference between two permit sources minted a second lead for the same property:
+  // "…, CA 92028" vs "…, CA, 92028" vs "SHADOWCREST LANE" vs "…, CA 92028-1421" are four
+  // distinct keys for one house. That is where the ~8k duplicate leads came from.
+  const STREET_SUFFIX = {
+    LANE:'LN', ROAD:'RD', STREET:'ST', DRIVE:'DR', AVENUE:'AVE', COURT:'CT', PLACE:'PL',
+    BOULEVARD:'BLVD', CIRCLE:'CIR', TERRACE:'TER', TRAIL:'TRL', PARKWAY:'PKWY',
+    HIGHWAY:'HWY', SQUARE:'SQ', WAY:'WAY', NORTH:'N', SOUTH:'S', EAST:'E', WEST:'W'
+  };
+  function normStreet(a) {
+    return String(a || '').split(',')[0]
+      .toUpperCase().replace(/[^A-Z0-9 ]/g, '').replace(/\s+/g, ' ').trim()
+      .split(' ').map(w => STREET_SUFFIX[w] || w).join(' ');
+  }
+  function normZip(a) {
+    const m = String(a || '').match(/\b(\d{5})(?:[-.]\d+)?\b(?![\s\S]*\b\d{5}\b)/);
+    return m ? m[1] : '';
+  }
+  function normAddr(a) {
+    const st = normStreet(a);
+    if (!st) return String(a || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    return st + '|' + normZip(a);
+  }
 
   // Returns false if the permit record has invalid address, system size, or install year.
   function qualifyPermit(rec) {
@@ -453,7 +476,7 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
   let addrOffset = 0;
   while (true) {
     if (overGlobal()) break;
-    const r = await supaFetch(`/customers?lead_source=eq.orphaned_list&select=address&limit=1000&offset=${addrOffset}`);
+    const r = await supaFetch(`/customers?lead_source=eq.orphaned_list&select=address&order=id.asc&limit=1000&offset=${addrOffset}`);
     if (!r.ok || !Array.isArray(r.data) || !r.data.length) break;
     r.data.forEach(row => existingAddrs.add(normAddr(row.address)));
     if (r.data.length < 1000) break;

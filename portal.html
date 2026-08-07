@@ -8116,6 +8116,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         + '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
         + '<button onclick="bbDiagnoseOwnerLookup(10)" title="Runs the real owner lookup against 10 sample leads and reports exactly which step of the chain is failing. ~20 seconds." style="width:auto;margin-top:0;background:none;border:1px solid rgba(74,158,255,0.35);border-radius:100px;color:#4a9eff;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#129658; Diagnose</button>'
         + '<button onclick="bbShowParcelImport()" title="Bulk-import owner names from the SanGIS county parcel file (the $25 data drive). Reads the CSV on this device only — nothing is uploaded. Matches on APN, then street+zip." style="width:auto;margin-top:0;background:none;border:1px solid rgba(74,158,255,0.35);border-radius:100px;color:#4a9eff;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#128230; County File</button>'
+        + '<button onclick="bbScanDuplicates()" title="Finds addresses with more than one lead and merges them into a single record — the survivor absorbs any phone, email or owner name the duplicates had, and their call history moves across. Shows a preview before anything changes." style="width:auto;margin-top:0;background:none;border:1px solid rgba(255,170,0,0.35);border-radius:100px;color:#ffaa00;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#128260; Merge Duplicates</button>'
         + '<button onclick="adminCanvassEnrichAll()" title="FREE — looks up missing property owner names via SANDAG/Regrid parcel GIS data and fills title_owner on every lead missing one. No per-lead cost." style="width:auto;margin-top:0;background:rgba(255,170,0,0.12);color:#ffaa00;border:1px solid rgba(255,170,0,0.35);border-radius:100px;padding:8px 18px;font-size:0.78rem;font-weight:800;cursor:pointer;white-space:nowrap;">&#128269; Run Owner Lookup</button>'
         + '</div></div>';
     } else {
@@ -8136,6 +8137,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         + '<button onclick="adminCanvassEnrichAll()" title="FREE — looks up missing property owner names via SANDAG parcel GIS data. No per-lead cost." style="width:auto;margin-top:0;background:#8DC63F;color:#000;border:none;border-radius:100px;padding:8px 16px;font-size:0.75rem;font-weight:800;cursor:pointer;white-space:nowrap;">&#128269; Free: Owners</button>'
         + '<button onclick="bbDiagnoseOwnerLookup(10)" title="Runs the real owner lookup against 10 sample leads and reports exactly which step of the chain is failing, and how often. ~20 seconds — use this before committing to a full multi-hour run." style="width:auto;margin-top:0;background:none;border:1px solid rgba(74,158,255,0.35);border-radius:100px;color:#4a9eff;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#129658; Diagnose</button>'
         + '<button onclick="bbShowParcelImport()" title="Bulk-import owner names from the SanGIS county parcel file (the $25 data drive). Reads the CSV on this device only — nothing is uploaded. Matches on APN, then street+zip." style="width:auto;margin-top:0;background:none;border:1px solid rgba(74,158,255,0.35);border-radius:100px;color:#4a9eff;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#128230; County File</button>'
+        + '<button onclick="bbScanDuplicates()" title="Finds addresses with more than one lead and merges them into a single record — the survivor absorbs any phone, email or owner name the duplicates had, and their call history moves across. Shows a preview before anything changes." style="width:auto;margin-top:0;background:none;border:1px solid rgba(255,170,0,0.35);border-radius:100px;color:#ffaa00;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#128260; Merge Duplicates</button>'
         + traceBtns
         + '</div>';
       bar.innerHTML = '<div style="background:rgba(239,68,68,0.07);border:1px solid rgba(239,68,68,0.2);border-radius:10px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">'
@@ -8706,6 +8708,238 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     Object.keys(streetDupe).forEach(function(k){ delete streetOnly[k]; });
     return { byApn: byApn, byStreetZip: byStreetZip, streetOnly: streetOnly, total: n };
   }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // Duplicate merge — one lead per house
+  // ══════════════════════════════════════════════════════════════════════════
+  // The nightly pipeline used to dedup on the whole address string, so any formatting
+  // difference between two permit sources ("…, CA 92028" vs "…, CA, 92028" vs
+  // "SHADOWCREST LANE") minted a second lead for the same property. That cause is fixed in
+  // bb-auto-pipeline-background.js; this cleans up the ~8k already in the table.
+  //
+  // MERGE, never blind-delete: the keeper absorbs every field the losers have and it does
+  // not, call history is repointed rather than dropped, and DNC is sticky (if any copy is
+  // marked do-not-call, the survivor is too).
+  var _bbDupRunning = false;
+  var _bbDupGroups = null;
+
+  // Same street+zip key the pipeline now uses, including suffix folding.
+  var _BB_SUFFIX = { LANE:'LN', ROAD:'RD', STREET:'ST', DRIVE:'DR', AVENUE:'AVE', COURT:'CT',
+    PLACE:'PL', BOULEVARD:'BLVD', CIRCLE:'CIR', TERRACE:'TER', TRAIL:'TRL', PARKWAY:'PKWY',
+    HIGHWAY:'HWY', SQUARE:'SQ', NORTH:'N', SOUTH:'S', EAST:'E', WEST:'W' };
+  function _bbDupKey(addr) {
+    var st = _bbNormStreet(addr).split(' ').map(function(w){ return _BB_SUFFIX[w] || w; }).join(' ');
+    if (!st) return '';
+    var m = String(addr || '').match(/\b(\d{5})(?:[-.]\d+)?\b(?![\s\S]*\b\d{5}\b)/);
+    return st + '|' + (m ? m[1] : '');
+  }
+
+  var _BB_DUP_SEL = 'id,address,phone,email,title_owner,apn,original_installer,install_year,'
+    + 'system_size,lat,lng,dnc,lead_score,notes,dial_status,created_at';
+
+  window.bbScanDuplicates = async function() {
+    if (_bbDupRunning) return;
+    _bbDupRunning = true;
+    _bbEnrichOverlay('<div style="font-size:0.78rem;font-weight:800;color:#4a9eff;margin-bottom:4px;">&#128260; Duplicate Scan</div>'
+      + '<div id="bbEnrichOvStatus" style="font-size:0.72rem;color:#bbb;">Loading leads&hellip;</div>');
+    try {
+      var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var rows = [], off = 0;
+      while (true) {
+        var r = await c.from('customers').select(_BB_DUP_SEL)
+          .eq('lead_source', 'orphaned_list')
+          .order('id', { ascending: true }).range(off, off + 999);
+        if (r.error || !r.data || !r.data.length) break;
+        rows = rows.concat(r.data);
+        var st = document.getElementById('bbEnrichOvStatus');
+        if (st) st.textContent = 'Loading leads… ' + rows.length.toLocaleString();
+        if (r.data.length < 1000) break;
+        off += 1000;
+      }
+
+      // Which leads have call/knock history — those must never be the row that gets removed
+      // without their activity being moved across first.
+      var acted = {};
+      try {
+        var aOff = 0;
+        while (true) {
+          var ar = await c.from('lead_activity').select('customer_id')
+            .order('id', { ascending: true }).range(aOff, aOff + 999);
+          if (ar.error || !ar.data || !ar.data.length) break;
+          ar.data.forEach(function(a){ if (a.customer_id) acted[a.customer_id] = true; });
+          if (ar.data.length < 1000) break;
+          aOff += 1000;
+        }
+      } catch(e) { /* lead_activity optional */ }
+
+      var byKey = {};
+      rows.forEach(function(l) {
+        var k = _bbDupKey(l.address);
+        if (!k || k.indexOf('|') === k.length - 1) return;   // no zip — too risky to group
+        (byKey[k] = byKey[k] || []).push(l);
+      });
+
+      var groups = [];
+      Object.keys(byKey).forEach(function(k) {
+        var g = byKey[k];
+        if (g.length < 2) return;
+        // Keeper: most-worked first, then the permit-sourced row, then the original.
+        g.sort(function(a, b) {
+          var aw = acted[a.id] ? 0 : 1, bw = acted[b.id] ? 0 : 1;
+          if (aw !== bw) return aw - bw;
+          var ai = a.original_installer ? 0 : 1, bi = b.original_installer ? 0 : 1;
+          if (ai !== bi) return ai - bi;
+          return new Date(a.created_at || 0) - new Date(b.created_at || 0);
+        });
+        groups.push({ key: k, keeper: g[0], losers: g.slice(1), acted: acted });
+      });
+
+      _bbDupGroups = groups;
+      var extra = groups.reduce(function(n, g){ return n + g.losers.length; }, 0);
+      var withHistory = groups.reduce(function(n, g){
+        return n + g.losers.filter(function(l){ return acted[l.id]; }).length; }, 0);
+      var gains = { phone:0, email:0, owner:0, installer:0 };
+      groups.forEach(function(g) {
+        var m = _bbMergeFields(g.keeper, g.losers);
+        if (m.phone) gains.phone++;
+        if (m.email) gains.email++;
+        if (m.title_owner) gains.owner++;
+        if (m.original_installer) gains.installer++;
+      });
+
+      var h = '<div style="font-size:0.78rem;font-weight:800;color:#4a9eff;margin-bottom:6px;">&#128260; Duplicate Scan</div>'
+        + '<div style="font-size:0.74rem;color:#bbb;line-height:1.7;">'
+        + '<b style="color:#F3EDE3;">' + rows.length.toLocaleString() + '</b> leads scanned<br>'
+        + '<b style="color:#ffaa00;">' + groups.length.toLocaleString() + '</b> addresses have more than one lead<br>'
+        + '<b style="color:#ffaa00;">' + extra.toLocaleString() + '</b> rows would be merged away'
+        + '</div>';
+      if (groups.length) {
+        h += '<div style="margin-top:8px;padding:8px 10px;background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.25);border-radius:8px;font-size:0.68rem;color:#8DC63F;line-height:1.7;">'
+          + 'Data the survivors gain: <b>' + gains.phone + '</b> phones &middot; <b>' + gains.email + '</b> emails &middot; '
+          + '<b>' + gains.owner + '</b> owner names &middot; <b>' + gains.installer + '</b> installers</div>';
+        if (withHistory) {
+          h += '<div style="margin-top:6px;font-size:0.66rem;color:#888;">' + withHistory
+            + ' merged row' + (withHistory !== 1 ? 's have' : ' has') + ' call history &mdash; it is moved onto the survivor, not deleted.</div>';
+        }
+        h += '<details style="margin-top:8px;"><summary style="font-size:0.66rem;color:#4a9eff;cursor:pointer;">Preview first 20</summary>'
+          + '<div style="max-height:190px;overflow:auto;margin-top:5px;">'
+          + groups.slice(0, 20).map(function(g) {
+              return '<div style="font-size:0.6rem;padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.05);">'
+                + '<div style="color:#8DC63F;">KEEP &nbsp;' + (g.keeper.address || '') + '</div>'
+                + g.losers.map(function(l){ return '<div style="color:#ff8a8a;">merge ' + (l.address || '') + '</div>'; }).join('')
+                + '</div>';
+            }).join('')
+          + '</div></details>'
+          + '<div style="margin-top:10px;display:flex;gap:8px;justify-content:flex-end;">'
+          + '<a href="#" onclick="_bbEnrichOverlayClose();return false;" style="color:#888;font-size:0.7rem;align-self:center;">Cancel</a>'
+          + '<button onclick="bbMergeDuplicates()" style="width:auto;margin:0;padding:6px 16px;background:#4a9eff;color:#fff;border:none;border-radius:100px;font-size:0.74rem;font-weight:800;cursor:pointer;">Merge ' + extra.toLocaleString() + ' rows</button>'
+          + '</div>';
+      } else {
+        h += '<div style="margin-top:8px;font-size:0.72rem;color:#8DC63F;">&#10003; No duplicates &mdash; one lead per house.</div>'
+          + '<div style="margin-top:8px;text-align:right;"><a href="#" onclick="_bbEnrichOverlayClose();return false;" style="color:#4a9eff;font-size:0.7rem;">Dismiss</a></div>';
+      }
+      _bbEnrichOverlay(h);
+    } catch(e) {
+      _bbEnrichOverlay('<div style="font-size:0.78rem;font-weight:800;color:#ff8a8a;margin-bottom:4px;">&#9888; Duplicate scan failed</div>'
+        + '<div style="font-size:0.72rem;color:#bbb;">' + (e && e.message ? e.message : 'unknown error') + '</div>'
+        + '<div style="margin-top:8px;text-align:right;"><a href="#" onclick="_bbEnrichOverlayClose();return false;" style="color:#4a9eff;font-size:0.7rem;">Dismiss</a></div>');
+    } finally { _bbDupRunning = false; }
+  };
+
+  // What the survivor gains from the rows being merged into it. Only ever FILLS BLANKS —
+  // a value already on the keeper is never overwritten. DNC is the exception: it is sticky,
+  // because losing a do-not-call flag in a merge would put a protected number back in the
+  // dialer.
+  function _bbMergeFields(keeper, losers) {
+    var upd = {};
+    ['phone','email','title_owner','apn','original_installer','install_year','system_size','lat','lng'].forEach(function(f) {
+      if (keeper[f] != null && keeper[f] !== '') return;
+      for (var i = 0; i < losers.length; i++) {
+        if (losers[i][f] != null && losers[i][f] !== '') { upd[f] = losers[i][f]; break; }
+      }
+    });
+    if (!keeper.dnc && losers.some(function(l){ return l.dnc; })) upd.dnc = true;
+    var best = Math.max.apply(null, [keeper.lead_score || 0].concat(losers.map(function(l){ return l.lead_score || 0; })));
+    if (best > (keeper.lead_score || 0)) upd.lead_score = best;
+    if (!keeper.notes) {
+      var ln = losers.find(function(l){ return l.notes; });
+      if (ln) upd.notes = ln.notes;
+    }
+    return upd;
+  }
+
+  window.bbStopMergeDupes = function() { _bbDupRunning = false; };
+
+  window.bbMergeDuplicates = async function() {
+    if (!_bbDupGroups || !_bbDupGroups.length) return;
+    if (_bbDupRunning) return;
+    _bbDupRunning = true;
+    var keptAwake = await _bbAcquireWakeLock();
+    var groups = _bbDupGroups;
+    var total = groups.reduce(function(n, g){ return n + g.losers.length; }, 0);
+    var merged = 0, enriched = 0, moved = 0, failed = 0, done = 0;
+    var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+
+    function paint() {
+      var pct = total ? Math.round(merged / total * 100) : 0;
+      _bbEnrichOverlay('<div style="font-size:0.75rem;color:#4a9eff;font-weight:700;margin-bottom:6px;">Merging duplicates&hellip; '
+        + merged.toLocaleString() + ' of ' + total.toLocaleString() + '</div>'
+        + '<div style="background:rgba(255,255,255,0.08);border-radius:100px;height:6px;overflow:hidden;">'
+        + '<div style="background:#4a9eff;height:6px;border-radius:100px;width:' + pct + '%;transition:width 0.3s;"></div></div>'
+        + '<div style="font-size:0.65rem;color:#555;margin-top:4px;">' + pct + '% &mdash; '
+        + (keptAwake ? 'screen kept awake &#9989;' : 'keep this tab open')
+        + ' &middot; <a href="#" onclick="bbStopMergeDupes();return false;" style="color:#ff8a8a;">Stop</a></div>');
+    }
+    paint();
+
+    try {
+      for (var gi = 0; gi < groups.length; gi++) {
+        if (!_bbDupRunning) break;
+        var g = groups[gi];
+        var upd = _bbMergeFields(g.keeper, g.losers);
+        if (Object.keys(upd).length) {
+          var ur = await c.from('customers').update(upd).eq('id', g.keeper.id);
+          if (!ur.error) enriched++;
+        }
+        for (var li = 0; li < g.losers.length; li++) {
+          if (!_bbDupRunning) break;
+          var loser = g.losers[li];
+          // Move call history onto the survivor BEFORE removing the row, so nothing a
+          // setter did is lost.
+          if (g.acted[loser.id]) {
+            var mr = await c.from('lead_activity').update({ customer_id: g.keeper.id }).eq('customer_id', loser.id);
+            if (!mr.error) moved++;
+            else { failed++; continue; }   // history could not be moved — leave the row alone
+          }
+          var dr = await c.from('customers').delete().eq('id', loser.id);
+          if (dr.error) { failed++; continue; }
+          merged++;
+          adminCustomers = adminCustomers.filter(function(x){ return x.id !== loser.id; });
+        }
+        done++;
+        if (done % 5 === 0) { paint(); await new Promise(function(r){ setTimeout(r, 0); }); }
+      }
+      var stopped = !_bbDupRunning;
+      _bbEnrichOverlay('<div style="font-size:0.78rem;font-weight:800;color:' + (stopped ? '#ffaa00' : '#8DC63F') + ';margin-bottom:5px;">'
+        + (stopped ? '&#9209; Merge stopped' : '&#10003; Duplicate merge complete') + '</div>'
+        + '<div style="font-size:0.72rem;color:#bbb;line-height:1.7;">'
+        + '<b style="color:#8DC63F;">' + merged.toLocaleString() + '</b> duplicate rows merged away<br>'
+        + '<b>' + enriched.toLocaleString() + '</b> survivors gained missing data<br>'
+        + (moved ? '<b>' + moved.toLocaleString() + '</b> call-history rows moved to the survivor<br>' : '')
+        + (failed ? '<span style="color:#ff8a8a;">' + failed + ' skipped (left untouched)</span>' : '')
+        + '</div>'
+        + '<div style="margin-top:8px;text-align:right;"><a href="#" onclick="_bbEnrichOverlayClose();return false;" style="color:#4a9eff;font-size:0.7rem;">Dismiss</a></div>');
+      _bbDupGroups = null;
+    } catch(e) {
+      _bbEnrichOverlay('<div style="font-size:0.78rem;font-weight:800;color:#ff8a8a;margin-bottom:4px;">&#9888; Merge failed</div>'
+        + '<div style="font-size:0.72rem;color:#bbb;">' + (e && e.message ? e.message : 'unknown error')
+        + '<br>' + merged + ' rows had already been merged; re-run the scan to continue.</div>'
+        + '<div style="margin-top:8px;text-align:right;"><a href="#" onclick="_bbEnrichOverlayClose();return false;" style="color:#4a9eff;font-size:0.7rem;">Dismiss</a></div>');
+    } finally {
+      _bbDupRunning = false;
+      _bbReleaseWakeLock();
+    }
+  };
 
   window.bbShowParcelImport = function() {
     var existing = document.getElementById('bbParcelBox');
