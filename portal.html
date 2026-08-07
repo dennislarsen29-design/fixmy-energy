@@ -3920,42 +3920,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         });
     };
 
+    // Delegates to the one tested skip-trace path (bbApplyTracerfyCsv). This box
+    // previously had its own matcher that could not work against a real export: it
+    // compared the CSV's street-only address to the FULL stored address, split rows on
+    // bare commas, and read `phone`/`email`/`dnc` columns Tracerfy never emits — which is
+    // why a 72-row file reported "Matched 0 of 72". It also never wrote title_owner.
     window.runTracefyUpdate = async function() {
       var raw = (document.getElementById('tracefyCsvInput').value||'').trim();
       var statusEl = document.getElementById('tracefyUpdateStatus');
-      if (!raw) { if (statusEl) statusEl.textContent = 'Paste a CSV first.'; return; }
-      if (statusEl) statusEl.textContent = 'Processing…';
-      var lines = raw.split('\n').map(function(l){ return l.trim(); }).filter(Boolean);
-      if (lines.length < 2) { if (statusEl) statusEl.textContent = 'Need header + at least one row.'; return; }
-      var headers = lines[0].split(',').map(function(h){ return h.trim().toLowerCase().replace(/\s+/g,'_'); });
-      var normAddr = function(a){ return (a||'').toLowerCase().replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim(); };
-      var rows = [];
-      for (var i = 1; i < lines.length; i++) {
-        var vals = lines[i].split(',');
-        var obj = {};
-        headers.forEach(function(h,j){ obj[h] = (vals[j]||'').trim(); });
-        if (obj.address) rows.push(obj);
-      }
-      if (!rows.length) { if (statusEl) statusEl.textContent = 'No valid rows found.'; return; }
-      var sc = supabase.createClient(SUPA_URL, SUPA_KEY);
-      var { data: existing } = await sc.from('customers').select('id,address').eq('lead_source','orphaned_list').limit(5000);
-      var addrMap = {};
-      (existing||[]).forEach(function(e){ addrMap[normAddr(e.address)] = e.id; });
-      var matched = 0, updated = 0, skipped = 0;
-      var now = new Date().toISOString();
-      for (var ri = 0; ri < rows.length; ri++) {
-        var row = rows[ri];
-        var id = addrMap[normAddr(row.address)];
-        if (!id) { skipped++; continue; }
-        matched++;
-        var upd = { enrichment_source: 'tracefy', enriched_at: now };
-        if (row.phone) upd.phone = row.phone;
-        if (row.email) upd.email = row.email;
-        if (row.dnc !== undefined && row.dnc !== '') upd.dnc = (row.dnc === 'true' || row.dnc === '1' || row.dnc === 'yes' || row.dnc === 'TRUE');
-        var res = await sc.from('customers').update(upd).eq('id', id);
-        if (!res.error) updated++;
-      }
-      if (statusEl) statusEl.textContent = 'Matched ' + matched + ' of ' + rows.length + ' rows — updated ' + updated + ' leads, skipped ' + skipped + '.';
+      return window.bbApplyTracerfyCsv(raw, statusEl);
     };
 
     window.psToggleChk = function(id) {
@@ -8973,6 +8946,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   window.bbProcessTracerfyCsv = async function() {
     var raw = (document.getElementById('bbTracerfyRaw')||{}).value || '';
     var statusEl = document.getElementById('bbTracerfyPasteStatus');
+    return window.bbApplyTracerfyCsv(raw, statusEl);
+  };
+
+  // The single skip-trace apply path. The Import tab's "Update Contacts from Tracefy CSV"
+  // box used to carry its own, much weaker copy of this — it matched the CSV's street-only
+  // address against the FULL stored address (so it could never match anything), split rows
+  // on bare commas, and looked for `phone`/`email`/`dnc` columns that a real Tracerfy
+  // export does not have. Both entry points now run this.
+  window.bbApplyTracerfyCsv = async function(raw, statusEl) {
+    raw = raw || '';
     if (!raw.trim()) { if (statusEl) statusEl.textContent = 'Choose a file, or paste the Tracerfy link or CSV text.'; return; }
     try {
       raw = await _bbResolveCsvInput(raw, statusEl);
