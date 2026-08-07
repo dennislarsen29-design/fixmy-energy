@@ -32,6 +32,11 @@ exports.handler = async function(event) {
   }
 
   const tried = [];
+  // Without this marker the debug chain reads like the free San Diego services failed,
+  // when the truth may be that the PAID source was never called at all. That distinction
+  // is the whole diagnosis when owner coverage looks broken — the free CA services return
+  // APN + situs but redact the name by law, so a missing key means no owner source ran.
+  if (!key) tried.push('regrid:no_key(REGRID_KEY unset — paid owner source skipped)');
   const regridHeaders = { 'Authorization': 'Bearer ' + key, 'Accept': 'application/json' };
   // Regrid's v1 API conventionally authenticates with a `token` QUERY PARAMETER; the
   // Bearer header alone returns 401 {"status":"error","message":"Invalid token"} against
@@ -155,6 +160,14 @@ exports.handler = async function(event) {
     { name: 'sd_city',      url: 'https://webmaps.sandiego.gov/arcgis/rest/services/GeocoderMerged/MapServer/1/query?',     fields: 'SITUS_STREET,OWN_NAME1,APN_8' }
   ];
 
+  // A parcel that was positively identified but whose OWNER NAME is withheld is NOT a
+  // miss — it still yields the APN, which is the primary match key for the SanGIS bulk
+  // parcel file (_bbBuildParcelIndex matches APN first, then street+zip). Throwing it
+  // away, as this used to, means every redacted parcel contributes nothing and the $30
+  // county drive has far less to join against later. Captured here and returned even
+  // when `owner` is null.
+  let redactedApn = null, redactedVia = null;
+
   async function trySdParcels(qlat, qlng, tag) {
     for (const svc of SD_SERVICES) {
       const label = svc.name + '@' + tag;
@@ -172,8 +185,10 @@ exports.handler = async function(event) {
           if (owner) return { owner, apn: parseSandagApn(attr), lat: qlat, lng: qlng, source: svc.name };
           // Features returned but no owner field — that's the California owner-name
           // redaction (Gov Code 6254.21), not a coordinate problem. Log the field list
-          // so it's distinguishable from a genuine miss.
-          tried.push(label + ':ok_no_owner:fields=' + Object.keys(attr).join(',').slice(0, 80));
+          // so it's distinguishable from a genuine miss, and KEEP the parcel number.
+          const apn = parseSandagApn(attr);
+          if (apn && !redactedApn) { redactedApn = apn; redactedVia = svc.name; }
+          tried.push(label + ':ok_no_owner' + (apn ? ':apn=' + apn : '') + ':fields=' + Object.keys(attr).join(',').slice(0, 80));
         } else {
           tried.push(label + ':ok_no_data');
         }
@@ -263,6 +278,16 @@ exports.handler = async function(event) {
     }) };
   }
 
+  // No owner name — but say WHY in a form the caller can act on, and hand back the APN
+  // if we positively identified the parcel. "We found your house, the county just won't
+  // publish the name" is a completely different problem from "we couldn't find it".
   console.error('regrid-lookup: no owner found for "' + address.slice(0, 60) + '" — tried: ' + tried.join(' | '));
-  return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ owner: null, apn: null, debug: tried.join(' | ') }) };
+  return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({
+    owner: null,
+    apn: redactedApn,
+    owner_redacted: !!redactedApn,
+    redacted_via: redactedVia,
+    regrid_key_set: !!key,
+    debug: tried.join(' | ')
+  }) };
 };

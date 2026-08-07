@@ -9208,7 +9208,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     try {
       var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
       var PAGE_SIZE = 500;
-      var pageOffset = 0, grandTotal = 0, found = 0, failed = 0, firstDebug = null;
+      var pageOffset = 0, grandTotal = 0, found = 0, failed = 0, apnSaved = 0, firstDebug = null;
       var failTally = {}, srcTally = {};
 
       // Get total count for accurate progress bar
@@ -9224,7 +9224,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }
 
       function progressHtml(done, pct, compact) {
-        return '<div style="font-size:0.75rem;color:#4a9eff;font-weight:700;margin-bottom:6px;">Enriching&hellip; '+done+' of '+grandTotal+' &mdash; '+found+' owners found</div>'
+        return '<div style="font-size:0.75rem;color:#4a9eff;font-weight:700;margin-bottom:6px;">Enriching&hellip; '+done+' of '+grandTotal+' &mdash; '+found+' owners found'
+          + (apnSaved ? ' <span style="color:#ffaa00;">&middot; '+apnSaved+' APNs saved</span>' : '') + '</div>'
           + '<div style="background:rgba(255,255,255,0.08);border-radius:100px;height:6px;overflow:hidden;">'
           + '<div style="background:#4a9eff;height:6px;border-radius:100px;width:'+pct+'%;transition:width 0.3s;"></div></div>'
           + '<div style="font-size:0.65rem;color:#555;margin-top:4px;">'+pct+'% &mdash; '
@@ -9285,6 +9286,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             } else {
               failed++;
               pageStayed++;   // still matches `title_owner is null` — cursor must step over it
+              // A redacted parcel still yields an APN. Saving it costs one extra PATCH and
+              // makes the SanGIS county file (which matches on APN first) land far more of
+              // these later — discarding it, as this used to, threw the identification away.
+              if (data.apn && !lead.apn) {
+                apnSaved++;
+                var apnUpd = { apn: data.apn };
+                if (data.lat != null) apnUpd.lat = data.lat;
+                if (data.lng != null) apnUpd.lng = data.lng;
+                try {
+                  await c2.from('customers').update(apnUpd).eq('id', lead.id);
+                  var apnCached = adminCustomers.find(function(r){ return r.id === lead.id; });
+                  if (apnCached) Object.assign(apnCached, apnUpd);
+                } catch(e2) {}
+              }
               _bbFailKeys(data.debug).forEach(function(k){ failTally[k] = (failTally[k] || 0) + 1; });
               // Always overwrite: this is labelled "Last miss", and pinning it to the FIRST
               // miss made it stale and actively misleading — during the Regrid 401 outage it
@@ -19926,7 +19941,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             var tInOutage = bbOutageHasZip(tZip);
             h += '<div style="font-size:1.05rem;font-weight:700;margin-bottom:4px;">'+esc(lead.address||'No address')+(tIsSDCP?'<span style="display:inline-block;margin-left:7px;padding:1px 7px;background:rgba(0,150,255,0.15);color:#4AABF7;border-radius:10px;font-size:0.58rem;font-weight:700;vertical-align:middle;">SDCP</span>':'')+(tInOutage?bbOutageBadgeHtml():'')+(lead.lead_score != null ? leadScoreBadge(lead.lead_score) : '')+'</div>';
             if (lead.dnc) h += '<span style="display:inline-block;margin-bottom:6px;padding:2px 8px;background:rgba(239,68,68,0.15);color:#ef4444;border-radius:10px;font-size:0.62rem;font-weight:700;">DNC</span>';
-            if (fullName) h += '<div style="font-size:0.8rem;font-weight:600;color:#F3EDE3;margin-bottom:2px;">'+esc(fullName)+'</div>';
+            // Owner name — the rep card used to render ONLY first/last, so a lead that
+            // did have a title_owner still showed nothing at the door. Knowing whose
+            // house it is before knocking is the entire point of enriching it.
+            var doorOwner = lead.title_owner || fullName || '';
+            if (doorOwner) h += '<div style="font-size:0.8rem;font-weight:600;color:#F3EDE3;margin-bottom:2px;">&#128100; '+esc(doorOwner)+'</div>';
+            if (lead.apn) h += '<div style="font-size:0.62rem;color:#555;margin-bottom:2px;">APN '+esc(lead.apn)+'</div>';
+            if (!doorOwner) h += _cvOwnerControlsHtml(lead);
             var tNotePreview = _parseNotes(lead.notes||'').slice(-1)[0];
             if (tNotePreview) h += '<div style="font-size:0.7rem;color:#666;margin-bottom:10px;font-style:italic;">'+esc(tNotePreview.by)+': '+esc(tNotePreview.text.slice(0,60))+(tNotePreview.text.length>60?'…':'')+'</div>';
             h += '<a href="'+mapsUrl+'" target="_blank" style="display:inline-block;font-size:0.75rem;font-weight:700;color:#4a9eff;text-decoration:none;background:rgba(74,158,255,0.08);border:1px solid rgba(74,158,255,0.25);border-radius:100px;padding:6px 14px;margin-bottom:8px;">🗺 Get Directions</a>';
@@ -20758,6 +20779,89 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       } catch(e) {
         if (st) { st.style.color = '#ef4444'; st.textContent = 'Could not save: ' + e.message; }
       }
+    };
+
+    // ── Owner at the door ──────────────────────────────────────────────────────
+    // Two ways to fill a missing owner: ask the parcel services (free, often redacted in
+    // California), or just write down what the rep can see. The second one matters more
+    // than it looks — a rep standing on the porch reading a name off the mailbox is a
+    // better source than any API we can legally query in this state.
+    function _cvOwnerControlsHtml(lead) {
+      return '<div id="cvOwnBox_' + lead.id + '" style="margin:4px 0 8px;">'
+        + '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">'
+        + '<button id="cvOwnBtn_' + lead.id + '" onclick="canvassFindOwner(\'' + lead.id + '\')" title="Queries the county parcel services for the property owner." style="width:auto;margin:0;padding:4px 12px;background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.3);color:#ffaa00;border-radius:100px;font-size:0.7rem;font-weight:700;cursor:pointer;">&#128269; Find Owner</button>'
+        + '<button onclick="canvassOwnerManual(\'' + lead.id + '\')" title="Type the name off the mailbox, or whatever the homeowner tells you." style="width:auto;margin:0;padding:4px 12px;background:transparent;border:1px solid rgba(255,255,255,0.14);color:#888;border-radius:100px;font-size:0.7rem;font-weight:700;cursor:pointer;">&#9998; Type it in</button>'
+        + '</div>'
+        + '<div id="cvOwnMsg_' + lead.id + '" style="font-size:0.66rem;color:#777;margin-top:4px;line-height:1.4;"></div>'
+        + '</div>';
+    }
+
+    async function _cvSaveOwner(id, owner, apn) {
+      var lead = canvassLeads.find(function(l){ return l.id === id; });
+      var upd = { title_owner: owner };
+      if (apn) upd.apn = apn;
+      try {
+        var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+        await c.from('customers').update(upd).eq('id', id);
+      } catch(e) {}
+      if (lead) Object.assign(lead, upd);
+      var rec = (allRecords || []).find(function(r){ return r.id === id; });
+      if (rec) Object.assign(rec, upd);
+      renderSales();
+    }
+
+    window.canvassFindOwner = async function(id) {
+      var lead = canvassLeads.find(function(l){ return l.id === id; });
+      if (!lead || !lead.address) return;
+      var btn = document.getElementById('cvOwnBtn_' + id);
+      var msg = document.getElementById('cvOwnMsg_' + id);
+      if (btn) { btn.textContent = 'Looking up…'; btn.disabled = true; }
+      if (msg) { msg.style.color = '#777'; msg.textContent = 'Checking county parcel records…'; }
+      try {
+        var body = { address: lead.address };
+        if (lead.lat) body.lat = lead.lat;
+        if (lead.lng) body.lng = lead.lng;
+        var r = await fetch('/.netlify/functions/regrid-lookup', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+        });
+        var data = await r.json();
+
+        if (data.owner) { await _cvSaveOwner(id, data.owner, data.apn); return; }
+
+        // Parcel found, name withheld. Keep the APN — it is what the county bulk file
+        // joins on — and tell the rep plainly rather than showing "not found", which
+        // would be false and would stop them trying the thing that actually works.
+        if (data.apn) {
+          try {
+            var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+            await c2.from('customers').update({ apn: data.apn }).eq('id', id);
+            lead.apn = data.apn;
+          } catch(e) {}
+        }
+        if (btn) { btn.textContent = '🔍 Try again'; btn.disabled = false; }
+        if (msg) {
+          msg.style.color = '#f59e0b';
+          msg.innerHTML = data.owner_redacted
+            ? 'Found the parcel (APN ' + esc(data.apn) + ') but California law blocks the county from publishing the owner name online. <b style="color:#8DC63F;">Read it off the mailbox and tap “Type it in”.</b>'
+            : 'No parcel match for this address.'
+              + (CURRENT_ROLE === 'admin' && data.regrid_key_set === false
+                  ? '<br/><span style="color:#f87171;">REGRID_KEY is not set — the paid owner source never ran.</span>' : '')
+              + ' <b style="color:#8DC63F;">Type the name in instead.</b>';
+        }
+      } catch(e) {
+        if (btn) { btn.textContent = '🔍 Try again'; btn.disabled = false; }
+        if (msg) { msg.style.color = '#f87171'; msg.textContent = 'Lookup failed — type the name in instead.'; }
+      }
+    };
+
+    window.canvassOwnerManual = async function(id) {
+      var lead = canvassLeads.find(function(l){ return l.id === id; });
+      if (!lead) return;
+      var name = prompt('Owner name for ' + (lead.address || 'this house') + ':', lead.title_owner || '');
+      if (name == null) return;
+      name = name.trim();
+      if (!name) return;
+      await _cvSaveOwner(id, name, null);
     };
 
     window.canvassPrioritize = function(id) {
