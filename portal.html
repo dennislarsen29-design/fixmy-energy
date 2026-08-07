@@ -4911,11 +4911,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
       var publicUrl = client.storage.from(BUCKET).getPublicUrl(path).data.publicUrl;
 
+      // The evaluation wizard always knows which slot it asked for, so it stamps the
+      // category up front (same as the customer portal's upload cards) instead of
+      // leaving the categorizer to guess. Quoya still runs its quality pass.
+      var forced = window._evForceLabel || null;
       var photoRecord = {
         job_id: String(currentJobId),
         url: publicUrl,
         path: path,
-        label: null,
+        label: forced,
+        expected_label: forced,
         quality_flag: null,
         quality_note: null,
         quoya_status: 'pending'
@@ -5018,6 +5023,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     'Sub Panel',
     'Sub Panel Sticker Photo',
     'Inverter Photo',
+    'Serial Number',
+    'Meter Photo',
+    'Production Screenshot',
     'Solar Array',
     'Roof Photo',
     'Utility Bill',
@@ -6288,6 +6296,715 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       resultEl.innerHTML = '<div style="color:#ef4444;font-size:0.75rem;">Analysis failed: ' + e.message + '</div>';
     }
   };
+
+  /* ══════════════════════════════════════════════════════════════════════════
+     GUIDED SOLAR EVALUATION (2026-08-08)
+     ─────────────────────────────────────────────────────────────────────────
+     The eval used to be "upload some photos and know what you're looking at",
+     which is exactly what stops the closing role from scaling. This is the
+     version a rep with no solar background can run: one task per screen, every
+     slot spelled out, the app-navigation and bill-retrieval steps written down,
+     and Quoya doing the expert part at the end.
+
+     Photos go through the SAME uploadPhotos()/job_photos path as everywhere
+     else — the wizard only differs in that it knows the category up front (like
+     the customer portal's upload cards do) instead of leaving it to the
+     categorizer to guess.
+     ══════════════════════════════════════════════════════════════════════════ */
+
+  var INVERTER_BRANDS = [
+    'SolarEdge', 'Enphase', 'SMA / Sunny Boy', 'Fronius', 'SunPower (Equinox)',
+    'Tesla / SolarCity', 'Generac / Pika', 'Delta', 'ABB / Power-One', 'Growatt',
+    'Sol-Ark', 'Outback', 'Schneider', 'Other / Not sure'
+  ];
+
+  // Which monitoring app the homeowner has, and exactly where the production
+  // screen lives inside it. A rep who has never opened these apps cannot find
+  // this on their own, and "get me a production screenshot" is a dead end.
+  var MONITORING_APPS = {
+    solaredge: {
+      label: 'SolarEdge (mySolarEdge)',
+      steps: [
+        'Open the <b>mySolarEdge</b> app and sign in as the homeowner (they may need to reset their password — that is normal).',
+        'Tap <b>Dashboard</b> at the bottom.',
+        'Tap the <b>Energy</b> tile, then switch the range to <b>Month</b> and then <b>Year</b>.',
+        'Screenshot BOTH the Month and Year charts — a year view is what shows when production dropped off.',
+        'If you see a <b>Layout</b> tab, open it: dead optimizers show as greyed-out panels. Screenshot that too.'
+      ],
+      tip: 'No app access? The inverter screen itself cycles through today/lifetime kWh — photograph that instead.'
+    },
+    enphase: {
+      label: 'Enphase (Enlighten / Enphase App)',
+      steps: [
+        'Open the <b>Enphase</b> app (older accounts say <b>Enlighten</b>) and sign in as the homeowner.',
+        'Tap <b>System</b>, then <b>Energy</b>.',
+        'Set the range to <b>Month</b>, screenshot, then <b>Year</b> and screenshot again.',
+        'Go back and tap <b>Devices</b> → <b>Microinverters</b>. Any showing an error or zero production are your problem panels — screenshot the list.',
+        'The <b>Array</b> view colours each panel by output — screenshot it if available.'
+      ],
+      tip: 'Enphase reports per-panel, so this tells you exactly how many microinverters are dead.'
+    },
+    other: {
+      label: 'Other / manufacturer portal',
+      steps: [
+        'Ask the homeowner which app or website they use to check their solar.',
+        'Sign in with them and find any chart showing production over time.',
+        'Screenshot a <b>month</b> view and a <b>year</b> view if both exist.'
+      ],
+      tip: 'Any production history is better than none — even a photo of the inverter screen.'
+    },
+    none: {
+      label: 'No monitoring / no access',
+      steps: [
+        'Photograph the inverter display if it shows today\'s or lifetime kWh.',
+        'Note the reading and roughly what time of day it is — Quoya can work with that.'
+      ],
+      tip: 'Skip this step if there is genuinely nothing. Quoya will estimate instead, and will say that it did.'
+    }
+  };
+
+  // Getting a real bill is the step reps most often fumble. Written out per utility.
+  var UTILITY_HELP = {
+    sdge: {
+      label: 'SDG&E',
+      steps: [
+        'Go to <b>sdge.com</b> and sign in as the homeowner (app works too).',
+        'Tap <b>My Account</b> → <b>Billing &amp; Payment</b> → <b>View Bill</b>.',
+        'Open the most recent statement and <b>download the PDF</b> — the PDF has the full usage history, a screenshot of the summary does not.',
+        'If they are on <b>NEM</b>, also grab the most recent <b>True-Up</b> statement — that is the one that shows the real annual position.'
+      ],
+      tip: 'No login? The paper bill works — photograph the page showing "Total kWh" and the 12-month usage graph.'
+    },
+    sce: {
+      label: 'Southern California Edison',
+      steps: [
+        'Go to <b>sce.com</b> and sign in.',
+        'Tap <b>My Account</b> → <b>Billing &amp; Payment</b> → <b>View/Print Bill</b>.',
+        'Download the most recent PDF statement.',
+        'For NEM customers, also pull the annual <b>True-Up</b>.'
+      ],
+      tip: 'SCE bills show usage in the "Details of your new charges" section.'
+    },
+    ladwp: {
+      label: 'LADWP',
+      steps: [
+        'Go to <b>ladwp.com</b> and sign in.',
+        'Tap <b>Account</b> → <b>Billing History</b>.',
+        'Download the latest bill PDF. LADWP bills every two months, so one bill covers 60 days.'
+      ],
+      tip: 'Because LADWP is bi-monthly, halve the total for a monthly figure.'
+    },
+    other: {
+      label: 'Other utility',
+      steps: [
+        'Ask the homeowner to sign in to their utility website or app.',
+        'Find <b>Billing</b> or <b>Statements</b> and download the most recent bill as a PDF.',
+        'A clear photo of the paper bill works if there is no online access.'
+      ],
+      tip: 'What matters is monthly kWh used and the amount owed — make sure both are legible.'
+    }
+  };
+
+  // The flow. `required` gates the Next button; `optional` slots never block.
+  var EVAL_STEPS = [
+    {
+      key: 'hardware', title: 'Hardware', icon: '&#128295;',
+      blurb: 'What is on the wall. Start with anything the customer already sent — you only fill the gaps.',
+      slots: [
+        { label: 'Inverter Photo',                key: 'inverter', icon: '&#128247;', required: true,
+          hint: 'The whole unit, straight on, close enough to read the front label.' },
+        { label: 'Serial Number',                 key: 'serial',   icon: '&#128290;', required: true,
+          hint: 'Close-up of the sticker. The serial encodes the build date, which decides the warranty.' },
+        { label: 'Meter Photo',                   key: 'meter',    icon: '&#9201;',   required: true,
+          hint: 'The utility meter face, with the numbers readable.' },
+        { label: 'MSP Step Back Photo',           key: 'msp',      icon: '&#9889;',   required: false,
+          hint: 'Main breaker panel with the door open — shows the amp rating and spare breaker space.' },
+        { label: 'Battery Placement Wall Photo',  key: 'battery',  icon: '&#128267;', required: false,
+          hint: 'Where a battery could physically go. Skip if there is nowhere obvious.' },
+        { label: 'Front of House',                key: 'front',    icon: '&#127968;', required: true,
+          hint: 'From the street, showing the roof and array if visible.' }
+      ]
+    },
+    {
+      key: 'production', title: 'Production', icon: '&#128200;',
+      blurb: 'What the system is actually making. Skip the whole step if there is no monitoring — it is not required.',
+      optional: true,
+      slots: [
+        { label: 'Production Screenshot', key: 'prod', icon: '&#128241;', required: false, multi: true,
+          hint: 'Month and year views. More is better.' }
+      ]
+    },
+    {
+      key: 'consumption', title: 'Consumption', icon: '&#128196;',
+      blurb: 'What the home uses and pays. This one is required — without it there is no savings math and no proposal.',
+      slots: [
+        { label: 'Utility Bill', key: 'bill', icon: '&#128196;', required: true, pdf: true,
+          hint: 'PDF is best. A photo of the paper bill works if that is all there is.' }
+      ]
+    },
+    { key: 'analysis', title: 'Quoya\'s Read', icon: '&#129302;', blurb: '', slots: [] }
+  ];
+
+  var _evId = null, _evRec = null, _evStepIdx = 0, _evRow = null;
+  var _evBusy = false, _evAnalyzing = false;
+  var _evLocal = { brand: '', model: '', serial: '', platform: '', utility: '', skipped: {}, answers: {} };
+
+  function _evPhotos() { return (jobPhotos[_evId] || []); }
+  function _evHas(label) {
+    return _evPhotos().filter(function(p){ return (p.label || p.Label || '') === label; });
+  }
+  function _evSlotDone(slot) {
+    return _evHas(slot.label).length > 0 || !!_evLocal.skipped[slot.key];
+  }
+  function _evStepDone(step) {
+    if (step.key === 'hardware') {
+      if (!_evLocal.brand) return false;
+    }
+    if (step.key === 'consumption' && !_evLocal.utility) return false;
+    return step.slots.filter(function(s){ return s.required; }).every(_evSlotDone);
+  }
+  function _evRepName() { return (typeof bbRepName === 'function') ? bbRepName() : 'Rep'; }
+
+  // ── Persistence. Degrades silently if 20260808_lead_evaluations.sql is unapplied:
+  // the wizard still uploads and still analyzes, it just can't resume tomorrow.
+  async function _evLoadRow(id) {
+    try {
+      var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var r = await c.from('lead_evaluations').select('*').eq('customer_id', id).limit(1);
+      if (r.error) return null;
+      return (r.data && r.data[0]) || null;
+    } catch(e) { return null; }
+  }
+  async function _evSave(patch) {
+    if (!_evId) return;
+    var body = Object.assign({
+      customer_id: _evId, rep_id: (typeof bbRepId === 'function' ? bbRepId() : null),
+      rep_name: _evRepName(), updated_at: new Date().toISOString()
+    }, patch);
+    try {
+      var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+      if (_evRow && _evRow.id) {
+        await c.from('lead_evaluations').update(body).eq('id', _evRow.id);
+        Object.assign(_evRow, body);
+      } else {
+        var ins = await c.from('lead_evaluations').insert(body).select();
+        if (!ins.error && ins.data && ins.data[0]) _evRow = ins.data[0];
+      }
+    } catch(e) { /* table not applied — nothing to resume, everything else still works */ }
+  }
+
+  window.openEvalWizard = async function(id) {
+    var rec = (adminCustomers || []).find(function(x){ return String(x.id) === String(id); });
+    if (!rec) return;
+    _evId = id; _evRec = rec; _evStepIdx = 0;
+    _evLocal = { brand: '', model: '', serial: '', platform: '', utility: '', skipped: {}, answers: {} };
+    currentJobId = id;
+
+    var slot = document.getElementById('editorSlot') || (function(){
+      var d = document.createElement('div'); d.id = 'editorSlot'; document.body.appendChild(d); return d;
+    })();
+    slot.innerHTML = '<div id="evalWrap" style="position:fixed;inset:0;background:#0e0e0e;z-index:9500;overflow-y:auto;">'
+      + '<div style="max-width:620px;margin:0 auto;padding:16px 14px 60px;color:#F3EDE3;">'
+      + '<div style="text-align:center;padding:60px 0;color:#888;font-size:0.85rem;">Loading evaluation&hellip;</div>'
+      + '</div></div>';
+
+    _evRow = await _evLoadRow(id);
+    if (_evRow) {
+      _evLocal.brand    = _evRow.inverter_brand || '';
+      _evLocal.model    = _evRow.inverter_model || '';
+      _evLocal.serial   = _evRow.inverter_serial || '';
+      _evLocal.platform = _evRow.monitoring_platform || '';
+      _evLocal.utility  = _evRow.utility || '';
+      _evLocal.skipped  = _evRow.skipped || {};
+      _evLocal.answers  = _evRow.answers || {};
+      if (_evRow.analysis) _evStepIdx = EVAL_STEPS.length - 1;
+    }
+    try { await loadJobPhotos(id); } catch(e) {}
+    _evRender();
+  };
+
+  window.closeEvalWizard = function() {
+    var s = document.getElementById('editorSlot');
+    if (s) s.innerHTML = '';
+    _evId = null; _evRec = null; _evRow = null;
+  };
+
+  window.evGoStep = function(i) {
+    if (i < 0 || i >= EVAL_STEPS.length) return;
+    _evStepIdx = i;
+    _evRender();
+    var w = document.getElementById('evalWrap'); if (w) w.scrollTop = 0;
+  };
+
+  window.evNext = function() {
+    var step = EVAL_STEPS[_evStepIdx];
+    if (!step.optional && !_evStepDone(step)) return;
+    _evSave({ step: (EVAL_STEPS[_evStepIdx + 1] || step).key });
+    // Landing on the analysis step with nothing computed yet kicks it off, so the rep
+    // never has to know there was a button.
+    if (EVAL_STEPS[_evStepIdx + 1] && EVAL_STEPS[_evStepIdx + 1].key === 'analysis') {
+      evGoStep(_evStepIdx + 1);
+      if (!(_evRow && _evRow.analysis) && !_evAnalyzing) window.evRunAnalysis();
+      return;
+    }
+    evGoStep(_evStepIdx + 1);
+  };
+
+  window.evSetField = function(field, val) {
+    _evLocal[field] = val;
+    var patch = {};
+    if (field === 'brand')    patch.inverter_brand = val;
+    if (field === 'model')    patch.inverter_model = val;
+    if (field === 'serial')   patch.inverter_serial = val;
+    if (field === 'platform') patch.monitoring_platform = val;
+    if (field === 'utility')  patch.utility = val;
+    _evSave(patch);
+    if (field === 'platform' || field === 'utility' || field === 'brand') _evRender();
+  };
+
+  window.evSkipSlot = function(key) {
+    _evLocal.skipped[key] = !_evLocal.skipped[key];
+    _evSave({ skipped: _evLocal.skipped });
+    _evRender();
+  };
+
+  // Upload straight into a known category — the wizard always knows what it asked for,
+  // so unlike a free-form drop these never need the categorizer to guess.
+  window.evUpload = async function(inputEl, label) {
+    var files = Array.from(inputEl.files || []);
+    if (!files.length || !_evId) return;
+    var st = document.getElementById('evStatus');
+    if (st) { st.style.color = '#8DC63F'; st.textContent = 'Uploading ' + files.length + ' file' + (files.length > 1 ? 's' : '') + '…'; }
+    _evBusy = true;
+    try {
+      window._evForceLabel = label;
+      await uploadPhotos(files);
+    } catch(e) {
+      if (st) { st.style.color = '#ef4444'; st.textContent = 'Upload failed: ' + e.message; }
+    } finally {
+      window._evForceLabel = null;
+      _evBusy = false;
+    }
+    try { await loadJobPhotos(_evId); } catch(e) {}
+    inputEl.value = '';
+    _evRender();
+  };
+
+  window.evAnswer = function(qid, val) {
+    _evLocal.answers[qid] = val;
+    _evSave({ answers: _evLocal.answers });
+    _evRender();
+  };
+
+  window.evRunAnalysis = async function() {
+    if (_evAnalyzing || !_evId) return;
+    _evAnalyzing = true;
+    _evSave({ status: 'analyzing' });
+    _evRender();
+    try {
+      var catalog = [];
+      try {
+        var cc = supabase.createClient(SUPA_URL, SUPA_KEY);
+        var cr = await cc.from('proposal_catalog').select('option_key,title,service_type,default_price')
+          .eq('is_active', true).order('sort_order');
+        catalog = (cr.data || []);
+      } catch(e) {}
+
+      function flat(raw) { return _parseNotes(raw || '').map(function(e){ return e.text; }).join('\n'); }
+      var notes = [flat(_evRec.notes), flat(_evRec.field_notes), flat(_evRec.assessment_notes)]
+        .filter(Boolean).join('\n').trim();
+
+      // Netlify caps a synchronous function at 26s and this does vision + web search, so
+      // a slow run can be cut off upstream. Abort a bit later than that so the rep gets a
+      // real message instead of a hung spinner. If this turns out to bite in production
+      // the fix is to move the call to a *-background function that writes the result to
+      // lead_evaluations and have this poll for it.
+      var ctrl = new AbortController();
+      var killer = setTimeout(function(){ ctrl.abort(); }, 30000);
+      var r = await fetch('/.netlify/functions/eval-analysis', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: ctrl.signal,
+        body: JSON.stringify({
+          photos: _evPhotos().map(function(p){ return { url: p.url, label: p.label || p.Label || '' }; }),
+          hardware: { brand: _evLocal.brand, model: _evLocal.model, serial: _evLocal.serial, platform: _evLocal.platform },
+          utility: (UTILITY_HELP[_evLocal.utility] || {}).label || _evLocal.utility,
+          notes: notes,
+          answers: _evLocal.answers,
+          catalog: catalog,
+          lead: {
+            address: _evRec.address || '', system_size: _evRec.system_size || '',
+            install_year: _evRec.install_year || '', original_installer: _evRec.original_installer || '',
+            monthly_bill: _evRec.monthly_bill || ''
+          }
+        })
+      });
+      clearTimeout(killer);
+      var data = await r.json();
+      if (data.error) {
+        _evRow = _evRow || {};
+        _evRow._err = (CURRENT_ROLE === 'admin' && data.detail)
+          ? data.error + ' — ' + data.detail
+          : 'Quoya couldn\'t analyze this right now. Your photos are all saved — try again in a minute.';
+      } else {
+        _evRow = _evRow || {};
+        _evRow._err = null;
+        _evRow.analysis  = data.confident ? data : null;
+        _evRow.questions = data.confident ? null : (data.questions || []);
+        await _evSave({
+          analysis: _evRow.analysis, questions: _evRow.questions,
+          status: data.confident ? 'ready' : 'needs_input',
+          analyzed_at: new Date().toISOString()
+        });
+      }
+    } catch(e) {
+      _evRow = _evRow || {};
+      _evRow._err = (e && e.name === 'AbortError')
+        ? 'Quoya took too long on this one. Your photos are all saved — tap Try again, and if it keeps timing out tell Dennis.'
+        : 'Quoya couldn\'t analyze this right now. Your photos are all saved — try again in a minute.';
+    } finally {
+      _evAnalyzing = false;
+      _evRender();
+    }
+  };
+
+  // Hand off to the internal builder with Quoya's picks already selected, so the rep's
+  // only job is pricing. Catalog keys are matched exactly — Quoya is given the real
+  // option_key list precisely so this can't be a fuzzy name match.
+  window.evBuildProposal = function() {
+    var a = (_evRow && _evRow.analysis) || {};
+    var pf = a.proposal_prefill || {};
+    window._propPrefill = {
+      optionKeys: pf.option_keys || [],
+      pw3: parseInt(pf.powerwall_count, 10) || 0,
+      restoreArray: !!pf.restore_array,
+      arrayOutputPct: pf.array_output_pct != null ? pf.array_output_pct : null,
+      note: pf.notes_for_rep || ''
+    };
+    var id = _evId;
+    window.closeEvalWizard();
+    if (typeof openProposalBuilder === 'function') openProposalBuilder(id);
+  };
+
+  // ── Render ─────────────────────────────────────────────────────────────────
+  function _evRender() {
+    var wrap = document.getElementById('evalWrap');
+    if (!wrap || !_evRec) return;
+    var step = EVAL_STEPS[_evStepIdx];
+    var name = ((_evRec.first_name || '') + ' ' + (_evRec.last_name || '')).trim() || _evRec.title_owner || _evRec.address || 'Lead';
+
+    var h = '<div style="max-width:620px;margin:0 auto;padding:14px 14px 80px;color:#F3EDE3;">';
+
+    // Header
+    h += '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:4px;">';
+    h += '<div style="font-size:0.7rem;font-weight:800;text-transform:uppercase;letter-spacing:0.09em;color:#8DC63F;">&#9889; Solar Evaluation</div>';
+    h += '<button onclick="closeEvalWizard()" style="width:auto;margin:0;background:none;border:none;color:#888;font-size:1.5rem;line-height:1;cursor:pointer;padding:0 4px;">&times;</button>';
+    h += '</div>';
+    h += '<div style="font-size:0.95rem;font-weight:700;margin-bottom:2px;">' + esc(name) + '</div>';
+    h += '<div style="font-size:0.72rem;color:#777;margin-bottom:14px;">' + esc(_evRec.address || '') + '</div>';
+
+    // Progress rail
+    h += '<div style="display:flex;gap:5px;margin-bottom:6px;">';
+    EVAL_STEPS.forEach(function(s, i) {
+      var done = i < _evStepIdx || (i !== EVAL_STEPS.length - 1 && _evStepDone(s));
+      var here = i === _evStepIdx;
+      h += '<button onclick="evGoStep(' + i + ')" title="' + s.title + '" style="width:auto;margin:0;flex:1;height:6px;border:none;border-radius:100px;cursor:pointer;padding:0;background:'
+        + (here ? '#8DC63F' : done ? 'rgba(141,198,63,0.45)' : 'rgba(255,255,255,0.12)') + ';"></button>';
+    });
+    h += '</div>';
+    h += '<div style="display:flex;justify-content:space-between;font-size:0.62rem;color:#666;margin-bottom:16px;">'
+      + '<span>Step ' + (_evStepIdx + 1) + ' of ' + EVAL_STEPS.length + '</span>'
+      + '<span>' + step.icon + ' ' + step.title + '</span></div>';
+
+    if (step.key === 'analysis') {
+      h += _evAnalysisHtml();
+    } else {
+      h += '<div style="font-size:1.05rem;font-weight:800;margin-bottom:4px;">' + step.icon + ' ' + step.title + '</div>';
+      h += '<div style="font-size:0.76rem;color:#999;line-height:1.5;margin-bottom:16px;">' + step.blurb + '</div>';
+
+      if (step.key === 'hardware')    h += _evHardwareFieldsHtml();
+      if (step.key === 'production')  h += _evProductionHelpHtml();
+      if (step.key === 'consumption') h += _evUtilityHelpHtml();
+
+      h += '<div id="evStatus" style="font-size:0.72rem;min-height:16px;margin-bottom:8px;color:#8DC63F;"></div>';
+      step.slots.forEach(function(s){ h += _evSlotHtml(s); });
+
+      // Footer nav
+      var ready = step.optional || _evStepDone(step);
+      h += '<div style="display:flex;gap:8px;margin-top:20px;">';
+      if (_evStepIdx > 0) {
+        h += '<button onclick="evGoStep(' + (_evStepIdx - 1) + ')" style="width:auto;margin:0;flex:0 0 auto;padding:13px 20px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.14);color:#aaa;border-radius:100px;font-size:0.82rem;font-weight:700;cursor:pointer;">&#8592; Back</button>';
+      }
+      h += '<button onclick="evNext()"' + (ready ? '' : ' disabled') + ' style="flex:1;margin:0;padding:13px;border:none;border-radius:100px;font-size:0.86rem;font-weight:800;cursor:' + (ready ? 'pointer' : 'not-allowed') + ';background:' + (ready ? '#8DC63F' : 'rgba(255,255,255,0.08)') + ';color:' + (ready ? '#1A1A1A' : '#555') + ';">'
+        + (EVAL_STEPS[_evStepIdx + 1] && EVAL_STEPS[_evStepIdx + 1].key === 'analysis' ? '&#129302; Run Quoya Analysis' : 'Next &#8594;') + '</button>';
+      h += '</div>';
+      if (!ready) {
+        var missing = step.slots.filter(function(s){ return s.required && !_evSlotDone(s); }).map(function(s){ return s.label; });
+        if (step.key === 'hardware' && !_evLocal.brand) missing.unshift('inverter brand');
+        if (step.key === 'consumption' && !_evLocal.utility) missing.unshift('which utility');
+        h += '<div style="font-size:0.7rem;color:#f59e0b;text-align:center;margin-top:8px;">Still needed: ' + missing.join(', ') + '</div>';
+      }
+      if (step.optional) {
+        h += '<div style="text-align:center;margin-top:10px;"><button onclick="evNext()" style="width:auto;margin:0;background:none;border:none;color:#666;font-size:0.74rem;cursor:pointer;text-decoration:underline;">Skip this step &rsaquo;</button></div>';
+      }
+    }
+
+    h += '</div>';
+    wrap.innerHTML = h;
+  }
+
+  function _evSlotHtml(slot) {
+    var have = _evHas(slot.label);
+    var skipped = !!_evLocal.skipped[slot.key];
+    var done = have.length > 0;
+    var border = done ? 'rgba(141,198,63,0.45)' : skipped ? 'rgba(255,255,255,0.1)' : slot.required ? 'rgba(245,158,11,0.35)' : 'rgba(255,255,255,0.1)';
+    var accept = slot.pdf ? 'image/*,application/pdf' : 'image/*';
+
+    var h = '<div style="background:rgba(255,255,255,0.035);border:1px solid ' + border + ';border-radius:14px;padding:13px;margin-bottom:9px;' + (skipped ? 'opacity:0.5;' : '') + '">';
+    h += '<div style="display:flex;align-items:flex-start;gap:10px;">';
+    h += '<div style="font-size:1.25rem;line-height:1;flex-shrink:0;">' + slot.icon + '</div>';
+    h += '<div style="flex:1;min-width:0;">';
+    h += '<div style="font-size:0.86rem;font-weight:700;">' + slot.label
+      + (slot.required ? '' : ' <span style="font-size:0.62rem;color:#666;font-weight:600;">optional</span>') + '</div>';
+    h += '<div style="font-size:0.7rem;color:#888;line-height:1.45;margin-top:2px;">' + slot.hint + '</div>';
+    if (done) {
+      var fromCust = have.some(function(p){ return p.uploaded_by === 'customer'; });
+      h += '<div style="font-size:0.7rem;color:#8DC63F;font-weight:700;margin-top:6px;">&#10003; ' + have.length + ' uploaded'
+        + (fromCust ? ' <span style="color:#4a9eff;font-weight:600;">(customer sent this)</span>' : '') + '</div>';
+      h += '<div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:6px;">';
+      have.slice(0, 5).forEach(function(p){
+        h += '<img src="' + p.url + '" onclick="window.open(\'' + p.url + '\',\'_blank\')" style="width:44px;height:44px;object-fit:cover;border-radius:7px;cursor:pointer;border:1px solid rgba(255,255,255,0.15);">';
+      });
+      h += '</div>';
+    }
+    h += '</div></div>';
+
+    h += '<div style="display:flex;gap:7px;margin-top:11px;">';
+    h += '<label style="flex:1;text-align:center;padding:11px;background:' + (done ? 'rgba(255,255,255,0.06)' : 'rgba(141,198,63,0.14)') + ';border:1px solid ' + (done ? 'rgba(255,255,255,0.14)' : 'rgba(141,198,63,0.4)') + ';color:' + (done ? '#aaa' : '#8DC63F') + ';border-radius:100px;font-size:0.78rem;font-weight:700;cursor:pointer;">'
+      + (done ? '&#43; Add another' : '&#128247; Take / Upload')
+      + '<input type="file" ' + (slot.multi ? 'multiple ' : '') + 'accept="' + accept + '" style="display:none" onchange="evUpload(this,\'' + slot.label + '\')"></label>';
+    if (!done) {
+      h += '<button onclick="evSkipSlot(\'' + slot.key + '\')" style="width:auto;margin:0;flex:0 0 auto;padding:11px 15px;background:' + (skipped ? 'rgba(255,255,255,0.12)' : 'transparent') + ';border:1px solid rgba(255,255,255,0.14);color:#888;border-radius:100px;font-size:0.75rem;font-weight:700;cursor:pointer;white-space:nowrap;">'
+        + (skipped ? '&#10003; Skipped' : 'Not present') + '</button>';
+    }
+    h += '</div>';
+    h += '</div>';
+    return h;
+  }
+
+  function _evHardwareFieldsHtml() {
+    var h = '<div style="background:rgba(74,158,255,0.05);border:1px solid rgba(74,158,255,0.2);border-radius:14px;padding:13px;margin-bottom:14px;">';
+    h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#4a9eff;margin-bottom:9px;">Confirm the equipment</div>';
+    h += '<label style="display:block;font-size:0.68rem;color:#888;margin-bottom:3px;">Inverter manufacturer *</label>';
+    h += '<select onchange="evSetField(\'brand\',this.value)" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:9px;color:#fff;padding:11px;font-size:0.88rem;margin-bottom:9px;box-sizing:border-box;">';
+    h += '<option value="">— Select the brand on the label —</option>';
+    INVERTER_BRANDS.forEach(function(b){ h += '<option value="' + b + '"' + (_evLocal.brand === b ? ' selected' : '') + '>' + b + '</option>'; });
+    h += '</select>';
+    h += '<div style="display:flex;gap:8px;">';
+    h += '<div style="flex:1;"><label style="display:block;font-size:0.68rem;color:#888;margin-bottom:3px;">Model (if readable)</label>'
+      + '<input value="' + esc(_evLocal.model) + '" onchange="evSetField(\'model\',this.value)" placeholder="e.g. SE7600A-US" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:9px;color:#fff;padding:10px;font-size:0.84rem;box-sizing:border-box;"/></div>';
+    h += '<div style="flex:1;"><label style="display:block;font-size:0.68rem;color:#888;margin-bottom:3px;">Serial number</label>'
+      + '<input value="' + esc(_evLocal.serial) + '" onchange="evSetField(\'serial\',this.value)" placeholder="type it or photo it" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:9px;color:#fff;padding:10px;font-size:0.84rem;box-sizing:border-box;"/></div>';
+    h += '</div>';
+    h += '<div style="font-size:0.66rem;color:#666;margin-top:7px;line-height:1.45;">Don\'t know the brand? Photograph the label and pick <b>Other / Not sure</b> &mdash; Quoya reads it off the picture.</div>';
+    h += '</div>';
+    return h;
+  }
+
+  function _evProductionHelpHtml() {
+    var h = '<div style="margin-bottom:14px;">';
+    h += '<label style="display:block;font-size:0.68rem;color:#888;margin-bottom:5px;">Which app does the homeowner have?</label>';
+    h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:11px;">';
+    Object.keys(MONITORING_APPS).forEach(function(k){
+      var on = _evLocal.platform === k;
+      h += '<button onclick="evSetField(\'platform\',\'' + k + '\')" style="width:auto;margin:0;padding:9px 14px;border-radius:100px;font-size:0.76rem;font-weight:700;cursor:pointer;'
+        + (on ? 'background:rgba(74,158,255,0.18);border:1px solid rgba(74,158,255,0.5);color:#4a9eff;'
+              : 'background:transparent;border:1px solid rgba(255,255,255,0.14);color:#888;') + '">'
+        + MONITORING_APPS[k].label + '</button>';
+    });
+    h += '</div>';
+    var app = MONITORING_APPS[_evLocal.platform];
+    if (app) {
+      h += '<div style="background:rgba(74,158,255,0.05);border:1px solid rgba(74,158,255,0.2);border-radius:14px;padding:13px;">';
+      h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#4a9eff;margin-bottom:8px;">How to find it &mdash; ' + app.label + '</div>';
+      h += '<ol style="margin:0;padding-left:18px;font-size:0.78rem;color:#ccc;line-height:1.7;">';
+      app.steps.forEach(function(s){ h += '<li style="margin-bottom:4px;">' + s + '</li>'; });
+      h += '</ol>';
+      h += '<div style="font-size:0.7rem;color:#8DC63F;margin-top:9px;line-height:1.45;">&#128161; ' + app.tip + '</div>';
+      h += '</div>';
+    }
+    h += '</div>';
+    return h;
+  }
+
+  function _evUtilityHelpHtml() {
+    var h = '<div style="margin-bottom:14px;">';
+    h += '<label style="display:block;font-size:0.68rem;color:#888;margin-bottom:5px;">Which utility? *</label>';
+    h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:11px;">';
+    Object.keys(UTILITY_HELP).forEach(function(k){
+      var on = _evLocal.utility === k;
+      h += '<button onclick="evSetField(\'utility\',\'' + k + '\')" style="width:auto;margin:0;padding:9px 14px;border-radius:100px;font-size:0.76rem;font-weight:700;cursor:pointer;'
+        + (on ? 'background:rgba(255,170,0,0.18);border:1px solid rgba(255,170,0,0.5);color:#ffaa00;'
+              : 'background:transparent;border:1px solid rgba(255,255,255,0.14);color:#888;') + '">'
+        + UTILITY_HELP[k].label + '</button>';
+    });
+    h += '</div>';
+    var u = UTILITY_HELP[_evLocal.utility];
+    if (u) {
+      h += '<div style="background:rgba(255,170,0,0.05);border:1px solid rgba(255,170,0,0.22);border-radius:14px;padding:13px;">';
+      h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#ffaa00;margin-bottom:8px;">How to pull the bill &mdash; ' + u.label + '</div>';
+      h += '<ol style="margin:0;padding-left:18px;font-size:0.78rem;color:#ccc;line-height:1.7;">';
+      u.steps.forEach(function(s){ h += '<li style="margin-bottom:4px;">' + s + '</li>'; });
+      h += '</ol>';
+      h += '<div style="font-size:0.7rem;color:#8DC63F;margin-top:9px;line-height:1.45;">&#128161; ' + u.tip + '</div>';
+      h += '</div>';
+    }
+    h += '</div>';
+    return h;
+  }
+
+  function _evAnalysisHtml() {
+    var h = '';
+    if (_evAnalyzing) {
+      return '<div style="text-align:center;padding:50px 18px;">'
+        + '<div style="font-size:2.2rem;margin-bottom:12px;">&#129302;</div>'
+        + '<div style="font-size:0.95rem;font-weight:700;color:#c4a3f0;margin-bottom:6px;">Quoya is working&hellip;</div>'
+        + '<div style="font-size:0.76rem;color:#888;line-height:1.6;">Reading your photos, decoding the serial, checking warranty terms and searching for known failures on this exact model.<br/>This takes 30&ndash;60 seconds.</div>'
+        + '</div>';
+    }
+    if (_evRow && _evRow._err) {
+      h += '<div style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.3);border-radius:14px;padding:16px;margin-bottom:12px;">'
+        + '<div style="font-size:0.84rem;font-weight:700;color:#f87171;margin-bottom:5px;">Analysis didn\'t run</div>'
+        + '<div style="font-size:0.76rem;color:#ccc;line-height:1.5;">' + esc(_evRow._err) + '</div></div>';
+      h += '<button onclick="evRunAnalysis()" style="width:100%;padding:13px;background:#8DC63F;border:none;color:#1A1A1A;border-radius:100px;font-size:0.86rem;font-weight:800;cursor:pointer;">Try again</button>';
+      return h;
+    }
+
+    var qs = (_evRow && _evRow.questions) || [];
+    if (qs.length) {
+      h += '<div style="background:rgba(155,109,232,0.07);border:1px solid rgba(155,109,232,0.32);border-radius:14px;padding:15px;margin-bottom:14px;">';
+      h += '<div style="font-size:0.86rem;font-weight:800;color:#c4a3f0;margin-bottom:4px;">&#129302; Quoya needs ' + qs.length + ' more thing' + (qs.length > 1 ? 's' : '') + '</div>';
+      h += '<div style="font-size:0.74rem;color:#999;line-height:1.5;">Check these at the equipment and tap an answer. It won\'t guess &mdash; a wrong diagnosis is worse than a question.</div>';
+      h += '</div>';
+      qs.forEach(function(q, i) {
+        var ans = _evLocal.answers[q.id];
+        h += '<div style="background:rgba(255,255,255,0.035);border:1px solid ' + (ans ? 'rgba(141,198,63,0.4)' : 'rgba(255,255,255,0.1)') + ';border-radius:14px;padding:13px;margin-bottom:9px;">';
+        h += '<div style="font-size:0.84rem;font-weight:700;margin-bottom:3px;">' + (i + 1) + '. ' + esc(q.question) + '</div>';
+        if (q.why) h += '<div style="font-size:0.68rem;color:#777;margin-bottom:9px;line-height:1.45;">' + esc(q.why) + '</div>';
+        if ((q.choices || []).length) {
+          h += '<div style="display:flex;gap:6px;flex-wrap:wrap;">';
+          q.choices.forEach(function(ch) {
+            var on = ans === ch;
+            h += '<button onclick="evAnswer(\'' + esc(q.id) + '\',' + JSON.stringify(ch).replace(/"/g, '&quot;') + ')" style="width:auto;margin:0;padding:9px 14px;border-radius:100px;font-size:0.76rem;font-weight:700;cursor:pointer;'
+              + (on ? 'background:rgba(141,198,63,0.18);border:1px solid rgba(141,198,63,0.5);color:#8DC63F;'
+                    : 'background:transparent;border:1px solid rgba(255,255,255,0.14);color:#999;') + '">' + esc(ch) + '</button>';
+          });
+          h += '</div>';
+        } else {
+          h += '<input value="' + esc(ans || '') + '" onchange="evAnswer(\'' + esc(q.id) + '\',this.value)" placeholder="Type what you see…" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:9px;color:#fff;padding:10px;font-size:0.84rem;box-sizing:border-box;"/>';
+        }
+        h += '</div>';
+      });
+      var answered = qs.filter(function(q){ return _evLocal.answers[q.id]; }).length;
+      h += '<button onclick="evRunAnalysis()"' + (answered ? '' : ' disabled') + ' style="width:100%;margin-top:6px;padding:13px;border:none;border-radius:100px;font-size:0.86rem;font-weight:800;cursor:' + (answered ? 'pointer' : 'not-allowed') + ';background:' + (answered ? '#8DC63F' : 'rgba(255,255,255,0.08)') + ';color:' + (answered ? '#1A1A1A' : '#555') + ';">&#129302; Re-run with my answers (' + answered + '/' + qs.length + ')</button>';
+      return h;
+    }
+
+    var a = (_evRow && _evRow.analysis) || null;
+    if (!a) {
+      h += '<div style="text-align:center;padding:40px 18px;">'
+        + '<div style="font-size:2rem;margin-bottom:10px;">&#129302;</div>'
+        + '<div style="font-size:0.8rem;color:#888;line-height:1.6;margin-bottom:16px;">Quoya hasn\'t looked at this evaluation yet.</div>'
+        + '<button onclick="evRunAnalysis()" style="width:100%;padding:13px;background:#8DC63F;border:none;color:#1A1A1A;border-radius:100px;font-size:0.86rem;font-weight:800;cursor:pointer;">&#129302; Run Quoya Analysis</button></div>';
+      return h;
+    }
+
+    // ── The read ──
+    var eq = a.equipment || {};
+    if (eq.brand || eq.model || eq.warranty_status) {
+      h += '<div style="background:rgba(74,158,255,0.06);border:1px solid rgba(74,158,255,0.22);border-radius:14px;padding:14px;margin-bottom:11px;">';
+      h += '<div style="font-size:0.9rem;font-weight:800;">' + esc([eq.brand, eq.model].filter(Boolean).join(' ') || 'Equipment') + '</div>';
+      var meta = [];
+      if (eq.serial) meta.push('S/N ' + eq.serial);
+      if (eq.manufacture_year) meta.push('Built ' + eq.manufacture_year);
+      if (meta.length) h += '<div style="font-size:0.7rem;color:#94a3b8;margin-top:3px;">' + esc(meta.join(' · ')) + '</div>';
+      if (eq.warranty_status) h += '<div style="font-size:0.76rem;color:#ddd;margin-top:7px;line-height:1.5;">' + esc(eq.warranty_status) + '</div>';
+      if (eq.warranty_action) h += '<div style="font-size:0.76rem;color:#8DC63F;margin-top:6px;line-height:1.5;font-weight:600;">&#127919; ' + esc(eq.warranty_action) + '</div>';
+      h += '</div>';
+    }
+
+    if (a.diagnosis) {
+      h += '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:14px;padding:14px;margin-bottom:11px;">';
+      h += '<div style="font-size:0.66rem;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;color:#888;margin-bottom:6px;">What\'s going on</div>';
+      h += '<div style="font-size:0.84rem;line-height:1.6;color:#eee;">' + esc(a.diagnosis) + '</div>';
+      if ((a.likely_causes || []).length) {
+        h += '<div style="margin-top:11px;">';
+        a.likely_causes.forEach(function(c) {
+          var col = c.likelihood === 'high' ? '#8DC63F' : c.likelihood === 'medium' ? '#f59e0b' : '#777';
+          h += '<div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:5px;">'
+            + '<span style="flex-shrink:0;font-size:0.58rem;font-weight:800;text-transform:uppercase;color:' + col + ';border:1px solid ' + col + '55;border-radius:4px;padding:1px 5px;margin-top:2px;">' + esc(c.likelihood || '') + '</span>'
+            + '<span style="font-size:0.76rem;color:#ccc;line-height:1.5;">' + esc(c.cause) + (c.evidence ? ' <span style="color:#777;">— ' + esc(c.evidence) + '</span>' : '') + '</span></div>';
+        });
+        h += '</div>';
+      }
+      h += '</div>';
+    }
+
+    var rc = a.recommendation || {};
+    if (rc.headline) {
+      h += '<div style="background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.35);border-radius:14px;padding:14px;margin-bottom:11px;">';
+      h += '<div style="font-size:0.66rem;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;color:#8DC63F;margin-bottom:6px;">Recommended</div>';
+      h += '<div style="font-size:0.92rem;font-weight:800;color:#F3EDE3;margin-bottom:5px;">' + esc(rc.headline) + '</div>';
+      if (rc.why) h += '<div style="font-size:0.78rem;color:#ccc;line-height:1.55;">' + esc(rc.why) + '</div>';
+      if (rc.alternative) h += '<div style="font-size:0.72rem;color:#888;line-height:1.5;margin-top:8px;"><b style="color:#aaa;">Or:</b> ' + esc(rc.alternative) + '</div>';
+      h += '</div>';
+    }
+
+    if ((a.talking_points || []).length) {
+      h += '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:14px;padding:14px;margin-bottom:11px;">';
+      h += '<div style="font-size:0.66rem;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;color:#888;margin-bottom:8px;">Say this</div>';
+      a.talking_points.forEach(function(t) {
+        h += '<div style="font-size:0.8rem;color:#eee;line-height:1.55;padding-left:14px;position:relative;margin-bottom:7px;">'
+          + '<span style="position:absolute;left:0;color:#8DC63F;">&bull;</span>' + esc(t) + '</div>';
+      });
+      h += '</div>';
+    }
+
+    if ((a.objections || []).length) {
+      h += '<details style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:14px;padding:12px 14px;margin-bottom:11px;">';
+      h += '<summary style="font-size:0.66rem;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;color:#888;cursor:pointer;">If they push back &#9660;</summary>';
+      h += '<div style="margin-top:10px;">';
+      a.objections.forEach(function(o) {
+        h += '<div style="margin-bottom:10px;"><div style="font-size:0.78rem;font-weight:700;color:#f59e0b;">&ldquo;' + esc(o.objection) + '&rdquo;</div>'
+          + '<div style="font-size:0.77rem;color:#ccc;line-height:1.55;margin-top:3px;">' + esc(o.answer) + '</div></div>';
+      });
+      h += '</div></details>';
+    }
+
+    if ((a.missing_data || []).length) {
+      h += '<div style="font-size:0.7rem;color:#777;line-height:1.5;margin-bottom:11px;">&#128161; Would sharpen this: ' + esc(a.missing_data.join(', ')) + '</div>';
+    }
+
+    var pf = a.proposal_prefill || {};
+    if (pf.notes_for_rep) {
+      h += '<div style="background:rgba(255,170,0,0.06);border:1px solid rgba(255,170,0,0.25);border-radius:12px;padding:11px 13px;margin-bottom:11px;">'
+        + '<div style="font-size:0.66rem;font-weight:800;text-transform:uppercase;letter-spacing:0.07em;color:#ffaa00;margin-bottom:4px;">You still set</div>'
+        + '<div style="font-size:0.77rem;color:#ddd;line-height:1.5;">' + esc(pf.notes_for_rep) + '</div></div>';
+    }
+
+    var isNS = _evRec && _evRec.lead_category === 'new_solar';
+    h += '<button onclick="evBuildProposal()" style="width:100%;padding:14px;background:#8DC63F;border:none;color:#1A1A1A;border-radius:100px;font-size:0.9rem;font-weight:800;cursor:pointer;margin-bottom:8px;">&#128196; Build Proposal &#8594;</button>';
+    if ((pf.option_keys || []).length) {
+      h += '<div style="font-size:0.68rem;color:#666;text-align:center;margin-bottom:12px;">' + pf.option_keys.length + ' item' + (pf.option_keys.length > 1 ? 's' : '') + ' pre-selected'
+        + (pf.powerwall_count ? ' &middot; ' + pf.powerwall_count + '&times; Powerwall 3' : '') + ' &mdash; you set the price.</div>';
+    }
+    if (isNS) {
+      h += '<button onclick="window._propOpenExternal(\'https://v2.aurorasolar.com/new-project\',' + JSON.stringify(_evRec.address || '') + ')" style="width:100%;padding:12px;background:rgba(74,158,255,0.12);border:1px solid rgba(74,158,255,0.35);color:#4a9eff;border-radius:100px;font-size:0.82rem;font-weight:700;cursor:pointer;margin-bottom:8px;">&#9728; Open Aurora (address copied)</button>';
+    }
+    h += '<div style="display:flex;gap:8px;">';
+    h += '<button onclick="evGoStep(0)" style="width:auto;margin:0;flex:1;padding:11px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.14);color:#aaa;border-radius:100px;font-size:0.76rem;font-weight:700;cursor:pointer;">&#8592; Back to photos</button>';
+    h += '<button onclick="evRunAnalysis()" style="width:auto;margin:0;flex:1;padding:11px;background:rgba(155,109,232,0.1);border:1px solid rgba(155,109,232,0.35);color:#c4a3f0;border-radius:100px;font-size:0.76rem;font-weight:700;cursor:pointer;">&#8635; Re-analyze</button>';
+    h += '</div>';
+    return h;
+  }
 
   // Production-based savings helper — calculates kWh contributions by component
   // Used by propShowScenario (builder preview) and sendProposal (stored proposal)
@@ -13460,7 +14177,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   function _proposalToolsRow(id, address, isNS){
     var jaddr = (address||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;');
     var pill = 'width:auto;padding:8px 14px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);border-radius:100px;color:#4a9eff;font-size:0.75rem;font-weight:700;cursor:pointer;';
-    return '<div style="margin-bottom:14px;">'+
+    // The evaluation comes BEFORE the proposal — it's the step that fills the proposal in.
+    // FixMy only: it's built around diagnosing an existing system, which a New Solar lead
+    // doesn't have.
+    var evalRow = !isNS
+      ? '<div style="margin-bottom:14px;">'+
+          '<div style="font-size:0.64rem;font-weight:600;text-transform:uppercase;letter-spacing:0.07em;color:#666;margin-bottom:7px;">On-Site Evaluation</div>'+
+          '<button type="button" onclick="openEvalWizard(\''+id+'\')" title="Step-by-step evaluation: hardware, production, consumption. Quoya diagnoses it and pre-fills the proposal." style="width:100%;padding:12px;background:rgba(141,198,63,0.14);border:1px solid rgba(141,198,63,0.45);border-radius:100px;color:#8DC63F;font-size:0.82rem;font-weight:800;cursor:pointer;">&#9889; Start Evaluation</button>'+
+        '</div>'
+      : '';
+    return evalRow + '<div style="margin-bottom:14px;">'+
       '<div style="font-size:0.64rem;font-weight:600;text-transform:uppercase;letter-spacing:0.07em;color:#666;margin-bottom:7px;">Proposal Tools</div>'+
       '<div style="display:flex;gap:8px;flex-wrap:wrap;">'+
         (!isNS ? '<button type="button" onclick="openProposalBuilder(\''+id+'\')" style="'+pill+'">&#128196; Internal Tool</button>' : '')+
@@ -13803,6 +14529,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   var _proposalCatalogCache = {};
   var _propBuilds = [];       // [{lineItems,price,deposit,participate,partPrice,...}]
   var _propCatItems = [];     // catalog items for current open modal
+  var _propPrefillNote = '';  // Quoya's evaluation prefill summary, rendered atop the builds
   var _propPropId = null;     // customer ID for current open modal
   var _propOpenAdvanced = {}; // tracks which option Advanced sections are expanded
   var _propExisting = null;   // saved proposal for optional restore
@@ -14443,6 +15170,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var container = document.getElementById('propBuilderBuilds');
     if (!container) return;
     var h = '';
+    // Quoya's prefill summary, rendered as part of the builds so it survives the
+    // re-renders that every edit triggers.
+    if (_propPrefillNote) h += _propPrefillNote;
     var _propBuildCust = (typeof adminCustomers !== 'undefined' && adminCustomers) ? (adminCustomers.find(function(x){ return x.id===_propPropId; })||{}) : {};
     var _propBuildAddr = (_propBuildCust.address||'').replace(/'/g,"\\'");
     // Show "Load previous" button when a saved proposal exists
@@ -15019,6 +15749,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   };
 
   window._propInitFromCatalog = function(c, catalog, existing) {
+    _propPrefillNote = '';   // a builder opened without an evaluation shows no prefill banner
     _propCatItems = catalog.slice().sort(function(a, b) {
       return (parseFloat(b.default_price)||0) - (parseFloat(a.default_price)||0);
     });
@@ -15035,7 +15766,42 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // Store existing for optional restore
     _propExisting = (existing && existing.options && existing.options.length) ? existing : null;
     window._propRenderBuilds();
+    _propApplyPrefill();
   };
+
+  // Quoya's picks, handed over from the evaluation wizard. Matched on exact option_key —
+  // the analysis is given the real catalog precisely so this is never a fuzzy name match,
+  // and a key that doesn't resolve is reported rather than silently dropped.
+  function _propApplyPrefill() {
+    var pf = window._propPrefill;
+    window._propPrefill = null;
+    if (!pf || !_propBuilds.length) return;
+    var missed = [];
+    (pf.optionKeys || []).forEach(function(key) {
+      var idx = _propCatItems.findIndex(function(r){ return r.option_key === key; });
+      if (idx < 0) { missed.push(key); return; }
+      window._propAddCatItem(idx, 0);
+    });
+    if (pf.pw3 > 0) {
+      _propPw3Counts[0] = pf.pw3;
+      if (typeof window._propUpdateTotal === 'function') window._propUpdateTotal(0);
+    }
+    if (pf.restoreArray) {
+      _propBuilds[0].restoreArray = true;
+      if (pf.arrayOutputPct != null) _propBuilds[0].arrayOutputPct = pf.arrayOutputPct;
+    }
+
+    _propPrefillNote = '<div id="propPrefillBar" style="background:rgba(155,109,232,0.08);border:1px solid rgba(155,109,232,0.35);border-radius:10px;padding:10px 13px;margin-bottom:12px;font-size:0.76rem;color:#c4a3f0;line-height:1.5;">'
+      + '&#129302; <b>Quoya pre-selected Option A</b> from the evaluation'
+      + (pf.pw3 ? ' &middot; ' + pf.pw3 + '&times; Powerwall 3' : '')
+      + '. You set the prices.'
+      + (pf.note ? '<div style="color:#ffaa00;margin-top:5px;">You still set: ' + esc(pf.note) + '</div>' : '')
+      // A recommendation that doesn't resolve to a real catalog row must be visible.
+      // Silently dropping it means the rep quotes a job missing the part Quoya called for.
+      + (missed.length ? '<div style="color:#f87171;margin-top:5px;">Couldn\'t match ' + missed.length + ' recommended item(s) to the catalog: ' + esc(missed.join(', ')) + ' &mdash; add manually.</div>' : '')
+      + '</div>';
+    window._propRenderBuilds();
+  }
 
   window.copyProposalLink = function(id) {
     var c = adminCustomers.find(function(x){ return x.id === id; });
@@ -17875,7 +18641,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         .eq('uploaded_by','customer');
       if(resp.data && resp.data.length){
         // Map labels back to upload card types
-        var labelToType={'Utility Bill':'bill','Main Panel':'panel','Inverter':'inverter'};
+        // Reverse of categoryMap above. Legacy rows carry the old non-canonical labels,
+        // so both spellings map back to the same card.
+        var labelToType={'Utility Bill':'bill','MSP Step Back Photo':'panel','Inverter Photo':'inverter','Serial Number':'serial',
+                         'Main Panel':'panel','Inverter':'inverter'};
         resp.data.forEach(function(p){
           var type=labelToType[p.label];
           if(!type) return;
@@ -17906,12 +18675,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var safeName=file.name.replace(/[^a-zA-Z0-9._-]/g,'_');
       var custId=String(currentUser.id||'anon');
 
-      // Map upload type to Quoya category
+      // Map upload type to Quoya category. These MUST be exact PHOTO_CATEGORIES values —
+      // they were 'Inverter'/'Main Panel', which match no category, so a customer's
+      // uploads never filled the matching slot in the tech's evaluation and the rep was
+      // asked to re-shoot photos the homeowner had already sent.
       var categoryMap = {
         'bill':     'Utility Bill',
-        'inverter': 'Inverter',
-        'serial':   'Inverter',
-        'panel':    'Main Panel'
+        'inverter': 'Inverter Photo',
+        'serial':   'Serial Number',
+        'panel':    'MSP Step Back Photo'
       };
       var category = categoryMap[type] || 'Additional Photos';
 
