@@ -13434,12 +13434,21 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       build.auroraImg  = opt.aurora_image_url  || '';
       build.auroraPortal= opt.aurora_portal_url || '';
       if (opt.milestones) build.deposit = opt.milestones.deposit || 0;
-      // Rehydrate the reroof block (its line item is a display-only echo — excluded below)
+      // Rehydrate the reroof + R&R blocks (their line items are display-only echoes,
+      // filtered out below so they can't double-count against the recomputed price)
       if (opt.reroof && opt.reroof.squares > 0) {
         build.reroof = { on: true, sqft: opt.reroof.sqft || (opt.reroof.squares * 100), chargePerSq: opt.reroof.charge_per_sq || 0 };
       }
+      if (opt.remove_reinstall && opt.remove_reinstall.panels > 0) {
+        build.rr = { on: true, panels: opt.remove_reinstall.panels, chargePerPanel: opt.remove_reinstall.charge_per_panel || 0 };
+      }
+      // The saved price is authoritative on reload — treat it as a manual entry whose base
+      // excludes the add-ons, so reopening a proposal shows the price that was actually
+      // sent rather than a value recomputed from the catalog.
+      build.priceManual = true;
+      build.basePrice = (opt.price || 0) - _propAddonCharge(build);
       if (opt.line_items && opt.line_items.length) {
-        build.lineItems = opt.line_items.filter(function(li){ return li.id !== 'reroof'; }).map(function(li){
+        build.lineItems = opt.line_items.filter(function(li){ return li.id !== 'reroof' && li.id !== 'remove_reinstall'; }).map(function(li){
           // Prefer the line's own saved id (battery/panel/inverter detection and
           // the quantity steppers depend on it); older proposals saved without
           // per-line ids fall back to the option's primary id.
@@ -13465,9 +13474,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   window._propSetPriceManual = function(optIdx, val) {
     var build = _propBuilds[optIdx];
     if (!build) return;
-    build.price = parseFloat(val) || 0;
-    // Participate price tracks 70% of System Price unless manually overridden
-    if (build.participate && !build.partPriceManual) build.partPrice = Math.round(build.price * 0.70);
+    // Store the typed figure MINUS the current add-on charge, so the field redisplays the
+    // exact number typed and later square/panel edits add to it instead of replacing it.
+    build.priceManual = true;
+    build.basePrice = (parseFloat(val) || 0) - _propAddonCharge(build);
+    window._propUpdateTotal(optIdx);   // recomputes price + participate price
     _propRenderBuilds();
   };
 
@@ -13675,6 +13686,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         };
         opt.line_items.push({ id: 'reroof', name: 'Complete Reroof — ' + _rrSqSend + ' square' + (_rrSqSend !== 1 ? 's' : ''), price: opt.reroof.charge, isCustom: false });
       }
+      // Remove & Reinstall: persist the block + surface it as a customer-visible line item.
+      var _rrrN = _rrPanels(build);
+      if (_rrrN > 0) {
+        var _rrrChg = parseFloat(build.rr.chargePerPanel) || 0;
+        opt.remove_reinstall = {
+          panels: _rrrN,
+          cost_per_panel: RR_COST_PER_PANEL,
+          charge_per_panel: _rrrChg,
+          cost: _rrrN * RR_COST_PER_PANEL,
+          charge: _rrrN * _rrrChg
+        };
+        opt.line_items.push({ id: 'remove_reinstall', name: 'Remove & Reinstall — ' + _rrrN + ' panel' + (_rrrN !== 1 ? 's' : ''), price: opt.remove_reinstall.charge, isCustom: false });
+      }
       options.push(opt);
     });
 
@@ -13766,7 +13790,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // ── PROPOSAL MENU BUILDER HELPERS ─────────────────────────────────────────
 
   function _propInitBuild() {
-    return { lineItems: [], price: 0, deposit: 0, participate: false, partPrice: null, teslaRebate: 0, sdcpRebate: 0, redline: 0, auroraImg: '', auroraPortal: '', nonExport: false, restoreArray: false, arrayOutputPct: 25, reroof: null };
+    return { lineItems: [], price: 0, basePrice: 0, priceManual: false, deposit: 0, participate: false, partPrice: null, teslaRebate: 0, sdcpRebate: 0, redline: 0, auroraImg: '', auroraPortal: '', nonExport: false, restoreArray: false, arrayOutputPct: 25, reroof: null, rr: null };
   }
   // Reroof squares from surface area (100 sq ft = 1 square). Cost is a fixed $700/sq
   // (the sub-sheet rate); the charge-per-square is the editable retail the rep sets.
@@ -13775,6 +13799,25 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (!build || !build.reroof || !build.reroof.on) return 0;
     var sqft = parseFloat(build.reroof.sqft) || 0;
     return sqft > 0 ? Math.ceil(sqft / 100) : 0;
+  }
+  // Remove & Reinstall — same shape as reroof: a per-unit sub-sheet dealer cost with the
+  // retail set per proposal. Quantity-driven, so it is a builder card rather than a fixed
+  // catalog line.
+  var RR_COST_PER_PANEL = 225;
+  function _rrPanels(build){
+    if (!build || !build.rr || !build.rr.on) return 0;
+    return Math.max(0, Math.floor(parseFloat(build.rr.panels) || 0));
+  }
+  // Everything the customer is charged for the quantity add-ons. Kept separate from the
+  // base so a manually-typed System Price stays intact while squares/panels add on top.
+  function _propAddonCharge(build){
+    var sq = _reroofSquares(build);
+    var rr = _rrPanels(build);
+    return sq * ((build.reroof && parseFloat(build.reroof.chargePerSq)) || 0)
+         + rr * ((build.rr && parseFloat(build.rr.chargePerPanel)) || 0);
+  }
+  function _propAddonCost(build){
+    return _reroofSquares(build) * REROOF_COST_PER_SQ + _rrPanels(build) * RR_COST_PER_PANEL;
   }
 
   window._propAddCatItem = function(catIdx, optIdx) {
@@ -13820,13 +13863,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var lineSum = build.lineItems
       .filter(function(li){ return !li.isCustom; })
       .reduce(function(s, li){ return s + (parseFloat(li.price)||0); }, 0);
-    // Reroof: cost ($700/sq) adds to dealer cost/redline (→ Sub Sheet + commission math);
-    // the per-square charge auto-adds to the retail System Price.
-    var sq = _reroofSquares(build);
-    var reroofCost   = sq * REROOF_COST_PER_SQ;
-    var reroofCharge = sq * ((build.reroof && parseFloat(build.reroof.chargePerSq)) || 0);
-    build.redline = lineSum + reroofCost;
-    build.price   = lineSum + reroofCharge;
+    // Reroof ($700/sq) and R&R ($225/panel) are sub-sheet dealer costs → redline →
+    // commission math. Their per-unit CHARGE is retail and adds to the System Price.
+    build.redline = lineSum + _propAddonCost(build);
+    // ⚠️ The System Price must not be recomputed from scratch once the rep has typed one.
+    // This previously did `build.price = lineSum + reroofCharge` unconditionally, so
+    // entering a price and THEN the reroof squares silently discarded the typed price —
+    // the "it wasn't adding appropriately" report. The manual value is stored as a base
+    // that EXCLUDES the add-ons, so the field keeps showing exactly what was typed while
+    // squares and panels continue to add on top of it.
+    var base = build.priceManual ? (parseFloat(build.basePrice) || 0) : lineSum;
+    build.price = base + _propAddonCharge(build);
   }
 
   window._propUpdateTotal = function(optIdx) {
@@ -13967,6 +14014,31 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           h += '</div>';
           var _rrCost = _rrSq * REROOF_COST_PER_SQ, _rrChargeTot = _rrSq * _rrCharge;
           h += '<div style="font-size:0.66rem;color:#aaa;margin-top:8px;line-height:1.7;">'+_rrSq+' square'+(_rrSq!==1?'s':'')+' &middot; Cost <b style="color:#ef9b9b;">$'+_rrCost.toLocaleString('en-US')+'</b> (Sub Sheet) &middot; Charge <b style="color:#8DC63F;">$'+_rrChargeTot.toLocaleString('en-US')+'</b> (System Price)</div>';
+        }
+        h += '</div>';
+        // Remove & Reinstall card (full-width) — panels pulled and re-set, typically
+        // alongside a reroof. Same cost/charge split as reroof: $225/panel dealer cost
+        // from the Sub Sheet, retail per panel set by the rep.
+        var _rrr = build.rr || null;
+        var _rrrOn = !!(_rrr && _rrr.on);
+        var _rrrN = _rrPanels(build);
+        var _rrrChg = _rrr ? (parseFloat(_rrr.chargePerPanel)||0) : 0;
+        h += '<div style="grid-column:1/-1;border:1px solid '+(_rrrOn?'rgba(141,198,63,0.5)':'rgba(255,255,255,0.1)')+';background:'+(_rrrOn?'rgba(141,198,63,0.07)':'rgba(255,255,255,0.03)')+';border-radius:8px;padding:10px;">';
+        h += '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">';
+        h += '<div onclick="_propToggleRR('+optIdx+')" style="flex:1;min-width:0;cursor:pointer;user-select:none;">';
+        h += '<div style="font-size:0.74rem;font-weight:700;color:'+(_rrrOn?'#8DC63F':'#ddd')+';line-height:1.3;">&#128260; Remove &amp; Reinstall</div>';
+        h += '<div style="font-size:0.62rem;color:#666;margin-top:2px;">Cost $'+RR_COST_PER_PANEL+'/panel &middot; set panel count + price charged</div>';
+        h += '</div>';
+        h += '<button onclick="_propToggleRR('+optIdx+')" style="width:auto;flex-shrink:0;padding:6px 14px;border-radius:100px;font-size:0.7rem;font-weight:800;cursor:pointer;'+(_rrrOn?'background:#8DC63F;color:#000;border:none;':'background:rgba(141,198,63,0.12);color:#8DC63F;border:1px solid rgba(141,198,63,0.4);')+'">'+(_rrrOn?'ON &#10003;':'Add')+'</button>';
+        h += '</div>';
+        if (_rrrOn) {
+          h += '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;">';
+          h += '<div><label style="font-size:0.58rem;color:#888;display:block;margin-bottom:2px;"># of panels</label><input type="number" id="propRRPanels_'+optIdx+'" value="'+(_rrr.panels||'')+'" step="1" min="0" onchange="_propRRPanels('+optIdx+',this.value)" style="width:120px;background:#0e0e0e;border:1px solid rgba(141,198,63,0.25);border-radius:6px;color:#8DC63F;font-weight:700;padding:5px 7px;font-size:0.78rem;box-sizing:border-box;"/></div>';
+          h += '<div><label style="font-size:0.58rem;color:#888;display:block;margin-bottom:2px;">$ / panel (charged)</label><input type="number" id="propRRCharge_'+optIdx+'" value="'+(_rrrChg||'')+'" step="1" onchange="_propRRCharge('+optIdx+',this.value)" style="width:120px;background:#0e0e0e;border:1px solid rgba(141,198,63,0.25);border-radius:6px;color:#8DC63F;font-weight:700;padding:5px 7px;font-size:0.78rem;box-sizing:border-box;"/></div>';
+          h += '</div>';
+          var _rrrCost = _rrrN * RR_COST_PER_PANEL, _rrrChgTot = _rrrN * _rrrChg;
+          h += '<div style="font-size:0.66rem;color:#aaa;margin-top:8px;line-height:1.7;">'+_rrrN+' panel'+(_rrrN!==1?'s':'')+' &middot; Cost <b style="color:#ef9b9b;">$'+_rrrCost.toLocaleString('en-US')+'</b> (Sub Sheet) &middot; Charge <b style="color:#8DC63F;">$'+_rrrChgTot.toLocaleString('en-US')+'</b> (System Price)</div>';
+          if (!_rrrChg) h += '<div style="font-size:0.62rem;color:#ffaa00;margin-top:4px;">Set a $/panel retail &mdash; at $0 this adds cost to the redline but nothing to the price.</div>';
         }
         h += '</div>';
         // Restore Existing Array card (full-width) — measured-output inverter recovery.
@@ -14352,6 +14424,37 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         chargePerSq: (build.reroof && build.reroof.chargePerSq) || 850
       };
     }
+    _propUpdateTotal(optIdx);
+    _propRenderBuilds();
+  };
+  window._propToggleRR = function(optIdx) {
+    var build = _propBuilds[optIdx];
+    if (!build) return;
+    if (build.rr && build.rr.on) {
+      build.rr.on = false;
+    } else {
+      // No default retail — $225 is the dealer cost, and the charge is a per-proposal
+      // decision. Inventing a retail number here would quietly set customer pricing.
+      build.rr = {
+        on: true,
+        panels: (build.rr && build.rr.panels) || '',
+        chargePerPanel: (build.rr && build.rr.chargePerPanel) || ''
+      };
+    }
+    _propUpdateTotal(optIdx);
+    _propRenderBuilds();
+  };
+  window._propRRPanels = function(optIdx, val) {
+    var build = _propBuilds[optIdx];
+    if (!build || !build.rr) return;
+    build.rr.panels = Math.max(0, Math.floor(parseFloat(val) || 0));
+    _propUpdateTotal(optIdx);
+    _propRenderBuilds();
+  };
+  window._propRRCharge = function(optIdx, val) {
+    var build = _propBuilds[optIdx];
+    if (!build || !build.rr) return;
+    build.rr.chargePerPanel = parseFloat(val) || 0;
     _propUpdateTotal(optIdx);
     _propRenderBuilds();
   };
