@@ -8735,7 +8735,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   }
 
   var _BB_DUP_SEL = 'id,address,phone,email,title_owner,apn,original_installer,install_year,'
-    + 'system_size,lat,lng,dnc,lead_score,notes,dial_status,created_at';
+    + 'system_size,lat,lng,dnc,lead_score,notes,dial_status,dial_attempts,dialed_at,'
+    + 'callback_at,knock_status,step,black_box,created_at';
 
   window.bbScanDuplicates = async function() {
     if (_bbDupRunning) return;
@@ -8798,13 +8799,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var extra = groups.reduce(function(n, g){ return n + g.losers.length; }, 0);
       var withHistory = groups.reduce(function(n, g){
         return n + g.losers.filter(function(l){ return acted[l.id]; }).length; }, 0);
-      var gains = { phone:0, email:0, owner:0, installer:0 };
+      var gains = { phone:0, email:0, owner:0, installer:0, notes:0, progress:0 };
       groups.forEach(function(g) {
         var m = _bbMergeFields(g.keeper, g.losers);
+        g.preview = m;
         if (m.phone) gains.phone++;
         if (m.email) gains.email++;
         if (m.title_owner) gains.owner++;
         if (m.original_installer) gains.installer++;
+        if (m.notes) gains.notes++;
+        if (m.step || m.dial_attempts || m.dialed_at || m.dial_status || m.knock_status || m.black_box === false) gains.progress++;
       });
 
       var h = '<div style="font-size:0.78rem;font-weight:800;color:#4a9eff;margin-bottom:6px;">&#128260; Duplicate Scan</div>'
@@ -8816,7 +8820,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (groups.length) {
         h += '<div style="margin-top:8px;padding:8px 10px;background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.25);border-radius:8px;font-size:0.68rem;color:#8DC63F;line-height:1.7;">'
           + 'Data the survivors gain: <b>' + gains.phone + '</b> phones &middot; <b>' + gains.email + '</b> emails &middot; '
-          + '<b>' + gains.owner + '</b> owner names &middot; <b>' + gains.installer + '</b> installers</div>';
+          + '<b>' + gains.owner + '</b> owner names &middot; <b>' + gains.installer + '</b> combined installers &middot; '
+          + '<b>' + gains.notes + '</b> merged note logs &middot; <b>' + gains.progress + '</b> carried-over progress</div>';
         if (withHistory) {
           h += '<div style="margin-top:6px;font-size:0.66rem;color:#888;">' + withHistory
             + ' merged row' + (withHistory !== 1 ? 's have' : ' has') + ' call history &mdash; it is moved onto the survivor, not deleted.</div>';
@@ -8824,9 +8829,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '<details style="margin-top:8px;"><summary style="font-size:0.66rem;color:#4a9eff;cursor:pointer;">Preview first 20</summary>'
           + '<div style="max-height:190px;overflow:auto;margin-top:5px;">'
           + groups.slice(0, 20).map(function(g) {
+              var p = g.preview || {};
+              var bits = [];
+              if (p.original_installer) bits.push('installer &rarr; ' + p.original_installer);
+              if (p.notes) bits.push(_parseNotes(p.notes).length + ' notes combined');
+              if (p.step) bits.push('step &rarr; ' + p.step);
+              if (p.phone) bits.push('phone added');
+              if (p.title_owner) bits.push('owner added');
               return '<div style="font-size:0.6rem;padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.05);">'
                 + '<div style="color:#8DC63F;">KEEP &nbsp;' + (g.keeper.address || '') + '</div>'
                 + g.losers.map(function(l){ return '<div style="color:#ff8a8a;">merge ' + (l.address || '') + '</div>'; }).join('')
+                + (bits.length ? '<div style="color:#4a9eff;">&rarr; ' + bits.join(' &middot; ') + '</div>' : '')
                 + '</div>';
             }).join('')
           + '</div></details>'
@@ -8846,25 +8859,106 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     } finally { _bbDupRunning = false; }
   };
 
-  // What the survivor gains from the rows being merged into it. Only ever FILLS BLANKS —
-  // a value already on the keeper is never overwritten. DNC is the exception: it is sticky,
-  // because losing a do-not-call flag in a merge would put a protected number back in the
-  // dialer.
+  // Merge every distinct installer into one value. Two leads exist for one house precisely
+  // BECAUSE the same job was permitted under two contractor names (SunPower / Complete
+  // Solar Inc), so keeping only the keeper's would throw away the very fact that explains
+  // the duplicate — and the opener script reads this name out loud on the call.
+  function _bbMergeInstallers(all) {
+    var seen = {}, out = [];
+    all.forEach(function(v) {
+      String(v || '').split(/\s*[·|]\s*/).forEach(function(part) {
+        var t = part.trim();
+        if (!t) return;
+        var k = t.toUpperCase().replace(/[^A-Z0-9]/g, '');
+        if (!k || seen[k]) return;
+        seen[k] = true; out.push(t);
+      });
+    });
+    return out.join(' \u00B7 ');
+  }
+
+  // One timeline out of several. Entries are {ts, by, text}; legacy rows parse as a single
+  // untimestamped entry. Sorted oldest-first so the merged card reads as one history, and
+  // de-duped on by+text because the same note can exist on both copies.
+  function _bbMergeNotes(all) {
+    var entries = [], seen = {};
+    all.forEach(function(raw) {
+      _parseNotes(raw).forEach(function(e) {
+        if (!e || (!e.text && !e.by)) return;
+        var k = (e.ts || '') + '|' + (e.by || '') + '|' + (e.text || '');
+        if (seen[k]) return;
+        seen[k] = true; entries.push(e);
+      });
+    });
+    if (!entries.length) return null;
+    entries.sort(function(a, b) {
+      if (!a.ts) return -1;                      // legacy/undated first
+      if (!b.ts) return 1;
+      return new Date(a.ts) - new Date(b.ts);
+    });
+    return JSON.stringify(entries);
+  }
+
+  // What the survivor gains from the rows being merged into it.
+  // Plain fields only ever FILL BLANKS — a value already on the keeper is never
+  // overwritten. Three deliberate exceptions, because for these "keeper wins" loses real
+  // information: installers are COMBINED, note feeds are MERGED into one timeline, and
+  // progress fields take the furthest-along value across the group.
   function _bbMergeFields(keeper, losers) {
     var upd = {};
-    ['phone','email','title_owner','apn','original_installer','install_year','system_size','lat','lng'].forEach(function(f) {
+    var all = [keeper].concat(losers);
+    ['phone','email','title_owner','apn','install_year','system_size','lat','lng'].forEach(function(f) {
       if (keeper[f] != null && keeper[f] !== '') return;
       for (var i = 0; i < losers.length; i++) {
         if (losers[i][f] != null && losers[i][f] !== '') { upd[f] = losers[i][f]; break; }
       }
     });
+
+    // Installer — combined, not first-wins.
+    var inst = _bbMergeInstallers(all.map(function(l){ return l.original_installer; }));
+    if (inst && inst !== (keeper.original_installer || '')) upd.original_installer = inst;
+
+    // Notes — one merged timeline across every copy.
+    if (losers.some(function(l){ return l.notes; })) {
+      var mergedNotes = _bbMergeNotes(all.map(function(l){ return l.notes; }));
+      if (mergedNotes && mergedNotes !== (keeper.notes || '')) upd.notes = mergedNotes;
+    }
+
+    // Progress — the furthest any copy of this house ever got.
+    var maxStep = Math.max.apply(null, all.map(function(l){ return parseInt(l.step, 10) || 0; }));
+    if (maxStep > (parseInt(keeper.step, 10) || 0)) upd.step = maxStep;
+    var attempts = all.reduce(function(n, l){ return n + (parseInt(l.dial_attempts, 10) || 0); }, 0);
+    if (attempts > (parseInt(keeper.dial_attempts, 10) || 0)) upd.dial_attempts = attempts;
+    // dial_status follows the MOST RECENT call across all copies, not the keeper's. If one
+    // copy was dialed in July and answered "no answer" while another went warm in August,
+    // the merged card must read warm — otherwise the merge walks the lead backwards and it
+    // drops into the wrong dialer bucket.
+    var dialed = all.filter(function(l){ return l.dialed_at; })
+      .sort(function(a, b){ return new Date(b.dialed_at) - new Date(a.dialed_at); });
+    if (dialed.length) {
+      if (dialed[0].dialed_at !== keeper.dialed_at) upd.dialed_at = dialed[0].dialed_at;
+      var latestStatus = dialed.find(function(l){ return l.dial_status; });
+      if (latestStatus && latestStatus.dial_status !== keeper.dial_status) upd.dial_status = latestStatus.dial_status;
+    }
+    if (!keeper.dial_status && !upd.dial_status) {
+      var ds = losers.find(function(l){ return l.dial_status; });
+      if (ds) upd.dial_status = ds.dial_status;
+    }
+    if (!keeper.knock_status) {
+      var ks = losers.find(function(l){ return l.knock_status; });
+      if (ks) upd.knock_status = ks.knock_status;
+    }
+    if (!keeper.callback_at) {
+      var cb = losers.find(function(l){ return l.callback_at; });
+      if (cb) upd.callback_at = cb.callback_at;
+    }
+    // If any copy was activated out of the Black Box, the survivor is activated too —
+    // otherwise a merge would quietly push a worked lead back into the queue.
+    if (keeper.black_box !== false && all.some(function(l){ return l.black_box === false; })) upd.black_box = false;
+
     if (!keeper.dnc && losers.some(function(l){ return l.dnc; })) upd.dnc = true;
     var best = Math.max.apply(null, [keeper.lead_score || 0].concat(losers.map(function(l){ return l.lead_score || 0; })));
     if (best > (keeper.lead_score || 0)) upd.lead_score = best;
-    if (!keeper.notes) {
-      var ln = losers.find(function(l){ return l.notes; });
-      if (ln) upd.notes = ln.notes;
-    }
     return upd;
   }
 
