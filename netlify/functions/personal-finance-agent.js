@@ -107,6 +107,11 @@ async function executeTool(name, input, key, cache) {
       return JSON.stringify(await supaGet('/personal_coach_reports?select=title,created_at&created_at=gte.' + since.toISOString() + '&order=created_at.desc&limit=30', key));
     }
     case 'write_recommendation':
+      // One report per run, enforced here rather than trusted to the prompt. The model
+      // filed three near-identical onboarding nags inside 60 seconds on 2026-08-07; the
+      // "write ONE brief note" instruction is advice, this is a wall.
+      if (b.reportsWritten) return 'You already filed this run\'s report. Do not write another — finish your turn.';
+      b.reportsWritten = 1;
       await supaInsert('personal_coach_reports', { priority: normalizePriority(input.priority), title: input.title, body: input.body }, key);
       return 'Saved.';
     default: return 'Unknown tool: ' + name;
@@ -127,7 +132,7 @@ Each run, in priority order:
 
 Rules:
 - Check get_recent_reports FIRST; don't repeat a recommendation from the last 7 days unless the numbers moved materially.
-- If the picture is quiet or the profile isn't filled in yet, write ONE brief note (prompt him to complete onboarding if get_profile shows onboarded=false). Never invent findings.
+- Write AT MOST ONE report per run — a second write_recommendation call is rejected. If the picture is quiet or the profile isn't filled in yet, that one note is a brief prompt to complete onboarding. Never invent findings, and never restate the same point in multiple reports.
 - Be specific: dollar amounts, position names, exact next actions.
 - You never execute trades and never present yourself as a licensed advisor. Investment/tax items end with: "This is educational, not licensed advice — verify with a licensed professional."`;
 
@@ -137,6 +142,25 @@ exports.handler = async function () {
   try {
     const today = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
     const cache = {};
+
+    // Until the profile is filled in there is nothing to analyse, so the run can only ever
+    // produce the same "complete your onboarding" note. Daily is nagging, not coaching —
+    // send it at most once a week and skip the run entirely otherwise. This also saves the
+    // Claude spend on a run whose output is already known.
+    try {
+      const prof = (await supaGet('/personal_profile?select=onboarded&limit=1', key))[0] || {};
+      if (!prof.onboarded) {
+        const since = new Date(); since.setDate(since.getDate() - 7);
+        const recent = await supaGet('/personal_coach_reports?select=id,title&created_at=gte.'
+          + since.toISOString() + '&limit=20', key);
+        const nagged = (recent || []).some(r => /onboard/i.test(r.title || ''));
+        if (nagged) {
+          console.log('[personal-coach] Profile not onboarded and already prompted within 7 days — skipping run.');
+          return { statusCode: 200, body: 'Skipped: onboarding reminder already sent this week' };
+        }
+      }
+    } catch (e) { console.warn('[personal-coach] onboarding pre-check failed:', e.message); }
+
     const DATA_TOOLS = TOOLS.filter(t => t.name !== 'write_recommendation').concat([WEB_SEARCH_TOOL]);
     const WRITE_TOOL = TOOLS.find(t => t.name === 'write_recommendation');
     const messages = [{ role: 'user', content: `Run today's personal financial review. Today is ${today}. Start with get_profile and get_recent_reports, then get_net_worth, get_cash_flow, get_holdings, get_debts. Use web_search only to confirm a current rule or rate.` }];
