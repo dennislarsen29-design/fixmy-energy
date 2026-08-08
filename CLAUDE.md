@@ -462,6 +462,13 @@ Asked whether a nightly run could be simulated to see if the permit pull was wor
 - Verified in `scratchpad/test-permit-pull.js`: the four failure modes produce four **distinct** outcome strings and the report reaches `last_run_summary`. Gated both ways — reverting the tally collapses all four to one identical report ("no permit queries ran"), reproducing the bug exactly.
 - **Fifth instance of the same pattern in one day**, after the Regrid `no_key`, the Tracerfy 429, the mailing-capture zero and the pipeline's stale timestamp. ⚠️ **STANDING RULE: never let a failing or never-taken code path produce the same output as a real negative.** Count the reason.
 
+### Today's Activity dashboard removed (2026-08-08, per Dennis)
+*"Remove today's activity and anything job or commissions related. This has evolved now and no longer relevant."* The rep home opened with a FixMy/Solar/Top Tier/Jobs/Commissions tile grid, a 20-knock ring and a day-streak — a third dashboard above the Black Box tabs, from an earlier shape of the business. Deleted along with the `totalEstComm` roll-up that fed it (nothing else read it).
+- **The shared Doors/Dialing scoreboard is now the one dashboard**, and it sits on the surface where the work happens rather than on a home screen a rep passes through.
+- **The Doors scoreboard now renders above the GPS gate**, so it shows before a rep taps Get My Location — previously it lived inside the route-ready branch and was invisible until GPS was on.
+- ⚠️ **Left deliberately:** the Finance tab's 1099 report still has a Commissions column, and the Jobs tab still exists. Both are admin surfaces, not the rep home this removal was about — say so explicitly before removing either.
+- Verified in `scratchpad/test-home-cleanup.js`. ⚠️ Two assertion traps caught here: a bare `/>Commissions</` search hits the Finance report and must be scoped to the rep-home markup, and comparing `data-tour="mode"` positions matches the **dialer's** anchor first because it is in the earlier script block — cross-render-function ordering checks are meaningless.
+
 ### New Hire Walkthrough — training module + portal tour in one (2026-08-08)
 Built as ONE feature rather than two, because a new hire learning the pitch and learning the screen is the same fifteen minutes. `BB_TOUR_STEPS` (portal.html) is 18 numbered steps of three kinds:
 - **`read`** — why anyone talks to us, and the four standing rules (never talk down the old installer, never sell, never quote a price, confirm date + window out loud).
