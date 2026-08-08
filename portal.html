@@ -7754,6 +7754,115 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
   };
 
+  // ── Dialing map ───────────────────────────────────────────────────────────
+  // The Doors map's organising idea is "where am I standing"; a dialer is at a desk, so
+  // that logic is meaningless here. This one centres on the LEAD BEING CALLED and pins the
+  // rest of the queue around it, so the rep can see the neighbourhood they're talking
+  // about — and tapping a pin makes that lead the next call, the exact analogue of Doors'
+  // tap-a-pin-to-prioritise.
+  //
+  // Deliberately its own map/marker state rather than sharing _cvMapObj: a rep can switch
+  // between Doors and Dialing in one session, and a shared object would be re-centred and
+  // re-pinned by whichever view rendered last.
+  var _bbDialMapObj = null, _bbDialMapEl = null, _bbDialMapMarkers = [], _bbDialMapInfo = null;
+  var _BB_DIAL_PIN = {
+    '':               { c:'#8DC63F', t:'Not dialled yet' },
+    'no_answer':      { c:'#8a8a8a', t:'No answer' },
+    'left_vm':        { c:'#8a8a8a', t:'Left voicemail' },
+    'callback':       { c:'#f59e0b', t:'Callback due' },
+    'warm':           { c:'#f59e0b', t:'Warm' },
+    'booked':         { c:'#4a9eff', t:'Booked' },
+    'not_interested': { c:'#ef4444', t:'Not interested' },
+    'wrong_number':   { c:'#ef4444', t:'Wrong number' }
+  };
+  window._bbDialMapOpen = function() {
+    try { return localStorage.getItem('bbDialMapOpen') !== '0'; } catch(e) { return true; }
+  };
+  window.bbDialToggleMap = function() {
+    try { localStorage.setItem('bbDialMapOpen', _bbDialMapOpen() ? '0' : '1'); } catch(e) {}
+    renderBBDialerView();
+  };
+  window._bbRenderDialMap = function(elId, lead, queue) {
+    var el = document.getElementById(elId);
+    if (!el) return;
+    if (typeof google === 'undefined' || !google.maps) {
+      el.innerHTML = '<div style="padding:22px;text-align:center;color:#666;font-size:0.75rem;">Map unavailable &mdash; Google Maps didn\'t load. The call list below still works.</div>';
+      return;
+    }
+    if (!lead || lead.lat == null || lead.lng == null) {
+      el.innerHTML = '<div style="padding:22px;text-align:center;color:#666;font-size:0.75rem;">This lead has no coordinates yet &mdash; run Geocode Missing Leads on the Black Box tab.</div>';
+      return;
+    }
+    var center = { lat: +lead.lat, lng: +lead.lng };
+    // Rebuild only when the element actually changed, so pan/zoom survives the DOM-local
+    // updates the dialer does constantly (stage switches, note typing, email edits).
+    if (!_bbDialMapObj || _bbDialMapEl !== el) {
+      _bbDialMapObj = new google.maps.Map(el, {
+        center: center, zoom: 18, mapTypeId: 'hybrid', tilt: 0,
+        streetViewControl: false, mapTypeControl: false, fullscreenControl: true,
+        gestureHandling: 'greedy'
+      });
+      _bbDialMapEl = el;
+      _bbDialMapInfo = new google.maps.InfoWindow();
+    }
+    _bbDialMapMarkers.forEach(function(m){ m.setMap(null); });
+    _bbDialMapMarkers = [];
+
+    // The lead being called — big, white-ringed, always on top.
+    _bbDialMapMarkers.push(new google.maps.Marker({
+      position: center, map: _bbDialMapObj, title: lead.address || '', zIndex: 999,
+      icon: { path: google.maps.SymbolPath.CIRCLE, scale: 10, fillColor: '#E8793A',
+              fillOpacity: 1, strokeColor: '#fff', strokeWeight: 3 }
+    }));
+
+    // Nearest 40 of the rest of the queue, same confetti guard as the Doors map.
+    var others = (queue || []).filter(function(l) {
+      return l.id !== lead.id && l.lat != null && l.lng != null;
+    }).map(function(l) {
+      var dx = (+l.lat - center.lat), dy = (+l.lng - center.lng) * Math.cos(center.lat * Math.PI / 180);
+      l._mapD = dx*dx + dy*dy;
+      return l;
+    }).sort(function(a,b){ return a._mapD - b._mapD; }).slice(0, 40);
+
+    var bounds = new google.maps.LatLngBounds();
+    bounds.extend(center);
+    others.forEach(function(l) {
+      var pin = _BB_DIAL_PIN[l.dial_status || ''] || _BB_DIAL_PIN[''];
+      var pos = { lat: +l.lat, lng: +l.lng };
+      bounds.extend(pos);
+      var mk = new google.maps.Marker({
+        position: pos, map: _bbDialMapObj, title: l.address || '',
+        zIndex: l.dial_status ? 1 : 10,
+        icon: { path: google.maps.SymbolPath.CIRCLE, scale: l.dial_status ? 6 : 8,
+                fillColor: pin.c, fillOpacity: l.dial_status ? 0.55 : 0.95,
+                strokeColor: '#111', strokeWeight: 1.5 }
+      });
+      mk.addListener('click', function() {
+        var who = _bbLeadDisplayName(l).display || '';
+        var body = '<div style="font-family:system-ui,sans-serif;color:#111;min-width:170px;">'
+          + '<div style="font-weight:700;font-size:0.82rem;">' + esc(l.address || 'No address') + '</div>'
+          + (who ? '<div style="font-size:0.74rem;color:#555;margin-top:2px;">' + esc(who) + '</div>' : '')
+          + (l.original_installer ? '<div style="font-size:0.7rem;color:#777;margin-top:2px;">' + esc(l.original_installer) + (l.install_year ? ' &middot; ' + esc(String(l.install_year)) : '') + '</div>' : '')
+          + '<div style="font-size:0.7rem;color:' + pin.c + ';font-weight:700;margin-top:4px;">' + pin.t + '</div>'
+          + '<button onclick="window.bbDialPinLead(\'' + l.id + '\')" style="margin-top:8px;padding:5px 12px;background:#E8793A;border:none;border-radius:100px;color:#fff;font-size:0.72rem;font-weight:700;cursor:pointer;">Call this one next</button>'
+          + '</div>';
+        _bbDialMapInfo.setContent(body);
+        _bbDialMapInfo.open(_bbDialMapObj, mk);
+      });
+      _bbDialMapMarkers.push(mk);
+    });
+
+    if (others.length) {
+      _bbDialMapObj.fitBounds(bounds, 40);
+      google.maps.event.addListenerOnce(_bbDialMapObj, 'idle', function() {
+        if (_bbDialMapObj.getZoom() > 19) _bbDialMapObj.setZoom(19);
+      });
+    } else {
+      _bbDialMapObj.setCenter(center);
+      _bbDialMapObj.setZoom(18);
+    }
+  };
+
   // ── Call timing ───────────────────────────────────────────────────────────
   // Stamped when the rep taps Call; consumed by bbDialCommit when they disposition,
   // giving a real per-call duration (lead_activity.call_duration existed since the
@@ -7972,8 +8081,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       + '. Likely a rental &mdash; whoever answers may not be the decision-maker.</div>';
   }
 
-  var BB_DIAL_SEL_FULL ='id,first_name,last_name,address,phone,email,dnc,notes,knock_status,title_owner,lead_source,original_installer,install_year,black_box,step,lead_category,dial_status,dialed_at,dial_attempts,callback_at';
-  var BB_DIAL_SEL_BASE = 'id,first_name,last_name,address,phone,email,dnc,notes,knock_status,title_owner,lead_source,original_installer,install_year,black_box,step,lead_category';
+  var BB_DIAL_SEL_FULL ='id,first_name,last_name,address,phone,email,dnc,notes,knock_status,title_owner,apn,lat,lng,lead_source,original_installer,install_year,black_box,step,lead_category,dial_status,dialed_at,dial_attempts,callback_at';
+  var BB_DIAL_SEL_BASE = 'id,first_name,last_name,address,phone,email,dnc,notes,knock_status,title_owner,apn,lat,lng,lead_source,original_installer,install_year,black_box,step,lead_category';
 
   var bbDialLoadError = null;
 
@@ -8525,6 +8634,134 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // from skip-trace/GIS enrichment. Reps confirm/add it right on the call card;
   // saves straight to customers.email so it's ready for the magic-link text+email
   // step later in the flow (step 9 of the Dialer Structure — see bbScriptBodyHtml).
+  // Resolve a lead by id across whichever surface is live. The email row started
+  // dialer-only and resolved through bbDialBuckets(), which does not exist on Doors —
+  // this is what lets ONE implementation serve both rather than a second copy drifting
+  // out of sync (the AI-notes / owner-name-cleaner mistake, twice over).
+  window._bbFindLeadById = function(id) {
+    var pools = [
+      (typeof bbDialQueue !== 'undefined' ? bbDialQueue : []),
+      (typeof window._cvLeadsRef === 'function' ? (window._cvLeadsRef() || []) : []),
+      (typeof adminCustomers !== 'undefined' ? adminCustomers : [])
+    ];
+    for (var i = 0; i < pools.length; i++) {
+      var hit = (pools[i] || []).find(function(x){ return x && x.id === id; });
+      if (hit) return hit;
+    }
+    return null;
+  };
+
+  // ── Owner controls (shared by Doors and Dialing) ──────────────────────────
+  // These lived inside the loadSalesDashboard closure, so the dialer — which is in the
+  // other script block — could not reach them. Rather than copy them (the mistake that
+  // gave us two AI-note implementations and two owner-name cleaners), they are promoted
+  // here once and both surfaces call the same code.
+  //
+  // Two things had to become surface-agnostic: the lead lookup (was canvassLeads.find)
+  // now goes through _bbFindLeadById, and the re-render goes through _bbOwnerRerender()
+  // — Doors must re-run renderSales, the dialer renderBBDialerView. Calling the wrong
+  // one blanks the screen out from under the rep.
+  function _bbOwnerRerender() {
+    if (typeof window._bbOwnerRerenderFn === 'function') { window._bbOwnerRerenderFn(); return; }
+    if (typeof renderBBDialerView === 'function') renderBBDialerView();
+  }
+  window._bbOwnerControlsHtml = function(lead) {
+    var has = !!lead.title_owner;
+    var h = '<div id="cvOwnBox_' + lead.id + '" style="margin:4px 0 8px;">'
+      + '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">';
+    if (!has) {
+      h += '<button id="cvOwnBtn_' + lead.id + '" onclick="canvassFindOwner(\'' + lead.id + '\')" title="Queries the county parcel services for the property owner." style="width:auto;margin:0;padding:4px 12px;background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.3);color:#ffaa00;border-radius:100px;font-size:0.7rem;font-weight:700;cursor:pointer;">&#128269; Find Owner</button>';
+    }
+    h += '<button onclick="canvassOwnerManual(\'' + lead.id + '\')" title="Type the name off the mailbox, from LandGlide, or whatever the homeowner tells you." style="width:auto;margin:0;padding:4px 12px;background:' + (has ? 'transparent' : 'rgba(255,255,255,0.04)') + ';border:1px solid rgba(255,255,255,0.14);color:#888;border-radius:100px;font-size:0.7rem;font-weight:700;cursor:pointer;">&#9998; ' + (has ? 'Edit owner' : 'Type it in') + '</button>';
+    h += '<button onclick="canvassCopyAddress(\'' + lead.id + '\')" title="Copy the address to paste into LandGlide or a parcel viewer." style="width:auto;margin:0;padding:4px 12px;background:transparent;border:1px solid rgba(255,255,255,0.14);color:#888;border-radius:100px;font-size:0.7rem;font-weight:700;cursor:pointer;">&#128203; Copy address</button>';
+    h += '</div>'
+      + '<div id="cvOwnMsg_' + lead.id + '" style="font-size:0.66rem;color:#777;margin-top:4px;line-height:1.4;"></div>'
+      + '</div>';
+    return h;
+  };
+
+  window.canvassCopyAddress = function(id) {
+    var lead = window._bbFindLeadById(id);
+    if (!lead) return;
+    var msg = document.getElementById('cvOwnMsg_' + id);
+    var done = function(){ if (msg) { msg.style.color = '#8DC63F'; msg.textContent = '\u2713 Address copied \u2014 paste it into LandGlide, then tap Edit owner.'; } };
+    try {
+      navigator.clipboard.writeText(lead.address || '').then(done, function(){ prompt('Copy this address:', lead.address || ''); });
+    } catch(e) { prompt('Copy this address:', lead.address || ''); }
+  };
+
+  async function _bbSaveOwner(id, owner, apn) {
+    var upd = { title_owner: owner };
+    if (apn) upd.apn = apn;
+    try {
+      var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+      await c.from('customers').update(upd).eq('id', id);
+    } catch(e) {}
+    // Update every in-memory pool, not just the one the caller happens to be looking at —
+    // the same lead can be sitting in the dial queue AND the canvass route.
+    [(typeof bbDialQueue !== 'undefined' ? bbDialQueue : []),
+     (typeof window._cvLeadsRef === 'function' ? window._cvLeadsRef() : []),
+     (typeof adminCustomers !== 'undefined' ? adminCustomers : [])].forEach(function(arr) {
+      var rec = (arr || []).find(function(x){ return x && x.id === id; });
+      if (rec) Object.assign(rec, upd);
+    });
+    _bbOwnerRerender();
+  }
+
+  window.canvassFindOwner = async function(id) {
+    var lead = window._bbFindLeadById(id);
+    if (!lead || !lead.address) return;
+    var btn = document.getElementById('cvOwnBtn_' + id);
+    var msg = document.getElementById('cvOwnMsg_' + id);
+    if (btn) { btn.textContent = 'Looking up\u2026'; btn.disabled = true; }
+    if (msg) { msg.style.color = '#777'; msg.textContent = 'Checking county parcel records\u2026'; }
+    try {
+      var body = { address: lead.address };
+      if (lead.lat) body.lat = lead.lat;
+      if (lead.lng) body.lng = lead.lng;
+      var r = await fetch('/.netlify/functions/regrid-lookup', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+      });
+      var data = await r.json();
+
+      if (data.owner) { await _bbSaveOwner(id, data.owner, data.apn); return; }
+
+      // Parcel found, name withheld. Keep the APN — it is what the county bulk file
+      // joins on — and tell the rep plainly rather than showing "not found", which
+      // would be false and would stop them trying the thing that actually works.
+      if (data.apn) {
+        try {
+          var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+          await c2.from('customers').update({ apn: data.apn }).eq('id', id);
+          lead.apn = data.apn;
+        } catch(e) {}
+      }
+      if (btn) { btn.textContent = '\ud83d\udd0d Try again'; btn.disabled = false; }
+      if (msg) {
+        msg.style.color = '#f59e0b';
+        msg.innerHTML = data.owner_redacted
+          ? 'Found the parcel (APN ' + esc(data.apn) + ') but California law blocks the county from publishing the owner name online. <b style="color:#8DC63F;">Read it off the mailbox and tap \u201cType it in\u201d.</b>'
+          : 'No parcel match for this address.'
+            + (CURRENT_ROLE === 'admin' && data.regrid_key_set === false
+                ? '<br/><span style="color:#f87171;">REGRID_KEY is not set \u2014 the paid owner source never ran.</span>' : '')
+            + ' <b style="color:#8DC63F;">Type the name in instead.</b>';
+      }
+    } catch(e) {
+      if (btn) { btn.textContent = '\ud83d\udd0d Try again'; btn.disabled = false; }
+      if (msg) { msg.style.color = '#f87171'; msg.textContent = 'Lookup failed \u2014 type the name in instead.'; }
+    }
+  };
+
+  window.canvassOwnerManual = async function(id) {
+    var lead = window._bbFindLeadById(id);
+    if (!lead) return;
+    var name = prompt('Owner name for ' + (lead.address || 'this house') + ':', lead.title_owner || '');
+    if (name == null) return;
+    name = name.trim();
+    if (!name) return;
+    await _bbSaveOwner(id, name, null);
+  };
+
   function bbEmailRowHtml(lead) {
     var email = lead.email || '';
     var id = lead.id || '';
@@ -8537,8 +8774,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   }
   window.bbEditEmail = function(id) {
     var row = document.getElementById('bbEmailRow'); if (!row) return;
-    var buckets = bbDialBuckets();
-    var lead = bbDialResolveCurrentLead(buckets) || (buckets[bbDialFilter]||[])[0] || {};
+    var lead = window._bbFindLeadById(id);
+    if (!lead && typeof bbDialBuckets === 'function') {
+      var buckets = bbDialBuckets();
+      lead = bbDialResolveCurrentLead(buckets) || (buckets[bbDialFilter]||[])[0];
+    }
+    lead = lead || {};
+    window._bbEmailEditing = id;   // suppresses the Doors GPS-tick re-render mid-edit
     var cur = lead.email || '';
     row.innerHTML = '<div style="display:flex;gap:6px;align-items:center;">' +
       '<input id="bbEmailInput" type="email" value="'+esc(cur)+'" placeholder="homeowner@email.com" style="flex:1;min-width:0;background:#111;border:1px solid rgba(74,158,255,0.4);border-radius:8px;color:#fff;padding:7px 10px;font-size:0.78rem;box-sizing:border-box;">' +
@@ -8556,13 +8798,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var client = supabase.createClient(SUPA_URL, SUPA_KEY);
       await client.from('customers').update({ email: val || null }).eq('id', id);
       // Keep in-memory copies in sync (dial queue + admin list) so the new value sticks on re-render.
-      [bbDialQueue, (typeof adminCustomers !== 'undefined' ? adminCustomers : [])].forEach(function(arr) {
+      [bbDialQueue,
+       (typeof window._cvLeadsRef === 'function' ? window._cvLeadsRef() : []),
+       (typeof adminCustomers !== 'undefined' ? adminCustomers : [])].forEach(function(arr) {
         var rec = (arr || []).find(function(x){ return x.id === id; });
         if (rec) rec.email = val || null;
       });
     } catch(e) { console.warn('Email save failed:', e); }
-    var buckets = bbDialBuckets();
-    var lead = bbDialResolveCurrentLead(buckets) || (buckets[bbDialFilter]||[])[0] || { id: id, email: val };
+    window._bbEmailEditing = null;
+    var lead = window._bbFindLeadById(id) || { id: id, email: val };
+    // DOM-local swap on purpose — a full re-render would wipe a typed note or a live AI
+    // transcript on either surface.
     if (row) row.outerHTML = bbEmailRowHtml(lead);
   };
 
@@ -8757,6 +9003,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += _bbAskForHtml(_nm);
     h += _bbTrusteeNote(lead);
     h += _bbAbsenteeNote(lead);
+    // A dialer who hears the real name on the phone had nowhere to put it — these are the
+    // same controls the door rep has, not a second copy.
+    h += _bbOwnerControlsHtml(lead);
     h += bbEmailRowHtml(lead);
     var badges = '';
     if (lead.original_installer) badges += '<span style="display:inline-block;padding:2px 9px;background:rgba(255,170,0,0.12);color:#ffaa00;border-radius:100px;font-size:0.62rem;font-weight:700;margin-right:6px;">'+esc(lead.original_installer)+'</span>';
@@ -8786,6 +9035,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // Satellite roof view — quick visual reference while on the call
     if (lead.address) {
       h += '<img src="https://maps.googleapis.com/maps/api/staticmap?center='+encodeURIComponent(lead.address)+'&zoom=19&size=640x260&scale=2&maptype=satellite&key='+GKEY+'" alt="Satellite view of roof" style="width:100%;max-height:180px;object-fit:cover;border-radius:10px;border:1px solid rgba(255,255,255,0.1);display:block;margin-bottom:12px;" onerror="this.style.display=\'none\';"/>';
+    }
+
+    // Interactive neighbourhood map — the Doors map's counterpart. Centres on THIS lead
+    // (a dialer has no useful "where am I"), pins the rest of the queue around it, and a
+    // pin tap makes that lead the next call.
+    var _dmOpen = _bbDialMapOpen();
+    h += '<button onclick="bbDialToggleMap()" style="width:100%;margin:0 0 8px;background:rgba(74,158,255,0.08);border:1px solid rgba(74,158,255,0.25);border-radius:10px;color:#4a9eff;font-size:0.72rem;font-weight:700;padding:7px;cursor:pointer;">'
+      + (_dmOpen ? '&#9650; Hide map' : '&#9660; &#128506; Show neighborhood map') + '</button>';
+    if (_dmOpen) {
+      h += '<div id="bbDialMap" style="width:100%;height:230px;border-radius:12px;overflow:hidden;border:1px solid rgba(255,255,255,0.1);margin-bottom:12px;background:#0d0d0d;"></div>';
     }
 
     // Shared activity feed — shows knock outcomes + prior calls + admin notes
@@ -8882,6 +9141,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
     h += '</div></div>';
     document.getElementById('dashBody').innerHTML = h;
+    // Mounted after the HTML lands — renderBBDialerView() replaces dashBody wholesale, so
+    // the container has to exist before Google Maps can attach to it. Same pattern as the
+    // Doors map mount in renderSales().
+    if (document.getElementById('bbDialMap')) {
+      var _dmLead = bbDialResolveCurrentLead(bbDialBuckets());
+      setTimeout(function(){
+        try { window._bbRenderDialMap('bbDialMap', _dmLead, bbDialQueue); }
+        catch(e) { console.warn('dial map failed:', e); }
+      }, 0);
+    }
   };
 
   window.bbDialSwitchRightTab = function(tab) { bbDialRightTab = tab; renderBBDialerView(); };
@@ -20286,6 +20555,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             var tInOutage = bbOutageHasZip(tZip);
             h += '<div style="font-size:1.05rem;font-weight:700;margin-bottom:4px;">'+esc(lead.address||'No address')+(tIsSDCP?'<span style="display:inline-block;margin-left:7px;padding:1px 7px;background:rgba(0,150,255,0.15);color:#4AABF7;border-radius:10px;font-size:0.58rem;font-weight:700;vertical-align:middle;">SDCP</span>':'')+(tInOutage?bbOutageBadgeHtml():'')+(lead.lead_score != null ? leadScoreBadge(lead.lead_score) : '')+'</div>';
             if (lead.dnc) h += '<span style="display:inline-block;margin-bottom:6px;padding:2px 8px;background:rgba(239,68,68,0.15);color:#ef4444;border-radius:10px;font-size:0.62rem;font-weight:700;">DNC</span>';
+            // Satellite roof view — the same image the dialer has carried all along. At a
+            // door it also answers "is this the right house" before the rep walks up.
+            if (lead.address) {
+              h += '<img src="https://maps.googleapis.com/maps/api/staticmap?center='+encodeURIComponent(lead.address)+'&zoom=19&size=640x260&scale=2&maptype=satellite&key='+GKEY+'" alt="Satellite view of roof" style="width:100%;max-height:180px;object-fit:cover;border-radius:10px;border:1px solid rgba(255,255,255,0.1);display:block;margin:8px 0 12px;" onerror="this.style.display=\'none\';"/>';
+            }
             if (lead.knock_status === 'come_back' && lead.callback_at) {
               var cbDue = _cvCbDue(lead);
               h += '<div style="display:inline-block;margin-bottom:8px;padding:4px 11px;background:'+(cbDue?'rgba(141,198,63,0.16)':'rgba(255,170,0,0.1)')+';border:1px solid '+(cbDue?'rgba(141,198,63,0.5)':'rgba(255,170,0,0.35)')+';color:'+(cbDue?'#8DC63F':'#ffaa00')+';border-radius:100px;font-size:0.7rem;font-weight:700;">'
@@ -20300,11 +20574,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             h += _bbAskForHtml(_doorNm);
             h += _bbTrusteeNote(lead);
             h += _bbAbsenteeNote(lead);
+            // Same inline email row the dialer has. Matters here because the magic-link
+            // photo upload after a doorstep booking needs a real address on file.
+            h += bbEmailRowHtml(lead);
             if (lead.apn) h += '<div style="font-size:0.62rem;color:#555;margin-bottom:2px;">APN '+esc(lead.apn)+'</div>';
             // Always available, not just when blank — the common case is looking the owner
             // up in LandGlide and typing it in afterwards, and correcting a wrong name
             // matters as much as filling an empty one.
-            h += _cvOwnerControlsHtml(lead);
+            h += _bbOwnerControlsHtml(lead);
             var tNotePreview = _parseNotes(lead.notes||'').slice(-1)[0];
             if (tNotePreview) h += '<div style="font-size:0.7rem;color:#666;margin-bottom:10px;font-style:italic;">'+esc(tNotePreview.by)+': '+esc(tNotePreview.text.slice(0,60))+(tNotePreview.text.length>60?'…':'')+'</div>';
             h += '<a href="'+mapsUrl+'" target="_blank" style="display:inline-block;font-size:0.75rem;font-weight:700;color:#4a9eff;text-decoration:none;background:rgba(74,158,255,0.08);border:1px solid rgba(74,158,255,0.25);border-radius:100px;padding:6px 14px;margin-bottom:8px;">🗺 Get Directions</a>';
@@ -20971,8 +21248,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var _cvNoteOpen = {}, _cvNoteDraft = {};
     function _cvUiBusy() {
       if (typeof _cvAiActive !== 'undefined' && _cvAiActive) return true;
+      // An in-progress email edit is exactly as destructible as a typed note — the GPS
+      // watch re-renders every few seconds and would throw the input away mid-keystroke.
+      if (window._bbEmailEditing) return true;
       return Object.keys(_cvNoteOpen).some(function(k){ return _cvNoteOpen[k]; });
     }
+    // Lets block-1 helpers (bbEmailRowHtml/bbSaveEmail, owner controls) reach the live
+    // route without duplicating them inside this closure.
+    window._cvLeadsRef = function(){ return canvassLeads; };
+    window._bbOwnerRerenderFn = renderSales;
     var _cvSdcpFocus = (function(){ try { return sessionStorage.getItem('cvSdcpFocus') === '1'; } catch(e){ return false; } })();
     var _cvMapOpen   = (function(){ try { return localStorage.getItem('cvMapOpen') !== '0'; } catch(e){ return true; } })();
 
@@ -21286,100 +21570,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // California), or just write down what the rep can see. The second one matters more
     // than it looks — a rep standing on the porch reading a name off the mailbox is a
     // better source than any API we can legally query in this state.
-    function _cvOwnerControlsHtml(lead) {
-      var has = !!lead.title_owner;
-      var h = '<div id="cvOwnBox_' + lead.id + '" style="margin:4px 0 8px;">'
-        + '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">';
-      if (!has) {
-        h += '<button id="cvOwnBtn_' + lead.id + '" onclick="canvassFindOwner(\'' + lead.id + '\')" title="Queries the county parcel services for the property owner." style="width:auto;margin:0;padding:4px 12px;background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.3);color:#ffaa00;border-radius:100px;font-size:0.7rem;font-weight:700;cursor:pointer;">&#128269; Find Owner</button>';
-      }
-      h += '<button onclick="canvassOwnerManual(\'' + lead.id + '\')" title="Type the name off the mailbox, from LandGlide, or whatever the homeowner tells you." style="width:auto;margin:0;padding:4px 12px;background:' + (has ? 'transparent' : 'rgba(255,255,255,0.04)') + ';border:1px solid rgba(255,255,255,0.14);color:#888;border-radius:100px;font-size:0.7rem;font-weight:700;cursor:pointer;">&#9998; ' + (has ? 'Edit owner' : 'Type it in') + '</button>';
-      // Cross-referencing happens in a separate app (LandGlide/parcel viewer), and
-      // retyping an address on a phone at a door is the friction that stops it happening.
-      h += '<button onclick="canvassCopyAddress(\'' + lead.id + '\')" title="Copy the address to paste into LandGlide or a parcel viewer." style="width:auto;margin:0;padding:4px 12px;background:transparent;border:1px solid rgba(255,255,255,0.14);color:#888;border-radius:100px;font-size:0.7rem;font-weight:700;cursor:pointer;">&#128203; Copy address</button>';
-      h += '</div>'
-        + '<div id="cvOwnMsg_' + lead.id + '" style="font-size:0.66rem;color:#777;margin-top:4px;line-height:1.4;"></div>'
-        + '</div>';
-      return h;
-    }
-
-    window.canvassCopyAddress = function(id) {
-      var lead = canvassLeads.find(function(l){ return l.id === id; });
-      if (!lead) return;
-      var msg = document.getElementById('cvOwnMsg_' + id);
-      var done = function(){ if (msg) { msg.style.color = '#8DC63F'; msg.textContent = '✓ Address copied — paste it into LandGlide, then tap Edit owner.'; } };
-      try {
-        navigator.clipboard.writeText(lead.address || '').then(done, function(){ prompt('Copy this address:', lead.address || ''); });
-      } catch(e) { prompt('Copy this address:', lead.address || ''); }
-    };
-
-    async function _cvSaveOwner(id, owner, apn) {
-      var lead = canvassLeads.find(function(l){ return l.id === id; });
-      var upd = { title_owner: owner };
-      if (apn) upd.apn = apn;
-      try {
-        var c = supabase.createClient(SUPA_URL, SUPA_KEY);
-        await c.from('customers').update(upd).eq('id', id);
-      } catch(e) {}
-      if (lead) Object.assign(lead, upd);
-      var rec = (allRecords || []).find(function(r){ return r.id === id; });
-      if (rec) Object.assign(rec, upd);
-      renderSales();
-    }
-
-    window.canvassFindOwner = async function(id) {
-      var lead = canvassLeads.find(function(l){ return l.id === id; });
-      if (!lead || !lead.address) return;
-      var btn = document.getElementById('cvOwnBtn_' + id);
-      var msg = document.getElementById('cvOwnMsg_' + id);
-      if (btn) { btn.textContent = 'Looking up…'; btn.disabled = true; }
-      if (msg) { msg.style.color = '#777'; msg.textContent = 'Checking county parcel records…'; }
-      try {
-        var body = { address: lead.address };
-        if (lead.lat) body.lat = lead.lat;
-        if (lead.lng) body.lng = lead.lng;
-        var r = await fetch('/.netlify/functions/regrid-lookup', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
-        });
-        var data = await r.json();
-
-        if (data.owner) { await _cvSaveOwner(id, data.owner, data.apn); return; }
-
-        // Parcel found, name withheld. Keep the APN — it is what the county bulk file
-        // joins on — and tell the rep plainly rather than showing "not found", which
-        // would be false and would stop them trying the thing that actually works.
-        if (data.apn) {
-          try {
-            var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
-            await c2.from('customers').update({ apn: data.apn }).eq('id', id);
-            lead.apn = data.apn;
-          } catch(e) {}
-        }
-        if (btn) { btn.textContent = '🔍 Try again'; btn.disabled = false; }
-        if (msg) {
-          msg.style.color = '#f59e0b';
-          msg.innerHTML = data.owner_redacted
-            ? 'Found the parcel (APN ' + esc(data.apn) + ') but California law blocks the county from publishing the owner name online. <b style="color:#8DC63F;">Read it off the mailbox and tap “Type it in”.</b>'
-            : 'No parcel match for this address.'
-              + (CURRENT_ROLE === 'admin' && data.regrid_key_set === false
-                  ? '<br/><span style="color:#f87171;">REGRID_KEY is not set — the paid owner source never ran.</span>' : '')
-              + ' <b style="color:#8DC63F;">Type the name in instead.</b>';
-        }
-      } catch(e) {
-        if (btn) { btn.textContent = '🔍 Try again'; btn.disabled = false; }
-        if (msg) { msg.style.color = '#f87171'; msg.textContent = 'Lookup failed — type the name in instead.'; }
-      }
-    };
-
-    window.canvassOwnerManual = async function(id) {
-      var lead = canvassLeads.find(function(l){ return l.id === id; });
-      if (!lead) return;
-      var name = prompt('Owner name for ' + (lead.address || 'this house') + ':', lead.title_owner || '');
-      if (name == null) return;
-      name = name.trim();
-      if (!name) return;
-      await _cvSaveOwner(id, name, null);
-    };
 
     /* ══════════════════════════════════════════════════════════════════════════
        BOOKING AT THE DOOR
