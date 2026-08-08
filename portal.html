@@ -7823,6 +7823,91 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
   };
 
+  // ── Shared page shell (Doors + Dialing) ───────────────────────────────────
+  // The two surfaces had grown different layouts, not just different content: different
+  // control placement, different counter styling, different order. Per Dennis the pages
+  // should be identical apart from the nuance of the action itself, in this order:
+  //   header (+ secondary actions top-right) → scoreboard → mode toggle → counters
+  //   → focus control | script controls → map → the card → everything else
+  // Each row below is ONE renderer used by both surfaces, so the order and the look
+  // cannot drift the way they did before.
+
+  // Counters. Same tile styling both modes; only the numbers and (on Dialing) the
+  // click-to-filter behaviour differ, which is the "nuance of the action" Dennis allows.
+  window._bbCountersHtml = function(tiles) {
+    var h = '<div style="display:grid;grid-template-columns:repeat(' + tiles.length + ',1fr);gap:6px;margin-bottom:12px;">';
+    tiles.forEach(function(t) {
+      var clickable = !!t.onclick;
+      var border = t.active ? '1px solid ' + t.color : '1px solid rgba(255,255,255,0.1)';
+      var bg = t.active ? 'rgba(255,255,255,0.07)' : 'rgba(255,255,255,0.04)';
+      h += '<' + (clickable ? 'button' : 'div') + (clickable ? ' onclick="' + t.onclick + '"' : '')
+        + ' style="width:auto;margin:0;background:' + bg + ';border:' + border + ';border-radius:12px;padding:10px 6px;text-align:center;'
+        + (clickable ? 'cursor:pointer;font-family:inherit;' : '') + '">'
+        + '<div style="font-size:1.2rem;font-weight:800;color:' + t.color + ';line-height:1.1;">' + t.value + '</div>'
+        + '<div style="font-size:0.6rem;color:#888;text-transform:uppercase;letter-spacing:0.05em;margin-top:3px;">' + t.label + '</div>'
+        + '</' + (clickable ? 'button' : 'div') + '>';
+    });
+    return h + '</div>';
+  };
+
+  // Focus (left) + script controls (right). Dialing focuses a ZIP, Doors focuses SDCP —
+  // both PRIORITISE and never hide, so a rep can't walk or dial past a good lead.
+  window._bbFocusControlHtml = function(mode) {
+    if (mode === 'door') {
+      var on = (typeof window._cvSdcpFocusOn === 'function') ? window._cvSdcpFocusOn() : false;
+      var n  = (typeof window._cvSdcpCount === 'function') ? window._cvSdcpCount() : 0;
+      return '<button onclick="canvassToggleSdcp()" title="Sorts San Diego Community Power doors to the top of your route. Nothing is hidden — a non-SDCP door you are standing next to still shows." '
+        + 'style="width:auto;margin:0;display:inline-flex;align-items:center;gap:7px;padding:6px 13px;border-radius:100px;font-size:0.7rem;font-weight:700;cursor:pointer;'
+        + (on ? 'background:rgba(0,150,255,0.14);border:1px solid rgba(74,171,247,0.5);color:#4AABF7;'
+              : 'background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.12);color:#888;') + '">'
+        + '<span style="display:inline-block;width:13px;height:13px;border-radius:3px;border:1.5px solid ' + (on ? '#4AABF7' : '#666') + ';background:' + (on ? '#4AABF7' : 'transparent') + ';color:#111;font-size:0.6rem;line-height:11px;text-align:center;">' + (on ? '&#10003;' : '') + '</span>'
+        + 'Focus SDCP' + (on && n ? ' <span style="color:#8DC63F;">&middot; ' + n + ' up top</span>' : '')
+        + '</button>';
+    }
+    var zip = (typeof bbDialFocusZip !== 'undefined' && bbDialFocusZip) || '';
+    var cnt = zip && typeof bbDialQueue !== 'undefined'
+      ? bbDialQueue.filter(function(l){ return extractZip(l.address||'') === zip; }).length : 0;
+    var h = '<span style="display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;">';
+    h += '<span style="font-size:0.7rem;color:#888;font-weight:700;">&#127919; ZIP</span>';
+    h += '<input id="bbDialZipInput" type="text" inputmode="numeric" maxlength="5" value="' + esc(zip) + '" placeholder="92065" '
+      + 'oninput="this.value=this.value.replace(/\\D/g,\'\')" onkeypress="if(event.key===\'Enter\')bbDialSetFocusZip(this.value)" '
+      + 'style="width:auto;flex:0 0 84px;min-width:0;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:100px;color:#fff;padding:6px 12px;font-size:0.78rem;">';
+    if (zip) {
+      h += '<span style="font-size:0.68rem;color:#8DC63F;font-weight:700;">' + cnt + ' up top</span>';
+      h += '<button onclick="bbDialClearFocusZip()" style="width:auto;margin:0;padding:5px 11px;background:none;border:1px solid rgba(255,255,255,0.15);color:#888;border-radius:100px;font-size:0.68rem;cursor:pointer;">&#10005;</button>';
+    }
+    return h + '</span>';
+  };
+
+  window._bbControlsRowHtml = function(mode) {
+    return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px;">'
+      + '<span>' + window._bbFocusControlHtml(mode) + '</span>'
+      + window._bbScriptControlsHtml(mode === 'door' ? 'door' : 'call')
+      + '</div>';
+  };
+
+  // Map block — open by default, remembered per device, identical wrapper both modes.
+  window._bbMapBlockHtml = function(mode) {
+    var isDoor = mode === 'door';
+    var open = isDoor
+      ? (function(){ try { return localStorage.getItem('cvMapOpen') !== '0'; } catch(e){ return true; } })()
+      : _bbDialMapOpen();
+    var toggle = isDoor ? 'canvassToggleMap()' : 'bbDialToggleMap()';
+    var id = isDoor ? 'cvDoorsMap' : 'bbDialMap';
+    var h = '<div style="margin-bottom:12px;">';
+    h += '<button onclick="' + toggle + '" style="width:100%;margin:0 0 8px;background:rgba(74,158,255,0.07);border:1px solid rgba(74,158,255,0.22);border-radius:10px;color:#4a9eff;font-size:0.72rem;font-weight:700;padding:7px;cursor:pointer;">'
+      + (open ? '&#9650; Hide map' : '&#9660; &#128506; Show map') + '</button>';
+    if (open) {
+      h += '<div id="' + id + '" style="width:100%;height:260px;border-radius:12px;overflow:hidden;border:1px solid rgba(255,255,255,0.1);background:#0d0d0d;"></div>';
+      h += '<div style="display:flex;gap:10px;flex-wrap:wrap;font-size:0.6rem;color:#666;margin-top:6px;justify-content:center;">'
+        + (isDoor ? '<span><span style="color:#4a9eff;">&#9679;</span> You</span>' : '<span><span style="color:#E8793A;">&#9679;</span> On call</span>')
+        + '<span><span style="color:#8DC63F;">&#9679;</span> Untouched</span>'
+        + '<span><span style="color:#f59e0b;">&#9679;</span> Warm</span>'
+        + '<span><span style="color:#8a8a8a;">&#9679;</span> Worked</span></div>';
+    }
+    return h + '</div>';
+  };
+
   // ── Rep scoreboard (shared by Doors and Dialing) ──────────────────────────
   // The two surfaces had completely different stat strips: Doors showed
   // Remaining/Knocked/Interested for the current route, Dialing showed queue-bucket
@@ -7893,7 +7978,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return out;
   };
 
+  window._bbScoreExpanded = function() {
+    try { return localStorage.getItem('bbScoreOpen') === '1'; } catch(e) { return false; }
+  };
+  window.bbToggleScore = function() {
+    try { localStorage.setItem('bbScoreOpen', window._bbScoreExpanded() ? '0' : '1'); } catch(e) {}
+    var el = document.getElementById('bbScoreboard');
+    if (el && el.parentNode) el.outerHTML = window._bbRepScoreboardHtml(window._bbScoreMode || 'call');
+  };
   window._bbRepScoreboardHtml = function(mode) {
+    window._bbScoreMode = mode;
     var d = _bbScore;
     if (!d) {
       return '<div id="bbScoreboard" style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:14px;padding:14px;margin-bottom:14px;font-size:0.72rem;color:#666;text-align:center;">Loading your week&hellip;</div>';
@@ -7916,6 +8010,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       h += '<div style="font-size:0.72rem;color:#888;">of ' + WEEKLY_HOURS_TARGET + 'h &middot; ' + (left > 0 ? left.toFixed(1) + 'h to go' : 'target hit &#127881;') + '</div>';
       h += '</div>';
       h += _bbScoreBar(hrs, WEEKLY_HOURS_TARGET, col);
+    }
+    // Collapsed shows only the hours line — the tallest element on the page sat above
+    // everything on every load. Expanded state is remembered per device.
+    var _exp = window._bbScoreExpanded();
+    if (d.hoursOk && _exp) {
       // Day-by-day accumulation, so a rep can see which day they lost.
       h += '<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-top:8px;">';
       d.byDay.forEach(function(v, i) {
@@ -7926,10 +8025,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           + '<div style="font-size:0.58rem;color:' + (i === todayIdx ? col : '#666') + ';font-weight:' + (i === todayIdx ? '800' : '600') + ';margin-top:2px;">' + days[i] + '</div></div>';
       });
       h += '</div>';
-    } else {
+    }
+    if (!d.hoursOk) {
       h += '<div style="font-size:0.72rem;color:#f59e0b;line-height:1.5;">Hours unavailable &mdash; the <code>rep_shifts</code> table is missing. Run <code>20260803_setter_database.sql</code>. Your activity counts below are still real.</div>';
     }
 
+    if (!_exp) {
+      h += '<button onclick="bbToggleScore()" style="width:100%;margin:8px 0 0;background:none;border:none;color:#666;font-size:0.66rem;cursor:pointer;padding:2px;">&#9662; '
+        + d.knocks + ' doors &middot; ' + d.dials + ' dials &middot; ' + d.booked + ' booked this week</button>';
+      return h + '</div>';
+    }
     // ── Inputs. Same four on both surfaces, so switching motion doesn't change the score.
     h += '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:12px;">';
     h += _bbScoreTile(d.knocks, 'Doors', '#8DC63F');
@@ -7939,6 +8044,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '</div>';
     h += '<div style="font-size:0.62rem;color:#666;margin-top:8px;text-align:center;">Today: '
        + d.todayKnocks + ' doors &middot; ' + d.todayDials + ' dials</div>';
+    h += '<button onclick="bbToggleScore()" style="width:100%;margin:6px 0 0;background:none;border:none;color:#666;font-size:0.66rem;cursor:pointer;padding:2px;">&#9652; Less</button>';
     h += '</div>';
     return h;
   };
@@ -9306,17 +9412,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // Header — the rep portal gets the Doors/Dialing toggle; admin keeps a back link.
     h += '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:14px;">';
     h += '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">';
-    h += isAdminDialer
-      ? '<button onclick="renderAdminCanvassView()" style="background:none;border:none;color:#555;cursor:pointer;font-size:0.75rem;padding:0;">&#8592; Back to Black Box</button>'
-      : _bbModeToggleHtml('dialing');
+    if (isAdminDialer) h += '<button onclick="renderAdminCanvassView()" style="background:none;border:none;color:#555;cursor:pointer;font-size:0.75rem;padding:0;">&#8592; Back to Black Box</button>';
     h += '<div style="font-size:0.78rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#E8793A;">&#128222; Dialing</div>';
-    h += window._bbScriptControlsHtml('call');
     h += '</div>';
     if (CURRENT_ROLE === 'admin') {
       h += '<button id="bbGhlSyncBtn" onclick="bbDialSyncGHL()" title="Manually pushes every dialable Black Box lead into GHL as a contact (tag: bb-dialer-lead) so GHL&#39;s Power Dialer can call them. Safe to re-run — duplicates merge. Also runs automatically at 2 AM with the nightly pipeline." style="padding:6px 14px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);color:#4a9eff;border-radius:100px;font-size:0.7rem;font-weight:700;cursor:pointer;">&#8679; Sync Queue to GHL</button>';
     }
     h += '</div>';
     h += window._bbRepScoreboardHtml('call');
+    if (!isAdminDialer) h += '<div style="margin-bottom:12px;">' + _bbModeToggleHtml('dialing') + '</div>';
 
     // The Black Box Team Dashboard was consolidated into Team -> 1:1s (2026-08-06), which
     // now carries its Day/Week/Month/Year range and at-a-glance table alongside the
@@ -9359,107 +9463,18 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       { key:'callbacks', label:'&#128257; Callbacks ('+buckets.callbacks.length+(buckets.callbacksDue?' &middot; '+buckets.callbacksDue+' due':'')+')', tip:'Leads with a scheduled callback, soonest first. The due count means the callback time has already passed — call these now.' },
       { key:'worked',    label:'&#10003; Worked ('+buckets.worked.length+')', tip:'Finished leads: booked, not interested, or wrong number. Kept here for reference — no more calls needed.' }
     ];
-    h += '<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;">';
-    chips.forEach(function(ch) {
-      var on = bbDialFilter === ch.key;
-      h += '<button onclick="bbDialSetFilter(\''+ch.key+'\')" title="'+ch.tip+'" style="padding:6px 14px;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;'+
-        (on ? 'background:rgba(232,121,58,0.16);border:1px solid rgba(232,121,58,0.5);color:#E8793A;' : 'background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);color:#888;')+'">'+ch.label+'</button>';
-    });
-    h += '<button onclick="bbDialLoaded=false;renderBBDialerView()" title="Reloads the dial queue fresh from the database — picks up new leads and other reps&#39; activity." style="padding:6px 12px;background:none;border:none;color:#555;cursor:pointer;font-size:0.7rem;text-decoration:underline;">&#8635; Refresh</button>';
-    h += '</div>';
+    // Same tile component Doors uses — these stay clickable because on Dialing they are
+    // also the queue filter, which is the one legitimate difference between the two.
+    h += window._bbCountersHtml([
+      { value: buckets.fresh.length,     label: 'Fresh',     color: '#8DC63F', active: bbDialFilter === 'fresh',     onclick: "bbDialSetFilter('fresh')" },
+      { value: buckets.callbacks.length, label: buckets.callbacksDue ? 'Callbacks · ' + buckets.callbacksDue + ' due' : 'Callbacks', color: '#f59e0b', active: bbDialFilter === 'callbacks', onclick: "bbDialSetFilter('callbacks')" },
+      { value: buckets.worked.length,    label: 'Worked',    color: '#4a9eff', active: bbDialFilter === 'worked',    onclick: "bbDialSetFilter('worked')" }
+    ]);
+    h += '<div style="text-align:center;margin:-6px 0 10px;"><button onclick="bbDialLoaded=false;renderBBDialerView()" title="Reloads the dial queue fresh from the database." style="width:auto;margin:0;padding:4px 12px;background:none;border:none;color:#555;cursor:pointer;font-size:0.68rem;text-decoration:underline;">&#8635; Refresh queue</button></div>';
 
-    // ── Selective ZIP-code dialing — cluster calls around a booked appointment ──
-    // Upcoming-appointment ZIP suggestions (from leads with a future diagnostic_date).
-    var _apptZips = [];
-    if (typeof adminCustomers !== 'undefined' && adminCustomers && adminCustomers.length) {
-      var _seenZ = {}, _nowZ = Date.now();
-      adminCustomers.forEach(function(c) {
-        if (!c.diagnostic_date) return;
-        var t = new Date(c.diagnostic_date).getTime();
-        if (isNaN(t) || t < _nowZ - 12*3600*1000) return; // today or later
-        var z = extractZip(c.address||''); if (!z || _seenZ[z]) return;
-        _seenZ[z] = true;
-        var nm = ((c.first_name||'')+' '+(c.last_name||'')).trim() || 'Appt';
-        _apptZips.push({ zip: z, label: nm + ' · ' + z });
-      });
-      _apptZips = _apptZips.slice(0, 6);
-    }
-    h += '<div style="margin-bottom:14px;background:rgba(232,121,58,0.05);border:1px solid rgba(232,121,58,0.18);border-radius:12px;padding:10px 12px;">';
-    h += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">';
-    h += '<span style="font-size:0.7rem;font-weight:700;color:#E8793A;">&#127919; Focus ZIP</span>';
-    h += '<input id="bbDialZipInput" type="text" inputmode="numeric" maxlength="5" value="'+esc(bbDialFocusZip)+'" placeholder="e.g. 92065" oninput="this.value=this.value.replace(/\\D/g,\'\')" onkeypress="if(event.key===\'Enter\')bbDialSetFocusZip(this.value)" style="width:auto;flex:0 0 110px;min-width:0;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:100px;color:#fff;padding:7px 14px;font-size:0.8rem;">';
-    h += '<button onclick="bbDialSetFocusZip(document.getElementById(\'bbDialZipInput\').value)" style="width:auto;padding:7px 14px;background:rgba(232,121,58,0.16);border:1px solid rgba(232,121,58,0.5);color:#E8793A;border-radius:100px;font-size:0.75rem;font-weight:700;cursor:pointer;">Focus</button>';
-    if (bbDialFocusZip) {
-      var _zc = bbDialQueue.filter(function(l){ return extractZip(l.address||'') === bbDialFocusZip; }).length;
-      h += '<span style="font-size:0.72rem;color:#8DC63F;font-weight:700;">'+_zc+' in '+esc(bbDialFocusZip)+' &uarr; top of queue</span>';
-      h += '<button onclick="bbDialClearFocusZip()" style="width:auto;padding:7px 12px;background:none;border:1px solid rgba(255,255,255,0.15);color:#888;border-radius:100px;font-size:0.72rem;cursor:pointer;">&#10005; All ZIPs</button>';
-    }
-    h += '</div>';
-    if (_apptZips.length) {
-      h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;align-items:center;">';
-      h += '<span style="font-size:0.64rem;color:#666;">Upcoming appts:</span>';
-      _apptZips.forEach(function(s) {
-        var on = s.zip === bbDialFocusZip;
-        h += '<button onclick="bbDialSetFocusZip(\''+s.zip+'\')" style="width:auto;padding:5px 11px;border-radius:100px;font-size:0.68rem;font-weight:600;cursor:pointer;'+(on?'background:rgba(232,121,58,0.16);border:1px solid rgba(232,121,58,0.5);color:#E8793A;':'background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);color:#aaa;')+'">'+esc(s.label)+'</button>';
-      });
-      h += '</div>';
-    }
-    // Live SDG&E outage-zip suggestions — lazy-loaded once per session from pipeline_state.
-    if (!bbOutageZipsLoaded) bbLoadOutageZips(function(){ renderBBDialerView(); });
-    if (bbOutageZips.length) {
-      h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;align-items:center;">';
-      h += '<span style="font-size:0.64rem;color:#ffaa00;">&#9889; Active outages:</span>';
-      bbOutageZips.slice(0, 6).forEach(function(o) {
-        var on = o.zip === bbDialFocusZip;
-        h += '<button onclick="bbDialSetFocusZip(\''+o.zip+'\')" title="'+o.affected+' affected — SDG&#39;s live outage feed" style="width:auto;padding:5px 11px;border-radius:100px;font-size:0.68rem;font-weight:600;cursor:pointer;'+(on?'background:rgba(232,121,58,0.16);border:1px solid rgba(232,121,58,0.5);color:#E8793A;':'background:rgba(255,170,0,0.06);border:1px solid rgba(255,170,0,0.25);color:#ffaa00;')+'">'+esc(o.zip)+'</button>';
-      });
-      h += '</div>';
-    }
-    h += '</div>';
-
-    // Callback-number search — find any lead by phone, regardless of which bucket it's in
-    h += '<div style="margin-bottom:14px;">';
-    h += '<div style="display:flex;gap:6px;">';
-    h += '<input id="bbDialSearchInput" type="tel" placeholder="Search by callback number…" onkeypress="bbDialSearchKeypress(event)" style="flex:1;min-width:0;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:100px;color:#fff;padding:9px 16px;font-size:0.82rem;">';
-    h += '<button onclick="bbDialSearchPhone()" title="Finds the lead card for whatever number just called back, even if it&#39;s not the current call in queue." style="width:auto;flex-shrink:0;padding:9px 18px;background:rgba(74,158,255,0.14);border:1px solid rgba(74,158,255,0.4);color:#4a9eff;border-radius:100px;font-size:0.78rem;font-weight:700;cursor:pointer;">&#128269; Find</button>';
-    h += '</div>';
-    if (bbDialSearchStatus) h += '<div style="font-size:0.72rem;color:#888;margin-top:6px;">'+bbDialSearchStatus+'</div>';
-    if (bbDialSearchResults && bbDialSearchResults.length) {
-      h += '<div style="margin-top:8px;background:var(--panel,#161a12);border:1px solid rgba(255,255,255,0.1);border-radius:10px;overflow:hidden;">';
-      bbDialSearchResults.forEach(function(r) {
-        var rn = _bbLeadDisplayName(r).display || '—';
-        h += '<button onclick="bbDialSelectResult(\''+r.id+'\')" style="width:100%;text-align:left;padding:10px 14px;background:none;border:none;border-bottom:1px solid rgba(255,255,255,0.06);color:#ccc;cursor:pointer;font-size:0.8rem;">'+rn+' <span style="color:#666;">— '+(r.address||'')+' &middot; '+(r.phone||'')+'</span></button>';
-      });
-      h += '</div>';
-    }
-    h += '</div>';
-
-    if (bbDialLoadError) {
-      h += '<div style="text-align:center;padding:24px 20px;background:rgba(239,68,68,0.07);border:1px solid rgba(239,68,68,0.25);border-radius:14px;color:#ef4444;font-size:0.8rem;margin-bottom:14px;">&#9888; Queue load failed: '+String(bbDialLoadError).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</div>';
-    }
-    var list = buckets[bbDialFilter] || [];
-    var pinnedLead = bbDialResolveCurrentLead(buckets);
-    var isPinned = !!(bbDialPinnedId && pinnedLead);
-    if (!isPinned && !list.length) {
-      var emptyMsg = bbDialLoadError ? 'Could not load the queue — see error above, then tap Refresh.'
-                   : bbDialFilter === 'fresh' ? 'No fresh leads left to dial — check Callbacks or import more leads.'
-                   : bbDialFilter === 'callbacks' ? 'No callbacks scheduled.' : 'Nothing worked yet — get dialing!';
-      h += '<div style="text-align:center;padding:40px 20px;background:rgba(255,255,255,0.03);border:1px dashed rgba(255,255,255,0.1);border-radius:14px;color:#666;font-size:0.8rem;">'+emptyMsg+'</div>';
-      h += '</div>';
-      document.getElementById('dashBody').innerHTML = h;
-      return;
-    }
-
-    var lead = isPinned ? pinnedLead : list[0];
-    var _nm = _bbLeadDisplayName(lead);
-    var name = _nm.display || '—';
-    var ph = (lead.phone||'').replace(/\D/g,'');
-    var phDisplay = ph.length === 10 ? '('+ph.slice(0,3)+') '+ph.slice(3,6)+'-'+ph.slice(6) : lead.phone;
-    var ksLabel = { interested:'&#10003; Knocked: Interested', not_home:'&#128683; Knocked: Not Home', not_interested:'&#128078; Knocked: NI', already_customer:'&#11088; Already Customer' }[lead.knock_status] || '';
-    var cbDue = lead.callback_at ? new Date(lead.callback_at) : null;
-
-    h += '<div style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap;">';
-    h += '<div style="flex:1;min-width:280px;">';
+    // Focus (left) + script controls (right) — one shared row, identical on both surfaces.
+    h += window._bbControlsRowHtml('call');
+    h += window._bbMapBlockHtml('call');
 
     // ── Current lead card ──
     h += '<div style="background:rgba(255,255,255,0.05);border:2px solid '+(isPinned?'rgba(74,158,255,0.45)':'rgba(232,121,58,0.4)')+';border-radius:16px;padding:18px;margin-bottom:12px;">';
@@ -9514,15 +9529,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       h += '<img src="https://maps.googleapis.com/maps/api/staticmap?center='+encodeURIComponent(lead.address)+'&zoom=19&size=640x260&scale=2&maptype=satellite&key='+GKEY+'" alt="Satellite view of roof" style="width:100%;max-height:180px;object-fit:cover;border-radius:10px;border:1px solid rgba(255,255,255,0.1);display:block;margin-bottom:12px;" onerror="this.style.display=\'none\';"/>';
     }
 
-    // Interactive neighbourhood map — the Doors map's counterpart. Centres on THIS lead
-    // (a dialer has no useful "where am I"), pins the rest of the queue around it, and a
-    // pin tap makes that lead the next call.
-    var _dmOpen = _bbDialMapOpen();
-    h += '<button onclick="bbDialToggleMap()" style="width:100%;margin:0 0 8px;background:rgba(74,158,255,0.08);border:1px solid rgba(74,158,255,0.25);border-radius:10px;color:#4a9eff;font-size:0.72rem;font-weight:700;padding:7px;cursor:pointer;">'
-      + (_dmOpen ? '&#9650; Hide map' : '&#9660; &#128506; Show neighborhood map') + '</button>';
-    if (_dmOpen) {
-      h += '<div id="bbDialMap" style="width:100%;height:230px;border-radius:12px;overflow:hidden;border:1px solid rgba(255,255,255,0.1);margin-bottom:12px;background:#0d0d0d;"></div>';
-    }
+    // (map now renders above the card via the shared _bbMapBlockHtml row)
 
     // Shared activity feed — shows knock outcomes + prior calls + admin notes
     h += '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#666;margin-bottom:4px;">Activity — all channels</div>';
@@ -20832,16 +20839,21 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         window._bbDialerPersonId = person.id || null;
         h += '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px;">';
         h += '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">';
-        h += _bbModeToggleHtml('doors');
         h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#8DC63F;">&#128682; Doors &mdash; Prospecting Route</div>';
-        // Script on/off, same placement and behaviour as the dialer's — a veteran who
-        // knows the approach cold can reclaim the screen space.
-        h += window._bbScriptControlsHtml('door');
+        h += '</div>';
+        // Secondary actions, top-right — same slot Dialing uses for its extras, so the
+        // header reads identically across modes.
+        h += '<div style="display:flex;gap:6px;flex-wrap:wrap;">';
+        h += '<button onclick="canvassAddDoor()" title="Add a house that is not in the system \u2014 including one whose installer is still in business (Sunrun, Tesla, etc.)." style="width:auto;margin:0;padding:5px 12px;background:rgba(141,198,63,0.12);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:100px;font-size:0.68rem;font-weight:700;cursor:pointer;">&#43; Door</button>';
         h += '</div>';
         // No shift control here by design (2026-08-07). Hours are derived entirely from
         // logged work by the auto-clock — there is nothing for a rep to press, and nothing
         // to forget. The weekly total lives on the admin Dialers scoreboard.
         h += '</div>';
+        // Same order as Dialing: scoreboard, then the mode toggle, then the counters,
+        // then focus | script, then the map, then the card.
+        h += window._bbRepScoreboardHtml('door');
+        h += '<div style="margin-bottom:12px;">' + _bbModeToggleHtml('doors') + '</div>';
 
         // QR Code card (moved off the login dashboard — lives here in the Black Box canvass route)
         (function(){
@@ -20953,31 +20965,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           h += '<button onclick="canvassInit()" style="width:auto;background:none;border:none;color:#555;cursor:pointer;font-size:0.7rem;padding:0;">↻ Refresh</button>';
           h += '</div>';
 
-          // Territory controls — SDCP prioritise + add a door that isn't in the system.
-          (function(){
-            var sdcpCount = canvassLeads.filter(function(l){
-              var z = extractZip(l.address||''); return z && SDCP_ZIPS.has(z) && !l.knock_status;
-            }).length;
-            h += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px;">';
-            h += '<button onclick="canvassToggleSdcp()" title="Sorts San Diego Community Power doors to the top of your route. Nothing is hidden — a non-SDCP door you are standing next to still shows." style="width:auto;margin-top:0;padding:5px 13px;border-radius:100px;font-size:0.7rem;font-weight:700;cursor:pointer;'
-              + (_cvSdcpFocus ? 'background:rgba(0,150,255,0.16);border:1px solid rgba(0,150,255,0.5);color:#4AABF7;'
-                              : 'background:transparent;border:1px solid rgba(255,255,255,0.14);color:#666;')
-              + '">' + (_cvSdcpFocus ? '&#10003; ' : '') + 'SDCP first</button>';
-            h += '<span style="font-size:0.68rem;color:#555;">'+sdcpCount+' SDCP door'+(sdcpCount===1?'':'s')+' in range</span>';
-            h += '<button onclick="canvassAddDoor()" title="Add a house that is not in the system — including one whose installer is still in business (Sunrun, Tesla, etc.)." style="width:auto;margin-top:0;margin-left:auto;padding:5px 13px;background:rgba(141,198,63,0.12);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:100px;font-size:0.7rem;font-weight:700;cursor:pointer;">&#43; Add a Door</button>';
-            h += '</div>';
-          })();
 
           h += '<div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;">';
 
           // ── Left panel ────────────────────────────────────────────────────────
           h += '<div style="flex:1;min-width:240px;">';
 
-          // Weekly scoreboard — identical on Doors and Dialing. The three tiles below it
-          // stay, because they describe THIS ROUTE, not the week.
-          h += window._bbRepScoreboardHtml('door');
-          // Stats strip
-          h += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:14px;">';
+          // Route counters — same tile component Dialing uses. Not clickable here: on
+          // Doors these describe the route, they are not a filter.
+          h += window._bbCountersHtml([
+            { value: unvisited.length, label: 'Remaining',  color: '#8DC63F' },
+            { value: visited.length,   label: 'Knocked',    color: '#4a9eff' },
+            { value: interested,       label: 'Interested', color: '#ffaa00' }
+          ]);
+          // Focus (left) + script controls (right) — the same shared row Dialing uses.
+          h += window._bbControlsRowHtml('door');
+          h += '<div style="display:none;">';
           h += '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:10px;text-align:center;"><div style="font-size:1.2rem;font-weight:800;color:#8DC63F;">'+unvisited.length+'</div><div style="font-size:0.65rem;color:#888;">Remaining</div></div>';
           h += '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:10px;text-align:center;"><div style="font-size:1.2rem;font-weight:800;color:#4a9eff;">'+visited.length+'</div><div style="font-size:0.65rem;color:#888;">Knocked</div></div>';
           h += '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:10px;text-align:center;"><div style="font-size:1.2rem;font-weight:800;color:#ffaa00;">'+interested+'</div><div style="font-size:0.65rem;color:#888;">Interested</div></div>';
@@ -20998,22 +21001,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             h += '<button onclick="canvassBatchRoute(5)" style="width:100%;margin-bottom:14px;padding:10px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);border-radius:10px;color:#4a9eff;font-size:0.8rem;font-weight:700;cursor:pointer;">🗺 Route Next 5 Houses in Google Maps</button>';
           }
 
-          // ── Satellite map — where you are + the doors around you ────────────────
-          h += '<div style="margin-bottom:14px;">';
-          h += '<button onclick="canvassToggleMap()" style="width:auto;margin-top:0;background:none;border:none;color:#666;cursor:pointer;font-size:0.72rem;padding:0;text-decoration:underline;">'
-             + (_cvMapOpen ? '&#9650; Hide map' : '&#9660; &#128506; Show satellite map') + '</button>';
-          if (_cvMapOpen) {
-            h += '<div id="cvDoorsMap" style="height:300px;border-radius:12px;overflow:hidden;border:1px solid rgba(255,255,255,0.12);margin-top:8px;background:#111;"></div>';
-            h += '<div style="display:flex;gap:10px;flex-wrap:wrap;font-size:0.62rem;color:#666;margin-top:6px;">'
-               + '<span><span style="color:#4a9eff;">&#9679;</span> You</span>'
-               + '<span><span style="color:#8DC63F;">&#9679;</span> Not knocked</span>'
-               + '<span><span style="color:#f59e0b;">&#9679;</span> Interested</span>'
-               + '<span><span style="color:#8a8a8a;">&#9679;</span> Not home</span>'
-               + '<span><span style="color:#ef4444;">&#9679;</span> Not interested</span>'
-               + '<span style="color:#555;">Tap a pin &rarr; go there next</span>'
-               + '</div>';
-          }
-          h += '</div>';
+          h += window._bbMapBlockHtml('door');
 
           if (!canvassLeads.length) {
             h += '<div style="text-align:center;padding:40px 20px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:14px;">';
@@ -21810,6 +21798,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // Lets block-1 helpers (bbEmailRowHtml/bbSaveEmail, owner controls) reach the live
     // route without duplicating them inside this closure.
     window._cvLeadsRef = function(){ return canvassLeads; };
+    // The shared focus control lives in block 1 and cannot see this closure's state.
+    window._cvSdcpFocusOn = function(){ return !!_cvSdcpFocus; };
+    window._cvSdcpCount = function(){
+      return canvassLeads.filter(function(l){
+        var z = extractZip(l.address || ''); return z && SDCP_ZIPS.has(z);
+      }).length;
+    };
     window._bbOwnerRerenderFn = renderSales;
     var _cvSdcpFocus = (function(){ try { return sessionStorage.getItem('cvSdcpFocus') === '1'; } catch(e){ return false; } })();
     var _cvMapOpen   = (function(){ try { return localStorage.getItem('cvMapOpen') !== '0'; } catch(e){ return true; } })();

@@ -462,6 +462,24 @@ Asked whether a nightly run could be simulated to see if the permit pull was wor
 - Verified in `scratchpad/test-permit-pull.js`: the four failure modes produce four **distinct** outcome strings and the report reaches `last_run_summary`. Gated both ways — reverting the tally collapses all four to one identical report ("no permit queries ran"), reproducing the bug exactly.
 - **Fifth instance of the same pattern in one day**, after the Regrid `no_key`, the Tracerfy 429, the mailing-capture zero and the pipeline's stale timestamp. ⚠️ **STANDING RULE: never let a failing or never-taken code path produce the same output as a real negative.** Count the reason.
 
+### Doors/Dialing symmetry pass 3 — one shared page shell (2026-08-08, per Dennis)
+*"The pages still look so different. Can we mimic them identically (other than the specific nuances of the action)?"* The remaining problem was **layout**, not content: different control placement, different counter styling, different order. Every row of both pages is now ONE renderer, called in the same order, so the two cannot drift apart again:
+```
+header (title + secondary actions top-right)
+_bbRepScoreboardHtml   — identical both modes, compact by default
+_bbModeToggleHtml      — 🚪 Doors | 📞 Dialing
+_bbCountersHtml        — Doors: Remaining/Knocked/Interested · Dialing: Fresh/Callbacks/Worked
+_bbControlsRowHtml     — focus LEFT, script + one-sheet RIGHT
+_bbMapBlockHtml        — open by default, remembered
+the card, then everything else
+```
+- **`_bbFocusControlHtml(mode)` finally unifies the focus controls** (the outstanding task): Dialing gets the ZIP input, Doors gets an SDCP checkbox, same row and same position. Both still **prioritise and never hide**.
+- **`_bbCountersHtml(tiles)`** renders the same tile either way; Dialing's are `<button>`s because there they are also the queue filter — the one legitimate behavioural difference, and the test asserts the container markup is otherwise identical.
+- **Scoreboard is compact by default** (`localStorage.bbScoreOpen`), showing only hours-vs-30h plus a one-line summary; tapping reveals the day bars and the four input tiles. It was the tallest element on the page and sat above everything on every load.
+- **Secondary actions moved to the header's top-right** on both — Doors' `+ Door`, Dialing's admin GHL sync.
+- ⚠️ **The Doors SDCP block was inside an IIFE.** Cutting it out by line range left an orphaned `})();` and silently deleted `canvassAddDoor` — the parse check caught the orphan, but only because it happened to break syntax. **When replacing a block in `portal.html`, check whether it is wrapped in an IIFE before slicing by markers.**
+- Verified in `scratchpad/test-shell.js`: all six rows are shared renderers, counters are structurally identical clickable or not, focus is SDCP on Doors and ZIP on Dialing with script controls to the right of both, the map blocks are identical apart from container id / toggle fn / rep-marker colour (which must differ, since the pins do), and the scoreboard is compact by default and expands.
+
 ### Doors/Dialing symmetry pass 2 — script controls + one rep scoreboard (2026-08-08)
 Reported as "they're both very different feels" and "the dashboards are very different."
 - **Script controls were the same two buttons in two visual languages and two places:** Dialing had a sliding switch buried at the tail of the Focus-ZIP row, Doors had a pill button up in the title row. `_bbScriptControlsHtml(which)` is now the single renderer (Script on/off + 📄 One sheet), mounted in the **header row on both**. `_bbScriptToggleHtml` and `_cvScriptToggleHtml` are **deleted, not hidden** — a surviving per-surface renderer is how these drift apart again. `bbScriptSetEnabled` now accepts an explicit boolean (it previously took a click event and toggled), and both setters repaint the shared strip via `outerHTML`.
