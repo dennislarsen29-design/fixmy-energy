@@ -63,7 +63,7 @@ exports.handler = async function (event) {
     let off = 0;
     while (true) {
       const r = await fetch(REST + '/customers?lead_source=eq.orphaned_list'
-        + '&select=id,address,phone,email,title_owner,first_name,last_name&order=id.asc&limit=1000&offset=' + off, { headers: H });
+        + '&select=id,address,phone,email,title_owner,first_name,last_name,mail_address&order=id.asc&limit=1000&offset=' + off, { headers: H });
       if (!r.ok) throw new Error('lead index HTTP ' + r.status);
       const rows = await r.json();
       if (!rows.length) break;
@@ -180,6 +180,14 @@ exports.handler = async function (event) {
         const first = (row['first_name'] || row['owner_1_first_name'] || '').trim();
         const last  = (row['last_name']  || row['owner_1_last_name']  || '').trim();
         const human = [first, last].filter(Boolean).join(' ') || null;
+
+        // Owner's mailing address. When it isn't the property, the owner doesn't live
+        // there — a rental or an absentee landlord. Arrives free with every trace and was
+        // being thrown away.
+        const mAddr  = (row['mail_address'] || row['mailing_address'] || '').trim();
+        const mCity  = (row['mail_city']  || row['mailing_city']  || '').trim();
+        const mState = (row['mail_state'] || row['mailing_state'] || '').trim();
+        const mZip   = String(row['mailing_zip'] || row['mail_zip'] || '').match(/\d{5}/);
         // Any column whose name looks like a do-not-call marker counts. Missing one of
         // these means putting a registered number back in the dialer.
         let dnc = false;
@@ -188,7 +196,7 @@ exports.handler = async function (event) {
           const v = String(row[k] || '').toLowerCase().trim();
           if (v && v !== 'false' && v !== 'no' && v !== '0' && v !== 'n' && v !== 'null') { dnc = true; break; }
         }
-        if (!phone && !email && !human && !dnc) continue;
+        if (!phone && !email && !human && !dnc && !mAddr) continue;
 
         let id = row['lead_id'] || null;
         if (!id) {
@@ -211,22 +219,40 @@ exports.handler = async function (event) {
         // never overwrite a real assessor value (a trust IS the correct owner).
         if (human && !lead.title_owner && !upd.title_owner) upd.title_owner = human;
         if (dnc) upd.dnc = true;
+
+        if (mAddr && !lead.mail_address && !upd.mail_address) {
+          upd.mail_address = mAddr;
+          if (mCity)  upd.mail_city  = mCity;
+          if (mState) upd.mail_state = mState;
+          if (mZip)   upd.mail_zip   = mZip[0];
+          // Same normalized street+zip key used by the dedupe and skip-trace matchers, so
+          // "123 Main Street" and "123 MAIN ST" don't read as two different places.
+          const situsKey = normStreet(lead.address) + '|' + normZip(lead.address);
+          const mailKey  = normStreet(mAddr) + '|' + (mZip ? mZip[0] : '');
+          // Only decide when we can actually compare — a missing zip on either side would
+          // otherwise flag every owner-occupied house as absentee.
+          if (normStreet(lead.address) && normStreet(mAddr) && normZip(lead.address) && mZip) {
+            upd.absentee = situsKey !== mailKey;
+          }
+        }
         if (Object.keys(upd).length) { upd.enrichment_source = 'tracerfy'; pending[id] = upd; }
         else alreadyHad++;
       }
     }
 
     const ids = Object.keys(pending);
-    const gains = { phone: 0, email: 0, name: 0, owner: 0, dnc: 0 };
+    const gains = { phone: 0, email: 0, name: 0, owner: 0, dnc: 0, mailing: 0, absentee: 0 };
     ids.forEach(id => {
       if (pending[id].phone) gains.phone++;
       if (pending[id].email) gains.email++;
       if (pending[id].first_name || pending[id].last_name) gains.name++;
       if (pending[id].title_owner) gains.owner++;
       if (pending[id].dnc) gains.dnc++;
+      if (pending[id].mail_address) gains.mailing++;
+      if (pending[id].absentee === true) gains.absentee++;
     });
     stamp(`${queuesRead} queues read · ${rowsSeen} rows · ${resolved} matched a lead · ${ids.length} leads would gain data`);
-    stamp(`Would add: ${gains.phone} phones, ${gains.email} emails, ${gains.name} HUMAN names (first/last), ${gains.owner} owner-of-record, ${gains.dnc} DNC flags`);
+    stamp(`Would add: ${gains.phone} phones, ${gains.email} emails, ${gains.name} HUMAN names, ${gains.owner} owner-of-record, ${gains.mailing} mailing addresses (${gains.absentee} absentee/rental), ${gains.dnc} DNC flags`);
 
     if (!apply) {
       return { statusCode: 200, headers: { 'Content-Type': 'application/json' },

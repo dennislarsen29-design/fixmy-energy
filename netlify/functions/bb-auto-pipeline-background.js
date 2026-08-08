@@ -1253,10 +1253,30 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
       const firstName = row['first_name'] || row['owner_1_first_name'] || '';
       const lastName  = row['last_name']  || row['owner_1_last_name']  || '';
       const ownerName = [firstName, lastName].filter(Boolean).join(' ') || null;
-      const dncRaw = row['do_not_call'] || row['dnc'] || row['primary_phone_dnc'] || '';
-      const dnc = ['true', 'yes', '1', 'y'].includes((dncRaw || '').toLowerCase().trim());
-      if (phone || email || ownerName) {
-        updateQueue.push({ leadId, streetAddr, zip: row['zip'] || row['zip_code'] || '', phone, email, ownerName, dnc });
+      // Any column that looks like a do-not-call marker counts. ⚠️ As of 2026-08-08 the
+      // advanced trace returns NO dnc column at all — see CLAUDE.md. This stays defensive
+      // in case that changes; it is not a substitute for a real scrub.
+      let dnc = false;
+      for (const k of Object.keys(row)) {
+        if (!/dnc|do_not_call|litigator|tcpa/.test(k)) continue;
+        const v = String(row[k] || '').toLowerCase().trim();
+        if (v && v !== 'false' && v !== 'no' && v !== '0' && v !== 'n' && v !== 'null') { dnc = true; break; }
+      }
+      // Owner mailing address → absentee/rental signal. Compared against the situs address
+      // on the SAME row, so no extra lookup is needed.
+      const mAddr  = (row['mail_address'] || row['mailing_address'] || '').trim();
+      const mCity  = (row['mail_city']  || row['mailing_city']  || '').trim();
+      const mState = (row['mail_state'] || row['mailing_state'] || '').trim();
+      const mZipM  = String(row['mailing_zip'] || row['mail_zip'] || '').match(/\d{5}/);
+      const sZipM  = String(row['zip'] || row['zip_code'] || '').match(/\d{5}/);
+      let absentee = null;
+      if (mAddr && streetAddr && mZipM && sZipM && normStreet(streetAddr) && normStreet(mAddr)) {
+        absentee = (normStreet(streetAddr) + '|' + sZipM[0]) !== (normStreet(mAddr) + '|' + mZipM[0]);
+      }
+      if (phone || email || ownerName || mAddr) {
+        updateQueue.push({ leadId, streetAddr, zip: row['zip'] || row['zip_code'] || '',
+          phone, email, firstName, lastName, ownerName, dnc,
+          mAddr, mCity, mState, mZip: mZipM ? mZipM[0] : '', absentee });
       }
     }
 
@@ -1302,8 +1322,20 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
         const upd = { enrichment_source: 'tracerfy' };
         if (u.phone) upd.phone = u.phone;
         if (u.email) upd.email = u.email;
+        // The skip-traced PERSON belongs in first_name/last_name — that is what the call
+        // and door cards read. Writing them only to title_owner (as this used to) put the
+        // human in the legal-owner column, where a trust-owned lead already has a value.
+        if (u.firstName) upd.first_name = u.firstName;
+        if (u.lastName)  upd.last_name  = u.lastName;
         if (u.ownerName) upd.title_owner = u.ownerName;
         if (u.dnc) upd.dnc = u.dnc;
+        if (u.mAddr) {
+          upd.mail_address = u.mAddr;
+          if (u.mCity)  upd.mail_city  = u.mCity;
+          if (u.mState) upd.mail_state = u.mState;
+          if (u.mZip)   upd.mail_zip   = u.mZip;
+          if (u.absentee !== null) upd.absentee = u.absentee;
+        }
         return supaUpdate(u.leadId, upd);
       });
       const oks = await Promise.all(writes.map(p => p.catch(() => false)));

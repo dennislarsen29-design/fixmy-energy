@@ -7930,6 +7930,48 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       + '&#9888; <b>' + esc(human) + '</b> doesn\'t match the <b>' + esc(roll.surname) + '</b> trust on title &mdash; could be a renter, or the property changed hands. Confirm before using the name.</div>';
   }
 
+  /* ── Absentee owner / rental signal ─────────────────────────────────────────
+     Every Tracerfy trace returns the owner's MAILING address alongside the
+     property, and we discarded all four columns for a year. When the mail goes
+     somewhere other than the house, the owner doesn't live there — that door is
+     a rental, which is exactly the `renter` disposition a rep burns a knock
+     discovering. Knowing it BEFORE the knock changes both the door (ask for the
+     tenant, don't pitch a bill they may not pay) and the phone call (the owner
+     is a landlord thinking about the asset, not a homeowner thinking about their
+     power bill).
+     `absentee` is computed at write time by the skip-trace apply paths
+     (tracerfy-backfill.js + bb-auto-pipeline Phase 3) on normalized street+zip,
+     so a missing zip on either side leaves it null rather than guessing. */
+  var BB_MAIL_COLS = 'mail_address,mail_city,mail_state,mail_zip,absentee';
+  var _bbMailColsOk = null; // null = not probed yet
+  // One cheap probe per session. 20260808_owner_mailing.sql may not be applied yet,
+  // and PostgREST 400s the WHOLE query on one unknown column — which would take the
+  // dialer queue and the entire Doors route down with it. Degrade silently instead.
+  async function bbMailSel(base) {
+    if (_bbMailColsOk === null) {
+      try {
+        var r = await fetch(SUPA_URL + '/rest/v1/customers?select=absentee&limit=1',
+          { headers: { 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY } });
+        _bbMailColsOk = r.ok;
+      } catch (e) { _bbMailColsOk = false; }
+    }
+    return _bbMailColsOk ? base + ',' + BB_MAIL_COLS : base;
+  }
+  window.bbMailSel = bbMailSel;
+
+  function _bbMailWhere(lead) {
+    var bits = [lead.mail_city, lead.mail_state].filter(function(x){ return x && String(x).trim(); });
+    if (bits.length) return bits.join(', ');
+    return String(lead.mail_address || '').trim();
+  }
+  function _bbAbsenteeNote(lead) {
+    if (!lead || lead.absentee !== true) return '';
+    var where = _bbMailWhere(lead);
+    return '<div style="font-size:0.7rem;color:#f59e0b;margin-bottom:6px;line-height:1.4;">'
+      + '&#127968; <b>Owner lives elsewhere</b>' + (where ? ' &mdash; mail goes to ' + esc(where) : '')
+      + '. Likely a rental &mdash; whoever answers may not be the decision-maker.</div>';
+  }
+
   var BB_DIAL_SEL_FULL ='id,first_name,last_name,address,phone,email,dnc,notes,knock_status,title_owner,lead_source,original_installer,install_year,black_box,step,lead_category,dial_status,dialed_at,dial_attempts,callback_at';
   var BB_DIAL_SEL_BASE = 'id,first_name,last_name,address,phone,email,dnc,notes,knock_status,title_owner,lead_source,original_installer,install_year,black_box,step,lead_category';
 
@@ -7975,8 +8017,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       return data;
     };
     bbDialLoadError = null;
-    var usedSel = BB_DIAL_SEL_FULL, usedAnd = dialableAnd;
-    var data = await q(BB_DIAL_SEL_FULL, filters);
+    // bbMailSel probes once per session and only appends the mailing columns when
+    // 20260808_owner_mailing.sql is actually applied — an unknown column would 400
+    // the whole query and drop the dialer to the pre-migration BASE select, losing
+    // callback/dial state for everyone.
+    var selFull = await bbMailSel(BB_DIAL_SEL_FULL);
+    var usedSel = selFull, usedAnd = dialableAnd;
+    var data = await q(selFull, filters);
     if (!data) { // dialer columns not migrated yet
       usedSel = BB_DIAL_SEL_BASE;
       usedAnd = '&and=(or(black_box.eq.true,lead_source.eq.orphaned_list),or(dnc.is.null,dnc.eq.false),or(archived.is.null,archived.eq.false))';
@@ -8709,6 +8756,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '<div style="font-size:0.78rem;color:#888;margin-bottom:6px;">'+esc(lead.address||'—')+'</div>';
     h += _bbAskForHtml(_nm);
     h += _bbTrusteeNote(lead);
+    h += _bbAbsenteeNote(lead);
     h += bbEmailRowHtml(lead);
     var badges = '';
     if (lead.original_installer) badges += '<span style="display:inline-block;padding:2px 9px;background:rgba(255,170,0,0.12);color:#ffaa00;border-radius:100px;font-size:0.62rem;font-weight:700;margin-right:6px;">'+esc(lead.original_installer)+'</span>';
@@ -20152,6 +20200,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           h += '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:10px;text-align:center;"><div style="font-size:1.2rem;font-weight:800;color:#4a9eff;">'+visited.length+'</div><div style="font-size:0.65rem;color:#888;">Knocked</div></div>';
           h += '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:10px;text-align:center;"><div style="font-size:1.2rem;font-weight:800;color:#ffaa00;">'+interested+'</div><div style="font-size:0.65rem;color:#888;">Interested</div></div>';
           h += '</div>';
+          // How much of this route is landlord-owned. Free (client-side over the loaded
+          // set) and it sets expectations before the rep starts logging `renter`.
+          var _cvAbsentee = canvassLeads.filter(function(l){ return l.absentee === true; }).length;
+          if (_cvAbsentee) {
+            h += '<div style="font-size:0.66rem;color:#f59e0b;text-align:center;margin:-8px 0 10px;">&#127968; '+_cvAbsentee+' of '+canvassLeads.length+' on this route are owner-not-resident &mdash; likely rentals</div>';
+          }
           // Show the radius the search settled on — when the nearest door is genuinely far,
           // this explains why instead of leaving it looking like a bug.
           if (canvassBoxMiles) {
@@ -20232,6 +20286,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             if (doorOwner) h += '<div style="font-size:0.8rem;font-weight:600;color:#F3EDE3;margin-bottom:2px;">&#128100; '+esc(doorOwner)+_bbEntityBadgeHtml(_doorNm)+'</div>';
             h += _bbAskForHtml(_doorNm);
             h += _bbTrusteeNote(lead);
+            h += _bbAbsenteeNote(lead);
             if (lead.apn) h += '<div style="font-size:0.62rem;color:#555;margin-bottom:2px;">APN '+esc(lead.apn)+'</div>';
             // Always available, not just when blank — the common case is looking the owner
             // up in LandGlide and typing it in afterwards, and correcting a wrong name
@@ -21778,7 +21833,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       _cvRefetching = true;
       renderSales();
       try {
-        var SEL = 'id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,original_installer,install_year,callback_at';
+        var SEL = await bbMailSel('id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,original_installer,install_year,callback_at');
         var client = supabase.createClient(SUPA_URL, SUPA_KEY);
         var res = await _canvassFetchBox(client, SEL, lat, lng);
         if (res.rows.length) {
@@ -21833,7 +21888,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       canvassUserLng = userLng;
       renderSales();
 
-      var SEL = 'id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,original_installer,install_year,callback_at';
+      // bbMailSel appends the mailing/absentee columns only when 20260808_owner_mailing.sql
+      // is applied — this SEL has no fallback tier, so one unknown column would hard-error
+      // the entire Doors route (canvassGpsStatus='error'), not degrade it.
+      var SEL = await bbMailSel('id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,original_installer,install_year,callback_at');
       var client = supabase.createClient(SUPA_URL, SUPA_KEY);
 
       var result;
