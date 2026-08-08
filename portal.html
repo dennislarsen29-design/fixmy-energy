@@ -1514,11 +1514,44 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     renderTeamView('dialers');
   };
 
+  // Calendar-aligned ranges, not rolling windows. "This week" has to mean the week the
+  // team is actually working — Monday to now — or the hours gauge below can't be checked
+  // against a 30-hour target that resets on Monday.
+  var DIAL_RANGES = [
+    { key:'today',   label:'Day' },
+    { key:'week',    label:'Week' },
+    { key:'month',   label:'Month' },
+    { key:'quarter', label:'Quarter' },
+    { key:'year',    label:'Year' }
+  ];
+  var WEEKLY_HOURS_TARGET = 30;
+
+  // Monday 00:00 of the week containing `d`. JS getDay() makes Sunday 0, so Sunday has to
+  // count back six days rather than none — otherwise every Sunday reports an empty week.
+  function _weekStart(d) {
+    var x = new Date(d || Date.now());
+    x.setHours(0,0,0,0);
+    var dow = x.getDay();
+    x.setDate(x.getDate() - (dow === 0 ? 6 : dow - 1));
+    return x;
+  }
+
   function _dialRangeStart(r) {
     var d = new Date();
-    if (r === 'today') { d.setHours(0,0,0,0); return d; }
-    var days = r === '7d' ? 7 : 30;
-    return new Date(Date.now() - days*24*3600*1000);
+    d.setHours(0,0,0,0);
+    if (r === 'today')   return d;
+    if (r === 'week')    return _weekStart(d);
+    if (r === 'month')   return new Date(d.getFullYear(), d.getMonth(), 1);
+    if (r === 'quarter') return new Date(d.getFullYear(), Math.floor(d.getMonth()/3)*3, 1);
+    if (r === 'year')    return new Date(d.getFullYear(), 0, 1);
+    // Legacy keys from a persisted selection.
+    if (r === '7d')  return new Date(Date.now() - 7*24*3600*1000);
+    if (r === '30d') return new Date(Date.now() - 30*24*3600*1000);
+    return d;
+  }
+  function _dialRangeLabel(r) {
+    var m = DIAL_RANGES.find(function(x){ return x.key === r; });
+    return m ? m.label : 'Day';
   }
 
   function _dialHrs(mins) {
@@ -1534,6 +1567,86 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var h = Math.floor(mins/60);
     if (h < 24) return h + 'h ago';
     return Math.floor(h/24) + 'd ago';
+  }
+
+  // Hours worked this week against the 30h target, per rep, accumulating day by day and
+  // resetting on Monday. Hours come entirely from the auto-clock — there is no button.
+  function _dialHoursGaugeHtml(weekShifts, reps) {
+    var wkStart = _weekStart();
+    var byRep = {}, dayTotals = [0,0,0,0,0,0,0];
+    (weekShifts || []).forEach(function(s) {
+      if (!s.started_at) return;
+      var st = new Date(s.started_at).getTime();
+      var en = s.ended_at ? new Date(s.ended_at).getTime() : Date.now();
+      // Same forgotten-clock-out guard used in the per-rep table: judge the FULL shift.
+      if ((en - st) / 3600000 > 16) return;
+      var canon = _repCanonical(s.rep_name) || 'Unassigned';
+      var mins = Math.max(0, (en - Math.max(st, wkStart.getTime())) / 60000);
+      byRep[canon] = (byRep[canon] || 0) + mins;
+      var dayIdx = Math.floor((st - wkStart.getTime()) / 86400000);
+      if (dayIdx >= 0 && dayIdx < 7) dayTotals[dayIdx] += mins;
+    });
+
+    var names = (reps || []).map(function(r){ return r.name; });
+    Object.keys(byRep).forEach(function(n){ if (names.indexOf(n) < 0) names.push(n); });
+
+    var teamMins = Object.keys(byRep).reduce(function(a,k){ return a + byRep[k]; }, 0);
+    var teamTarget = WEEKLY_HOURS_TARGET * Math.max(1, names.length);
+    var wkLabel = wkStart.toLocaleDateString('en-US', { month:'short', day:'numeric' });
+
+    function bar(mins, target) {
+      var hrs = mins / 60;
+      var pct = Math.min(100, Math.round(hrs / target * 100));
+      // Deliberately not red for "behind" — it is Monday morning for someone every week.
+      var col = pct >= 100 ? '#8DC63F' : pct >= 66 ? '#a3d977' : pct >= 33 ? '#ffaa00' : '#E8793A';
+      return { hrs: hrs, pct: pct, col: col };
+    }
+
+    var t = bar(teamMins, teamTarget);
+    var h = '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:14px;padding:14px;margin-bottom:14px;">';
+    h += '<div style="display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-bottom:4px;">';
+    h += '<div style="font-size:0.7rem;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;color:#888;">&#127777; Hours this week</div>';
+    h += '<div style="font-size:0.68rem;color:#666;">Week of ' + wkLabel + ' &middot; resets Monday &middot; ' + WEEKLY_HOURS_TARGET + 'h target each</div>';
+    h += '</div>';
+
+    h += '<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:6px;">';
+    h += '<div style="font-size:1.5rem;font-weight:800;color:'+t.col+';">' + t.hrs.toFixed(1) + 'h</div>';
+    h += '<div style="font-size:0.74rem;color:#777;">of ' + teamTarget + 'h team target &middot; ' + t.pct + '%</div>';
+    h += '</div>';
+    h += '<div style="background:rgba(255,255,255,0.08);border-radius:100px;height:9px;overflow:hidden;margin-bottom:12px;">'
+       + '<div style="background:'+t.col+';height:9px;border-radius:100px;width:'+t.pct+'%;transition:width 0.3s;"></div></div>';
+
+    // Day-by-day accumulation across the week.
+    var dayNames = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+    var todayIdx = Math.floor((Date.now() - wkStart.getTime()) / 86400000);
+    var maxDay = Math.max.apply(null, dayTotals.concat([1]));
+    h += '<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:5px;margin-bottom:12px;">';
+    dayNames.forEach(function(dn, i) {
+      var mins = dayTotals[i];
+      var pct = Math.round(mins / maxDay * 100);
+      var future = i > todayIdx;
+      h += '<div style="text-align:center;">';
+      h += '<div style="height:38px;display:flex;align-items:flex-end;justify-content:center;">'
+         + '<div style="width:70%;height:'+(future?0:Math.max(mins>0?4:0,pct*0.38))+'px;background:'+(i===todayIdx?'#8DC63F':'rgba(141,198,63,0.4)')+';border-radius:3px 3px 0 0;"></div></div>';
+      h += '<div style="font-size:0.58rem;color:'+(i===todayIdx?'#8DC63F':'#555')+';font-weight:'+(i===todayIdx?'800':'600')+';margin-top:3px;">'+dn+'</div>';
+      h += '<div style="font-size:0.56rem;color:#444;">'+(future ? '' : (mins/60).toFixed(1)+'h')+'</div>';
+      h += '</div>';
+    });
+    h += '</div>';
+
+    // Per-rep bars.
+    names.sort(function(a,b){ return (byRep[b]||0) - (byRep[a]||0); });
+    names.slice(0, 12).forEach(function(n) {
+      var b = bar(byRep[n] || 0, WEEKLY_HOURS_TARGET);
+      h += '<div style="display:flex;align-items:center;gap:9px;margin-bottom:6px;">';
+      h += '<div style="flex:0 0 100px;font-size:0.72rem;color:#bbb;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+esc(n)+'</div>';
+      h += '<div style="flex:1;background:rgba(255,255,255,0.07);border-radius:100px;height:7px;overflow:hidden;">'
+         + '<div style="background:'+b.col+';height:7px;border-radius:100px;width:'+b.pct+'%;"></div></div>';
+      h += '<div style="flex:0 0 74px;text-align:right;font-size:0.7rem;color:'+b.col+';font-weight:700;">'+b.hrs.toFixed(1)+'h <span style="color:#555;font-weight:600;">/'+WEEKLY_HOURS_TARGET+'</span></div>';
+      h += '</div>';
+    });
+    h += '</div>';
+    return h;
   }
 
   async function _teamDialersHtml() {
@@ -1554,11 +1667,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // ── Shift clock (optional — 20260803_setter_database.sql) ───────────────
     var shifts = [], shiftsMissing = false;
     try {
+      // A year back so the Year range has real hours; the gauge slices this week out of it.
       var sr = await sc.from('rep_shifts').select('rep_name,rep_id,started_at,ended_at')
-        .gte('started_at', new Date(Date.now() - 31*24*3600*1000).toISOString()).limit(3000);
+        .gte('started_at', new Date(Date.now() - 400*24*3600*1000).toISOString()).limit(20000);
       if (sr.error) throw sr.error;
       shifts = sr.data || [];
     } catch(e) { shiftsMissing = true; }
+    // The hours gauge is always THIS WEEK regardless of the range pill — the 30h target
+    // resets Monday, so showing it against a Year selection would be meaningless.
+    var weekShifts = shifts.filter(function(s){
+      return s.started_at && new Date(s.started_at).getTime() >= _weekStart().getTime();
+    });
 
     // ── Roster: team_members ∪ anyone with activity ─────────────────────────
     var stats = {};   // lowercased name -> row
@@ -1627,12 +1746,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // Range pills
     var pst = 'width:auto;margin:0;padding:6px 16px;border:none;border-radius:100px;font-size:0.74rem;font-weight:700;cursor:pointer;white-space:nowrap;';
     h += '<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;">'
-      + [['today','Today'],['7d','7 days'],['30d','30 days']].map(function(p){
-          var on = range === p[0];
-          return '<button onclick="teamSetDialRange(\''+p[0]+'\')" style="'+pst+'background:'+(on?'#4a9eff':'rgba(255,255,255,0.07)')+';color:'+(on?'#fff':'#888')+';">'+p[1]+'</button>';
+      + DIAL_RANGES.map(function(p){
+          var on = range === p.key;
+          return '<button onclick="teamSetDialRange(\''+p.key+'\')" style="'+pst+'background:'+(on?'#4a9eff':'rgba(255,255,255,0.07)')+';color:'+(on?'#fff':'#888')+';">'+p.label+'</button>';
         }).join('')
       + '<button onclick="renderTeamView(\'dialers\')" style="'+pst+'background:rgba(255,255,255,0.07);color:#888;">&#8635; Refresh</button>'
       + '</div>';
+
+    h += _dialHoursGaugeHtml(weekShifts, reps);
 
     if (actErr) {
       h += '<div style="padding:12px 14px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.3);border-radius:10px;font-size:0.76rem;color:#ff8a8a;margin-bottom:12px;">&#9888; Could not load call activity &mdash; ' + actErr + '</div>';
@@ -7503,54 +7624,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   }
   var _bbShiftLastSeen = {};
 
-  window.bbShiftStart = async function() {
-    try {
-      var c = supabase.createClient(SUPA_URL, SUPA_KEY);
-      var row = { rep_id: bbRepId(), rep_name: bbRepName(), started_at: new Date().toISOString(), source: 'dialer' };
-      var r = await c.from('rep_shifts').insert(row).select();
-      if (r.error) throw new Error(r.error.message);
-      _bbShift = (r.data && r.data[0]) || row;
-      _bbShiftRerender();
-    } catch(e) { alert('Could not start shift: ' + e.message + '\n\nIf this persists, run supabase/migrations/20260803_setter_database.sql.'); }
-  };
-
-  window.bbShiftEnd = async function() {
-    if (!_bbShift) return;
-    if (!confirm('End your shift? Your dials and hours are saved to your record.')) return;
-    try {
-      var c = supabase.createClient(SUPA_URL, SUPA_KEY);
-      var r = await c.from('rep_shifts').update({ ended_at: new Date().toISOString() }).eq('id', _bbShift.id);
-      if (r.error) throw new Error(r.error.message);
-      _bbShift = null;
-      _bbShiftRerender();
-    } catch(e) { alert('Could not end shift: ' + e.message); }
-  };
-
-  function _bbShiftElapsed() {
-    if (!_bbShift || !_bbShift.started_at) return '';
-    var mins = Math.max(0, Math.round((Date.now() - new Date(_bbShift.started_at).getTime()) / 60000));
-    return Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm';
-  }
-
-  function bbShiftControlHtml() {
-    if (_bbShift) {
-      return '<div style="display:flex;align-items:center;gap:8px;">'
-        + '<span style="font-size:0.7rem;color:#8DC63F;font-weight:700;">&#128337; On shift &middot; ' + _bbShiftElapsed() + '</span>'
-        + '<button onclick="bbShiftEnd()" style="width:auto;padding:5px 12px;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.35);color:#ff8a8a;border-radius:100px;font-size:0.68rem;font-weight:700;cursor:pointer;">End Shift</button>'
-        + '</div>';
-    }
-    return '<button onclick="bbShiftStart()" title="Starts your shift clock. Your hours are paired with your dials so your 1:1 shows real dials-per-hour." style="width:auto;padding:5px 12px;background:rgba(141,198,63,0.12);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:100px;font-size:0.68rem;font-weight:700;cursor:pointer;">&#9654; Start Shift</button>';
-  }
-
-  // The shift control now renders on BOTH prospecting screens, so start/end must redraw
-  // whichever one is open — hard-calling renderBBDialerView() from Doors would blank the
-  // route out from under the rep.
-  function _bbShiftRerender() {
-    if (typeof window._bbShiftRerenderFn === 'function') {
-      try { window._bbShiftRerenderFn(); return; } catch(e) {}
-    }
-    renderBBDialerView();
-  }
+  // The manual Start/End Shift controls were removed (2026-08-07). Hours are derived
+  // entirely from logged work by _bbAutoShiftOnActivity above and closed by the
+  // shift-autoclose sweep, so there is no button to press and none to forget. The weekly
+  // total against the 30h target lives on the admin Dialers scoreboard.
 
   // ── Doors / Dialing ───────────────────────────────────────────────────────
   // Two prospecting motions, one product: Doors = service door-to-door, Dialing = phone.
@@ -7561,15 +7638,23 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (!isRep) {
       return '<button onclick="renderAdminCanvassView()" style="width:auto;margin-top:0;background:none;border:none;color:#555;cursor:pointer;font-size:0.75rem;padding:0;">&#8592; Back to Black Box</button>';
     }
-    function pill(id, label, active, colour) {
-      return '<button onclick="salesSetView(\''+id+'\')" style="width:auto;margin-top:0;padding:7px 18px;border-radius:100px;font-size:0.75rem;font-weight:700;cursor:pointer;white-space:nowrap;'
-        + (active ? 'background:'+colour+';border:1px solid '+colour+';color:#1A1A1A;'
-                  : 'background:transparent;border:1px solid rgba(255,255,255,0.14);color:#888;')
-        + '">'+label+'</button>';
+    // Styled to match the FixMy / New Solar / Top Tier category pills on the Leads screen —
+    // same size, same weight, same colour-when-active. These are the top-level mode switch
+    // for the whole product, so they should read as loudly as those do.
+    var catTabStyle = 'width:auto;margin-top:0;padding:9px 22px;border:none;border-radius:100px;font-size:0.82rem;font-weight:800;cursor:pointer;transition:all 0.15s;white-space:nowrap;';
+    function pill(id, label, active, colour, count) {
+      var badge = (count != null) ? ' (' + count + ')' : '';
+      return '<button onclick="salesSetView(\''+id+'\')" style="'+catTabStyle
+        + (active ? 'background:'+colour+';color:#1A1A1A;box-shadow:0 2px 10px '+colour+'55;'
+                  : 'background:rgba(255,255,255,0.07);color:#888;')
+        + '">'+label+badge+'</button>';
     }
-    return '<div style="display:inline-flex;gap:6px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:100px;padding:4px;">'
-      + pill('canvass', '&#128682; Doors',  mode === 'doors',   '#8DC63F')
-      + pill('dialer',  '&#128222; Dialing', mode === 'dialing', '#E8793A')
+    var doorCount = null, dialCount = null;
+    try { if (typeof window._cvDoorCount === 'number') doorCount = window._cvDoorCount; } catch(e){}
+    try { if (typeof bbDialQueue !== 'undefined' && bbDialLoaded) dialCount = bbDialQueue.length; } catch(e){}
+    return '<div style="display:flex;gap:8px;flex-wrap:wrap;">'
+      + pill('canvass', '&#128682; Doors',   mode === 'doors',   '#8DC63F', doorCount)
+      + pill('dialer',  '&#128222; Dialing', mode === 'dialing', '#E8793A', dialCount)
       + '</div>';
   }
 
@@ -8342,7 +8427,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var h = portalNav + '<div style="padding:4px 0 16px;">';
 
     // Header — the rep portal gets the Doors/Dialing toggle; admin keeps a back link.
-    window._bbShiftRerenderFn = renderBBDialerView;
     h += '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:14px;">';
     h += '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">';
     h += isAdminDialer
@@ -8381,9 +8465,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var buckets = bbDialBuckets();
     var sess = bbDialSession();
 
-    // Shift clock — lazily checks for an open shift on first render, then re-renders.
-    if (!_bbShiftChecked) { bbShiftLoad().then(function(){ renderBBDialerView(); }); }
-    h += '<div style="display:flex;justify-content:flex-end;margin-bottom:8px;">' + bbShiftControlHtml() + '</div>';
+    // Shift control deliberately absent — see the Doors header for the rationale.
 
     // Session stats
     h += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px;">';
@@ -19742,12 +19824,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += _bbModeToggleHtml('doors');
         h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#8DC63F;">&#128682; Doors &mdash; Prospecting Route</div>';
         h += '</div>';
-        // Shift clock — same control the Dialing side has. The clock already opens itself
-        // on the first knock (bbLogActivity -> _bbAutoShiftOnActivity); this just makes it
-        // visible so a rep can see they're on the clock.
-        window._bbShiftRerenderFn = renderSales;
-        if (!_bbShiftChecked) { bbShiftLoad().then(function(){ renderSales(); }); }
-        h += bbShiftControlHtml();
+        // No shift control here by design (2026-08-07). Hours are derived entirely from
+        // logged work by the auto-clock — there is nothing for a rep to press, and nothing
+        // to forget. The weekly total lives on the admin Dialers scoreboard.
         h += '</div>';
 
         // QR Code card (moved off the login dashboard — lives here in the Black Box canvass route)
@@ -19842,8 +19921,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         }
 
         else if (canvassGpsStatus === 'ready') {
-          var unvisited = canvassLeads.filter(function(l){ return !l.knock_status; });
+          var unvisited = canvassLeads.filter(_cvIsOpen);
           var visited = canvassLeads.filter(function(l){ return !!l.knock_status; });
+          window._cvDoorCount = unvisited.length;   // feeds the Doors pill badge
           var interested = canvassLeads.filter(function(l){ return l.knock_status === 'interested'; }).length;
 
           // Location pill — now states when the route last re-centered and which way the
@@ -19936,7 +20016,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             h += '<div style="background:rgba(255,255,255,0.05);border:2px solid '+(reopened?'rgba(74,158,255,0.5)':'rgba(141,198,63,0.35)')+';border-radius:16px;padding:18px;margin-bottom:12px;">';
             h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">';
             if (reopened) {
-              var rsLbl = {interested:'✓ Hot Lead',not_home:'🚫 Not Home',not_interested:'👎 No Interest',already_customer:'⭐ Already Ours'}[lead.knock_status] || lead.knock_status || '';
+              var rsLbl = CV_DOOR_LABELS[lead.knock_status] || lead.knock_status || '';
               h += '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#4a9eff;">&#8635; Revisiting'+(rsLbl?' &middot; '+rsLbl:'')+'</div>';
             } else {
               h += '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#8DC63F;">Next Door · 1 of '+unvisited.length+' remaining</div>';
@@ -19990,13 +20070,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
               h += '<div style="margin-bottom:14px;"></div>';
             }
 
-            // Outcome buttons
+            // Outcome buttons — door-native equivalents of the Dialer's dispositions.
+            // Booked is the whole point and gets the full-width primary treatment.
             h += '<div style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#666;margin-bottom:8px;">What happened?</div>';
+            h += '<button onclick="canvassStartBooking(\''+lead.id+'\')" style="width:100%;padding:16px;margin-bottom:8px;border:none;border-radius:12px;background:#8DC63F;color:#1A1A1A;font-size:0.95rem;font-weight:800;cursor:pointer;">&#9989; BOOKED!</button>';
             h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">';
-            h += '<button onclick="canvassKnock(\''+lead.id+'\',\'not_home\')" style="padding:14px 8px;border:1px solid rgba(255,255,255,0.15);border-radius:12px;background:rgba(255,255,255,0.06);color:#ccc;font-size:0.8rem;font-weight:700;cursor:pointer;">🚫 Not Home</button>';
-            h += '<button onclick="canvassKnock(\''+lead.id+'\',\'not_interested\')" style="padding:14px 8px;border:1px solid rgba(255,255,255,0.15);border-radius:12px;background:rgba(255,255,255,0.06);color:#ccc;font-size:0.8rem;font-weight:700;cursor:pointer;">👎 Not Interested</button>';
-            h += '<button onclick="canvassKnock(\''+lead.id+'\',\'interested\')" style="padding:14px 8px;border:1px solid rgba(141,198,63,0.4);border-radius:12px;background:rgba(141,198,63,0.12);color:#8DC63F;font-size:0.8rem;font-weight:700;cursor:pointer;">✅ Interested!</button>';
-            h += '<button onclick="canvassKnock(\''+lead.id+'\',\'already_customer\')" style="padding:14px 8px;border:1px solid rgba(74,158,255,0.3);border-radius:12px;background:rgba(74,158,255,0.08);color:#4a9eff;font-size:0.8rem;font-weight:700;cursor:pointer;">⭐ Already Customer</button>';
+            CV_DOOR_OUTCOMES.forEach(function(o) {
+              h += '<button onclick="canvassKnock(\''+lead.id+'\',\''+o.key+'\')" title="'+o.tip+'" style="padding:14px 8px;border:1px solid '+o.border+';border-radius:12px;background:'+o.bg+';color:'+o.color+';font-size:0.8rem;font-weight:700;cursor:pointer;">'+o.icon+' '+o.label+'</button>';
+            });
             h += '</div>';
             // Inline note input
             h += '<div style="margin-top:10px;border-top:1px solid rgba(255,255,255,0.06);padding-top:8px;">';
@@ -20042,8 +20123,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           if (!bbHistT.length) {
             h += '<div style="font-size:0.72rem;color:#444;text-align:center;padding:20px 8px;background:rgba(255,255,255,0.02);border:1px dashed rgba(255,255,255,0.08);border-radius:10px;">No knocks yet<br/><span style="font-size:0.65rem;color:#333;">History appears here as you go</span></div>';
           } else {
-            var bbSC = {interested:'#8DC63F',not_home:'#666',not_interested:'#ef4444',already_customer:'#4a9eff'};
-            var bbSL = {interested:'✓ Hot Lead',not_home:'🚫 Not Home',not_interested:'👎 No Interest',already_customer:'⭐ Already Ours'};
+            var bbSC = {booked:'#8DC63F',warm:'#E8793A',come_back:'#ffaa00',renter:'#9b6de8',
+                        interested:'#8DC63F',not_home:'#666',not_interested:'#ef4444',already_customer:'#4a9eff'};
+            var bbSL = Object.assign({ interested:'✓ Interested' }, CV_DOOR_LABELS);
             h += '<div style="font-size:0.6rem;color:#444;margin-bottom:5px;">Tap one to pull it back up</div>';
             bbHistT.slice(0, 20).forEach(function(entry) {
               var ago = '';
@@ -20594,6 +20676,21 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var CV_REFETCH_MI = 1.5;               // move this far from the fetch point ⇒ re-query
     var CV_MOVING_MPS = 2.2;               // ~5 mph — below this, heading is noise
     var CV_BEHIND_DEG = 100;               // more than this off your heading = behind you
+    // Door dispositions — the Dialer's intent, in the language of a doorstep.
+    // ⚠️ No DNC here, deliberately (per Dennis): a door rep having a bad approach must not
+    // be able to permanently kill a lead's phone eligibility for everyone else. A genuine
+    // "never contact me" goes through Not Interested + a note, and an admin sets the real
+    // dnc flag from the lead editor.
+    var CV_DOOR_OUTCOMES = [
+      { key:'not_home',        label:'Not Home',       icon:'&#128683;', color:'#ccc',    bg:'rgba(255,255,255,0.06)', border:'rgba(255,255,255,0.15)', tip:'Nobody answered. Stays in the route for another pass.' },
+      { key:'come_back',       label:'Come Back',      icon:'&#128337;', color:'#ffaa00', bg:'rgba(255,170,0,0.1)',    border:'rgba(255,170,0,0.35)',   tip:'They asked you to return later. Stays in the route, behind untouched doors.' },
+      { key:'warm',            label:'Warm',           icon:'&#128293;', color:'#E8793A', bg:'rgba(232,121,58,0.12)',  border:'rgba(232,121,58,0.4)',   tip:'Spoke with them, real interest but no appointment yet.' },
+      { key:'renter',          label:'Renter',         icon:'&#127968;', color:'#9b6de8', bg:'rgba(155,109,232,0.1)',  border:'rgba(155,109,232,0.35)', tip:'Not the owner — we can only work with whoever is on title.' },
+      { key:'not_interested',  label:'Not Interested', icon:'&#128078;', color:'#ccc',    bg:'rgba(255,255,255,0.06)', border:'rgba(255,255,255,0.15)', tip:'Clear no. Removed from the route.' },
+      { key:'already_customer',label:'Customer',       icon:'&#11088;',  color:'#4a9eff', bg:'rgba(74,158,255,0.08)',  border:'rgba(74,158,255,0.3)',   tip:'Already ours.' }
+    ];
+    var CV_DOOR_LABELS = (function(){ var m = { booked:'✅ Booked!' }; CV_DOOR_OUTCOMES.forEach(function(o){ m[o.key] = o.label; }); return m; })();
+
     var _cvReopenId = null;   // a knocked door the rep pulled back up from the session log
     // renderSales() rebuilds dashBody wholesale, and the GPS watch calls it every few
     // seconds. Anything the rep has open or half-typed is destroyed unless it survives
@@ -20643,22 +20740,100 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       });
     }
 
+    // ── Route sequencing ───────────────────────────────────────────────────────
+    // Pure nearest-first zig-zags: it will send a rep across the road and back for two
+    // doors that are 80ft apart as the crow flies but on opposite sides. A knocking route
+    // is walked STREET AT A TIME, up the block taking both sides in house-number order,
+    // and only then on to the next street — even when a door one street over happens to
+    // be marginally closer.
+    function _cvHouseNum(addr) {
+      var m = String(addr || '').trim().match(/^(\d+)/);
+      return m ? parseInt(m[1], 10) : null;
+    }
+    function _cvStreetName(addr) {
+      // Strip the leading house number, keep the street, drop city/state/zip.
+      var street = String(addr || '').split(',')[0].replace(/^\s*\d+\s*/, '');
+      return street.toUpperCase().replace(/[^A-Z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
+    }
+
+    // A door still "open" for knocking. come_back is deliberately included — the rep asked
+    // to return, so it belongs in the route, just not at the front.
+    function _cvIsOpen(l) { return !l.knock_status || l.knock_status === 'come_back'; }
+
+    // Assigns each open door a walking-order index. Streets are visited nearest-first;
+    // within a street the doors run in house-number order, starting from whichever end
+    // the rep is closer to, so they walk the block rather than bouncing down it.
+    function _cvSequenceRoute() {
+      var open = canvassLeads.filter(_cvIsOpen);
+      var groups = {};
+      open.forEach(function(l) {
+        var k = _cvStreetName(l.address) || '(unknown)';
+        (groups[k] = groups[k] || []).push(l);
+      });
+
+      var keys = Object.keys(groups).map(function(k) {
+        var g = groups[k];
+        var nearest = null, nearestLead = null;
+        g.forEach(function(l) {
+          var d = l._distMi != null ? l._distMi : 9999;
+          if (nearest == null || d < nearest) { nearest = d; nearestLead = l; }
+        });
+        return {
+          key: k, leads: g, dist: nearest == null ? 9999 : nearest, entry: nearestLead,
+          // A street the rep has already driven past ranks below one ahead of them, but
+          // only ever as a tiebreak — never enough to strand a street they're standing on.
+          behind: !!(nearestLead && nearestLead._behind),
+          sdcp: g.some(_cvIsSdcp)
+        };
+      });
+
+      keys.sort(function(a, b) {
+        if (a.behind !== b.behind) return a.behind ? 1 : -1;
+        if (_cvSdcpFocus && a.sdcp !== b.sdcp) return a.sdcp ? -1 : 1;
+        return a.dist - b.dist;
+      });
+
+      var seq = 0;
+      keys.forEach(function(grp) {
+        // Both sides of the street together, in house-number order. Direction is chosen by
+        // which end the rep is nearer, so they don't start at the far end and walk back.
+        var numbered = grp.leads.slice().sort(function(a, b) {
+          var na = _cvHouseNum(a.address), nb = _cvHouseNum(b.address);
+          if (na == null && nb == null) return 0;
+          if (na == null) return 1;
+          if (nb == null) return -1;
+          return na - nb;
+        });
+        var entryNum = grp.entry ? _cvHouseNum(grp.entry.address) : null;
+        if (entryNum != null && numbered.length > 1) {
+          var firstNum = _cvHouseNum(numbered[0].address);
+          var lastNum  = _cvHouseNum(numbered[numbered.length - 1].address);
+          if (firstNum != null && lastNum != null &&
+              Math.abs(entryNum - lastNum) < Math.abs(entryNum - firstNum)) {
+            numbered.reverse();   // rep is nearer the high end — walk down instead of up
+          }
+        }
+        numbered.forEach(function(l) { l._seq = seq++; });
+        grp.leads.forEach(function(l){ l._street = grp.key; });
+      });
+      canvassLeads.forEach(function(l){ if (l._seq == null) l._seq = 99999; });
+    }
+
     // One comparator for the whole route so the three places that re-sort can't drift.
-    // Order: hot leads, then unknocked before knocked, then ahead-of-you before behind,
-    // then SDCP first when focused, then plain distance.
+    // Order: hot leads, then still-open doors before finished ones, then walking sequence.
     function _cvRouteCmp(a, b) {
       if (a._hot && !b._hot) return -1;
       if (!a._hot && b._hot) return 1;
-      if (a.knock_status && !b.knock_status) return 1;
-      if (!a.knock_status && b.knock_status) return -1;
-      if (!!a._behind !== !!b._behind) return a._behind ? 1 : -1;
-      if (_cvSdcpFocus) {
-        var sa = _cvIsSdcp(a), sb = _cvIsSdcp(b);
-        if (sa !== sb) return sa ? -1 : 1;
-      }
+      var ao = _cvIsOpen(a), bo = _cvIsOpen(b);
+      if (ao !== bo) return ao ? -1 : 1;
+      // A come-back sits behind untouched doors on the same street.
+      var ac = a.knock_status === 'come_back', bc = b.knock_status === 'come_back';
+      if (ao && bo && ac !== bc) return ac ? 1 : -1;
+      var sa = a._seq != null ? a._seq : 99999, sb = b._seq != null ? b._seq : 99999;
+      if (sa !== sb) return sa - sb;
       return (a._distMi != null ? a._distMi : 9999) - (b._distMi != null ? b._distMi : 9999);
     }
-    function _cvSortRoute() { _cvMarkBehind(); canvassLeads.sort(_cvRouteCmp); }
+    function _cvSortRoute() { _cvMarkBehind(); _cvSequenceRoute(); canvassLeads.sort(_cvRouteCmp); }
 
     window.canvassToggleSdcp = function() {
       _cvSdcpFocus = !_cvSdcpFocus;
@@ -20911,6 +21086,275 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       await _cvSaveOwner(id, name, null);
     };
 
+    /* ══════════════════════════════════════════════════════════════════════════
+       BOOKING AT THE DOOR
+       Three steps, because the two things that kill a doorstep booking are wrong
+       contact details and a homeowner who doesn't really know what they agreed to.
+         1. Pick the day and arrival window.
+         2. Read every detail back out loud and get a yes on each one.
+         3. Capture the equipment / production / bill photos while you're standing there —
+            the same categories the homeowner could have uploaded themselves, so the
+            evaluation is half-done before the tech arrives.
+       ══════════════════════════════════════════════════════════════════════════ */
+    var _cvBk = null;   // { id, lead, step, date, startISO, endISO, confirmed:{}, }
+
+    // What the rep reads back. Keys map to editable lead fields so "Fix it" can correct
+    // it on the spot rather than booking against a wrong number.
+    var CV_CONFIRM_ITEMS = [
+      { key:'name',  label:'Name',        say:'Can I confirm I have your name right — {v}?',                    field:'name'    },
+      { key:'phone', label:'Phone',       say:'I have {v} — is that the best number to reach you?',             field:'phone'   },
+      { key:'email', label:'Email',       say:'And your email is {v}? That is where the confirmation goes.',    field:'email'   },
+      { key:'addr',  label:'Address',     say:'We will be coming to {v} — correct?',                            field:'address' },
+      { key:'appt',  label:'Appointment', say:'So we are set for {v}. Does that still work?',                   field:null      },
+      { key:'title', label:'Who is home', say:'Everyone on the title needs to be there so we can go over options together — will that work?', field:null }
+    ];
+
+    // The same photo categories a homeowner can upload from the customer portal.
+    var CV_BOOK_PHOTOS = [
+      { label:'Inverter Photo',        icon:'&#128247;', hint:'The whole unit, close enough to read the front label.' },
+      { label:'Serial Number',         icon:'&#128290;', hint:'Close-up of the sticker.' },
+      { label:'MSP Step Back Photo',   icon:'&#9889;',   hint:'Main breaker panel with the door open.' },
+      { label:'Production Screenshot', icon:'&#128241;', hint:'Their solar app, if they have it on their phone.' },
+      { label:'Utility Bill',          icon:'&#128196;', hint:'Photo or PDF of the most recent bill.' }
+    ];
+
+    window.canvassStartBooking = async function(id) {
+      var lead = canvassLeads.find(function(l){ return l.id === id; });
+      if (!lead) return;
+      _cvBk = { id: id, lead: lead, step: 0, date: '', start: '', confirmed: {} };
+      currentJobId = id;
+      try { await loadJobPhotos(id); } catch(e) {}
+      _cvBkRender();
+    };
+    window.canvassCancelBooking = function() {
+      _cvBk = null;
+      var s = document.getElementById('editorSlot');
+      if (s) s.innerHTML = '';
+      renderSales();
+    };
+    window.canvassBkStep = function(n) { if (_cvBk) { _cvBk.step = n; _cvBkRender(); } };
+    window.canvassBkSet = function(k, v) { if (_cvBk) { _cvBk[k] = v; _cvBkRender(); } };
+    window.canvassBkConfirm = function(k) {
+      if (!_cvBk) return;
+      _cvBk.confirmed[k] = true;
+      _cvBkRender();
+    };
+    window.canvassBkFix = async function(k) {
+      if (!_cvBk) return;
+      var item = CV_CONFIRM_ITEMS.find(function(i){ return i.key === k; });
+      if (!item || !item.field) return;
+      var lead = _cvBk.lead;
+      var cur = item.field === 'name'
+        ? ((lead.first_name||'') + ' ' + (lead.last_name||'')).trim()
+        : (lead[item.field] || '');
+      var v = prompt(item.label + ':', cur);
+      if (v == null) return;
+      v = v.trim();
+      var upd = {};
+      if (item.field === 'name') {
+        var parts = v.split(/\s+/);
+        upd.first_name = parts.shift() || null;
+        upd.last_name  = parts.join(' ') || null;
+      } else {
+        upd[item.field] = v || null;
+      }
+      Object.assign(lead, upd);
+      try {
+        var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+        await c.from('customers').update(upd).eq('id', _cvBk.id);
+      } catch(e) {}
+      _cvBk.confirmed[k] = true;
+      _cvBkRender();
+    };
+
+    window.canvassBkUpload = async function(inputEl, label) {
+      if (!_cvBk) return;
+      var files = Array.from(inputEl.files || []);
+      if (!files.length) return;
+      var st = document.getElementById('cvBkPhotoStatus');
+      if (st) { st.style.color = '#8DC63F'; st.textContent = 'Uploading…'; }
+      currentJobId = _cvBk.id;
+      try {
+        window._evForceLabel = label;   // the slot already knows its category
+        await uploadPhotos(files);
+      } catch(e) {
+        if (st) { st.style.color = '#ef4444'; st.textContent = 'Upload failed: ' + e.message; }
+      } finally { window._evForceLabel = null; }
+      try { await loadJobPhotos(_cvBk.id); } catch(e) {}
+      inputEl.value = '';
+      _cvBkRender();
+    };
+
+    function _cvBkApptLabel() {
+      if (!_cvBk || !_cvBk.date || !_cvBk.start) return '';
+      var d = new Date(_cvBk.date + 'T' + _cvBk.start);
+      if (isNaN(d.getTime())) return '';
+      var end = new Date(d.getTime() + 2 * 3600000);
+      var fmt = function(x){ var hh = x.getHours() % 12 || 12; var mm = x.getMinutes(); return hh + (mm ? ':' + String(mm).padStart(2,'0') : '') + (x.getHours() < 12 ? 'am' : 'pm'); };
+      return d.toLocaleDateString('en-US', { weekday:'long', month:'long', day:'numeric' }) + ', ' + fmt(d) + '–' + fmt(end);
+    }
+
+    window.canvassCommitBooking = async function() {
+      if (!_cvBk) return;
+      var lead = _cvBk.lead;
+      var start = new Date(_cvBk.date + 'T' + _cvBk.start);
+      var startISO = start.toISOString();
+      var endISO = new Date(start.getTime() + 2 * 3600000).toISOString();
+      var st = document.getElementById('cvBkStatus');
+      if (st) { st.style.color = '#888'; st.textContent = 'Booking the appointment…'; }
+      try {
+        var r = await fetch('/.netlify/functions/ghl-book', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            firstName: lead.first_name || '', lastName: lead.last_name || '',
+            phone: lead.phone || '', email: lead.email || null,
+            address: lead.address || null, startISO: startISO, endISO: endISO, customerId: lead.id
+          })
+        });
+        var result = await r.json();
+        // ghl-book returns ok:true even when the calendar itself rejects the slot — a real
+        // booking needs an appointmentId with no apptError, same check the dialer uses.
+        var booked = !!result.appointmentId && !result.apptError;
+        if (!r.ok || !result.ok || !booked) {
+          throw new Error(result.error || (result.apptError && result.apptError.body) || 'the calendar rejected the appointment');
+        }
+      } catch(e) {
+        if (st) st.textContent = '';
+        if (!confirm('Could not book the calendar appointment (' + e.message + ').\n\nSave it as booked anyway and fix the calendar later?')) return;
+      }
+      if (st) { st.style.color = '#888'; st.textContent = 'Saving…'; }
+      try {
+        var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+        await c.from('customers').update({
+          knock_status: 'booked', knocked_at: new Date().toISOString(), knocked_by: person.id,
+          diagnostic_date: startISO, arrival_end: endISO,
+          rep_id: person.id, step: 1, lead_category: 'fixmy', sold_type: null, black_box: false
+        }).eq('id', lead.id);
+      } catch(e) {}
+      Object.assign(lead, { knock_status: 'booked', diagnostic_date: startISO, rep_id: person.id, step: 1 });
+      try {
+        await bbLogActivity(lead.id, 'door_knock', 'booked',
+          'Booked at the door for ' + _cvBkApptLabel(), { rep_name: person.name || person.id, rec: lead });
+      } catch(e) {}
+      try {
+        var hist = JSON.parse(localStorage.getItem('bbKnockHistory') || '[]');
+        hist.unshift({ id: lead.id, address: lead.address, knockStatus: 'booked', ts: new Date().toISOString() });
+        localStorage.setItem('bbKnockHistory', JSON.stringify(hist.slice(0, 25)));
+      } catch(e) {}
+      _cvBk = null;
+      var slot = document.getElementById('editorSlot');
+      if (slot) slot.innerHTML = '';
+      if (_cvReopenId === lead.id) _cvReopenId = null;
+      _cvSortRoute();
+      renderSales();
+    };
+
+    function _cvBkRender() {
+      var slot = document.getElementById('editorSlot');
+      if (!slot || !_cvBk) return;
+      var lead = _cvBk.lead;
+      var name = ((lead.first_name||'') + ' ' + (lead.last_name||'')).trim() || lead.title_owner || '';
+      var h = '<div style="position:fixed;inset:0;background:#0e0e0e;z-index:9600;overflow-y:auto;">'
+        + '<div style="max-width:560px;margin:0 auto;padding:16px 14px 70px;color:#F3EDE3;">';
+
+      h += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">'
+        + '<div style="font-size:0.72rem;font-weight:800;text-transform:uppercase;letter-spacing:0.09em;color:#8DC63F;">&#9989; Booking</div>'
+        + '<button onclick="canvassCancelBooking()" style="width:auto;margin:0;background:none;border:none;color:#888;font-size:1.5rem;line-height:1;cursor:pointer;padding:0 4px;">&times;</button></div>';
+      h += '<div style="font-size:0.9rem;font-weight:700;">' + esc(lead.address || '') + '</div>';
+      if (name) h += '<div style="font-size:0.76rem;color:#888;margin-bottom:12px;">' + esc(name) + '</div>';
+      else h += '<div style="margin-bottom:12px;"></div>';
+
+      var steps = ['When', 'Confirm', 'Photos'];
+      h += '<div style="display:flex;gap:5px;margin-bottom:14px;">';
+      steps.forEach(function(s, i) {
+        h += '<div style="flex:1;height:6px;border-radius:100px;background:' + (i <= _cvBk.step ? '#8DC63F' : 'rgba(255,255,255,0.12)') + ';"></div>';
+      });
+      h += '</div>';
+      h += '<div style="font-size:0.62rem;color:#666;margin-bottom:14px;">Step ' + (_cvBk.step + 1) + ' of 3 &middot; ' + steps[_cvBk.step] + '</div>';
+
+      // ── 1. When ──
+      if (_cvBk.step === 0) {
+        var today = new Date(); today.setHours(0,0,0,0);
+        h += '<div style="font-size:1.02rem;font-weight:800;margin-bottom:10px;">When are we coming out?</div>';
+        h += '<label style="display:block;font-size:0.68rem;color:#888;margin-bottom:3px;">Date</label>';
+        h += '<input type="date" value="'+esc(_cvBk.date)+'" min="'+today.toISOString().slice(0,10)+'" onchange="canvassBkSet(\'date\',this.value)" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:9px;color:#fff;padding:12px;font-size:0.9rem;margin-bottom:12px;box-sizing:border-box;"/>';
+        h += '<label style="display:block;font-size:0.68rem;color:#888;margin-bottom:5px;">Arrival window (2 hours)</label>';
+        h += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:14px;">';
+        ['08:00','10:00','12:00','14:00','16:00','18:00'].forEach(function(t) {
+          var on = _cvBk.start === t;
+          var hh = parseInt(t,10); var lbl = (hh % 12 || 12) + (hh < 12 ? 'am' : 'pm') + '–' + ((hh+2) % 12 || 12) + ((hh+2) < 12 ? 'am' : 'pm');
+          h += '<button onclick="canvassBkSet(\'start\',\''+t+'\')" style="width:auto;margin:0;padding:12px 4px;border-radius:10px;font-size:0.76rem;font-weight:700;cursor:pointer;'
+            + (on ? 'background:rgba(141,198,63,0.18);border:1px solid rgba(141,198,63,0.5);color:#8DC63F;' : 'background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);color:#999;')
+            + '">'+lbl+'</button>';
+        });
+        h += '</div>';
+        h += '<div style="font-size:0.7rem;color:#666;line-height:1.5;margin-bottom:16px;">Book inside 48 hours where you can &mdash; the further out it sits, the more no-shows.</div>';
+        var ready0 = !!(_cvBk.date && _cvBk.start);
+        h += '<button onclick="canvassBkStep(1)"'+(ready0?'':' disabled')+' style="width:100%;padding:14px;border:none;border-radius:100px;font-size:0.88rem;font-weight:800;cursor:'+(ready0?'pointer':'not-allowed')+';background:'+(ready0?'#8DC63F':'rgba(255,255,255,0.08)')+';color:'+(ready0?'#1A1A1A':'#555')+';">Next &#8594;</button>';
+      }
+
+      // ── 2. Confirm out loud ──
+      else if (_cvBk.step === 1) {
+        var vals = {
+          name:  name || '(no name yet)',
+          phone: lead.phone || '(no phone yet)',
+          email: lead.email && !String(lead.email).endsWith('@pending.fixmy.energy') ? lead.email : '(no email yet)',
+          addr:  lead.address || '',
+          appt:  _cvBkApptLabel(),
+          title: ''
+        };
+        var doneCount = CV_CONFIRM_ITEMS.filter(function(i){ return _cvBk.confirmed[i.key]; }).length;
+        h += '<div style="font-size:1.02rem;font-weight:800;margin-bottom:4px;">Read each one out loud</div>';
+        h += '<div style="font-size:0.74rem;color:#999;line-height:1.5;margin-bottom:14px;">Say it, get a yes, tap Confirmed. This is what stops no-shows and wrong numbers.</div>';
+        CV_CONFIRM_ITEMS.forEach(function(item) {
+          var done = !!_cvBk.confirmed[item.key];
+          var say = item.say.replace('{v}', vals[item.key] || '');
+          h += '<div style="background:rgba(255,255,255,0.035);border:1px solid '+(done?'rgba(141,198,63,0.45)':'rgba(255,255,255,0.1)')+';border-radius:14px;padding:13px;margin-bottom:9px;">';
+          h += '<div style="font-size:0.6rem;font-weight:800;text-transform:uppercase;letter-spacing:0.07em;color:#666;margin-bottom:4px;">'+item.label+'</div>';
+          h += '<div style="font-size:0.86rem;line-height:1.5;color:#eee;margin-bottom:10px;">&ldquo;'+esc(say)+'&rdquo;</div>';
+          if (done) {
+            h += '<div style="font-size:0.76rem;color:#8DC63F;font-weight:700;">&#10003; Confirmed</div>';
+          } else {
+            h += '<div style="display:flex;gap:7px;flex-wrap:wrap;">';
+            h += '<button onclick="canvassBkConfirm(\''+item.key+'\')" style="width:auto;margin:0;flex:1;padding:11px;background:rgba(141,198,63,0.14);border:1px solid rgba(141,198,63,0.45);color:#8DC63F;border-radius:100px;font-size:0.78rem;font-weight:700;cursor:pointer;">&#10003; Confirmed</button>';
+            if (item.field) h += '<button onclick="canvassBkFix(\''+item.key+'\')" style="width:auto;margin:0;flex:0 0 auto;padding:11px 16px;background:transparent;border:1px solid rgba(255,255,255,0.14);color:#888;border-radius:100px;font-size:0.78rem;font-weight:700;cursor:pointer;">&#9998; Fix it</button>';
+            h += '</div>';
+          }
+          h += '</div>';
+        });
+        var allOk = doneCount === CV_CONFIRM_ITEMS.length;
+        h += '<div style="display:flex;gap:8px;margin-top:14px;">';
+        h += '<button onclick="canvassBkStep(0)" style="width:auto;margin:0;flex:0 0 auto;padding:13px 20px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.14);color:#aaa;border-radius:100px;font-size:0.82rem;font-weight:700;cursor:pointer;">&#8592; Back</button>';
+        h += '<button onclick="canvassBkStep(2)"'+(allOk?'':' disabled')+' style="flex:1;margin:0;padding:13px;border:none;border-radius:100px;font-size:0.86rem;font-weight:800;cursor:'+(allOk?'pointer':'not-allowed')+';background:'+(allOk?'#8DC63F':'rgba(255,255,255,0.08)')+';color:'+(allOk?'#1A1A1A':'#555')+';">Next &#8594; ('+doneCount+'/'+CV_CONFIRM_ITEMS.length+')</button>';
+        h += '</div>';
+      }
+
+      // ── 3. Photos ──
+      else {
+        var photos = jobPhotos[_cvBk.id] || [];
+        h += '<div style="font-size:1.02rem;font-weight:800;margin-bottom:4px;">Grab what you can while you\'re here</div>';
+        h += '<div style="font-size:0.74rem;color:#999;line-height:1.5;margin-bottom:14px;">All optional &mdash; but every one you get now is one the tech doesn\'t have to chase, and Quoya can start the analysis before the appointment.</div>';
+        h += '<div id="cvBkPhotoStatus" style="font-size:0.72rem;min-height:16px;margin-bottom:8px;color:#8DC63F;"></div>';
+        CV_BOOK_PHOTOS.forEach(function(slotDef) {
+          var have = photos.filter(function(p){ return (p.label || p.Label || '') === slotDef.label; });
+          var accept = slotDef.label === 'Utility Bill' ? 'image/*,application/pdf' : 'image/*';
+          h += '<div style="background:rgba(255,255,255,0.035);border:1px solid '+(have.length?'rgba(141,198,63,0.45)':'rgba(255,255,255,0.1)')+';border-radius:14px;padding:12px;margin-bottom:8px;display:flex;align-items:center;gap:11px;">';
+          h += '<div style="font-size:1.2rem;flex-shrink:0;">'+slotDef.icon+'</div>';
+          h += '<div style="flex:1;min-width:0;"><div style="font-size:0.84rem;font-weight:700;">'+slotDef.label+(have.length?' <span style="color:#8DC63F;font-size:0.7rem;">&#10003; '+have.length+'</span>':'')+'</div>';
+          h += '<div style="font-size:0.68rem;color:#888;line-height:1.4;">'+slotDef.hint+'</div></div>';
+          h += '<label style="flex-shrink:0;padding:9px 14px;background:'+(have.length?'rgba(255,255,255,0.06)':'rgba(141,198,63,0.14)')+';border:1px solid '+(have.length?'rgba(255,255,255,0.14)':'rgba(141,198,63,0.4)')+';color:'+(have.length?'#aaa':'#8DC63F')+';border-radius:100px;font-size:0.74rem;font-weight:700;cursor:pointer;white-space:nowrap;">'+(have.length?'+ Add':'&#128247; Add')
+            + '<input type="file" multiple accept="'+accept+'" style="display:none" onchange="canvassBkUpload(this,\''+slotDef.label+'\')"></label>';
+          h += '</div>';
+        });
+        h += '<div id="cvBkStatus" style="font-size:0.74rem;color:#888;min-height:18px;margin:12px 0;"></div>';
+        h += '<button onclick="canvassCommitBooking()" style="width:100%;padding:15px;background:#8DC63F;border:none;color:#1A1A1A;border-radius:100px;font-size:0.92rem;font-weight:800;cursor:pointer;margin-bottom:8px;">&#9989; Confirm Booking</button>';
+        h += '<button onclick="canvassBkStep(1)" style="width:100%;padding:11px;background:transparent;border:1px solid rgba(255,255,255,0.14);color:#888;border-radius:100px;font-size:0.78rem;font-weight:700;cursor:pointer;">&#8592; Back</button>';
+      }
+
+      h += '</div></div>';
+      slot.innerHTML = h;
+    }
+
     window.canvassPrioritize = function(id) {
       var i = canvassLeads.findIndex(function(l){ return l.id === id; });
       if (i < 0) return;
@@ -21145,9 +21589,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           l._distMi = canvassHaversine(userLat, userLng, l.lat, l.lng);
           l._hot = l.knock_status === 'callback' || l.knock_status === 'interested';
         });
-        leads.sort(_cvRouteCmp);   // _behind is unset on a cold load — pure nearest-first
-        // Trim to a route-sized list AFTER the true-distance sort, so the cap keeps the
-        // nearest doors instead of an arbitrary slice of the box.
+        // Cap by TRUE DISTANCE so the 80 we keep are genuinely the nearest — street
+        // sequencing runs afterwards, over the kept set, in _cvSortRoute().
+        leads.sort(function(a, b){ return (a._distMi != null ? a._distMi : 9999) - (b._distMi != null ? b._distMi : 9999); });
         leads = leads.slice(0, 80);
         _cvFetchLat = userLat; _cvFetchLng = userLng; _cvFetchAt = Date.now();
       }
@@ -21164,6 +21608,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }
 
       canvassLeads = leads.filter(function(l){ return canvassSkipIds.indexOf(l.id) < 0; });
+      _cvSortRoute();   // street-at-a-time walking order over the kept set
       canvassGpsStatus = 'ready';
       try { localStorage.setItem('bbLeadsCache', JSON.stringify({ts: Date.now(), leads: canvassLeads, lat: canvassUserLat, lng: canvassUserLng, skipIds: canvassSkipIds})); } catch(e) {}
       renderSales();
@@ -21222,16 +21667,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // the live route rather than leaving them parked on a door they just finished.
       if (_cvReopenId === id) _cvReopenId = null;
       _cvSortRoute();   // knocked doors fall to the end; same comparator as everywhere else
-      if (knockStatus === 'interested') {
-        // Assign this lead to the current rep and advance step
-        var updates = { rep_id: person.id, step: 1, lead_category: 'fixmy', sold_type: null };
+      // 'warm' is the door equivalent of the dialer's warm: a real conversation with no
+      // appointment. It earns a place in the real pipeline, same as the old 'interested'
+      // did, but the rep stays on the route instead of being thrown into the editor —
+      // they're standing on a sidewalk with more doors to knock.
+      if (knockStatus === 'warm' || knockStatus === 'interested') {
+        var updates = { rep_id: person.id, step: 1, lead_category: 'fixmy', sold_type: null, black_box: false };
         await c2.from('customers').update(updates).eq('id', id);
         var recInAll = allRecords.find(function(r){ return r.id === id; });
         if (recInAll) Object.assign(recInAll, updates);
-        // Show lead editor for this record so rep can fill in contact info
-        salesSetView('leads');
-        setTimeout(function(){ if (typeof window.salesEditLead === 'function') window.salesEditLead(id); }, 100);
-        return;
+        else allRecords.push(Object.assign({}, lead, updates));
       }
       renderSales();
     };
@@ -21241,7 +21686,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // live route — skipping a door the rep isn't even looking at is silent data loss.
       var rid = _cvReopenId;
       if (rid) { _cvReopenId = null; canvassSkipIds.push(rid); }
-      var unvisited = canvassLeads.filter(function(l){ return !l.knock_status; });
+      var unvisited = canvassLeads.filter(_cvIsOpen);
       if (!rid && unvisited.length) canvassSkipIds.push(unvisited[0].id);
       canvassLeads = canvassLeads.filter(function(l){ return canvassSkipIds.indexOf(l.id) < 0; });
       try { localStorage.setItem('bbLeadsCache', JSON.stringify({ts: Date.now(), leads: canvassLeads, lat: canvassUserLat, lng: canvassUserLng, skipIds: canvassSkipIds})); } catch(e) {}
@@ -21249,7 +21694,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     };
 
     window.canvassBatchRoute = function(n) {
-      var unvisited = canvassLeads.filter(function(l){ return !l.knock_status && l.address; });
+      var unvisited = canvassLeads.filter(function(l){ return _cvIsOpen(l) && l.address; });
       var batch = unvisited.slice(0, n || 5);
       if (!batch.length) return;
       // Nearest-neighbor optimizer: reorder stops for efficient driving when coords available
