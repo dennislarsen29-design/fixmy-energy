@@ -7895,6 +7895,41 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       esc(parsed.surname) + ' household</b>' + (parsed.isEntity ? ' &mdash; the county lists a trust, not a person' : '') + '</div>';
   }
 
+  /* ── Trustee inference ──────────────────────────────────────────────────────
+     No parcel source will ever name a trustee — the county's owner of record IS
+     the trust. But skip-trace resolves the ADDRESS to the people living there,
+     and for an owner-occupied trust property that person is the trustee in the
+     overwhelming majority of cases. Comparing the skip-traced surname against
+     the trust's family name turns two fields we already have into a real answer:
+       match    → almost certainly the trustee, greet them by name
+       mismatch → a renter, or the property changed hands — worth knowing BEFORE
+                  you open with the wrong name
+     The deed itself is the only authoritative source (recorded grant deeds name
+     the trustee, and recorded documents stay public — AB 1785 restricts what the
+     ASSESSOR publishes, not the Recorder's index). That's a per-parcel lookup by
+     APN, not something to bulk-scrape. */
+  function _bbSurnameKey(s) {
+    return String(s || '').toUpperCase().replace(/[^A-Z]/g, '');
+  }
+  function _bbTrusteeNote(lead) {
+    var roll = _bbOwnerParse(lead.title_owner);
+    if (!roll.isEntity) return '';
+    var last = String(lead.last_name || '').trim();
+    if (!last) {
+      return '<div style="font-size:0.68rem;color:#777;margin-bottom:6px;line-height:1.4;">'
+        + 'No trustee name yet &mdash; owner lookup can\'t fix a trust (the county\'s owner really is the trust). '
+        + '<b style="color:#c4a3f0;">Skip-trace resolves this one.</b></div>';
+    }
+    var human = ((lead.first_name || '') + ' ' + last).trim();
+    var match = _bbSurnameKey(last) && _bbSurnameKey(last) === _bbSurnameKey(roll.surname);
+    if (match) {
+      return '<div style="font-size:0.7rem;color:#8DC63F;margin-bottom:6px;line-height:1.4;">'
+        + '&#10003; <b>' + esc(human) + '</b> &mdash; surname matches the ' + esc(roll.surname) + ' trust on title. Almost certainly the trustee.</div>';
+    }
+    return '<div style="font-size:0.7rem;color:#f59e0b;margin-bottom:6px;line-height:1.4;">'
+      + '&#9888; <b>' + esc(human) + '</b> doesn\'t match the <b>' + esc(roll.surname) + '</b> trust on title &mdash; could be a renter, or the property changed hands. Confirm before using the name.</div>';
+  }
+
   var BB_DIAL_SEL_FULL ='id,first_name,last_name,address,phone,email,dnc,notes,knock_status,title_owner,lead_source,original_installer,install_year,black_box,step,lead_category,dial_status,dialed_at,dial_attempts,callback_at';
   var BB_DIAL_SEL_BASE = 'id,first_name,last_name,address,phone,email,dnc,notes,knock_status,title_owner,lead_source,original_installer,install_year,black_box,step,lead_category';
 
@@ -8673,6 +8708,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '<div style="font-size:1.15rem;font-weight:800;margin-bottom:2px;">'+esc(name)+_bbEntityBadgeHtml(_nm)+(dialIsSDCP?'<span style="display:inline-block;margin-left:7px;padding:1px 7px;background:rgba(0,150,255,0.15);color:#4AABF7;border-radius:10px;font-size:0.58rem;font-weight:700;vertical-align:middle;">SDCP</span>':'')+(dialInOutage?bbOutageBadgeHtml():'')+'</div>';
     h += '<div style="font-size:0.78rem;color:#888;margin-bottom:6px;">'+esc(lead.address||'—')+'</div>';
     h += _bbAskForHtml(_nm);
+    h += _bbTrusteeNote(lead);
     h += bbEmailRowHtml(lead);
     var badges = '';
     if (lead.original_installer) badges += '<span style="display:inline-block;padding:2px 9px;background:rgba(255,170,0,0.12);color:#ffaa00;border-radius:100px;font-size:0.62rem;font-weight:700;margin-right:6px;">'+esc(lead.original_installer)+'</span>';
@@ -9130,8 +9166,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var { count: total }     = await c2.from('customers').select('id',{count:'exact',head:true}).eq('lead_source','orphaned_list').is('sold_type',null);
     var { count: noContact } = await c2.from('customers').select('id',{count:'exact',head:true}).eq('lead_source','orphaned_list').is('sold_type',null).is('phone',null).is('email',null);
     var { count: noOwner }   = await c2.from('customers').select('id',{count:'exact',head:true}).eq('lead_source','orphaned_list').is('sold_type',null).is('title_owner',null).or('phone.not.is.null,email.not.is.null');
+    // Trust/LLC-owned leads with no human name on file. These are NOT an owner-lookup
+    // failure — the county's owner of record genuinely is the trust, so no parcel source
+    // will ever resolve them. Skip-trace is the only thing that will, so they get counted
+    // separately rather than sitting inside "missing owner" looking fixable.
+    var trustNoHuman = 0;
+    try {
+      var tr = await c2.from('customers').select('id',{count:'exact',head:true})
+        .eq('lead_source','orphaned_list').is('sold_type',null)
+        .is('last_name', null)
+        .or('title_owner.ilike.*TRUST*,title_owner.ilike.*REVOCABLE*,title_owner.ilike.*LLC*');
+      trustNoHuman = tr.count || 0;
+    } catch(e) {}
+
     total = total||0; noContact = noContact||0; noOwner = noOwner||0;
     window._bbBlackBoxTotal = total; // share with Lead Insights header
+    window._bbTrustNoHuman = trustNoHuman;
     var statEl = document.getElementById('bbStatImported');
     if (statEl) statEl.textContent = total.toLocaleString();
     if (!bar) return;
@@ -9190,6 +9240,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         + '<div><div style="font-size:0.75rem;font-weight:700;color:#ef4444;">'+noContact+' leads have no contact info</div>'
         + '<div style="font-size:0.68rem;color:#888;margin-top:1px;">'+(total-noContact)+' of '+total+' have phone or email &mdash; GIS owner lookup is free &middot; skip-trace adds phone/email (paid)</div></div>'
         + actionBtn + '</div>';
+    }
+
+    // Trust-owned leads are a different problem from a failed lookup, and mixing them in
+    // makes owner coverage look worse than it is. Called out separately so nobody spends
+    // another parcel run trying to fix something no parcel source can answer.
+    if (trustNoHuman > 0) {
+      bar.innerHTML += '<div style="margin-top:8px;background:rgba(155,109,232,0.07);border:1px solid rgba(155,109,232,0.28);border-radius:10px;padding:10px 14px;">'
+        + '<div style="font-size:0.75rem;font-weight:700;color:#c4a3f0;">&#127963; '+trustNoHuman.toLocaleString()+' leads owned by a trust or LLC with no human name</div>'
+        + '<div style="font-size:0.68rem;color:#888;margin-top:2px;line-height:1.5;">Owner lookup can\'t fix these &mdash; the county\'s owner of record really <i>is</i> the trust. '
+        + '<b style="color:#c4a3f0;">Skip-trace resolves the address to the people living there</b>, which for an owner-occupied trust is the trustee. '
+        + 'Cards show a &#10003; when the skip-traced surname matches the trust on title.</div></div>';
     }
   };
 
@@ -20119,6 +20180,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             var doorOwner = _doorNm.display || '';
             if (doorOwner) h += '<div style="font-size:0.8rem;font-weight:600;color:#F3EDE3;margin-bottom:2px;">&#128100; '+esc(doorOwner)+_bbEntityBadgeHtml(_doorNm)+'</div>';
             h += _bbAskForHtml(_doorNm);
+            h += _bbTrusteeNote(lead);
             if (lead.apn) h += '<div style="font-size:0.62rem;color:#555;margin-bottom:2px;">APN '+esc(lead.apn)+'</div>';
             // Always available, not just when blank — the common case is looking the owner
             // up in LandGlide and typing it in afterwards, and correcting a wrong name
