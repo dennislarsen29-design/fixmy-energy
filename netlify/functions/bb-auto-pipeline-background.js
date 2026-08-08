@@ -114,8 +114,13 @@ exports.handler = async function(event) {
     console.log(line);
   }
 
-  // 13.5 min global hard stop (Netlify background limit is 15 min)
-  const GLOBAL_DEADLINE = Date.now() + (13.5 * 60 * 1000);
+  // 13.5 min global hard stop (Netlify background limit is 15 min).
+  // `max_seconds` in the POST body shortens it — used by the harness so a simulated run
+  // finishes in seconds instead of burning the full budget, and available for a bounded
+  // manual run from the portal. Never allowed to EXCEED the Netlify cap.
+  const MAX_RUN_MS = 13.5 * 60 * 1000;
+  const reqMs = Number(bodyParams.max_seconds) > 0 ? Number(bodyParams.max_seconds) * 1000 : MAX_RUN_MS;
+  const GLOBAL_DEADLINE = Date.now() + Math.min(reqMs, MAX_RUN_MS);
   function overGlobal() { return Date.now() > GLOBAL_DEADLINE; }
 
   function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -289,6 +294,22 @@ exports.handler = async function(event) {
   // Checkpointing after every phase makes the timestamp truthful AND names the
   // phase the run died in, which is the diagnosis rather than just the symptom.
   const progress = {};
+  // ── Permit-pull outcome tally ─────────────────────────────────────────────
+  // Every non-200 from PermitStack used to `break` with no stamp and no counter, so a
+  // dead key, a rate limit and a genuinely quiet night all produced the SAME output:
+  // "0 permits". Same failure family as the Regrid no_key, the Tracerfy 429 and the
+  // mailing-capture zero — a failing path rendering identically to nothing happening.
+  // ⚠️ Never let a permit source fail silently; count the reason.
+  const pullOutcomes = {};
+  function tally(phase, reason) {
+    const k = phase + ':' + reason;
+    pullOutcomes[k] = (pullOutcomes[k] || 0) + 1;
+  }
+  function tallyReport() {
+    const keys = Object.keys(pullOutcomes).sort();
+    if (!keys.length) return 'no permit queries ran';
+    return keys.map(k => k + ' \u00d7' + pullOutcomes[k]).join(' | ');
+  }
   async function checkpoint(phase) {
     try {
       const ts = new Date().toISOString();
@@ -720,13 +741,21 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
               break;
             }
             if (!resp.ok) {
+              tally('1c', 'http_' + resp.status);
+              // Only the first few, or a dead key spams 600 identical lines.
+              if ((pullOutcomes['1c:http_' + resp.status] || 0) <= 3) {
+                stamp(`  1c ${city}/"${qname}" \u2192 HTTP ${resp.status}`);
+              }
               if (resp.status === 429) await sleep(2000);
               break;
             }
             let body;
-            try { body = await resp.json(); } catch(e) { break; }
+            try { body = await resp.json(); }
+            catch(e) { tally('1c', 'bad_json'); stamp(`  1c ${city}/"${qname}" \u2192 unparseable response`); break; }
             const batch = body.permits || body.results || body.data || [];
-            if (!Array.isArray(batch) || !batch.length) break;
+            if (!Array.isArray(batch)) { tally('1c', 'unexpected_shape'); stamp(`  1c ${city}/"${qname}" \u2192 no permits/results/data array (keys: ${Object.keys(body || {}).join(',') || 'none'})`); break; }
+            if (!batch.length) { tally('1c', page === 1 ? 'empty' : 'end_of_pages'); break; }
+            tally('1c', 'ok');
 
             const batchRecs = [];
             for (const p of batch) {
@@ -931,13 +960,20 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
                 break;
               }
               if (!resp.ok) {
+                tally('1b', 'http_' + resp.status);
+                if ((pullOutcomes['1b:http_' + resp.status] || 0) <= 3) {
+                  stamp(`  1b ${city}/"${qname}" \u2192 HTTP ${resp.status}`);
+                }
                 if (resp.status === 429) await sleep(2000);
                 break;
               }
               let body;
-              try { body = await resp.json(); } catch(e) { break; }
+              try { body = await resp.json(); }
+              catch(e) { tally('1b', 'bad_json'); break; }
               const batch = body.permits || body.results || body.data || [];
-              if (!Array.isArray(batch) || !batch.length) break;
+              if (!Array.isArray(batch)) { tally('1b', 'unexpected_shape'); break; }
+              if (!batch.length) { tally('1b', page === 1 ? 'empty' : 'end_of_pages'); break; }
+              tally('1b', 'ok');
 
               const batchRecs = [];
               for (const p of batch) {
@@ -1641,7 +1677,9 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
   progress.phase1_by_installer = summary.phase1_by_installer;
   progress.phase2_owners_added = summary.phase2_owners_added;
   progress.phase3_tracerfy     = summary.phase3_tracerfy;
+  progress.permit_pull_outcomes = tallyReport();
   progress.phase4_ghl_sync     = summary.phase4_ghl_sync;
+  stamp('Permit pull outcomes \u2014 ' + tallyReport());
   await checkpoint('complete');
 
   stamp('=== Pipeline complete ===');
