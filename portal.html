@@ -5553,7 +5553,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var mapsUrl = 'https://www.google.com/maps/dir/?api=1&destination='+encodeURIComponent(lead.address||'');
         var fullName = ((lead.first_name||'')+' '+(lead.last_name||'')).trim();
 
-        var ownerName = lead.title_owner || fullName || '';
+        var _gpNm = _bbLeadDisplayName(lead);
+        var ownerName = _gpNm.display || '';
         h += '<div style="background:rgba(255,255,255,0.05);border:2px solid rgba(141,198,63,0.35);border-radius:16px;padding:18px;margin-bottom:12px;">';
         h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">';
         h += '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#8DC63F;">Next Door &middot; 1 of '+unvisited.length+' remaining</div>';
@@ -5625,7 +5626,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           h += '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#444;margin-bottom:6px;">Coming up &mdash; <span style="font-weight:400;color:#333;">tap to go there first</span></div>';
           unvisited.slice(1, 6).forEach(function(nl, ni) {
             var nd = nl._distMi != null ? nl._distMi.toFixed(1)+' mi' : '';
-            var nlOwner = nl.title_owner || ((nl.first_name||'')+' '+(nl.last_name||'')).trim();
+            var nlOwner = _bbLeadDisplayName(nl).display;
             h += '<button onclick="adminCanvassPrioritize(\''+nl.id+'\')" style="width:100%;display:flex;justify-content:space-between;align-items:center;padding:9px 10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:8px;margin-bottom:4px;cursor:pointer;text-align:left;">';
             h += '<div>';
             h += '<div style="font-size:0.75rem;color:#aaa;font-weight:600;">'+(ni+2)+'. '+(esc(nl.address)||'&mdash;')+'</div>';
@@ -5694,9 +5695,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           var bbVisible = bbLeads.slice(0, bbLimit);
           h += '<div style="display:grid;gap:10px;margin-bottom:20px;">';
           bbVisible.forEach(function(lead) {
-            var rawOwner = lead.title_owner || '';
-            var cleanOwner = rawOwner.replace(/\s+(TR\s+)?\d{2}-\d{2}-\d{2}$/, '').trim();
-            var name = cleanOwner || ((lead.first_name||'')+' '+(lead.last_name||'')).trim() || '—';
+            var _bbNm = _bbLeadDisplayName(lead);
+            var name = _bbNm.display || '—';
             var realEmail = (lead.email && !lead.email.endsWith('@pending.fixmy.energy')) ? lead.email : null;
             var noContact = !lead.phone && !realEmail;
             var allNotes = _parseNotes(lead.notes||'');
@@ -7832,7 +7832,70 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return newNotes;
   }
 
-  var BB_DIAL_SEL_FULL = 'id,first_name,last_name,address,phone,email,dnc,notes,knock_status,title_owner,lead_source,original_installer,install_year,black_box,step,lead_category,dial_status,dialed_at,dial_attempts,callback_at';
+  /* ── Owner names off the assessor roll ──────────────────────────────────────
+     County parcel data stores the owner of record, not a person you can greet:
+     "KOKJOHN FAMILY TRUST 05-04-15", "EDGAR THOMAS R REVOCABLE TR", "STRICKER
+     MICHAEL&AMIE F". A rep opening with any of those out loud sounds like a
+     robocall. This is the single place that turns a roll string into something
+     sayable, plus the surname to actually ask for.
+
+     ⚠️ A TRUST is not bad data — it is genuinely who owns the parcel. No API
+     fixes it, because the county record IS the trust. The human name comes from
+     skip-trace (Tracerfy → first_name/last_name), which is why real contact
+     names always win over the roll string below. */
+  var BB_ENTITY_RX = /\b(TRUST|TRUSTEE|REVOCABLE|IRREVOCABLE|LIVING\s+TR|FAMILY\s+TR|SURVIVORS?|LLC|L\.?L\.?C|INC|CORP(ORATION)?|COMPANY|PARTNERS?|ESTATE|ET\s*AL)\b/i;
+
+  var BB_KEEP_UPPER = { LLC:1, LP:1, LLP:1, INC:1, CO:1, II:1, III:1, IV:1, JR:1, SR:1, USA:1 };
+  function _bbTitleCase(s) {
+    return String(s || '').toLowerCase()
+      .replace(/\b([a-z])/g, function(m, c){ return c.toUpperCase(); })
+      .replace(/\s*&\s*/g, ' & ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .split(' ')
+      .map(function(w){ return BB_KEEP_UPPER[w.toUpperCase()] ? w.toUpperCase() : w; })
+      .join(' ');
+  }
+
+  // { display, surname, isEntity } — surname is what the rep should ask for.
+  function _bbOwnerParse(raw) {
+    var s = String(raw || '').replace(/\s+/g, ' ').trim();
+    if (!s) return { display: '', surname: '', isEntity: false };
+    // Trailing recording date the assessor appends: "… TRUST 05-04-15", "… TR 4-1-09".
+    s = s.replace(/\s+(TR\s+)?\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4}\s*$/i, '').trim();
+    var isEntity = BB_ENTITY_RX.test(s) || /\bTRS?\b\s*$/i.test(s);
+    // A dangling "TR"/"TRS" is the roll's abbreviation for trust — it reads as a typo
+    // on screen, and the TRUST badge already carries the meaning.
+    s = s.replace(/\s+TRS?\s*$/i, '').trim();
+    // Assessor convention puts the surname (or the family name of the trust) first.
+    var surname = (s.split(/[\s&]+/)[0] || '').replace(/[^A-Za-z'-]/g, '');
+    return { display: _bbTitleCase(s), surname: _bbTitleCase(surname), isEntity: isEntity };
+  }
+
+  // The name to show on a call/door card. A skip-traced human always beats the roll.
+  function _bbLeadDisplayName(lead) {
+    var human = ((lead.first_name || '') + ' ' + (lead.last_name || '')).trim();
+    if (human) return { display: human, surname: _bbTitleCase(lead.last_name || ''), isEntity: false, human: true };
+    var p = _bbOwnerParse(lead.title_owner);
+    p.human = false;
+    return p;
+  }
+
+  function _bbEntityBadgeHtml(parsed) {
+    if (!parsed || !parsed.isEntity) return '';
+    return '<span title="The county records this property under a trust or company. Ask for the ' +
+      (parsed.surname || 'homeowner') + ' household or whoever handles the property — do not read the entity name out loud." ' +
+      'style="display:inline-block;margin-left:7px;padding:1px 7px;background:rgba(155,109,232,0.15);color:#c4a3f0;border-radius:10px;font-size:0.58rem;font-weight:700;vertical-align:middle;">TRUST</span>';
+  }
+
+  // One line telling the rep exactly who to ask for, when the card name isn't a person.
+  function _bbAskForHtml(parsed) {
+    if (!parsed || parsed.human || !parsed.surname) return '';
+    return '<div style="font-size:0.72rem;color:#c4a3f0;margin-bottom:6px;">&#128100; Ask for: <b>the ' +
+      esc(parsed.surname) + ' household</b>' + (parsed.isEntity ? ' &mdash; the county lists a trust, not a person' : '') + '</div>';
+  }
+
+  var BB_DIAL_SEL_FULL ='id,first_name,last_name,address,phone,email,dnc,notes,knock_status,title_owner,lead_source,original_installer,install_year,black_box,step,lead_category,dial_status,dialed_at,dial_attempts,callback_at';
   var BB_DIAL_SEL_BASE = 'id,first_name,last_name,address,phone,email,dnc,notes,knock_status,title_owner,lead_source,original_installer,install_year,black_box,step,lead_category';
 
   var bbDialLoadError = null;
@@ -8024,8 +8087,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   };
   function _bbScriptCtx(lead) {
     lead = lead || {};
+    var nm = _bbLeadDisplayName(lead);
     return {
+      // Never fall back to the roll string here — "Hi, is this KOKJOHN FAMILY TRUST
+      // 05-04-15?" is the fastest way to sound like a robocall. With no skip-traced
+      // first name we greet generically and ask for the household by surname.
       name: esc((lead.first_name || '').trim() || 'there'),
+      surname: esc(nm.human ? '' : (nm.surname || '')),
+      isEntity: !!nm.isEntity,
       installer: esc(lead.original_installer || ''),
       year: esc(String(lead.install_year || '').trim()),
       rep: esc((typeof bbRepName === 'function' && bbRepName()) || 'your name'),
@@ -8083,6 +8152,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         _bbFlowNode('#E8793A','10','Book fast','Next day if you can get it — never more than 48 hours out.')
       );
       case 'opener': return (
+        (c.surname
+          ? _bbWarn('We only have the name the county has on file' + (c.isEntity ? ' &mdash; a <b>trust</b>, not a person' : '') +
+              '. Do <b>not</b> read it out loud. Ask for <b>the ' + c.surname + ' household</b>, or just &ldquo;the homeowner&rdquo;, and get their real name into the card once they answer.')
+          : '') +
         _bbTip('This blends the intro and the reason for the call into one smooth line — don&rsquo;t pause after your name long enough to invite a brush-off.') +
         _bbSay('Hi '+c.name+'. This is '+c.rep+', one of the techs. I&rsquo;m calling on your solar on <strong>'+street+'</strong>. '+installerLine+' How&rsquo;s things been going for yours?') +
         _bbTip('If they mention a zero/odd bill, a second system, or anything unusual — drop the script and just ask genuine probing questions about it before moving to Qualify.') +
@@ -8549,7 +8622,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (bbDialSearchResults && bbDialSearchResults.length) {
       h += '<div style="margin-top:8px;background:var(--panel,#161a12);border:1px solid rgba(255,255,255,0.1);border-radius:10px;overflow:hidden;">';
       bbDialSearchResults.forEach(function(r) {
-        var rn = ((r.first_name||'')+' '+(r.last_name||'')).trim() || r.title_owner || '—';
+        var rn = _bbLeadDisplayName(r).display || '—';
         h += '<button onclick="bbDialSelectResult(\''+r.id+'\')" style="width:100%;text-align:left;padding:10px 14px;background:none;border:none;border-bottom:1px solid rgba(255,255,255,0.06);color:#ccc;cursor:pointer;font-size:0.8rem;">'+rn+' <span style="color:#666;">— '+(r.address||'')+' &middot; '+(r.phone||'')+'</span></button>';
       });
       h += '</div>';
@@ -8573,7 +8646,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
 
     var lead = isPinned ? pinnedLead : list[0];
-    var name = ((lead.first_name||'')+' '+(lead.last_name||'')).trim() || lead.title_owner || '—';
+    var _nm = _bbLeadDisplayName(lead);
+    var name = _nm.display || '—';
     var ph = (lead.phone||'').replace(/\D/g,'');
     var phDisplay = ph.length === 10 ? '('+ph.slice(0,3)+') '+ph.slice(3,6)+'-'+ph.slice(6) : lead.phone;
     var ksLabel = { interested:'&#10003; Knocked: Interested', not_home:'&#128683; Knocked: Not Home', not_interested:'&#128078; Knocked: NI', already_customer:'&#11088; Already Customer' }[lead.knock_status] || '';
@@ -8596,8 +8670,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var dialZip = extractZip(lead.address||'');
     var dialIsSDCP = dialZip && SDCP_ZIPS.has(dialZip);
     var dialInOutage = bbOutageHasZip(dialZip);
-    h += '<div style="font-size:1.15rem;font-weight:800;margin-bottom:2px;">'+esc(name)+(dialIsSDCP?'<span style="display:inline-block;margin-left:7px;padding:1px 7px;background:rgba(0,150,255,0.15);color:#4AABF7;border-radius:10px;font-size:0.58rem;font-weight:700;vertical-align:middle;">SDCP</span>':'')+(dialInOutage?bbOutageBadgeHtml():'')+'</div>';
+    h += '<div style="font-size:1.15rem;font-weight:800;margin-bottom:2px;">'+esc(name)+_bbEntityBadgeHtml(_nm)+(dialIsSDCP?'<span style="display:inline-block;margin-left:7px;padding:1px 7px;background:rgba(0,150,255,0.15);color:#4AABF7;border-radius:10px;font-size:0.58rem;font-weight:700;vertical-align:middle;">SDCP</span>':'')+(dialInOutage?bbOutageBadgeHtml():'')+'</div>';
     h += '<div style="font-size:0.78rem;color:#888;margin-bottom:6px;">'+esc(lead.address||'—')+'</div>';
+    h += _bbAskForHtml(_nm);
     h += bbEmailRowHtml(lead);
     var badges = '';
     if (lead.original_installer) badges += '<span style="display:inline-block;padding:2px 9px;background:rgba(255,170,0,0.12);color:#ffaa00;border-radius:100px;font-size:0.62rem;font-weight:700;margin-right:6px;">'+esc(lead.original_installer)+'</span>';
@@ -8692,7 +8767,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '<div style="font-size:0.72rem;color:#555;padding:10px 2px;">No calls logged yet today.</div>';
       }
       recentCalled.forEach(function(nl) {
-        var nm = ((nl.first_name||'')+' '+(nl.last_name||'')).trim() || nl.title_owner || '—';
+        var nm = _bbLeadDisplayName(nl).display || '—';
         var outLbl = (BB_DIAL_OUTCOMES[nl.dial_status] && BB_DIAL_OUTCOMES[nl.dial_status].label) || nl.dial_status || '';
         var outColor = (BB_DIAL_OUTCOMES[nl.dial_status] && BB_DIAL_OUTCOMES[nl.dial_status].color) || '#666';
         var isCurrent = isPinned && lead.id === nl.id;
@@ -8709,7 +8784,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var upNextOffset = isPinned ? 1 : 2;
       if (!upNextList.length) h += '<div style="font-size:0.72rem;color:#555;padding:10px 2px;">Nothing else queued in this bucket.</div>';
       upNextList.forEach(function(nl, i) {
-        var nm = ((nl.first_name||'')+' '+(nl.last_name||'')).trim() || nl.title_owner || '—';
+        var nm = _bbLeadDisplayName(nl).display || '—';
         var lastN = _parseNotes(nl.notes||'').slice(-1)[0];
         h += '<button onclick="bbDialJump(\''+nl.id+'\')" style="width:100%;text-align:left;padding:9px 10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:8px;margin-bottom:4px;cursor:pointer;">';
         h += '<div style="font-size:0.75rem;color:#aaa;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+(i+upNextOffset)+'. '+esc(nm)+'</div>';
@@ -20040,8 +20115,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             // Owner name — the rep card used to render ONLY first/last, so a lead that
             // did have a title_owner still showed nothing at the door. Knowing whose
             // house it is before knocking is the entire point of enriching it.
-            var doorOwner = lead.title_owner || fullName || '';
-            if (doorOwner) h += '<div style="font-size:0.8rem;font-weight:600;color:#F3EDE3;margin-bottom:2px;">&#128100; '+esc(doorOwner)+'</div>';
+            var _doorNm = _bbLeadDisplayName(lead);
+            var doorOwner = _doorNm.display || '';
+            if (doorOwner) h += '<div style="font-size:0.8rem;font-weight:600;color:#F3EDE3;margin-bottom:2px;">&#128100; '+esc(doorOwner)+_bbEntityBadgeHtml(_doorNm)+'</div>';
+            h += _bbAskForHtml(_doorNm);
             if (lead.apn) h += '<div style="font-size:0.62rem;color:#555;margin-bottom:2px;">APN '+esc(lead.apn)+'</div>';
             // Always available, not just when blank — the common case is looking the owner
             // up in LandGlide and typing it in afterwards, and correcting a wrong name
