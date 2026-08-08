@@ -132,6 +132,10 @@ exports.handler = async function (event) {
     // ── Pull each finished queue and resolve its rows ────────────────────────
     const pending = {};   // leadId -> merged update
     let queuesRead = 0, rowsSeen = 0, resolved = 0, alreadyHad = 0;
+    // A zero-gain run has two very different causes and they must not look alike:
+    // the vendor sent the mail_* columns EMPTY, or we matched leads that already have
+    // the data. Counting both is the only way to tell without guessing.
+    let mailRowsWithValue = 0, mailBlockedByExisting = 0, mailSample = null;
 
     const URL_FIELDS = ['download_url','csv_url','result_url','results_url','output_url','file','file_url','url','download','result','link'];
 
@@ -242,6 +246,11 @@ exports.handler = async function (event) {
         if (human && !lead.title_owner && !upd.title_owner) upd.title_owner = human;
         if (dnc) upd.dnc = true;
 
+        if (mAddr) {
+          mailRowsWithValue++;
+          if (!mailSample) mailSample = { city: mCity || '(blank)', state: mState || '(blank)', zip: mZip ? mZip[0] : '(blank)' };
+          if (lead.mail_address) mailBlockedByExisting++;
+        }
         if (mAddr && !lead.mail_address && !upd.mail_address) {
           upd.mail_address = mAddr;
           if (mCity)  upd.mail_city  = mCity;
@@ -273,13 +282,17 @@ exports.handler = async function (event) {
       if (pending[id].mail_address) gains.mailing++;
       if (pending[id].absentee === true) gains.absentee++;
     });
+    stamp(`mailing diagnostic: ${mailRowsWithValue} of ${rowsSeen} CSV rows carried a non-empty mail_address`
+      + (mailBlockedByExisting ? `; ${mailBlockedByExisting} matched a lead that already had one` : '')
+      + (mailSample ? `; first sample → city=${mailSample.city} state=${mailSample.state} zip=${mailSample.zip}` : '')
+      + (mailRowsWithValue === 0 ? '  ⚠ Tracerfy emitted the mail_* HEADERS but every value was blank — nothing to capture, not a matching failure.' : ''));
     if (rateLimited) stamp('⚠ Tracerfy rate-limited this run — the queue history was NOT fully read. Zero gains below do not mean there is nothing left to recover. Wait ~15 min and re-run.');
     stamp(`${queuesRead} queues read · ${rowsSeen} rows · ${resolved} matched a lead · ${ids.length} leads would gain data`);
     stamp(`Would add: ${gains.phone} phones, ${gains.email} emails, ${gains.name} HUMAN names, ${gains.owner} owner-of-record, ${gains.mailing} mailing addresses (${gains.absentee} absentee/rental), ${gains.dnc} DNC flags`);
 
     if (!apply) {
       return { statusCode: 200, headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dryRun: true, rateLimited, incomplete: rateLimited, queuesRead, rowsSeen, resolved, leadsToUpdate: ids.length, gains, log }, null, 2) };
+        body: JSON.stringify({ dryRun: true, rateLimited, incomplete: rateLimited, mailRowsWithValue, mailBlockedByExisting, queuesRead, rowsSeen, resolved, leadsToUpdate: ids.length, gains, log }, null, 2) };
     }
 
     let written = 0, failed = 0;
@@ -296,7 +309,7 @@ exports.handler = async function (event) {
     }
     stamp(`Applied: ${written} leads updated, ${failed} failed`);
     return { statusCode: 200, headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ applied: true, rateLimited, incomplete: rateLimited, queuesRead, rowsSeen, resolved, written, failed, gains, log }, null, 2) };
+      body: JSON.stringify({ applied: true, rateLimited, incomplete: rateLimited, mailRowsWithValue, mailBlockedByExisting, queuesRead, rowsSeen, resolved, written, failed, gains, log }, null, 2) };
   } catch (e) {
     console.error('[tracerfy-backfill] ' + e.message);
     return { statusCode: 200, body: JSON.stringify({ error: e.message, log }) };
