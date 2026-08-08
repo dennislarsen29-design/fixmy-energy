@@ -94,17 +94,61 @@ exports.handler = async function (event) {
       if (!d.next) break;
     }
     stamp(`Found ${queues.length} queues in Tracerfy history`);
+    // One run should tell us the whole shape of this API rather than costing another
+    // guess-and-redeploy cycle. Dump the field names and a scrubbed sample of the first
+    // row so the download URL (and its field name) is unambiguous.
+    if (queues[0]) {
+      stamp('queue fields: ' + Object.keys(queues[0]).join(','));
+      const sample = {};
+      Object.keys(queues[0]).forEach(k => {
+        const v = queues[0][k];
+        sample[k] = (typeof v === 'string' && v.length > 120) ? v.slice(0, 120) + '…' : v;
+      });
+      stamp('queue sample: ' + JSON.stringify(sample).slice(0, 900));
+    }
 
     // ── Pull each finished queue and resolve its rows ────────────────────────
     const pending = {};   // leadId -> merged update
     let queuesRead = 0, rowsSeen = 0, resolved = 0, alreadyHad = 0;
 
+    const URL_FIELDS = ['download_url','csv_url','result_url','results_url','output_url','file','file_url','url','download','result','link'];
+
     for (const qu of queues.slice(0, maxQueues)) {
-      const url = qu.download_url || qu.csv_url || qu.result_url || qu.file;
       const status = String(qu.status || qu.state || '').toLowerCase();
-      if (!url || (status && !/complete|done|finish|success/.test(status))) continue;
-      const cr = await fetch(url, { headers: tHdr });
-      if (!cr.ok) { stamp(`queue ${qu.id || '?'} CSV → HTTP ${cr.status}`); continue; }
+      if (status && !/complete|done|finish|success/.test(status)) continue;
+
+      let urlField = URL_FIELDS.find(f => typeof qu[f] === 'string' && /^https?:|^\//.test(qu[f]));
+      let url = urlField ? qu[urlField] : null;
+
+      // Some APIs only expose the download link on the per-queue detail endpoint.
+      if (!url && qu.id != null) {
+        try {
+          const dr = await fetch('https://tracerfy.com/v1/api/queues/' + qu.id + '/', { headers: tHdr });
+          if (dr.ok) {
+            const detail = await dr.json();
+            urlField = URL_FIELDS.find(f => typeof detail[f] === 'string' && /^https?:|^\//.test(detail[f]));
+            if (urlField) { url = detail[urlField]; urlField = 'detail.' + urlField; }
+            else if (queuesRead === 0) stamp(`queue ${qu.id} detail fields: ` + Object.keys(detail).join(','));
+          } else if (queuesRead === 0) {
+            stamp(`queue ${qu.id} detail → HTTP ${dr.status}`);
+          }
+        } catch(e) { /* fall through to the no-url branch */ }
+      }
+      if (!url) { if (queuesRead === 0) stamp(`queue ${qu.id || '?'}: no download URL on the row`); continue; }
+      if (url.startsWith('/')) url = 'https://tracerfy.com' + url;
+
+      // ⚠️ Only send the API token to Tracerfy's own host. A results file lives on their
+      // CDN as a PRESIGNED link, and S3/DigitalOcean Spaces reject a request that carries
+      // both a query signature and an Authorization header — that is an HTTP 400
+      // ("only one auth mechanism allowed"), which is exactly what every queue returned.
+      const sameHost = /(^|\.)tracerfy\.com$/i.test(new URL(url).hostname);
+      const cr = await fetch(url, sameHost ? { headers: tHdr } : {});
+      if (!cr.ok) {
+        let body = '';
+        try { body = (await cr.text()).replace(/\s+/g, ' ').slice(0, 200); } catch(e) {}
+        stamp(`queue ${qu.id || '?'} CSV → HTTP ${cr.status} · via ${urlField} · host ${new URL(url).hostname} · ${body}`);
+        continue;
+      }
       const csv = await cr.text();
       const lines = csv.split(/\r?\n/).filter(l => l.trim());
       if (lines.length < 2) continue;
