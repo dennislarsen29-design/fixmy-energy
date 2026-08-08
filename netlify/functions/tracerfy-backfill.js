@@ -83,10 +83,32 @@ exports.handler = async function (event) {
     stamp(`Indexed ${Object.keys(leadById).length} leads`);
 
     // ── Walk Tracerfy's queue history ────────────────────────────────────────
+    // Tracerfy rate-limits. A 429 on page 1 used to break straight out and report
+    // "Found 0 queues" with every gain at zero — indistinguishable from "there is
+    // nothing left to recover", which is the opposite conclusion. Back off and
+    // retry, and if it still won't yield, say so plainly instead of reporting a
+    // clean zero.
+    let rateLimited = false;
+    const getQueuePage = async (page) => {
+      let waitMs = 2000;
+      for (let attempt = 1; attempt <= 4; attempt++) {
+        const r = await fetch('https://tracerfy.com/v1/api/queues/?page=' + page, { headers: tHdr });
+        if (r.ok) return r;
+        if (r.status !== 429) { stamp(`queue list page ${page} → HTTP ${r.status}`); return null; }
+        // Honour Retry-After when Tracerfy sends one; it knows better than we do.
+        const ra = parseInt(r.headers.get('retry-after') || '', 10);
+        const pause = (ra > 0 && ra < 60) ? ra * 1000 : waitMs;
+        stamp(`queue list page ${page} → HTTP 429 (rate limited), retry ${attempt}/4 in ${Math.round(pause / 1000)}s`);
+        if (attempt === 4) { rateLimited = true; return null; }
+        await new Promise(res => setTimeout(res, pause));
+        waitMs *= 2;
+      }
+      return null;
+    };
     const queues = [];
     for (let page = 1; page <= 10 && queues.length < maxQueues; page++) {
-      const r = await fetch('https://tracerfy.com/v1/api/queues/?page=' + page, { headers: tHdr });
-      if (!r.ok) { stamp(`queue list page ${page} → HTTP ${r.status}`); break; }
+      const r = await getQueuePage(page);
+      if (!r) break;
       const d = await r.json();
       const list = Array.isArray(d) ? d : (d.results || d.data || []);
       if (!list.length) break;
@@ -251,12 +273,13 @@ exports.handler = async function (event) {
       if (pending[id].mail_address) gains.mailing++;
       if (pending[id].absentee === true) gains.absentee++;
     });
+    if (rateLimited) stamp('⚠ Tracerfy rate-limited this run — the queue history was NOT fully read. Zero gains below do not mean there is nothing left to recover. Wait ~15 min and re-run.');
     stamp(`${queuesRead} queues read · ${rowsSeen} rows · ${resolved} matched a lead · ${ids.length} leads would gain data`);
     stamp(`Would add: ${gains.phone} phones, ${gains.email} emails, ${gains.name} HUMAN names, ${gains.owner} owner-of-record, ${gains.mailing} mailing addresses (${gains.absentee} absentee/rental), ${gains.dnc} DNC flags`);
 
     if (!apply) {
       return { statusCode: 200, headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dryRun: true, queuesRead, rowsSeen, resolved, leadsToUpdate: ids.length, gains, log }, null, 2) };
+        body: JSON.stringify({ dryRun: true, rateLimited, incomplete: rateLimited, queuesRead, rowsSeen, resolved, leadsToUpdate: ids.length, gains, log }, null, 2) };
     }
 
     let written = 0, failed = 0;
@@ -273,7 +296,7 @@ exports.handler = async function (event) {
     }
     stamp(`Applied: ${written} leads updated, ${failed} failed`);
     return { statusCode: 200, headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ applied: true, queuesRead, rowsSeen, resolved, written, failed, gains, log }, null, 2) };
+      body: JSON.stringify({ applied: true, rateLimited, incomplete: rateLimited, queuesRead, rowsSeen, resolved, written, failed, gains, log }, null, 2) };
   } catch (e) {
     console.error('[tracerfy-backfill] ' + e.message);
     return { statusCode: 200, body: JSON.stringify({ error: e.message, log }) };
