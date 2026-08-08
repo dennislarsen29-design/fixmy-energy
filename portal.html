@@ -762,7 +762,50 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // login until they re-sign under the new version, exactly like a brand-new hire.
   var REP_AGREEMENT_VERSION = '2026-07-30-setter-split';
 
-  function _showSubSheetAckPopup(ackKey) {
+  // ── Sub Sheet acknowledgement ─────────────────────────────────────────────
+  // Was localStorage-ONLY: clearing iPad history wiped the ack and re-prompted every
+  // time, and there was no record anywhere of who had acknowledged which rate sheet —
+  // for a document that sets what subs get paid, that record is worth having.
+  // Stored in rep_agreements with source='sub_sheet_ack' (no migration needed: that
+  // table already has rep_id / rep_name / signed_at / source / agreement_version).
+  // ⚠️ The rep-agreement login check MUST exclude these rows, or a sub-sheet ack would
+  // look like the newest "agreement" at the wrong version and force a re-sign.
+  var SUB_SHEET_ACK_SOURCE = 'sub_sheet_ack';
+  var _ssAckPerson = {};
+  async function _subSheetAcked(person) {
+    var key = 'subSheetAck_' + ((person && person.id) || '') + '_' + SUB_SHEET_VERSION;
+    try { if (localStorage.getItem(key)) return true; } catch(e) {}
+    if (!person || !person.id) return false;
+    try {
+      var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var r = await c.from('rep_agreements')
+        .select('agreement_version,source,signed_at')
+        .eq('rep_id', person.id).eq('source', SUB_SHEET_ACK_SOURCE)
+        .order('signed_at', { ascending: false }).limit(5);
+      var hit = (r.data || []).find(function(x){ return x.agreement_version === SUB_SHEET_VERSION; });
+      if (hit) { try { localStorage.setItem(key, '1'); } catch(e) {} return true; }
+    } catch(e) { /* offline — fall through and prompt rather than silently pass */ }
+    return false;
+  }
+  window.subSheetAcknowledge = async function() {
+    var personId = _ssAckPerson.id || '', personName = _ssAckPerson.name || '';
+    var key = 'subSheetAck_' + personId + '_' + SUB_SHEET_VERSION;
+    try { localStorage.setItem(key, '1'); } catch(e) {}
+    var modal = document.getElementById('subSheetAckModal');
+    if (modal) modal.remove();
+    if (!personId) return;
+    try {
+      var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+      await c.from('rep_agreements').insert({
+        rep_id: personId, rep_name: personName || '', rep_legal_name: personName || '',
+        signed_at: new Date().toISOString(),
+        source: SUB_SHEET_ACK_SOURCE, agreement_version: SUB_SHEET_VERSION
+      });
+    } catch(e) { console.warn('[SubSheet] ack save failed:', e); }
+  };
+
+  function _showSubSheetAckPopup(ackKey, person) {
+    _ssAckPerson = person || {};
     var modal = document.createElement('div');
     modal.id = 'subSheetAckModal';
     modal.style.cssText = 'position:fixed;inset:0;z-index:9995;background:rgba(0,0,0,0.75);display:flex;align-items:flex-end;justify-content:center;';
@@ -773,7 +816,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<div style="font-size:0.78rem;color:#666;line-height:1.5;">Rates have been updated. Please review and acknowledge before continuing.</div>' +
       '</div>' +
       _renderSubSheetHTML() +
-      '<button onclick="(function(){try{localStorage.setItem(\''+ackKey+'\',\'1\');}catch(e){}document.getElementById(\'subSheetAckModal\').remove();})()" ' +
+      '<button onclick="subSheetAcknowledge()" ' +
         'style="width:100%;margin-top:16px;padding:15px;background:#8DC63F;color:#fff;border:none;border-radius:12px;font-size:0.95rem;font-weight:700;cursor:pointer;font-family:inherit;">&#10003; I\'ve Reviewed My Rates &mdash; Acknowledge &amp; Continue</button>' +
       '</div>';
     document.body.appendChild(modal);
@@ -20146,9 +20189,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         // localStorage; on an iPad with history cleared there is no localStorage, so the
         // rep was re-prompted, signed again, added another row, and made it permanent.
         // Newest row wins; duplicates are a legitimate audit trail, not an error.
-        var agrRes = await agc.from('rep_agreements').select('id,agreement_version,signed_at')
-          .eq('rep_id', person.id).order('signed_at', { ascending: false }).limit(1);
-        var agr = { data: (agrRes.data && agrRes.data[0]) || null, error: agrRes.error };
+        var agrRes = await agc.from('rep_agreements').select('id,agreement_version,signed_at,source')
+          .eq('rep_id', person.id).order('signed_at', { ascending: false }).limit(10);
+        // Filter sub-sheet acks client-side rather than with .neq(): `source <> 'x'` is
+        // NULL for a NULL source in SQL, so a server-side neq would silently drop every
+        // legacy row that predates the source column.
+        var agrRow = (agrRes.data || []).find(function(x){ return x.source !== SUB_SHEET_ACK_SOURCE; }) || null;
+        var agr = { data: agrRow, error: agrRes.error };
         if (agr.data) {
           agreementSigned = (agr.data.agreement_version === REP_AGREEMENT_VERSION);
           if (agreementSigned) { try { localStorage.setItem('repAgreement_' + person.id, 'supabase|' + REP_AGREEMENT_VERSION); } catch(e) {} }
@@ -20188,7 +20235,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     document.getElementById('userName').textContent = person.name + ' \xB7 ' + (agreementSigned ? roleLabel : 'Agreement Review');
     var _ssb = document.getElementById('subSheetBtn'); if (_ssb) _ssb.style.display = 'inline-flex';
     var _ackKey = 'subSheetAck_' + (person.id || '') + '_' + SUB_SHEET_VERSION;
-    if (!localStorage.getItem(_ackKey)) { setTimeout(function(){ _showSubSheetAckPopup(_ackKey); }, 600); }
+    // Check the SERVER before prompting — localStorage alone re-prompted on every
+    // cleared-history reload, which is what reps were hitting on the iPad.
+    _subSheetAcked(person).then(function(acked) {
+      if (!acked) setTimeout(function(){ _showSubSheetAckPopup(_ackKey, person); }, 600);
+    });
 
     if (!agreementSigned) {
       window.signRepAgreement = async function() {
