@@ -20051,7 +20051,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     } else {
       try {
         var agc = supabase.createClient(SUPA_URL, SUPA_KEY);
-        var agr = await agc.from('rep_agreements').select('id,agreement_version').eq('rep_id', person.id).maybeSingle();
+        // ⚠️ Was .maybeSingle(), which ERRORS ("multiple rows returned") the moment a rep
+        // has more than one agreement row — and signRepAgreement INSERTs, so a re-sign
+        // always creates one. That error fell through to the offline branch, which trusts
+        // localStorage; on an iPad with history cleared there is no localStorage, so the
+        // rep was re-prompted, signed again, added another row, and made it permanent.
+        // Newest row wins; duplicates are a legitimate audit trail, not an error.
+        var agrRes = await agc.from('rep_agreements').select('id,agreement_version,signed_at')
+          .eq('rep_id', person.id).order('signed_at', { ascending: false }).limit(1);
+        var agr = { data: (agrRes.data && agrRes.data[0]) || null, error: agrRes.error };
         if (agr.data) {
           agreementSigned = (agr.data.agreement_version === REP_AGREEMENT_VERSION);
           if (agreementSigned) { try { localStorage.setItem('repAgreement_' + person.id, 'supabase|' + REP_AGREEMENT_VERSION); } catch(e) {} }
@@ -20548,7 +20556,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           h += '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:14px;padding:16px;margin-bottom:16px;">';
           h += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#8DC63F;margin-bottom:10px;">&#128241; My QR Code &mdash; Share with Homeowners</div>';
           h += '<div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap;">';
-          h += '<img src="'+qrImgUrl+'" style="width:130px;height:130px;border-radius:10px;background:#fff;padding:6px;flex-shrink:0;" />';
+          h += '<img id="cvQrImg" src="'+qrImgUrl+'" style="width:130px;height:130px;border-radius:10px;background:#fff;padding:6px;flex-shrink:0;" />';
           h += '<div style="flex:1;min-width:140px;">';
           h += '<p style="font-size:0.75rem;color:#888;margin:0 0 10px;line-height:1.4;">Homeowners who scan this can save Solar Review as a contact and book a free evaluation — you get credit for the lead.</p>';
           h += '<button onclick="navigator.clipboard.writeText(\''+qrLink+'\')" style="display:block;width:100%;padding:7px 0;background:rgba(141,198,63,0.12);border:1px solid rgba(141,198,63,0.3);color:#8DC63F;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;margin-bottom:6px;">&#128203; Copy Link</button>';
@@ -21003,7 +21011,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }
 
       h += '<div style="text-align:center;padding:20px 0 6px;"><button onclick="window.openRepChat()" style="background:none;border:none;color:#444;font-size:0.68rem;cursor:pointer;text-decoration:underline;text-underline-offset:3px;">&#128172; Rep Assistant</button></div>';
+      // Carry the two expensive nodes across the innerHTML swap instead of letting the
+      // browser destroy and rebuild them. The QR is a remote image (a rebuild re-fetches
+      // it, which is the visible flash) and the map is a live google.maps.Map (a rebuild
+      // is a full re-init AND loses pan/zoom). Reattaching the SAME node also means
+      // _cvRenderDoorsMap's `_cvMapEl !== el` check sees no change and only updates pins.
+      var _sticky = {};
+      ['cvDoorsMap', 'cvQrImg'].forEach(function(sid) {
+        var el = document.getElementById(sid);
+        if (el && el.parentNode) { _sticky[sid] = el; el.parentNode.removeChild(el); }
+      });
       document.getElementById('dashBody').innerHTML = h;
+      Object.keys(_sticky).forEach(function(sid) {
+        var slot = document.getElementById(sid);
+        if (slot && slot.parentNode) slot.parentNode.replaceChild(_sticky[sid], slot);
+        else if (_sticky[sid].parentNode) _sticky[sid].parentNode.removeChild(_sticky[sid]);
+      });
       // Doors satellite map — mounted after the HTML lands, since renderSales() replaces
       // dashBody wholesale and the container has to exist first.
       if (salesView === 'canvass' && _cvMapOpen && document.getElementById('cvDoorsMap')) {
@@ -21422,6 +21445,39 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var _cvFetchLat = null, _cvFetchLng = null, _cvFetchAt = null;
     var _cvRefetching = false;
     var _cvHeading = null;                 // degrees, only when genuinely moving
+    // ── GPS-tick re-render throttle ───────────────────────────────────────────
+    // watchPosition fires roughly every second, and a stationary phone still reports
+    // metre-scale jitter. Every tick called renderSales(), which replaces dashBody
+    // wholesale — destroying and rebuilding the QR <img> (browser re-fetches it) and the
+    // Google Map (full `new google.maps.Map`). That is the visible blinking, and it also
+    // threw away the map's pan/zoom on every tick.
+    // Only redraw when something a rep can actually see has changed.
+    var CV_RERENDER_M   = 12;              // metres of real movement before a redraw
+    var CV_RERENDER_MS  = 3500;            // and never more often than this
+    var _cvLastDrawLat = null, _cvLastDrawLng = null, _cvLastDrawAt = 0, _cvLastDrawKey = '';
+    function _cvRouteKey() {
+      // Identity of what the screen is showing: the first few doors, in order, plus the
+      // revisit override. If this is unchanged, a redraw would paint the same pixels.
+      // Heading is in the key because the GPS pill displays it — engaging or disengaging
+      // it is a visible change. Bucketed to 45° so ordinary compass wobble while walking
+      // doesn't reintroduce the constant redraw this throttle exists to stop.
+      var hd = _cvHeading == null ? 'x' : String(Math.round(_cvHeading / 45) % 8);
+      return (_cvReopenId || '') + '|' + hd + '|' + canvassLeads.filter(_cvIsOpen).slice(0, 5)
+        .map(function(l){ return l.id + ':' + (l.knock_status || ''); }).join(',');
+    }
+    function _cvShouldRedraw() {
+      var key = _cvRouteKey();
+      if (key !== _cvLastDrawKey) return true;          // the route itself changed
+      var now = Date.now();
+      if (now - _cvLastDrawAt < CV_RERENDER_MS) return false;
+      if (_cvLastDrawLat == null || canvassUserLat == null) return true;
+      var moved = canvassHaversine(_cvLastDrawLat, _cvLastDrawLng, canvassUserLat, canvassUserLng) * 1609.34;
+      return moved >= CV_RERENDER_M;
+    }
+    function _cvMarkDrawn() {
+      _cvLastDrawLat = canvassUserLat; _cvLastDrawLng = canvassUserLng;
+      _cvLastDrawAt = Date.now(); _cvLastDrawKey = _cvRouteKey();
+    }
     var CV_REFETCH_MI = 1.5;               // move this far from the fetch point ⇒ re-query
     var CV_MOVING_MPS = 2.2;               // ~5 mph — below this, heading is noise
     var CV_BEHIND_DEG = 100;               // more than this off your heading = behind you
@@ -22381,8 +22437,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           _canvassRescore();
           // Never redraw out from under a rep who is mid-note or mid-transcript. The
           // distances stay a few seconds stale, which is strictly better than losing
-          // what they were typing at the door.
-          if (!_cvUiBusy()) renderSales();
+          // what they were typing at the door. And never redraw for GPS jitter alone —
+          // that is what made the QR code and the map blink.
+          if (!_cvUiBusy() && _cvShouldRedraw()) { _cvMarkDrawn(); renderSales(); }
 
           // Follow the rep. Without this the route stays anchored to wherever they first
           // tapped Get My Location — the actual cause of "next door is 5 miles away and
