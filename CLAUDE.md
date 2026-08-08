@@ -462,6 +462,16 @@ Asked whether a nightly run could be simulated to see if the permit pull was wor
 - Verified in `scratchpad/test-permit-pull.js`: the four failure modes produce four **distinct** outcome strings and the report reaches `last_run_summary`. Gated both ways — reverting the tally collapses all four to one identical report ("no permit queries ran"), reproducing the bug exactly.
 - **Fifth instance of the same pattern in one day**, after the Regrid `no_key`, the Tracerfy 429, the mailing-capture zero and the pipeline's stale timestamp. ⚠️ **STANDING RULE: never let a failing or never-taken code path produce the same output as a real negative.** Count the reason.
 
+### New Hire Walkthrough — training module + portal tour in one (2026-08-08)
+Built as ONE feature rather than two, because a new hire learning the pitch and learning the screen is the same fifteen minutes. `BB_TOUR_STEPS` (portal.html) is 18 numbered steps of three kinds:
+- **`read`** — why anyone talks to us, and the four standing rules (never talk down the old installer, never sell, never quote a price, confirm date + window out loud).
+- **`script`** — renders through `bbScriptBodyHtml` / `cvScriptBodyHtml`, **the same functions the live panel and the one-sheet use**. ⚠️ This is the point: training cannot teach a stale script. Editing the Bill Branch changes the training module in the same edit.
+- **`tour`** — highlights a REAL element on the page (`.bb-tour-spot` = green ring + `0 0 0 9999px` scrim cut-out) and explains it in place, so the hire learns the actual screen rather than a picture of it. Anchored via `data-tour="mode|counters|controls|map|card"` on the shared shell rows plus `#bbScoreboard`.
+- ⚠️ **A tour step whose element is absent still renders**, as a plain card with "This one lives on the other tab" — a rep on Dialing hitting a Doors step must not get a highlight pointing at nothing.
+- Progress is per-rep in `localStorage` (`bbTourDone_<id>` + `_at`), so a hire can stop and resume; the Training tab offers Start / Resume / Replay / Start over, and an admin can replay it to see exactly what a hire sees.
+- Verified in `scratchpad/test-tour.js`: all three step kinds present, the Bill Branch step renders the live three-beat script, the highlight lands on the real element and clears on close, a missing element still explains itself, progress saves and resumes at the right step, and finishing clears the marker.
+- Also removed in this pass: the dialer's legacy "Dials Today / Contacts / Booked" strip, a second differently-styled copy of numbers the shared scoreboard already shows directly above it.
+
 ### Doors/Dialing symmetry pass 3 — one shared page shell (2026-08-08, per Dennis)
 *"The pages still look so different. Can we mimic them identically (other than the specific nuances of the action)?"* The remaining problem was **layout**, not content: different control placement, different counter styling, different order. Every row of both pages is now ONE renderer, called in the same order, so the two cannot drift apart again:
 ```

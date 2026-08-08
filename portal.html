@@ -353,6 +353,25 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
       @page { margin: 14mm; }
     }
 
+
+    /* ── Guided tour ──────────────────────────────────────────────────────
+       A tour step highlights a REAL element in place rather than showing a
+       picture of it, so a new hire learns the actual screen. */
+    body.bb-tour-open { overflow: hidden; }
+    .bb-tour-scrim { position: fixed; inset: 0; background: rgba(0,0,0,0.72); z-index: 99990; }
+    .bb-tour-spot {
+      position: relative; z-index: 99992;
+      box-shadow: 0 0 0 3px #8DC63F, 0 0 0 9999px rgba(0,0,0,0.72);
+      border-radius: 14px;
+    }
+    .bb-tour-card {
+      position: fixed; z-index: 99995; left: 50%; transform: translateX(-50%);
+      bottom: 18px; width: calc(100% - 28px); max-width: 560px;
+      background: #1c1c1c; border: 1px solid rgba(141,198,63,0.35);
+      border-radius: 18px; padding: 16px; box-shadow: 0 18px 50px rgba(0,0,0,0.6);
+    }
+    @media (min-width: 900px) { .bb-tour-card { bottom: 28px; } }
+
   </style>
 </head>
 <body>
@@ -7703,6 +7722,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // Rep portal only — the admin Black Box screen stays the pipeline/ops view, so its
   // dialer keeps a plain "back" affordance instead of a mode switch.
   function _bbModeToggleHtml(mode) {
+    // data-tour anchor lives on the wrapper each caller supplies; see bbStartTour.
     var isRep = typeof window.salesSetView === 'function';
     if (!isRep) {
       return '<button onclick="renderAdminCanvassView()" style="width:auto;margin-top:0;background:none;border:none;color:#555;cursor:pointer;font-size:0.75rem;padding:0;">&#8592; Back to Black Box</button>';
@@ -7823,6 +7843,151 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
   };
 
+  // ── Onboarding: training module + guided portal tour ──────────────────────
+  // One feature, not two: a new hire runs through the same numbered steps whether they
+  // are learning the pitch or learning the screen. Each step is either a READ step (the
+  // script/structure content, pulled from the same bbScriptBodyHtml the live panel uses,
+  // so training can never teach a stale script) or a TOUR step (highlights a real element
+  // on the page and explains it in place).
+  //
+  // Progress is per-rep in localStorage — a new hire can stop and resume, and an admin can
+  // replay it any time from the Training tab to see exactly what a hire sees.
+  var BB_TOUR_STEPS = [
+    { id:'welcome', kind:'read', title:'Welcome', body:
+      '<p style="margin:0 0 10px;">This takes about fifteen minutes. By the end you will know <b>what we do</b>, <b>what to say</b>, and <b>which buttons to press</b>.</p>'
+      + '<p style="margin:0 0 10px;">You can stop at any point and pick up where you left off.</p>'
+      + '<p style="margin:0;color:#8a8578;font-size:0.8rem;">Two motions, one job: <b>Doors</b> is knocking, <b>Dialing</b> is calling. Everything else in here works the same way for both.</p>' },
+
+    { id:'why', kind:'read', title:'Why anyone talks to us', body:
+      '<p style="margin:0 0 10px;">Every lead in your queue is a home whose solar installer <b>went out of business</b> — SunPower, Titan, Sunnova, Sullivan and others.</p>'
+      + '<p style="margin:0 0 10px;">The panels are still on the roof. The warranty on the hardware is usually still good. What disappeared is <b>anyone to call</b> — nobody files the claim, nobody does the labour, nobody notices when production drops.</p>'
+      + '<p style="margin:0;">That is the whole business. You are not selling. You are the person who shows up.</p>' },
+
+    { id:'structure', kind:'script', stage:'flow', which:'call', title:'The structure of a contact' },
+    { id:'opener',    kind:'script', stage:'opener', which:'call', title:'1 · The opener' },
+    { id:'qualify',   kind:'script', stage:'qualify', which:'call', title:'2 · Qualify' },
+    { id:'branch',    kind:'script', stage:'pain', which:'call', title:'3 · The three beats' },
+    { id:'expect',    kind:'script', stage:'expectations', which:'call', title:'4 · Set expectations' },
+    { id:'book',      kind:'script', stage:'book', which:'call', title:'5 · Book it' },
+    { id:'objections',kind:'script', stage:'objections', which:'call', title:'Objections' },
+
+    { id:'tour-score', kind:'tour', sel:'#bbScoreboard', title:'Your week', body:
+      'Hours from <b>Doors and Dialing combined</b>, against the 30-hour weekly goal. It clocks you in automatically from your logged work — there is no button to press or forget. Tap it to see your day-by-day and your inputs.' },
+    { id:'tour-mode', kind:'tour', sel:'[data-tour="mode"]', title:'Doors / Dialing', body:
+      'Switch motions here. The page below is deliberately identical either way — only the action changes.' },
+    { id:'tour-counters', kind:'tour', sel:'[data-tour="counters"]', title:'What is in front of you', body:
+      'On Doors: how much of the route is left. On Dialing: your queue, and tapping one filters to it.' },
+    { id:'tour-focus', kind:'tour', sel:'[data-tour="controls"]', title:'Focus and the script', body:
+      'Focus sorts good leads to the top &mdash; it never hides anything, so you can always work the door in front of you. On the right, the script panel and the printable one-sheet.' },
+    { id:'tour-map', kind:'tour', sel:'[data-tour="map"]', title:'The map', body:
+      'Doors shows where you are standing and the doors around you. Dialing centres on the home you are calling. Tap any pin to jump to that lead next.' },
+    { id:'tour-card', kind:'tour', sel:'[data-tour="card"]', title:'The card', body:
+      'Everything about this one home: who owns it, who installed it, whether it is a rental, the roof from above, and the buttons to call, text or knock.' },
+    { id:'tour-ai', kind:'tour', sel:'[data-tour="card"]', title:'AI Notes', body:
+      'Tap <b>&#127908; AI Notes</b> before you start talking. It listens, writes the note for you and saves it to the lead. You still choose the disposition yourself.' },
+
+    { id:'rules', kind:'read', title:'Four rules that matter', body:
+      '<ol style="margin:0 0 0 18px;padding:0;line-height:1.9;">'
+      + '<li><b>Never talk down the old installer.</b> It makes the tech\'s job harder and makes you sound like a pitch.</li>'
+      + '<li><b>Never sell on the phone or at the door.</b> You are asking for a free look. That is all.</li>'
+      + '<li><b>Never quote a price or an incentive.</b> "That is exactly what the tech figures out."</li>'
+      + '<li><b>Confirm the date AND the two-hour window out loud</b> before you hang up or walk away.</li>'
+      + '</ol>' },
+
+    { id:'done', kind:'read', title:'That is it', body:
+      '<p style="margin:0 0 10px;">Everything here is on the screen when you need it — the script panel walks you through it live, and <b>&#128196; One sheet</b> prints the whole thing.</p>'
+      + '<p style="margin:0;">Start with Dialing if you are nervous. Start with Doors if you would rather move.</p>' }
+  ];
+
+  function _bbTourKey() { return 'bbTourDone_' + (window._bbDialerPersonId || CURRENT_ROLE || 'x'); }
+  window.bbTourCompleted = function() { try { return localStorage.getItem(_bbTourKey()) === '1'; } catch(e) { return false; } };
+  var _bbTourIdx = 0;
+
+  window.bbStartTour = function(fromStep) {
+    _bbTourIdx = 0;
+    if (fromStep) {
+      var k = BB_TOUR_STEPS.findIndex(function(s){ return s.id === fromStep; });
+      if (k >= 0) _bbTourIdx = k;
+    } else {
+      try { var saved = parseInt(localStorage.getItem(_bbTourKey() + '_at') || '0', 10);
+            if (saved > 0 && saved < BB_TOUR_STEPS.length) _bbTourIdx = saved; } catch(e) {}
+    }
+    if (!document.getElementById('bbTourHost')) {
+      var host = document.createElement('div');
+      host.id = 'bbTourHost';
+      document.body.appendChild(host);
+    }
+    _bbTourRender();
+  };
+  window.bbTourNext = function() {
+    _bbTourIdx++;
+    try { localStorage.setItem(_bbTourKey() + '_at', String(_bbTourIdx)); } catch(e) {}
+    if (_bbTourIdx >= BB_TOUR_STEPS.length) { bbTourFinish(); return; }
+    _bbTourRender();
+  };
+  window.bbTourBack = function() { if (_bbTourIdx > 0) { _bbTourIdx--; _bbTourRender(); } };
+  window.bbTourClose = function() {
+    var h = document.getElementById('bbTourHost'); if (h) h.remove();
+    document.body.classList.remove('bb-tour-open');
+    _bbTourClearSpot();
+  };
+  window.bbTourFinish = function() {
+    try { localStorage.setItem(_bbTourKey(), '1'); localStorage.removeItem(_bbTourKey() + '_at'); } catch(e) {}
+    bbTourClose();
+    if (typeof renderSales === 'function' && window._bbTourWasSales) renderSales();
+  };
+  function _bbTourClearSpot() {
+    var prev = document.querySelector('.bb-tour-spot');
+    if (prev) prev.classList.remove('bb-tour-spot');
+  }
+
+  function _bbTourRender() {
+    var st = BB_TOUR_STEPS[_bbTourIdx];
+    var host = document.getElementById('bbTourHost');
+    if (!st || !host) return;
+    document.body.classList.add('bb-tour-open');
+    _bbTourClearSpot();
+
+    // A tour step highlights a real element in place. If that element isn't on screen —
+    // a rep on Dialing when the step describes a Doors control — the step still renders
+    // as a plain card rather than silently pointing at nothing.
+    var target = st.kind === 'tour' && st.sel ? document.querySelector(st.sel) : null;
+    if (target) {
+      target.classList.add('bb-tour-spot');
+      try { target.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch(e) {}
+    }
+
+    var body;
+    if (st.kind === 'script') {
+      var lead = { original_installer: 'SunPower', install_year: 2019, first_name: 'Dave',
+                   address: '1249 Shadowcrest Ln, Fallbrook, CA 92028' };
+      body = (st.which === 'door' ? window.cvScriptBodyHtml : bbScriptBodyHtml)(st.stage, lead);
+    } else {
+      body = st.body || '';
+    }
+
+    var pct = Math.round(((_bbTourIdx + 1) / BB_TOUR_STEPS.length) * 100);
+    var h = '<div class="bb-tour-scrim"></div>';
+    h += '<div class="bb-tour-card">';
+    h += '<div style="height:4px;border-radius:100px;background:rgba(255,255,255,0.1);margin-bottom:12px;overflow:hidden;">'
+       + '<div style="height:100%;width:' + pct + '%;background:#8DC63F;"></div></div>';
+    h += '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:8px;">';
+    h += '<div style="font-size:0.95rem;font-weight:800;color:#8DC63F;">' + esc(st.title) + '</div>';
+    h += '<div style="font-size:0.66rem;color:#666;white-space:nowrap;">' + (_bbTourIdx + 1) + ' of ' + BB_TOUR_STEPS.length + '</div>';
+    h += '</div>';
+    if (st.kind === 'tour' && !target) {
+      h += '<div style="font-size:0.7rem;color:#f59e0b;margin-bottom:8px;">This one lives on the other tab &mdash; here is what it does.</div>';
+    }
+    h += '<div style="font-size:0.85rem;line-height:1.6;color:#e8e4da;max-height:46vh;overflow-y:auto;">' + body + '</div>';
+    h += '<div style="display:flex;gap:8px;margin-top:14px;align-items:center;">';
+    if (_bbTourIdx > 0) h += '<button onclick="bbTourBack()" style="width:auto;margin:0;padding:9px 16px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.14);color:#aaa;border-radius:100px;font-size:0.78rem;font-weight:700;cursor:pointer;">Back</button>';
+    h += '<button onclick="bbTourNext()" style="flex:1;margin:0;padding:11px;background:#8DC63F;border:none;color:#1A1A1A;border-radius:100px;font-size:0.85rem;font-weight:800;cursor:pointer;">'
+       + (_bbTourIdx === BB_TOUR_STEPS.length - 1 ? 'Finish' : 'Next') + '</button>';
+    h += '<button onclick="bbTourClose()" title="Close — your place is saved." style="width:auto;margin:0;padding:9px 14px;background:none;border:none;color:#666;font-size:0.74rem;cursor:pointer;">Later</button>';
+    h += '</div></div>';
+    host.innerHTML = h;
+  }
+
   // ── Shared page shell (Doors + Dialing) ───────────────────────────────────
   // The two surfaces had grown different layouts, not just different content: different
   // control placement, different counter styling, different order. Per Dennis the pages
@@ -7835,7 +8000,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // Counters. Same tile styling both modes; only the numbers and (on Dialing) the
   // click-to-filter behaviour differ, which is the "nuance of the action" Dennis allows.
   window._bbCountersHtml = function(tiles) {
-    var h = '<div style="display:grid;grid-template-columns:repeat(' + tiles.length + ',1fr);gap:6px;margin-bottom:12px;">';
+    var h = '<div data-tour="counters" style="display:grid;grid-template-columns:repeat(' + tiles.length + ',1fr);gap:6px;margin-bottom:12px;">';
     tiles.forEach(function(t) {
       var clickable = !!t.onclick;
       var border = t.active ? '1px solid ' + t.color : '1px solid rgba(255,255,255,0.1)';
@@ -7880,7 +8045,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   };
 
   window._bbControlsRowHtml = function(mode) {
-    return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px;">'
+    return '<div data-tour="controls" style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px;">'
       + '<span>' + window._bbFocusControlHtml(mode) + '</span>'
       + window._bbScriptControlsHtml(mode === 'door' ? 'door' : 'call')
       + '</div>';
@@ -7894,7 +8059,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       : _bbDialMapOpen();
     var toggle = isDoor ? 'canvassToggleMap()' : 'bbDialToggleMap()';
     var id = isDoor ? 'cvDoorsMap' : 'bbDialMap';
-    var h = '<div style="margin-bottom:12px;">';
+    var h = '<div data-tour="map" style="margin-bottom:12px;">';
     h += '<button onclick="' + toggle + '" style="width:100%;margin:0 0 8px;background:rgba(74,158,255,0.07);border:1px solid rgba(74,158,255,0.22);border-radius:10px;color:#4a9eff;font-size:0.72rem;font-weight:700;padding:7px;cursor:pointer;">'
       + (open ? '&#9650; Hide map' : '&#9660; &#128506; Show map') + '</button>';
     if (open) {
@@ -9420,7 +9585,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
     h += '</div>';
     h += window._bbRepScoreboardHtml('call');
-    if (!isAdminDialer) h += '<div style="margin-bottom:12px;">' + _bbModeToggleHtml('dialing') + '</div>';
+    if (!isAdminDialer) h += '<div data-tour="mode" style="margin-bottom:12px;">' + _bbModeToggleHtml('dialing') + '</div>';
 
     // The Black Box Team Dashboard was consolidated into Team -> 1:1s (2026-08-06), which
     // now carries its Day/Week/Month/Year range and at-a-glance table alongside the
@@ -9450,12 +9615,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
     // Shift control deliberately absent — see the Doors header for the rationale.
 
-    // Session stats
-    h += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px;">';
-    h += '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:10px;text-align:center;"><div style="font-size:1.2rem;font-weight:800;color:#E8793A;">'+sess.dials+'</div><div style="font-size:0.68rem;color:#888;">Dials Today</div></div>';
-    h += '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:10px;text-align:center;"><div style="font-size:1.2rem;font-weight:800;color:#4a9eff;">'+sess.contacts+'</div><div style="font-size:0.68rem;color:#888;">Contacts</div></div>';
-    h += '<div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:10px;text-align:center;"><div style="font-size:1.2rem;font-weight:800;color:#8DC63F;">'+sess.booked+'</div><div style="font-size:0.68rem;color:#888;">Booked</div></div>';
-    h += '</div>';
+    // (session stats removed — the shared scoreboard above already shows today's
+    //  dials / convos / booked, and this was a second copy in a different style)
 
     // Filter chips
     var chips = [
@@ -9477,7 +9638,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += window._bbMapBlockHtml('call');
 
     // ── Current lead card ──
-    h += '<div style="background:rgba(255,255,255,0.05);border:2px solid '+(isPinned?'rgba(74,158,255,0.45)':'rgba(232,121,58,0.4)')+';border-radius:16px;padding:18px;margin-bottom:12px;">';
+    h += '<div data-tour="card" style="background:rgba(255,255,255,0.05);border:2px solid '+(isPinned?'rgba(74,158,255,0.45)':'rgba(232,121,58,0.4)')+';border-radius:16px;padding:18px;margin-bottom:12px;">';
     h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:6px;">';
     if (isPinned) {
       h += '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#4a9eff;">&#128204; Pinned from search — not part of queue order</div>';
@@ -20853,7 +21014,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         // Same order as Dialing: scoreboard, then the mode toggle, then the counters,
         // then focus | script, then the map, then the card.
         h += window._bbRepScoreboardHtml('door');
-        h += '<div style="margin-bottom:12px;">' + _bbModeToggleHtml('doors') + '</div>';
+        h += '<div data-tour="mode" style="margin-bottom:12px;">' + _bbModeToggleHtml('doors') + '</div>';
 
         // QR Code card (moved off the login dashboard — lives here in the Black Box canvass route)
         (function(){
@@ -21024,7 +21185,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             var fullName = ((lead.first_name||'')+' '+(lead.last_name||'')).trim();
 
             // "Next Door" card
-            h += '<div style="background:rgba(255,255,255,0.05);border:2px solid '+(reopened?'rgba(74,158,255,0.5)':'rgba(141,198,63,0.35)')+';border-radius:16px;padding:18px;margin-bottom:12px;">';
+            h += '<div data-tour="card" style="background:rgba(255,255,255,0.05);border:2px solid '+(reopened?'rgba(74,158,255,0.5)':'rgba(141,198,63,0.35)')+';border-radius:16px;padding:18px;margin-bottom:12px;">';
             h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">';
             if (reopened) {
               var rsLbl = CV_DOOR_LABELS[lead.knock_status] || lead.knock_status || '';
@@ -21206,6 +21367,29 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // ── TRAINING ────────────────────────────────────────────────────────────
       else if (salesView === 'training') {
         var trainingTab = sessionStorage.getItem('trainingTab_'+person.id) || 'tech';
+        // ── New Hire Walkthrough ──────────────────────────────────────────────
+        // Training and the portal tour are one feature: the same numbered steps teach
+        // the pitch AND the screen, and the script steps render from the live script
+        // functions so training can never drift from what a rep actually reads.
+        (function(){
+          var done = window.bbTourCompleted();
+          var at = 0; try { at = parseInt(localStorage.getItem('bbTourDone_' + (person.id||'') + '_at') || '0', 10) || 0; } catch(e) {}
+          h += '<div style="background:' + (done ? 'rgba(255,255,255,0.04)' : 'rgba(141,198,63,0.09)')
+             + ';border:1px solid ' + (done ? 'rgba(255,255,255,0.1)' : 'rgba(141,198,63,0.4)')
+             + ';border-radius:14px;padding:14px 16px;margin-bottom:16px;">';
+          h += '<div style="font-size:0.85rem;font-weight:800;color:#8DC63F;margin-bottom:4px;">&#127891; New Hire Walkthrough</div>';
+          h += '<div style="font-size:0.76rem;color:#999;line-height:1.55;margin-bottom:10px;">'
+             + (done ? 'You have finished this. Replay it any time \u2014 it always shows the current script.'
+                     : at > 0 ? 'You are part way through \u2014 pick up where you left off.'
+                     : 'About fifteen minutes. What we do, what to say, and which buttons to press.')
+             + '</div>';
+          h += '<div style="display:flex;gap:8px;flex-wrap:wrap;">';
+          h += '<button onclick="bbStartTour()" style="width:auto;margin:0;padding:10px 18px;background:#8DC63F;border:none;color:#1A1A1A;border-radius:100px;font-size:0.8rem;font-weight:800;cursor:pointer;">'
+             + (done ? '\u21bb Replay' : at > 0 ? 'Resume' : 'Start walkthrough') + '</button>';
+          if (at > 0 || done) h += '<button onclick="bbStartTour(\'welcome\')" style="width:auto;margin:0;padding:10px 16px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.14);color:#aaa;border-radius:100px;font-size:0.78rem;font-weight:700;cursor:pointer;">Start over</button>';
+          h += '<button onclick="bbOpenOneSheet(\'call\')" style="width:auto;margin:0;padding:10px 16px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);color:#4a9eff;border-radius:100px;font-size:0.78rem;font-weight:700;cursor:pointer;">&#128196; Script one-sheet</button>';
+          h += '</div></div>';
+        })();
         function tTabBtn(v, lbl) {
           var a = trainingTab === v;
           return '<button onclick="window.setTrainingTab(\''+v+'\')" style="padding:6px 14px;border:none;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;background:'+(a?'#8DC63F':'rgba(255,255,255,0.07)')+';color:'+(a?'#1A1A1A':'#888')+';">'+lbl+'</button>';
