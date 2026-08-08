@@ -63,7 +63,7 @@ exports.handler = async function (event) {
     let off = 0;
     while (true) {
       const r = await fetch(REST + '/customers?lead_source=eq.orphaned_list'
-        + '&select=id,address,phone,email,title_owner&order=id.asc&limit=1000&offset=' + off, { headers: H });
+        + '&select=id,address,phone,email,title_owner,first_name,last_name&order=id.asc&limit=1000&offset=' + off, { headers: H });
       if (!r.ok) throw new Error('lead index HTTP ' + r.status);
       const rows = await r.json();
       if (!rows.length) break;
@@ -163,11 +163,17 @@ exports.handler = async function (event) {
 
         const phone = row['primary_phone'] || row['mobile_1'] || row['landline_1'] || null;
         const email = row['email_1'] || row['email'] || null;
-        const owner = [row['first_name'] || row['owner_1_first_name'] || '',
-                       row['last_name'] || row['owner_1_last_name'] || ''].filter(Boolean).join(' ') || null;
+        // The skip-traced PERSON. This belongs in first_name/last_name — it is the human
+        // who lives there, which for a trust-owned property is the trustee. Writing it to
+        // title_owner (as this used to) put it in the column that holds the legal owner of
+        // record, where it was then skipped entirely for any lead already carrying a trust
+        // name — i.e. exactly the leads the name was needed for.
+        const first = (row['first_name'] || row['owner_1_first_name'] || '').trim();
+        const last  = (row['last_name']  || row['owner_1_last_name']  || '').trim();
+        const human = [first, last].filter(Boolean).join(' ') || null;
         const dncRaw = row['do_not_call'] || row['dnc'] || row['primary_phone_dnc'] || '';
         const dnc = ['true','yes','1','y'].includes(dncRaw.toLowerCase().trim());
-        if (!phone && !email && !owner && !dnc) continue;
+        if (!phone && !email && !human && !dnc) continue;
 
         let id = row['lead_id'] || null;
         if (!id) {
@@ -184,7 +190,11 @@ exports.handler = async function (event) {
         const upd = pending[id] || {};
         if (phone && !lead.phone && !upd.phone) upd.phone = phone;
         if (email && !lead.email && !upd.email) upd.email = email;
-        if (owner && !lead.title_owner && !upd.title_owner) upd.title_owner = owner;
+        if (first && !lead.first_name && !upd.first_name) upd.first_name = first;
+        if (last  && !lead.last_name  && !upd.last_name)  upd.last_name  = last;
+        // Only use the person as the owner of record when we have nothing there at all —
+        // never overwrite a real assessor value (a trust IS the correct owner).
+        if (human && !lead.title_owner && !upd.title_owner) upd.title_owner = human;
         if (dnc) upd.dnc = true;
         if (Object.keys(upd).length) { upd.enrichment_source = 'tracerfy'; pending[id] = upd; }
         else alreadyHad++;
@@ -192,15 +202,16 @@ exports.handler = async function (event) {
     }
 
     const ids = Object.keys(pending);
-    const gains = { phone: 0, email: 0, owner: 0, dnc: 0 };
+    const gains = { phone: 0, email: 0, name: 0, owner: 0, dnc: 0 };
     ids.forEach(id => {
       if (pending[id].phone) gains.phone++;
       if (pending[id].email) gains.email++;
+      if (pending[id].first_name || pending[id].last_name) gains.name++;
       if (pending[id].title_owner) gains.owner++;
       if (pending[id].dnc) gains.dnc++;
     });
     stamp(`${queuesRead} queues read · ${rowsSeen} rows · ${resolved} matched a lead · ${ids.length} leads would gain data`);
-    stamp(`Would add: ${gains.phone} phones, ${gains.email} emails, ${gains.owner} owner names, ${gains.dnc} DNC flags`);
+    stamp(`Would add: ${gains.phone} phones, ${gains.email} emails, ${gains.name} HUMAN names (first/last), ${gains.owner} owner-of-record, ${gains.dnc} DNC flags`);
 
     if (!apply) {
       return { statusCode: 200, headers: { 'Content-Type': 'application/json' },
