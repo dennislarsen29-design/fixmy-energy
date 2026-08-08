@@ -20032,6 +20032,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             var tInOutage = bbOutageHasZip(tZip);
             h += '<div style="font-size:1.05rem;font-weight:700;margin-bottom:4px;">'+esc(lead.address||'No address')+(tIsSDCP?'<span style="display:inline-block;margin-left:7px;padding:1px 7px;background:rgba(0,150,255,0.15);color:#4AABF7;border-radius:10px;font-size:0.58rem;font-weight:700;vertical-align:middle;">SDCP</span>':'')+(tInOutage?bbOutageBadgeHtml():'')+(lead.lead_score != null ? leadScoreBadge(lead.lead_score) : '')+'</div>';
             if (lead.dnc) h += '<span style="display:inline-block;margin-bottom:6px;padding:2px 8px;background:rgba(239,68,68,0.15);color:#ef4444;border-radius:10px;font-size:0.62rem;font-weight:700;">DNC</span>';
+            if (lead.knock_status === 'come_back' && lead.callback_at) {
+              var cbDue = _cvCbDue(lead);
+              h += '<div style="display:inline-block;margin-bottom:8px;padding:4px 11px;background:'+(cbDue?'rgba(141,198,63,0.16)':'rgba(255,170,0,0.1)')+';border:1px solid '+(cbDue?'rgba(141,198,63,0.5)':'rgba(255,170,0,0.35)')+';color:'+(cbDue?'#8DC63F':'#ffaa00')+';border-radius:100px;font-size:0.7rem;font-weight:700;">'
+                + (cbDue ? '&#128337; Due now &mdash; they asked you back ' : '&#128337; Come back ') + esc(_cvCbLabel(lead)) + '</div>';
+            }
             // Owner name — the rep card used to render ONLY first/last, so a lead that
             // did have a title_owner still showed nothing at the door. Knowing whose
             // house it is before knocking is the entire point of enriching it.
@@ -20076,9 +20081,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             h += '<button onclick="canvassStartBooking(\''+lead.id+'\')" style="width:100%;padding:16px;margin-bottom:8px;border:none;border-radius:12px;background:#8DC63F;color:#1A1A1A;font-size:0.95rem;font-weight:800;cursor:pointer;">&#9989; BOOKED!</button>';
             h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">';
             CV_DOOR_OUTCOMES.forEach(function(o) {
-              h += '<button onclick="canvassKnock(\''+lead.id+'\',\''+o.key+'\')" title="'+o.tip+'" style="padding:14px 8px;border:1px solid '+o.border+';border-radius:12px;background:'+o.bg+';color:'+o.color+';font-size:0.8rem;font-weight:700;cursor:pointer;">'+o.icon+' '+o.label+'</button>';
+              // Come Back needs a time, so it opens the picker instead of committing.
+              var fn = o.key === 'come_back'
+                ? 'canvassComeBack(\''+lead.id+'\')'
+                : 'canvassKnock(\''+lead.id+'\',\''+o.key+'\')';
+              h += '<button onclick="'+fn+'" title="'+o.tip+'" style="padding:14px 8px;border:1px solid '+o.border+';border-radius:12px;background:'+o.bg+';color:'+o.color+';font-size:0.8rem;font-weight:700;cursor:pointer;">'+o.icon+' '+o.label+'</button>';
             });
             h += '</div>';
+            if (_cvCbFor === lead.id) h += _cvComeBackPickerHtml(lead);
             // Inline note input
             h += '<div style="margin-top:10px;border-top:1px solid rgba(255,255,255,0.06);padding-top:8px;">';
             h += '<button onclick="canvassToggleNote(\''+lead.id+'\')" style="width:auto;background:none;border:none;color:#555;cursor:pointer;font-size:0.7rem;padding:0;text-decoration:underline;">📝 Add Note</button>';
@@ -20102,7 +20112,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
               h += '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#444;margin-bottom:6px;">Coming up</div>';
               unvisited.slice(1, 5).forEach(function(nl, ni) {
                 var nd = nl._distMi != null ? nl._distMi.toFixed(1)+' mi' : '';
-                var hotBadge = nl._hot ? '<span style="color:#f59e0b;font-size:0.65rem;margin-left:4px;">&#9733; Hot</span>' : '';
+                var hotBadge = _cvCbDue(nl)
+                  ? '<span style="color:#8DC63F;font-size:0.65rem;margin-left:4px;">&#128337; Due now</span>'
+                  : (nl.knock_status === 'come_back' && nl.callback_at)
+                    ? '<span style="color:#ffaa00;font-size:0.65rem;margin-left:4px;">&#128337; '+esc(_cvCbLabel(nl))+'</span>'
+                    : nl._hot ? '<span style="color:#f59e0b;font-size:0.65rem;margin-left:4px;">&#9733; Hot</span>' : '';
                 h += '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:rgba(255,255,255,0.03);border:1px solid '+(nl._hot?'rgba(245,158,11,0.3)':'rgba(255,255,255,0.07)')+';border-radius:8px;margin-bottom:4px;">';
                 h += '<div style="font-size:0.75rem;color:#888;">'+(ni+2)+'. '+(nl.address||'—')+hotBadge+'</div>';
                 if (nd) h += '<div style="font-size:0.68rem;color:#555;">'+nd+'</div>';
@@ -20760,6 +20774,28 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // to return, so it belongs in the route, just not at the front.
     function _cvIsOpen(l) { return !l.knock_status || l.knock_status === 'come_back'; }
 
+    // A come-back whose time has arrived. Reuses customers.callback_at, the same column
+    // the dialer's callbacks use, so a door come-back and a phone callback are one concept.
+    var CV_CB_LEAD_MIN = 20;   // surface it slightly early — you have to walk there
+    function _cvCbDue(l) {
+      if (!l || l.knock_status !== 'come_back' || !l.callback_at) return false;
+      var t = new Date(l.callback_at).getTime();
+      return !isNaN(t) && t - CV_CB_LEAD_MIN * 60000 <= Date.now();
+    }
+    function _cvCbLabel(l) {
+      if (!l || !l.callback_at) return '';
+      var d = new Date(l.callback_at);
+      if (isNaN(d.getTime())) return '';
+      var today = new Date(); today.setHours(0,0,0,0);
+      var day = new Date(d); day.setHours(0,0,0,0);
+      var dayDiff = Math.round((day - today) / 86400000);
+      var when = dayDiff === 0 ? 'today' : dayDiff === 1 ? 'tomorrow'
+               : d.toLocaleDateString('en-US', { weekday:'short', month:'short', day:'numeric' });
+      var hh = d.getHours() % 12 || 12;
+      var mm = d.getMinutes();
+      return when + ' at ' + hh + (mm ? ':' + String(mm).padStart(2,'0') : '') + (d.getHours() < 12 ? 'am' : 'pm');
+    }
+
     // Assigns each open door a walking-order index. Streets are visited nearest-first;
     // within a street the doors run in house-number order, starting from whichever end
     // the rep is closer to, so they walk the block rather than bouncing down it.
@@ -20826,7 +20862,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (!a._hot && b._hot) return 1;
       var ao = _cvIsOpen(a), bo = _cvIsOpen(b);
       if (ao !== bo) return ao ? -1 : 1;
-      // A come-back sits behind untouched doors on the same street.
+      // A come-back sits behind untouched doors — unless its time has arrived, in which
+      // case _hot has already pulled it to the front above.
       var ac = a.knock_status === 'come_back', bc = b.knock_status === 'come_back';
       if (ao && bo && ac !== bc) return ac ? 1 : -1;
       var sa = a._seq != null ? a._seq : 99999, sb = b._seq != null ? b._seq : 99999;
@@ -21117,6 +21154,69 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       { label:'Production Screenshot', icon:'&#128241;', hint:'Their solar app, if they have it on their phone.' },
       { label:'Utility Bill',          icon:'&#128196;', hint:'Photo or PDF of the most recent bill.' }
     ];
+
+    // ── Come back later ────────────────────────────────────────────────────────
+    // "Try me after six" is the most common thing a rep hears at a door, and it is
+    // worthless unless the door actually resurfaces then. Saved to customers.callback_at
+    // — the same column the dialer's callbacks use — so a door come-back and a phone
+    // callback are one concept, and _cvCbDue floats it to the top when its time lands.
+    var _cvCbFor = null;
+    window.canvassComeBack = function(id) { _cvCbFor = id; renderSales(); };
+    window.canvassCancelComeBack = function() { _cvCbFor = null; renderSales(); };
+
+    window.canvassSaveComeBack = async function(id, iso) {
+      if (!iso) {
+        var el = document.getElementById('cvCbWhen_' + id);
+        iso = el && el.value ? new Date(el.value).toISOString() : null;
+      }
+      if (!iso) { alert('Pick a day and time first.'); return; }
+      _cvCbFor = null;
+      var lead = canvassLeads.find(function(l){ return l.id === id; });
+      if (lead) lead.callback_at = iso;
+      try {
+        var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+        var r = await c.from('customers').update({ callback_at: iso }).eq('id', id);
+        // callback_at arrived with the dialer migration; if it isn't there the knock still
+        // records, the door just won't resurface on a timer.
+        if (r.error) console.warn('come-back time not saved (run 20260702_black_box_dialer.sql):', r.error.message);
+      } catch(e) {}
+      await window.canvassKnock(id, 'come_back');
+    };
+
+    function _cvComeBackPickerHtml(lead) {
+      function preset(label, dt) {
+        return '<button onclick="canvassSaveComeBack(\''+lead.id+'\',\''+dt.toISOString()+'\')" style="width:auto;margin:0;padding:10px 12px;background:rgba(255,170,0,0.1);border:1px solid rgba(255,170,0,0.35);color:#ffaa00;border-radius:10px;font-size:0.76rem;font-weight:700;cursor:pointer;">'+label+'</button>';
+      }
+      var now = new Date();
+      var inTwo = new Date(now.getTime() + 2 * 3600000);
+      var tonight = new Date(now); tonight.setHours(18, 0, 0, 0);
+      if (tonight <= now) tonight.setDate(tonight.getDate() + 1);
+      var tomorrow = new Date(now); tomorrow.setDate(tomorrow.getDate() + 1); tomorrow.setHours(11, 0, 0, 0);
+      var weekend = new Date(now);
+      weekend.setDate(weekend.getDate() + ((6 - weekend.getDay() + 7) % 7 || 7));
+      weekend.setHours(10, 0, 0, 0);
+
+      // datetime-local wants local wall time, not UTC.
+      var pad = function(n){ return String(n).padStart(2,'0'); };
+      var def = tonight;
+      var defLocal = def.getFullYear()+'-'+pad(def.getMonth()+1)+'-'+pad(def.getDate())+'T'+pad(def.getHours())+':'+pad(def.getMinutes());
+
+      var h = '<div style="background:rgba(255,170,0,0.06);border:1px solid rgba(255,170,0,0.3);border-radius:14px;padding:13px;margin-top:10px;">';
+      h += '<div style="font-size:0.78rem;font-weight:800;color:#ffaa00;margin-bottom:3px;">&#128337; When should you come back?</div>';
+      h += '<div style="font-size:0.7rem;color:#999;line-height:1.45;margin-bottom:10px;">The door drops back to the top of your route when it\'s time.</div>';
+      h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:9px;">';
+      h += preset('In 2 hours', inTwo);
+      h += preset('This evening &middot; 6pm', tonight);
+      h += preset('Tomorrow &middot; 11am', tomorrow);
+      h += preset('Saturday &middot; 10am', weekend);
+      h += '</div>';
+      h += '<input id="cvCbWhen_'+lead.id+'" type="datetime-local" value="'+defLocal+'" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:9px;color:#fff;padding:10px;font-size:0.82rem;box-sizing:border-box;margin-bottom:8px;"/>';
+      h += '<div style="display:flex;gap:7px;">';
+      h += '<button onclick="canvassSaveComeBack(\''+lead.id+'\')" style="width:auto;margin:0;flex:1;padding:11px;background:#ffaa00;border:none;color:#1A1A1A;border-radius:100px;font-size:0.8rem;font-weight:800;cursor:pointer;">Save come-back</button>';
+      h += '<button onclick="canvassCancelComeBack()" style="width:auto;margin:0;flex:0 0 auto;padding:11px 16px;background:transparent;border:1px solid rgba(255,255,255,0.14);color:#888;border-radius:100px;font-size:0.78rem;font-weight:700;cursor:pointer;">Cancel</button>';
+      h += '</div></div>';
+      return h;
+    }
 
     window.canvassStartBooking = async function(id) {
       var lead = canvassLeads.find(function(l){ return l.id === id; });
@@ -21488,7 +21588,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       _cvRefetching = true;
       renderSales();
       try {
-        var SEL = 'id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,original_installer,install_year';
+        var SEL = 'id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,original_installer,install_year,callback_at';
         var client = supabase.createClient(SUPA_URL, SUPA_KEY);
         var res = await _canvassFetchBox(client, SEL, lat, lng);
         if (res.rows.length) {
@@ -21522,7 +21622,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (canvassUserLat == null || canvassUserLng == null) return;
       canvassLeads.forEach(function(l) {
         if (l.lat != null && l.lng != null) l._distMi = canvassHaversine(canvassUserLat, canvassUserLng, l.lat, l.lng);
-        l._hot = l.knock_status === 'callback' || l.knock_status === 'interested';
+        l._hot = l.knock_status === 'callback' || l.knock_status === 'interested' || _cvCbDue(l);
       });
       _cvSortRoute();
     }
@@ -21543,7 +21643,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       canvassUserLng = userLng;
       renderSales();
 
-      var SEL = 'id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,original_installer,install_year';
+      var SEL = 'id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,original_installer,install_year,callback_at';
       var client = supabase.createClient(SUPA_URL, SUPA_KEY);
 
       var result;
@@ -21587,7 +21687,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (userLat && userLng) {
         leads.forEach(function(l) {
           l._distMi = canvassHaversine(userLat, userLng, l.lat, l.lng);
-          l._hot = l.knock_status === 'callback' || l.knock_status === 'interested';
+          l._hot = l.knock_status === 'callback' || l.knock_status === 'interested' || _cvCbDue(l);
         });
         // Cap by TRUE DISTANCE so the 80 we keep are genuinely the nearest — street
         // sequencing runs afterwards, over the kept set, in _cvSortRoute().
