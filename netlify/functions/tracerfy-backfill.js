@@ -63,7 +63,7 @@ exports.handler = async function (event) {
     let off = 0;
     while (true) {
       const r = await fetch(REST + '/customers?lead_source=eq.orphaned_list'
-        + '&select=id,address,phone,email,title_owner,first_name,last_name,mail_address&order=id.asc&limit=1000&offset=' + off, { headers: H });
+        + '&select=id,address,phone,email,title_owner,first_name,last_name,mail_address,absentee&order=id.asc&limit=1000&offset=' + off, { headers: H });
       if (!r.ok) throw new Error('lead index HTTP ' + r.status);
       const rows = await r.json();
       if (!rows.length) break;
@@ -264,6 +264,17 @@ exports.handler = async function (event) {
           // otherwise flag every owner-occupied house as absentee.
           if (normStreet(lead.address) && normStreet(mAddr) && normZip(lead.address) && mZip) {
             upd.absentee = situsKey !== mailKey;
+          }
+        }
+        // Absentee must be derivable even when the mailing address was stored by ANOTHER
+        // path (the nightly pipeline's Phase 3) that left the flag null. Deriving it only
+        // inside the !lead.mail_address branch above means the guard blocks its own
+        // backfill forever — the address is present, so the branch never runs again.
+        if (mAddr && lead.absentee == null && upd.absentee === undefined) {
+          const sK = normStreet(lead.address) + '|' + normZip(lead.address);
+          const mK = normStreet(mAddr) + '|' + (mZip ? mZip[0] : '');
+          if (normStreet(lead.address) && normStreet(mAddr) && normZip(lead.address) && mZip) {
+            upd.absentee = sK !== mK;
           }
         }
         if (Object.keys(upd).length) { upd.enrichment_source = 'tracerfy'; pending[id] = upd; }
