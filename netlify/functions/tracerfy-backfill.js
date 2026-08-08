@@ -155,6 +155,15 @@ exports.handler = async function (event) {
       queuesRead++;
 
       const hdrs = parseLine(lines[0]).map(h => h.toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, ''));
+      // Column names only — never row data. 0 DNC flags across 13k rows is not credible
+      // (roughly a quarter of US consumer numbers are on the national registry), so the
+      // real column is almost certainly named something we aren't reading. Calling a
+      // registered number is a TCPA problem, so this needs to be provably right.
+      if (queuesRead === 1) {
+        stamp('CSV columns: ' + hdrs.join(','));
+        const dncish = hdrs.filter(h => /dnc|do_not|litigat|scrub|tcpa|complain/.test(h));
+        stamp('DNC-ish columns detected: ' + (dncish.length ? dncish.join(',') : 'NONE'));
+      }
       for (let i = 1; i < lines.length; i++) {
         const vals = parseLine(lines[i]);
         const row = {};
@@ -171,8 +180,14 @@ exports.handler = async function (event) {
         const first = (row['first_name'] || row['owner_1_first_name'] || '').trim();
         const last  = (row['last_name']  || row['owner_1_last_name']  || '').trim();
         const human = [first, last].filter(Boolean).join(' ') || null;
-        const dncRaw = row['do_not_call'] || row['dnc'] || row['primary_phone_dnc'] || '';
-        const dnc = ['true','yes','1','y'].includes(dncRaw.toLowerCase().trim());
+        // Any column whose name looks like a do-not-call marker counts. Missing one of
+        // these means putting a registered number back in the dialer.
+        let dnc = false;
+        for (const k of Object.keys(row)) {
+          if (!/dnc|do_not_call|litigator|tcpa/.test(k)) continue;
+          const v = String(row[k] || '').toLowerCase().trim();
+          if (v && v !== 'false' && v !== 'no' && v !== '0' && v !== 'n' && v !== 'null') { dnc = true; break; }
+        }
         if (!phone && !email && !human && !dnc) continue;
 
         let id = row['lead_id'] || null;
