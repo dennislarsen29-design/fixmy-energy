@@ -279,6 +279,32 @@ exports.handler = async function(event) {
     return resp.ok;
   }
 
+  // ── Progress checkpointing ────────────────────────────────────────────────
+  // last_run_at used to be written ONCE, after Phase 4. Any run that did real work
+  // and then died — a background-function timeout is the obvious way — left the
+  // portal reporting the last COMPLETED run, so a pipeline that had been enriching
+  // leads nightly displayed "Last pipeline run: 3d ago". Verified in the wild:
+  // phase2_offset advanced 2026-08-07 while last_run_at still read 2026-08-05.
+  // ⚠️ A partial failure must never render identically to nothing having happened.
+  // Checkpointing after every phase makes the timestamp truthful AND names the
+  // phase the run died in, which is the diagnosis rather than just the symptom.
+  const progress = {};
+  async function checkpoint(phase) {
+    try {
+      const ts = new Date().toISOString();
+      const rows = [
+        { key: 'last_run_at',      value: ts,    updated_at: ts },
+        { key: 'last_run_phase',   value: phase, updated_at: ts },
+        { key: 'last_run_summary', value: JSON.stringify({ ...progress, log: log.slice(-80) }), updated_at: ts }
+      ];
+      await Promise.all(rows.map(body => fetch(SUPA_REST + '/pipeline_state', {
+        method: 'POST',
+        headers: { ...supaHeaders, Prefer: 'resolution=merge-duplicates' },
+        body: JSON.stringify(body)
+      })));
+    } catch (e) { stamp('checkpoint(' + phase + ') failed — ' + e.message); }
+  }
+
   // ══════════════════════════════════════════════════════════════════════════
   // PHASE 0 — AI INTELLIGENCE ANALYSIS + ZIP EXPANSION INIT
   // Runs before Phase 1: reads expansion index, loads active zips, calls
@@ -421,6 +447,8 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
     stamp('Phase 0 AI: skipped — ANTHROPIC_KEY not set');
   }
 
+
+  await checkpoint('phase0');
   // ══════════════════════════════════════════════════════════════════════════
   // PHASE 0b — GEOCODE MISSING LAT/LNG (Nominatim / OpenStreetMap)
   // Geocodes up to 300 orphaned leads per run that are missing lat/lng.
@@ -461,6 +489,9 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
     stamp('Phase 0b: skipped (enrich_only mode)');
   }
 
+
+  progress.phase0b_geocoded = geocodedCount;
+  await checkpoint('phase0b');
   // ══════════════════════════════════════════════════════════════════════════
   // PHASE 1 — PERMIT PULL
   // Pull all 16 installers, insert records not already in Supabase
@@ -610,6 +641,9 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
     stamp('Phase 1a: skipped (enrich_only mode)');
   }
 
+
+  progress.phase1_new_permits = inserted;
+  await checkpoint('phase1a');
   // ══════════════════════════════════════════════════════════════════════════
   // PHASE 1c — PermitStack SD Cities
   // City-by-city permit pull for 16 San Diego cities. Primary source for SD
@@ -751,6 +785,9 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
     }
   }
 
+
+  progress.phase1c_new_permits = inserted1c;
+  await checkpoint('phase1c');
   // ══════════════════════════════════════════════════════════════════════════
   // PHASE 1d — SD COUNTY OPEN DATA (Socrata / unincorporated areas)
   // Runs regardless of PermitStack availability — covers unincorporated SD County
@@ -828,6 +865,9 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
     stamp(`Phase 1d inserted: ${inserted1d} records`);
   }
 
+
+  progress.phase1d_new_permits = inserted1d;
+  await checkpoint('phase1d');
   // ══════════════════════════════════════════════════════════════════════════
   // PHASE 1b — OC / RIVERSIDE PERMIT PULL (via PermitStack)
   // Activated when expansion index ≥ 20 (OC) or ≥ 54 (Riverside).
@@ -962,6 +1002,9 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
     stamp('Zip expansion: fully expanded (' + EXPANSION_QUEUE.length + ' extra zips active)');
   }
 
+
+  progress.phase1b_new_permits = inserted1b;
+  await checkpoint('phase1b');
   // ══════════════════════════════════════════════════════════════════════════
   // PHASE 2 — OWNER ENRICHMENT (SANDAG / Regrid)
   // Fill title_owner for all leads missing it, up to 2000 per run
@@ -1202,6 +1245,9 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
     stamp(`Phase 2: offset ${p2Start}→${nextP2} (pool ${p2Total})`);
   } catch(e) { stamp('Phase 2: offset persist error — ' + e.message); }
 
+
+  progress.phase2_owners_added = enriched;
+  await checkpoint('phase2');
   // ══════════════════════════════════════════════════════════════════════════
   // PHASE 3 — TRACERFY SKIP-TRACE
   // Submit all no-contact leads, poll up to 4 min, write results back.
@@ -1548,6 +1594,9 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
     }
   }
 
+
+  progress.phase3_tracerfy = tracerfyResult;
+  await checkpoint('phase3');
   // ── Phase 4: sync dialable Black Box leads into GHL (Power Dialer contacts) ──
   // Reuses ghl-bulk-sync.js in-process — same code path as the portal's manual
   // "Sync Queue to GHL" button. Idempotent: GHL upsert dedupes by phone/email.
@@ -1582,35 +1631,18 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
     log
   };
 
-  // ── Write last_run_at + last_run_summary so the portal can show when pipeline ran ──
-  try {
-    const runTs = new Date().toISOString();
-    const runSummary = JSON.stringify({
-      phase0b_geocoded: summary.phase0b_geocoded,
-      phase1_new_permits: summary.phase1_new_permits,
-      phase1c_new_permits: summary.phase1c_new_permits,
-      phase1d_new_permits: summary.phase1d_new_permits,
-      phase1b_new_permits: summary.phase1b_new_permits,
-      phase1_by_installer: summary.phase1_by_installer,
-      phase2_owners_added: summary.phase2_owners_added,
-      phase3_tracerfy: summary.phase3_tracerfy,
-      phase4_ghl_sync: summary.phase4_ghl_sync,
-      log: (summary.log || []).slice(-80)
-    });
-    await Promise.all([
-      fetch(SUPA_REST + '/pipeline_state', {
-        method: 'POST',
-        headers: { ...supaHeaders, Prefer: 'resolution=merge-duplicates' },
-        body: JSON.stringify({ key: 'last_run_at', value: runTs, updated_at: runTs })
-      }),
-      fetch(SUPA_REST + '/pipeline_state', {
-        method: 'POST',
-        headers: { ...supaHeaders, Prefer: 'resolution=merge-duplicates' },
-        body: JSON.stringify({ key: 'last_run_summary', value: runSummary, updated_at: runTs })
-      })
-    ]);
-    stamp('Pipeline: last_run_at saved');
-  } catch(e) { stamp('Pipeline: failed to save last_run_at — ' + e.message); }
+  // Final checkpoint — 'complete' is what distinguishes a finished run from one
+  // that died mid-flight. The portal reads last_run_phase to say which.
+  progress.phase0b_geocoded    = summary.phase0b_geocoded;
+  progress.phase1_new_permits  = summary.phase1_new_permits;
+  progress.phase1c_new_permits = summary.phase1c_new_permits;
+  progress.phase1d_new_permits = summary.phase1d_new_permits;
+  progress.phase1b_new_permits = summary.phase1b_new_permits;
+  progress.phase1_by_installer = summary.phase1_by_installer;
+  progress.phase2_owners_added = summary.phase2_owners_added;
+  progress.phase3_tracerfy     = summary.phase3_tracerfy;
+  progress.phase4_ghl_sync     = summary.phase4_ghl_sync;
+  await checkpoint('complete');
 
   stamp('=== Pipeline complete ===');
   console.log('Summary:', JSON.stringify(summary, null, 2));
