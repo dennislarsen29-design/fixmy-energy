@@ -310,13 +310,29 @@ exports.handler = async function(event) {
     if (!keys.length) return 'no permit queries ran';
     return keys.map(k => k + ' \u00d7' + pullOutcomes[k]).join(' | ');
   }
+  // A thrown fetch is a permit-pull outcome too. Every catch below used to stamp a log
+  // line and count nothing, so a vendor timing out on 44 straight queries summarised
+  // identically to a quiet night \u2014 the exact failure this tally exists to prevent.
+  // Timeouts are separated from other network errors because they mean something
+  // different: the vendor is up but slow, and the per-request budget is the lever.
+  function netReason(e) {
+    const msg = String((e && (e.name + ' ' + e.message)) || '');
+    return /AbortError|aborted|timeout|timed out/i.test(msg) ? 'timeout' : 'net_error';
+  }
   async function checkpoint(phase) {
     try {
       const ts = new Date().toISOString();
       const rows = [
         { key: 'last_run_at',      value: ts,    updated_at: ts },
         { key: 'last_run_phase',   value: phase, updated_at: ts },
-        { key: 'last_run_summary', value: JSON.stringify({ ...progress, log: log.slice(-80) }), updated_at: ts }
+        // ⚠️ The tally must ride on EVERY checkpoint, not just the end-of-run write.
+        // It was only folded into `progress` after the final phase, so a run that died
+        // partway — the case where you most need to know why the permit pull came back
+        // empty — persisted a summary with no reasons in it at all. Same lesson as the
+        // per-phase checkpointing itself: report progress as it happens, not on success.
+        { key: 'last_run_summary', value: JSON.stringify({
+            ...progress, permit_pull_outcomes: tallyReport(), log: log.slice(-80)
+          }), updated_at: ts }
       ];
       await Promise.all(rows.map(body => fetch(SUPA_REST + '/pipeline_state', {
         method: 'POST',
@@ -576,8 +592,8 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
           const url = `${baseUrl}?$q=${encodeURIComponent(qname)}&$limit=1000&$offset=${offset}`;
           let resp;
           try { resp = await fetchWithTimeout(url, { headers: { Accept: 'application/json' } }, 8000); }
-          catch(e) { stamp(`  ${label} "${qname}" fetch err: ${e.message}`); break; }
-          if (!resp.ok || resp.status === 404) break;
+          catch(e) { tally(label, netReason(e)); stamp(`  ${label} "${qname}" fetch err: ${e.message}`); break; }
+          if (!resp.ok || resp.status === 404) { tally(label, 'http_' + resp.status); break; }
           let batch;
           try { batch = await resp.json(); } catch(e) { break; }
           if (!Array.isArray(batch) || !batch.length) break;
@@ -737,7 +753,10 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
             try {
               resp = await fetchWithTimeout(url, { headers: psHeaders }, 10000);
             } catch(e) {
-              stamp(`  1c ${city}/"${qname}" fetch err: ${e.message}`);
+              tally('1c', netReason(e));
+              if ((pullOutcomes['1c:' + netReason(e)] || 0) <= 3) {
+                stamp(`  1c ${city}/"${qname}" fetch err: ${e.message}`);
+              }
               break;
             }
             if (!resp.ok) {
@@ -842,10 +861,12 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
           try {
             resp = await fetchWithTimeout(url, { headers: { Accept: 'application/json' } }, 8000);
           } catch(e) {
+            tally('1d', netReason(e));
             stamp(`  1d "${qname}" fetch err: ${e.message}`);
             break;
           }
           if (!resp.ok || resp.status === 404) {
+            tally('1d', 'http_' + resp.status);
             if (resp.status === 404) { stamp('Phase 1d: SD County endpoint 404 — skipping'); break outer1d; }
             break;
           }
@@ -956,7 +977,10 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
               try {
                 resp = await fetchWithTimeout(url, { headers: psHeaders }, 10000);
               } catch(e) {
-                stamp(`  1b ${city}/"${qname}" fetch err: ${e.message}`);
+                tally('1b', netReason(e));
+                if ((pullOutcomes['1b:' + netReason(e)] || 0) <= 3) {
+                  stamp(`  1b ${city}/"${qname}" fetch err: ${e.message}`);
+                }
                 break;
               }
               if (!resp.ok) {
