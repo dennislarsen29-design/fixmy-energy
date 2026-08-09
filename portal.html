@@ -4441,6 +4441,66 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     loadSEOPulse();
   }
 
+  // ── SEO sync health ────────────────────────────────────────────────────────
+  // This panel used to print "updated nightly" above whatever rows existed. The sync
+  // died 2026-07-13 and it kept presenting four-week-old numbers as current for a
+  // month — a dead feed rendering identically to a live one, the same failure family
+  // as the permit tally and the Regrid no_key. seo-insights.js now stamps
+  // pipeline_state.seo_sync_status on every terminal path; this reads it.
+  var SEO_STALE_DAYS = 3;
+  function _seoSyncBanner(st, lastRowDate) {
+    var now = Date.now();
+    var at = st && st.at ? new Date(st.at).getTime() : null;
+    var ageD = at ? Math.floor((now - at) / 86400000) : null;
+    var dataAgeD = lastRowDate ? Math.floor((now - new Date(lastRowDate + 'T00:00:00Z').getTime()) / 86400000) : null;
+    // No stamp at all + stale data = the sync predates this instrumentation and has
+    // not run since. Say that plainly rather than implying everything is fine.
+    if (!st) {
+      if (dataAgeD == null || dataAgeD <= SEO_STALE_DAYS + 2) return '';
+      return _seoWarn('No sync has reported in since this check was added, and the newest Search Console row is ' +
+        dataAgeD + ' days old. The numbers below are stale.',
+        'Open <code>/.netlify/functions/seo-insights</code> in a browser tab to run it now — it will return the real reason as JSON.');
+    }
+    if (st.status === 'failed') {
+      return _seoWarn('Search Console sync is failing (<b>' + esc(st.reason || 'unknown') + '</b>), last tried ' +
+        (ageD === 0 ? 'today' : ageD + 'd ago') + '. Figures below are from ' + esc(lastRowDate || 'an older pull') + '.',
+        esc(st.hint || ''));
+    }
+    if (st.status === 'skipped') {
+      return _seoWarn('Search Console sync is not configured, so nothing is being collected.', esc(st.hint || ''));
+    }
+    if (st.status === 'ok_no_rows') {
+      return _seoWarn('The sync is working — Google returned <b>zero impressions</b> for the whole window.',
+        'This is a real answer, not a broken credential: the site currently has no search visibility.');
+    }
+    if (ageD != null && ageD > SEO_STALE_DAYS) {
+      return _seoWarn('Last successful sync was ' + ageD + ' days ago.', 'The nightly job may have stopped running.');
+    }
+    return '';
+  }
+  function _seoWarn(headline, hint) {
+    return '<div style="background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.35);border-radius:8px;padding:9px 11px;margin-bottom:10px;">'+
+      '<div style="font-size:0.75rem;color:#fbbf24;font-weight:700;line-height:1.5;">&#9888; ' + headline + '</div>'+
+      (hint ? '<div style="font-size:0.7rem;color:#bbb;margin-top:4px;line-height:1.55;">' + hint + '</div>' : '')+
+      '<button onclick="seoResyncNow(this)" style="width:auto;margin-top:8px;padding:5px 12px;font-size:0.68rem;font-weight:700;background:rgba(245,158,11,0.18);color:#fbbf24;border:1px solid rgba(245,158,11,0.4);border-radius:6px;cursor:pointer;">&#128260; Run sync now</button>'+
+    '</div>';
+  }
+  // One click to get the real error instead of reading Netlify logs.
+  async function seoResyncNow(btn) {
+    if (btn) { btn.disabled = true; btn.textContent = 'Running…'; }
+    try {
+      var r = await fetch('/.netlify/functions/seo-insights');
+      var d = await r.json().catch(function(){ return {}; });
+      if (d.ok) alert('Sync ran.\n\n' + (d.daily || 0) + ' days written, ' + (d.queries || 0) + ' queries, ' +
+        (d.pages || 0) + ' pages.' + (d.emptyWindow ? '\n\nGoogle returned zero impressions — the credential is fine, there is genuinely no search traffic.' : ''));
+      else alert('Sync failed: ' + (d.reason || r.status) + '\n\n' + (d.hint || d.error || 'No detail returned.'));
+      loadSEOPulse();
+    } catch (e) {
+      alert('Could not reach the sync function: ' + e.message);
+    }
+    if (btn) { btn.disabled = false; btn.textContent = '🔄 Run sync now'; }
+  }
+
   // ── SEO Pulse — Search Console / GA4 snapshot pulled nightly by seo-insights.js ──
   async function loadSEOPulse() {
     var el = document.getElementById('seoPulse');
@@ -4450,10 +4510,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var since = new Date(Date.now() - 60 * 86400000).toISOString().slice(0,10);
       var { data: rows, error } = await sc.from('seo_metrics').select('*').gte('date', since).order('date', {ascending:true});
       if (error) throw error;
+      var _seoStatus = null;
+      try {
+        var stRes = await sc.from('pipeline_state').select('value').eq('key', 'seo_sync_status').limit(1);
+        var raw = stRes.data && stRes.data[0] && stRes.data[0].value;
+        _seoStatus = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+      } catch (e) { /* status is a nicety — never block the panel on it */ }
       if (!rows || !rows.length) {
         el.innerHTML =
           '<div style="background:rgba(232,121,249,0.05);border:1px solid rgba(232,121,249,0.2);border-radius:12px;padding:14px 16px;margin-bottom:16px;">'+
             '<div style="font-size:0.72rem;font-weight:700;color:#e879f9;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;">&#128200; SEO Pulse — not connected yet</div>'+
+            _seoSyncBanner(_seoStatus, null)+
             '<p style="font-size:0.78rem;color:#999;margin:0;line-height:1.6;">Search Console data will appear here once <code style="color:#e879f9;">GSC_SERVICE_ACCOUNT</code> is set in Netlify. One-time setup (~15 min, desktop) — steps are in GROWTH_ACTIONS.md. The nightly sync and Thursday AI analysis start automatically after that.</p>'+
           '</div>';
         return;
@@ -4498,8 +4565,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<div style="background:rgba(232,121,249,0.04);border:1px solid rgba(232,121,249,0.18);border-radius:12px;padding:14px 16px;margin-bottom:16px;">'+
           '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">'+
             '<div style="font-size:0.72rem;font-weight:700;color:#e879f9;text-transform:uppercase;letter-spacing:0.06em;">&#128200; SEO Pulse</div>'+
-            '<span style="font-size:0.62rem;color:#555;margin-left:auto;">vs prior 28 days · updated nightly · AI analysis Thu</span>'+
+            // Name the real last-data date. "updated nightly" was a claim, not a fact —
+            // it kept reading as current while the feed had been dead for four weeks.
+            '<span style="font-size:0.62rem;color:#555;margin-left:auto;">vs prior 28 days · newest data '+esc(rows[rows.length-1].date)+'</span>'+
           '</div>'+
+          _seoSyncBanner(_seoStatus, rows[rows.length-1].date)+
           '<div style="display:flex;gap:8px;flex-wrap:wrap;">'+cards+'</div>'+
           qHtml+
         '</div>';

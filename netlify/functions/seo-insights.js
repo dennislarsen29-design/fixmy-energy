@@ -57,8 +57,30 @@ async function gscQuery(token, site, body) {
     headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   });
-  if (!resp.ok) throw new Error('GSC query failed: ' + resp.status + ' ' + (await resp.text()).slice(0, 300));
+  if (!resp.ok) {
+    const e = new Error('GSC query failed: ' + resp.status + ' ' + (await resp.text()).slice(0, 300));
+    e.httpStatus = resp.status;
+    throw e;
+  }
   return (await resp.json()).rows || [];
+}
+
+// A dead key, a revoked Search Console grant, a property that no longer exists, and a
+// site that genuinely got zero impressions are four different problems with four
+// different fixes. Name them, or the operator is left guessing — which is exactly what
+// happened here: this sync died 2026-07-13 and nothing anywhere recorded why.
+function classifyFailure(e) {
+  const s = e && e.httpStatus;
+  const msg = String((e && e.message) || '');
+  if (s === 401 || /invalid_grant|Invalid JWT|token exchange failed/i.test(msg))
+    return { reason: 'auth', hint: 'The service-account key is rejected by Google — most likely disabled, deleted, or expired by an org key-rotation policy. Create a new key in GCP → IAM → Service Accounts and re-store it in app_config.' };
+  if (s === 403)
+    return { reason: 'forbidden', hint: 'Google authenticated the key but refused the property — the service account has lost its Search Console access, or the Search Console API is disabled on the GCP project. Re-add ' + '(the service-account email)' + ' as a user on the property.' };
+  if (s === 404)
+    return { reason: 'property_not_found', hint: 'Search Console has no property matching GSC_SITE_URL. A domain property is "sc-domain:fixmy.energy"; a URL-prefix property is "https://fixmy.energy/". They are different objects — check which one is verified.' };
+  if (s === 429)
+    return { reason: 'rate_limited', hint: 'Google rate-limited the request. Usually transient; the next scheduled run should recover.' };
+  return { reason: 'upstream', hint: msg.slice(0, 200) };
 }
 
 async function supaUpsert(table, rows, onConflict) {
@@ -73,6 +95,34 @@ async function supaUpsert(table, rows, onConflict) {
     body: JSON.stringify(rows)
   });
   if (!resp.ok) throw new Error('Supabase upsert ' + table + ' failed: ' + resp.status + ' ' + (await resp.text()).slice(0, 300));
+}
+
+// Every terminal path writes here, so the portal can tell a live sync from a dead one.
+// ⚠️ Deliberately pipeline_state, NOT app_config: app_config holds this very
+// service-account key plus the Plaid access tokens and is service-role-only, while
+// pipeline_state is already read by the portal with the anon key and carries no
+// secrets. A health stamp must never be the reason a secrets table gets opened up.
+// No migration — same snapshot-row pattern as the Black Box pipeline's own status.
+async function writeStatus(status, extra) {
+  try {
+    const key = process.env.SUPA_SERVICE_KEY;
+    const at = new Date().toISOString();
+    await fetch(SUPA_REST + '/pipeline_state', {
+      method: 'POST',
+      headers: {
+        apikey: key, Authorization: 'Bearer ' + key, 'Content-Type': 'application/json',
+        Prefer: 'resolution=merge-duplicates,return=minimal'
+      },
+      body: JSON.stringify({
+        key: 'seo_sync_status',
+        value: JSON.stringify({ at, status, ...(extra || {}) }),
+        updated_at: at
+      })
+    });
+  } catch (e) {
+    // Never let the health-stamp be the thing that kills the run.
+    console.warn('seo-insights: status write failed —', e.message);
+  }
 }
 
 // Load the service-account key: env var override first, then app_config table.
@@ -103,9 +153,13 @@ exports.handler = async function() {
 
   let sa;
   try { sa = await loadServiceAccount(); }
-  catch (e) { return { statusCode: 500, body: JSON.stringify({ error: e.message }) }; }
+  catch (e) {
+    await writeStatus('failed', { reason: 'credential_unreadable', hint: e.message.slice(0, 200) });
+    return { statusCode: 500, body: JSON.stringify({ error: e.message }) };
+  }
   if (!sa || !sa.client_email || !sa.private_key) {
     console.log('seo-insights: no service-account key found in app_config — skipping (see GROWTH_ACTIONS.md)');
+    await writeStatus('skipped', { reason: 'no_credential', hint: 'No service-account key in app_config (key = gsc_service_account). See the header of seo-insights.js.' });
     return { statusCode: 200, body: JSON.stringify({ skipped: 'service account not configured — insert it into app_config (see function header)' }) };
   }
 
@@ -169,6 +223,11 @@ exports.handler = async function() {
 
     await supaUpsert('seo_metrics', metricRows, 'date');
     summary.daily = metricRows.length;
+    // ⚠️ Google answering with zero rows is a REAL answer (the site got no impressions
+    // in the window) and must not look like a broken credential. supaUpsert returns
+    // early on an empty array, so without this the run writes nothing and still says
+    // ok — indistinguishable from the failure that actually took this sync down.
+    summary.emptyWindow = metricRows.length === 0;
 
     // 3. Top queries + pages, last 7 days → snapshot keyed to the window end date
     const qStart = iso(daysAgo(9));
@@ -185,9 +244,18 @@ exports.handler = async function() {
     summary.pages = pages.length;
 
     console.log('seo-insights:', JSON.stringify(summary));
+    await writeStatus(summary.emptyWindow ? 'ok_no_rows' : 'ok', {
+      days: summary.daily, queries: summary.queries, pages: summary.pages,
+      ga4: summary.ga4, site, window: start + '→' + end,
+      hint: summary.emptyWindow
+        ? 'Google answered normally but reported zero impressions for the whole window. The credential is fine — the site genuinely has no search visibility.'
+        : null
+    });
     return { statusCode: 200, body: JSON.stringify({ ok: true, ...summary }) };
   } catch (e) {
-    console.error('seo-insights:', e.message);
-    return { statusCode: 500, body: JSON.stringify({ error: e.message, ...summary }) };
+    const c = classifyFailure(e);
+    console.error('seo-insights:', c.reason, '—', e.message);
+    await writeStatus('failed', { reason: c.reason, hint: c.hint, site, detail: String(e.message).slice(0, 300) });
+    return { statusCode: 500, body: JSON.stringify({ error: e.message, reason: c.reason, hint: c.hint, ...summary }) };
   }
 };
