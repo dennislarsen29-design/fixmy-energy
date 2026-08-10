@@ -15,6 +15,16 @@ Full audit: https://claude.ai/code/artifact/0c2828a2-6213-43cd-8afd-e13b19c8aff7
 - ☐ **Check GHL partial handling** — confirm no workflow keys off webhook payloads with `status='partial'`; only completed homepage leads hit the webhook-trigger now.
 - ⏳ **Search Console** — ✅ verified + sitemap submitted 2026-07-04; ✅ Manual actions: none; ✅ Security issues: none (drop is algorithmic — recovery = fixes already shipped + content plan). Still open: (b) ☰ → *Performance* → stretch to 12–16 months, screenshot the traffic curve for Claude; (c) Settings → Users and permissions → add main Google account as Owner.
 
+## ⏰ Check back — Google Ads (set 2026-08-10, review 2026-08-11 onward)
+Campaign went live 2026-08-10 at $20/day (Performance Max) to burn a **$980 credit — expiry not confirmed; check Billing → Promotions**. Come back after ~24h of spend and answer:
+- ☐ **Is "Book appointment" recording anything yet?** It read **0.00** on Aug 10. If it is still zero after real clicks, the tag is broken, not the traffic.
+- ☐ **Did the wrong search themes get replaced?** All 15 were UK energy-switching terms ("dual fuel comparison", "switch energy supplier online"). 21 correct ones supplied.
+- ☐ **Was "TechSol - Number click 26592" demoted to Secondary?** 32 conversions, set Primary — a leftover phone-click action from a prior setup. While it is Primary the bid strategy optimises toward number clicks, not booked evaluations.
+- ☐ **Was one of the two duplicate "Book appointment" actions demoted?** Both were Primary (one GA4, one Website tag) — double-counting the moment they start firing.
+- ☐ **Was "Get directions" demoted?** Service-area business, no storefront — nobody gets directions to you.
+- ☐ **What search terms did the money actually go to?** Campaigns → Insights → Search terms. Add negatives.
+- ☐ **"Solar Review - Battery (Local Search)" showed "Some ads limited by policy"** — recheck now that /privacy and /terms exist.
+
 ## This week
 - ✅ **SEO dashboard connected 2026-07-04** — service account created (org key-creation policy overridden then re-locked), granted GSC Full + GA4 Viewer, key stored in Supabase `app_config` (Netlify env var hit AWS's 4KB limit and broke deploys — resolved), test pull returned `ok:true, ga4:true`. GSC data rows start flowing ~1–2 days after property verification; SEO Pulse fills automatically. First "▶ seo" agent run makes sense once a few days of data exist (~Tuesday).
 - ✅ **All migrations confirmed 2026-07-04** — attribution columns + `seo_metrics`/`seo_queries` + `app_config` all ran with "Success. No rows returned." Attribution now lands in columns; nightly SEO sync has its tables.
