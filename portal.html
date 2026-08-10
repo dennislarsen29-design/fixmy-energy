@@ -8903,6 +8903,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         _bbTip('This blends the intro and the reason for the call into one smooth line — don&rsquo;t pause after your name long enough to invite a brush-off.') +
         _bbSay('Hi '+c.name+'. This is '+c.rep+', one of the techs. I&rsquo;m calling on your solar on <strong>'+street+'</strong>. '+installerLine+' How&rsquo;s things been going for yours?') +
         _bbTip('If they mention a zero/odd bill, a second system, or anything unusual — drop the script and just ask genuine probing questions about it before moving to Qualify.') +
+        _bbWarn('<b>If you are using AI Notes, you must ask first.</b> California requires everyone on the call to agree before it can be transcribed &mdash; being on the call yourself is not enough. Say it early, right after they answer:') +
+        _bbSay('Quick heads up before we go further &mdash; this call is being transcribed so my notes are accurate. Is that alright with you?') +
+        _bbTip('If they say no, that is the end of it &mdash; tap <b>They said no</b> and type the note yourself. Never transcribe anyway. The AI Notes button asks you to confirm this before it starts.') +
         (c.sdcp ? _bbTip('&#128161; SDCP territory — if bills come up later: &ldquo;you&rsquo;re on San Diego Community Power now, which changed how solar credits work — one more reason to check the numbers.&rdquo;') : '')
       );
       case 'qualify': return (
@@ -9204,6 +9207,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       return _bbTip('Intro and reason-for-call in one line. Name the street &mdash; it&rsquo;s what separates you from a canvasser.')
         + _bbSay('Hey &mdash; ' + esc(who) + '? I&rsquo;m ' + esc(rep) + '. I&rsquo;m out on ' + esc(street) + ' today because of the solar that <b>' + esc(inst) + '</b> put on' + esc(yr) + '. They&rsquo;re not around anymore, so nobody&rsquo;s been checking on these systems &mdash; I&rsquo;m the one who does that now.')
         + _bbTip('Then <b>stop talking</b>. Let them react. The pause is doing the work.')
+        + _bbWarn('<b>If you are using AI Notes, you must ask first.</b> California requires everyone in the conversation to agree before it can be transcribed. Ask once they are talking to you:')
+        + _bbSay('Do you mind if my phone transcribes our conversation? It just means my notes are accurate instead of me scribbling.')
+        + _bbTip('If they say no, tap <b>They said no</b> and type the note afterwards. Never transcribe anyway. The AI Notes button asks you to confirm before it starts.')
         + _bbWarn('Never talk down ' + esc(inst) + '. It makes the tech&rsquo;s job harder on site and it makes you sound like a pitch.')
         + (isSDCP ? _bbTip('&#9889; This address is in <b>SDCP</b> territory &mdash; extra rebate money is available here. Save it for the eval, don&rsquo;t lead with it.') : '');
     }
@@ -9319,6 +9325,55 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // which returns a crisp CRM note + suggested disposition. The note PREFILLS
   // the call-note box for the rep to review/edit — it never auto-commits a
   // disposition (human stays in the loop).
+  // ── Consent gate for the note-taker (2026-08-10) ───────────────────────────
+  // California Penal Code § 632 is an ALL-PARTY consent statute: being a participant
+  // in the call is not enough, and § 637.2 attaches statutory damages per violation.
+  // A line in the script is advice a rep can skip; the transcription itself has to be
+  // gated, so this sits in front of BOTH note-takers and there is no path around it.
+  //
+  // ⚠️ Consent is per-conversation and is deliberately NOT remembered across calls or
+  // doors. Caching it would be the whole point of the gate, thrown away.
+  var _aiConsentAt = null;
+  var AI_CONSENT_LINES = {
+    call: 'Quick heads up before we go further — this call is being transcribed so my notes are accurate. Is that alright with you?',
+    door: 'Do you mind if my phone transcribes our conversation? It just means my notes are accurate instead of me scribbling.'
+  };
+  // onProceed runs only after the rep confirms the customer said yes.
+  function _aiConsentGate(mode, onProceed) {
+    var line = AI_CONSENT_LINES[mode] || AI_CONSENT_LINES.call;
+    var where = mode === 'door' ? 'this conversation' : 'this call';
+    var old = document.getElementById('aiConsentWrap');
+    if (old && old.parentNode) old.parentNode.removeChild(old);
+    var w = document.createElement('div');
+    w.id = 'aiConsentWrap';
+    w.style.cssText = 'position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,0.72);display:flex;align-items:center;justify-content:center;padding:18px;';
+    w.innerHTML =
+      '<div role="dialog" aria-modal="true" aria-labelledby="aiConsentH" style="max-width:440px;width:100%;background:#1b1b22;border:1px solid rgba(155,109,232,0.45);border-radius:16px;padding:22px;">'+
+        '<div id="aiConsentH" style="font-size:0.68rem;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#c4a3f0;margin-bottom:10px;">&#127908; Ask before recording</div>'+
+        '<p style="font-size:0.8rem;color:#bbb;line-height:1.55;margin:0 0 12px;">California law requires everyone on '+where+' to agree before it can be transcribed. Read this out loud:</p>'+
+        '<div style="background:rgba(155,109,232,0.1);border-left:3px solid #9b6de8;border-radius:0 8px 8px 0;padding:13px 15px;font-size:0.95rem;line-height:1.6;color:#fff;margin-bottom:16px;">&ldquo;'+esc(line)+'&rdquo;</div>'+
+        '<button id="aiConsentYes" style="width:100%;padding:13px;margin-bottom:8px;background:#8DC63F;color:#0d0d0d;border:none;border-radius:10px;font-size:0.85rem;font-weight:800;cursor:pointer;">They said yes &mdash; start transcribing</button>'+
+        '<button id="aiConsentNo" style="width:100%;padding:11px;background:transparent;color:#aaa;border:1px solid #3a3a44;border-radius:10px;font-size:0.8rem;font-weight:600;cursor:pointer;">They said no &mdash; I&rsquo;ll type the note</button>'+
+        '<p style="font-size:0.68rem;color:#777;line-height:1.5;margin:12px 0 0;">If they decline, that is the end of it &mdash; do not transcribe anyway. Typing the note yourself is always fine.</p>'+
+      '</div>';
+    document.body.appendChild(w);
+    function close() { if (w.parentNode) w.parentNode.removeChild(w); }
+    document.getElementById('aiConsentYes').onclick = function() {
+      _aiConsentAt = new Date().toISOString();
+      close();
+      onProceed();
+    };
+    document.getElementById('aiConsentNo').onclick = function() { _aiConsentAt = null; close(); };
+    // Escape is the same as declining — never a shortcut into recording.
+    w.addEventListener('keydown', function(e) { if (e.key === 'Escape') { _aiConsentAt = null; close(); } });
+    document.getElementById('aiConsentYes').focus();
+  }
+  // Stamped onto the saved note so the record shows consent was taken, and when.
+  // A claim that you asked is worth much more with a timestamp behind it.
+  function _aiConsentTag() {
+    return _aiConsentAt ? '[Transcription consent given ' + _aiConsentAt + ']\n' : '';
+  }
+
   var _bbAiRec = null, _bbAiActive = false, _bbAiFinal = '';
   function _bbAiSetBtn(recording) {
     var b = document.getElementById('bbAiBtn'); if (!b) return;
@@ -9338,6 +9393,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (panel) { panel.style.display = 'block'; document.getElementById('bbAiTranscript').textContent = 'Voice transcription isn\'t supported in this browser — use Safari (iOS 14.5+) or Chrome. You can still type notes manually below.'; }
       return;
     }
+    _aiConsentGate('call', _bbAiBegin);
+  };
+  function _bbAiBegin() {
+    var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    var panel = document.getElementById('bbAiPanel');
     _bbAiFinal = ''; _bbAiActive = true;
     if (panel) { panel.style.display = 'block'; }
     var st = document.getElementById('bbAiStatus'); if (st) st.textContent = '● recording';
@@ -9366,7 +9426,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }
     };
     try { _bbAiRec.start(); } catch(e) { console.warn('SpeechRecognition start failed:', e); }
-  };
+  }
   // Rep-facing failure text for the AI note-taker. Reps (setters especially) must never
   // see raw Anthropic API text — a billing/credit message on screen mid-call is confusing
   // and looks broken to them, and it's not something they can act on. They get a neutral
@@ -9417,7 +9477,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // Auto-save to the lead immediately — don't rely on the rep also tapping a
       // disposition button afterward (that was silently losing notes). Outcome stays
       // null/un-dispositioned here; the rep still picks the real disposition separately.
-      if (data.note && lead.id) { try { await bbLogActivity(lead.id, 'dialer', null, data.note); } catch(e) {} }
+      if (data.note && lead.id) { try { await bbLogActivity(lead.id, 'dialer', null, _aiConsentTag() + data.note); } catch(e) {} }
       if (st) {
         var oc = data.suggested_outcome && BB_DIAL_OUTCOMES[data.suggested_outcome];
         st.innerHTML = '&#10003; saved to lead' + (oc ? ' &middot; suggests: <span style="color:'+oc.color+';font-weight:700;">'+oc.label+'</span>' : '');
@@ -9456,6 +9516,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var box = document.getElementById('cvAiTranscript_'+leadId);
     if (panel) panel.style.display = 'block';
     if (!SR) { if (box) box.textContent = 'Voice transcription isn\'t supported here — use Safari (iOS 14.5+) or Chrome. You can still type the note below.'; return; }
+    _aiConsentGate('door', function() { _cvAiBegin(leadId, targetId); });
+  };
+  function _cvAiBegin(leadId, targetId) {
+    var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    var box = document.getElementById('cvAiTranscript_'+leadId);
     _cvAiFinal = ''; _cvAiActive = true; _cvAiTarget = targetId; _cvAiLeadId = leadId;
     _cvAiLead = (adminCustomers||[]).find(function(c){ return c.id === leadId; }) || { id: leadId };
     var st = document.getElementById('cvAiStatus_'+leadId); if (st) st.textContent = '● recording';
@@ -9470,7 +9535,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     _cvAiRec.onend = function(){ if (_cvAiActive && _cvAiRec) { try { _cvAiRec.start(); } catch(e){} } };
     _cvAiRec.onerror = function(ev){ if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') { _cvAiActive = false; _cvAiSetBtn(leadId, false); if (box) box.textContent = 'Microphone access denied — allow the mic for fixmy.energy, then try again.'; } };
     try { _cvAiRec.start(); } catch(e) { console.warn('cv SR start failed:', e); }
-  };
+  }
   function _cvAiStop() {
     _cvAiActive = false;
     var leadId = _cvAiLeadId;
@@ -9492,7 +9557,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var wrap = noteEl.parentNode; if (wrap && wrap.style && wrap.style.display === 'none') wrap.style.display = 'block';
       }
       // Auto-save to the lead immediately — see _bbAiStop for the same fix + rationale.
-      if (data.note && leadId) { try { await bbLogActivity(leadId, 'door_knock', null, data.note); } catch(e) {} }
+      if (data.note && leadId) { try { await bbLogActivity(leadId, 'door_knock', null, _aiConsentTag() + data.note); } catch(e) {} }
       if (st) { var oc = data.suggested_outcome; st.innerHTML = '&#10003; saved to lead' + (oc ? ' &middot; suggests: <span style="color:#c4a3f0;font-weight:700;">'+esc(String(oc))+'</span>' : ''); }
     }).catch(function(e){ console.warn('cv AI summarize failed:', e && e._data ? e._data : e); if (st) st.textContent = _aiNoteFailText(e && e._data, e); });
   }
