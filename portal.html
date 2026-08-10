@@ -6066,7 +6066,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var _steps = _canvassBoxSteps();
     for (var _bi = 0; _bi < _steps.length; _bi++) {
       var _bx = _canvassGeoBox(adminCanvassUserLat, adminCanvassUserLng, _steps[_bi]);
-      var adminParams = 'lead_source=eq.orphaned_list&sold_type=is.null&lat=not.is.null&select=' + adminSEL
+      // DQ'd doors are archived — excluded here for the same reason as the rep route.
+      var adminParams = 'lead_source=eq.orphaned_list&sold_type=is.null&lat=not.is.null'
+        + '&or=(archived.is.null,archived.eq.false)&select=' + adminSEL
         + '&lat=gte.' + _bx.latMin + '&lat=lte.' + _bx.latMax
         + '&lng=gte.' + _bx.lngMin + '&lng=lte.' + _bx.lngMax
         + '&limit=1000';
@@ -7560,10 +7562,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     booked:         { label:'Booked!',        icon:'&#9989;',   color:'#8DC63F', tip:'Appointment set! Activates the lead into the main pipeline and opens the editor.' },
     not_interested: { label:'Not Interested', icon:'&#128078;', color:'#ef4444', tip:'Clear no. Moves the lead to Worked — no more calls.' },
     wrong_number:   { label:'Wrong #',        icon:'&#10060;',  color:'#666',    tip:'Number does not belong to this homeowner. Moves to Worked.' },
-    dnc:            { label:'DNC',            icon:'&#9940;',   color:'#ef4444', tip:'Do Not Contact — permanently flags the lead and removes it from the queue. Required if they ask you to stop calling.' }
+    dnc:            { label:'DNC',            icon:'&#9940;',   color:'#ef4444', tip:'Do Not Contact — permanently flags the lead and removes it from the queue. Required if they ask you to stop calling.' },
+    disqualified:   { label:"DQ'd",           icon:'&#128711;', color:'#94a3b8', tip:'Not a property we can work — commercial building, no solar, apartment, mobile home. Removes it from BOTH the dialer and the door route.' }
   };
   var BB_KNOCK_FEED_LABELS = { not_home:'Not Home', not_interested:'Not Interested', interested:'Interested!', already_customer:'Already Customer' };
-  var BB_DIAL_WORKED = { booked:1, not_interested:1, dnc:1, wrong_number:1 };
+  var BB_DIAL_WORKED = { booked:1, not_interested:1, dnc:1, wrong_number:1, disqualified:1 };
 
   var bbDialQueue = [];
   var bbDialLoaded = false;
@@ -10192,6 +10195,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
     var updates = { dial_status: outcome, dialed_at: now, dial_attempts: (lead.dial_attempts||0)+1, callback_at: callbackIso || null };
     if (outcome === 'dnc') updates.dnc = true;
+    // Mirrors the door DQ exactly: archive so the property leaves BOTH motions, and
+    // stays restorable from the admin Archived modal. Never sets dnc — a property being
+    // the wrong TYPE is not the homeowner asking us to stop calling.
+    if (outcome === 'disqualified') updates.archived = true;
     var res = await client.from('customers').update(updates).eq('id', lead.id);
     if (res.error) {
       // Dialer columns not migrated yet — keep the critical flag at least
@@ -10201,6 +10208,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     lead.dial_status = outcome; lead.dialed_at = now;
     lead.dial_attempts = (lead.dial_attempts||0)+1; lead.callback_at = callbackIso || null;
     if (outcome === 'dnc') lead.dnc = true;
+    if (outcome === 'disqualified') lead.archived = true;
 
     await bbLogActivity(lead.id, 'dialer', outcome, note, {
       callback_at: callbackIso || null,
@@ -10213,7 +10221,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (outcome === 'booked') sess.booked++;
     bbDialSessionSave(sess);
 
-    if (outcome === 'dnc') bbDialQueue = bbDialQueue.filter(function(x){ return x.id !== lead.id; });
+    if (outcome === 'dnc' || outcome === 'disqualified') bbDialQueue = bbDialQueue.filter(function(x){ return x.id !== lead.id; });
 
     if (outcome === 'booked') {
       var act = { black_box: false, step: lead.step || 1, lead_category: lead.lead_category || 'fixmy' };
@@ -10423,6 +10431,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         + '<button onclick="bbDiagnoseOwnerLookup(10)" title="Runs the real owner lookup against 10 sample leads and reports exactly which step of the chain is failing. ~20 seconds." style="width:auto;margin-top:0;background:none;border:1px solid rgba(74,158,255,0.35);border-radius:100px;color:#4a9eff;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#129658; Diagnose</button>'
         + '<button onclick="bbShowParcelImport()" title="Bulk-import owner names from the SanGIS county parcel file (the $25 data drive). Reads the CSV on this device only — nothing is uploaded. Matches on APN, then street+zip." style="width:auto;margin-top:0;background:none;border:1px solid rgba(74,158,255,0.35);border-radius:100px;color:#4a9eff;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#128230; County File</button>'
         + '<button onclick="bbScanDuplicates()" title="Finds addresses with more than one lead and merges them into a single record — the survivor absorbs any phone, email or owner name the duplicates had, and their call history moves across. Shows a preview before anything changes." style="width:auto;margin-top:0;background:none;border:1px solid rgba(255,170,0,0.35);border-radius:100px;color:#ffaa00;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#128260; Merge Duplicates</button>'
+        + '<button onclick="bbScanCommercial()" title="Finds parcels that are not workable homes — commercial buildings, HOA common areas, mobile homes, suites — and lets you confirm before any are removed. Nothing changes until you approve the list." style="width:auto;margin-top:0;background:none;border:1px solid rgba(148,163,184,0.4);border-radius:100px;color:#94a3b8;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#128711; Commercial</button>'
         + '<button onclick="adminCanvassEnrichAll()" title="FREE — looks up missing property owner names via SANDAG/Regrid parcel GIS data and fills title_owner on every lead missing one. No per-lead cost." style="width:auto;margin-top:0;background:rgba(255,170,0,0.12);color:#ffaa00;border:1px solid rgba(255,170,0,0.35);border-radius:100px;padding:8px 18px;font-size:0.78rem;font-weight:800;cursor:pointer;white-space:nowrap;">&#128269; Run Owner Lookup</button>'
         + '</div></div>';
     } else {
@@ -10444,6 +10453,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         + '<button onclick="bbDiagnoseOwnerLookup(10)" title="Runs the real owner lookup against 10 sample leads and reports exactly which step of the chain is failing, and how often. ~20 seconds — use this before committing to a full multi-hour run." style="width:auto;margin-top:0;background:none;border:1px solid rgba(74,158,255,0.35);border-radius:100px;color:#4a9eff;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#129658; Diagnose</button>'
         + '<button onclick="bbShowParcelImport()" title="Bulk-import owner names from the SanGIS county parcel file (the $25 data drive). Reads the CSV on this device only — nothing is uploaded. Matches on APN, then street+zip." style="width:auto;margin-top:0;background:none;border:1px solid rgba(74,158,255,0.35);border-radius:100px;color:#4a9eff;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#128230; County File</button>'
         + '<button onclick="bbScanDuplicates()" title="Finds addresses with more than one lead and merges them into a single record — the survivor absorbs any phone, email or owner name the duplicates had, and their call history moves across. Shows a preview before anything changes." style="width:auto;margin-top:0;background:none;border:1px solid rgba(255,170,0,0.35);border-radius:100px;color:#ffaa00;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#128260; Merge Duplicates</button>'
+        + '<button onclick="bbScanCommercial()" title="Finds parcels that are not workable homes — commercial buildings, HOA common areas, mobile homes, suites — and lets you confirm before any are removed. Nothing changes until you approve the list." style="width:auto;margin-top:0;background:none;border:1px solid rgba(148,163,184,0.4);border-radius:100px;color:#94a3b8;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#128711; Commercial</button>'
         + '<button onclick="bbRecoverSkipTraces(false)" title="Walks every Tracerfy queue you have ever paid for, re-reads the results, and fills in names, phones and emails that were never applied. Shows what it would write before anything changes." style="width:auto;margin-top:0;background:none;border:1px solid rgba(155,109,232,0.4);border-radius:100px;color:#c4a3f0;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#9851; Recover Skip Traces</button>'
         + traceBtns
         + '</div>';
@@ -11070,6 +11080,156 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   var _BB_DUP_SEL = 'id,address,phone,email,title_owner,apn,original_installer,install_year,'
     + 'system_size,lat,lng,dnc,lead_score,notes,dial_status,dial_attempts,dialed_at,'
     + 'callback_at,knock_status,step,black_box,created_at';
+
+  // ── Commercial / unworkable parcel scan ──────────────────────────────────────
+  // We have NO land-use column — the SanGIS parcel file carries ASR_LANDUSE but the
+  // import only took owner + APN. So this is a heuristic, and it is deliberately a
+  // SUGGESTION list a human confirms, never an auto-filter.
+  // ⚠️ Bare "LLC", "TRUST" and "INC" are NOT signals and must never become ones:
+  // ~17% of our doors are landlord-owned (1,524 measured rentals) and landlords hold
+  // property in exactly those wrappers. Filtering on them would hide real homeowners.
+  var _BB_COMM_STRONG = [
+    { re: /\b(PLAZA|SHOPPING|COMMERCE|COMMERCIAL|INDUSTRIAL|BUSINESS PARK|SELF STORAGE|STORAGE|HOTEL|MOTEL|MEDICAL CENTER|OFFICE)\b/i, why:'owner reads commercial', reason:'commercial' },
+    { re: /\b(CITY OF|COUNTY OF|STATE OF|UNITED STATES|SCHOOL DISTRICT|UNIFIED SCHOOL|WATER DISTRICT)\b/i, why:'government / institutional owner', reason:'commercial' },
+    { re: /\b(CHURCH|MINISTRIES|MINISTRY|TEMPLE|SYNAGOGUE|MOSQUE|PARISH|DIOCESE)\b/i, why:'religious institution', reason:'commercial' },
+    { re: /\b(HOMEOWNERS ASSN|HOMEOWNERS ASSOCIATION|OWNERS ASSN|COMMUNITY ASSN)\b/i, why:'HOA — common area, not a home', reason:'multi_unit' },
+    { re: /\b(APARTMENTS|APTS|VILLAS|TOWNHOMES)\b/i, why:'multi-unit owner name', reason:'multi_unit' }
+  ];
+  // Real but softer — surfaced UNCHECKED so an admin opts in rather than out.
+  var _BB_COMM_WEAK = [
+    { re: /\b(PROPERTIES|INVESTMENTS|HOLDINGS|PARTNERS|MANAGEMENT|ASSOCIATES|ENTERPRISES|REALTY|DEVELOPMENT)\b/i, why:'investor-style owner name — could still be a rental home', reason:'commercial' }
+  ];
+  function _bbCommercialSignals(l) {
+    var out = { strong:false, why:[], reason:'commercial' };
+    var owner = String(l.title_owner || '');
+    var addr  = String(l.address || '');
+    var apn   = String(l.apn || '').replace(/\D/g, '');
+    // Documented in the SanGIS metadata: 76x = possessory interest, 77x = mobile home.
+    // Neither is a real parcel we can retrofit.
+    if (/^77/.test(apn)) { out.strong = true; out.reason = 'mobile_home'; out.why.push('APN starts 77 — mobile home'); }
+    else if (/^76/.test(apn)) { out.strong = true; out.reason = 'commercial'; out.why.push('APN starts 76 — possessory interest, not a parcel'); }
+    if (/\b(STE|SUITE|UNIT)\b\s*\S/i.test(addr) || /#\s*\w/.test(addr)) {
+      out.strong = true; out.reason = out.reason === 'mobile_home' ? out.reason : 'multi_unit';
+      out.why.push('address has a suite/unit number');
+    }
+    _BB_COMM_STRONG.forEach(function(s){ if (owner && s.re.test(owner)) { out.strong = true; out.reason = s.reason; out.why.push(s.why); } });
+    if (!out.why.length) _BB_COMM_WEAK.forEach(function(s){ if (owner && s.re.test(owner)) out.why.push(s.why); });
+    return out.why.length ? out : null;
+  }
+
+  var _bbCommRunning = false;
+  window.bbScanCommercial = async function() {
+    if (_bbCommRunning) return;
+    _bbCommRunning = true;
+    _bbEnrichOverlay('<div style="font-size:0.78rem;font-weight:800;color:#94a3b8;margin-bottom:4px;">&#128711; Commercial Scan</div>'
+      + '<div id="bbEnrichOvStatus" style="font-size:0.72rem;color:#bbb;">Loading leads&hellip;</div>');
+    try {
+      var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var rows = [], off = 0;
+      while (true) {
+        var r = await c.from('customers').select('id,address,title_owner,apn')
+          .eq('lead_source', 'orphaned_list')
+          .or('archived.is.null,archived.eq.false')
+          .order('id', { ascending: true }).range(off, off + 999);
+        if (r.error || !r.data || !r.data.length) break;
+        rows = rows.concat(r.data);
+        var st = document.getElementById('bbEnrichOvStatus');
+        if (st) st.textContent = 'Loading leads… ' + rows.length.toLocaleString();
+        if (r.data.length < 1000) break;
+        off += 1000;
+      }
+      var hits = [];
+      rows.forEach(function(l) {
+        var sig = _bbCommercialSignals(l);
+        if (sig) hits.push({ id:l.id, address:l.address, owner:l.title_owner, apn:l.apn,
+                             strong:sig.strong, reason:sig.reason, why:sig.why.join(' · ') });
+      });
+      hits.sort(function(a,b){ return (b.strong?1:0) - (a.strong?1:0); });
+      window._bbCommHits = hits;
+      _bbRenderCommercialPreview(rows.length, hits);
+    } catch (e) {
+      _bbEnrichOverlay('<div style="font-size:0.78rem;font-weight:800;color:#ef4444;margin-bottom:4px;">Scan failed</div>'
+        + '<div style="font-size:0.72rem;color:#bbb;">' + esc(e.message || String(e)) + '</div>'
+        + '<div style="margin-top:8px;"><a href="#" onclick="_bbEnrichOverlayClose();return false;" style="color:#888;font-size:0.7rem;">Dismiss</a></div>');
+    } finally { _bbCommRunning = false; }
+  };
+
+  function _bbRenderCommercialPreview(scanned, hits) {
+    var strong = hits.filter(function(h){ return h.strong; }).length;
+    if (!hits.length) {
+      _bbEnrichOverlay('<div style="font-size:0.78rem;font-weight:800;color:#8DC63F;margin-bottom:4px;">&#128711; Commercial Scan</div>'
+        + '<div style="font-size:0.72rem;color:#bbb;">Checked ' + scanned.toLocaleString() + ' leads — nothing looks commercial.</div>'
+        + '<div style="margin-top:8px;"><a href="#" onclick="_bbEnrichOverlayClose();return false;" style="color:#888;font-size:0.7rem;">Close</a></div>');
+      return;
+    }
+    var h = '<div style="font-size:0.78rem;font-weight:800;color:#94a3b8;margin-bottom:4px;">&#128711; Commercial Scan</div>';
+    h += '<div style="font-size:0.72rem;color:#bbb;margin-bottom:2px;">Checked ' + scanned.toLocaleString() + ' leads. <b>' + hits.length + '</b> look unworkable — ' + strong + ' strong, ' + (hits.length - strong) + ' worth an eyeball.</div>';
+    h += '<div style="font-size:0.66rem;color:#777;margin-bottom:8px;line-height:1.5;">Strong matches are ticked. The softer ones are <b>not</b> — an investor-style owner name is often just a landlord\'s rental home. Nothing changes until you press the button.</div>';
+    h += '<div style="max-height:min(46vh,360px);overflow-y:auto;border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:6px;margin-bottom:8px;">';
+    hits.forEach(function(x, i) {
+      h += '<label style="display:flex;gap:7px;align-items:flex-start;padding:5px 4px;border-bottom:1px solid rgba(255,255,255,0.05);cursor:pointer;">'
+        + '<input type="checkbox" class="bbCommChk" data-i="' + i + '"' + (x.strong ? ' checked' : '') + ' onchange="_bbCommCount()" style="width:auto;margin:3px 0 0 0;flex:none;">'
+        + '<span style="min-width:0;">'
+        + '<span style="font-size:0.72rem;color:#ddd;font-weight:600;display:block;">' + esc(x.address || '(no address)') + '</span>'
+        + (x.owner ? '<span style="font-size:0.66rem;color:#888;display:block;">' + esc(x.owner) + '</span>' : '')
+        + '<span style="font-size:0.63rem;color:' + (x.strong ? '#94a3b8' : '#7a6a3a') + ';display:block;">' + esc(x.why) + '</span>'
+        + '</span></label>';
+    });
+    h += '</div>';
+    h += '<div id="bbCommCount" style="font-size:0.7rem;color:#94a3b8;font-weight:700;margin-bottom:6px;"></div>';
+    h += '<button onclick="bbApplyCommercialDq()" style="width:auto;padding:7px 16px;font-size:0.72rem;font-weight:700;background:rgba(148,163,184,0.18);color:#cbd5e1;border:1px solid rgba(148,163,184,0.45);border-radius:8px;cursor:pointer;">&#128711; DQ selected</button> '
+      + '<a href="#" onclick="_bbEnrichOverlayClose();return false;" style="color:#888;font-size:0.7rem;margin-left:8px;">Cancel</a>';
+    _bbEnrichOverlay(h);
+    _bbCommCount();
+  }
+  window._bbCommCount = function() {
+    var n = document.querySelectorAll('.bbCommChk:checked').length;
+    var el = document.getElementById('bbCommCount');
+    if (el) el.textContent = n + ' selected — these will be archived and removed from both Doors and Dialing.';
+  };
+
+  window.bbApplyCommercialDq = async function() {
+    var hits = window._bbCommHits || [];
+    var picked = [];
+    document.querySelectorAll('.bbCommChk:checked').forEach(function(cb) {
+      var x = hits[parseInt(cb.getAttribute('data-i'), 10)];
+      if (x) picked.push(x);
+    });
+    if (!picked.length) { alert('Nothing selected.'); return; }
+    _bbEnrichOverlay('<div style="font-size:0.78rem;font-weight:800;color:#94a3b8;margin-bottom:4px;">&#128711; Disqualifying</div>'
+      + '<div id="bbEnrichOvStatus" style="font-size:0.72rem;color:#bbb;">0 of ' + picked.length + '&hellip;</div>');
+    var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var now = new Date().toISOString(), done = 0, failed = 0;
+    // Grouped by reason so each chunk carries the right one. The per-lead reason is not
+    // written to a column (there isn't one) — it's summarised into pipeline_state below,
+    // and every record stays visible + restorable in the admin Archived modal.
+    var byReason = {};
+    picked.forEach(function(x){ (byReason[x.reason] = byReason[x.reason] || []).push(x.id); });
+    for (var reason in byReason) {
+      var ids = byReason[reason];
+      for (var i = 0; i < ids.length; i += 200) {
+        var chunk = ids.slice(i, i + 200);
+        var r = await c.from('customers')
+          .update({ archived: true, knock_status: 'disqualified', knocked_at: now })
+          .in('id', chunk);
+        if (r.error) failed += chunk.length; else done += chunk.length;
+        var st = document.getElementById('bbEnrichOvStatus');
+        if (st) st.textContent = done + ' of ' + picked.length + '…';
+      }
+    }
+    try {
+      await c.from('pipeline_state').upsert({
+        key: 'bb_commercial_dq_last',
+        value: JSON.stringify({ at: now, disqualified: done, failed: failed,
+                                by_reason: Object.keys(byReason).reduce(function(a,k){ a[k] = byReason[k].length; return a; }, {}) }),
+        updated_at: now
+      }, { onConflict: 'key' });
+    } catch(e) {}
+    _bbEnrichOverlay('<div style="font-size:0.78rem;font-weight:800;color:#8DC63F;margin-bottom:4px;">&#9989; Done</div>'
+      + '<div style="font-size:0.72rem;color:#bbb;">Disqualified <b>' + done + '</b>' + (failed ? ', ' + failed + ' failed' : '') + '. They are out of Doors and Dialing.</div>'
+      + '<div style="font-size:0.66rem;color:#777;margin-top:5px;">Anything caught by mistake is restorable from Admin &rarr; &#128451; Archived.</div>'
+      + '<div style="margin-top:8px;"><a href="#" onclick="_bbEnrichOverlayClose();return false;" style="color:#888;font-size:0.7rem;">Close</a></div>');
+  };
 
   window.bbScanDuplicates = async function() {
     if (_bbDupRunning) return;
@@ -21429,14 +21589,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             h += '<button onclick="canvassStartBooking(\''+lead.id+'\')" style="width:100%;padding:16px;margin-bottom:8px;border:none;border-radius:12px;background:#8DC63F;color:#1A1A1A;font-size:0.95rem;font-weight:800;cursor:pointer;">&#9989; BOOKED!</button>';
             h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">';
             CV_DOOR_OUTCOMES.forEach(function(o) {
-              // Come Back needs a time, so it opens the picker instead of committing.
-              var fn = o.key === 'come_back'
-                ? 'canvassComeBack(\''+lead.id+'\')'
-                : 'canvassKnock(\''+lead.id+'\',\''+o.key+'\')';
+              // Come Back needs a time and DQ needs a reason, so both open a picker
+              // instead of committing straight away.
+              var fn = o.key === 'come_back'   ? 'canvassComeBack(\''+lead.id+'\')'
+                     : o.key === 'disqualified' ? 'canvassDisqualify(\''+lead.id+'\')'
+                     : 'canvassKnock(\''+lead.id+'\',\''+o.key+'\')';
               h += '<button onclick="'+fn+'" title="'+o.tip+'" style="padding:14px 8px;border:1px solid '+o.border+';border-radius:12px;background:'+o.bg+';color:'+o.color+';font-size:0.8rem;font-weight:700;cursor:pointer;">'+o.icon+' '+o.label+'</button>';
             });
             h += '</div>';
             if (_cvCbFor === lead.id) h += _cvComeBackPickerHtml(lead);
+            if (_cvDqFor === lead.id) h += _cvDqPickerHtml(lead);
             // Inline note input
             h += '<div style="margin-top:10px;border-top:1px solid rgba(255,255,255,0.06);padding-top:8px;">';
             h += '<button onclick="canvassToggleNote(\''+lead.id+'\')" style="width:auto;background:none;border:none;color:#555;cursor:pointer;font-size:0.7rem;padding:0;text-decoration:underline;">📝 Add Note</button>';
@@ -22121,9 +22283,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       { key:'warm',            label:'Warm',           icon:'&#128293;', color:'#E8793A', bg:'rgba(232,121,58,0.12)',  border:'rgba(232,121,58,0.4)',   tip:'Spoke with them, real interest but no appointment yet.' },
       { key:'renter',          label:'Renter',         icon:'&#127968;', color:'#9b6de8', bg:'rgba(155,109,232,0.1)',  border:'rgba(155,109,232,0.35)', tip:'Not the owner — we can only work with whoever is on title.' },
       { key:'not_interested',  label:'Not Interested', icon:'&#128078;', color:'#ccc',    bg:'rgba(255,255,255,0.06)', border:'rgba(255,255,255,0.15)', tip:'Clear no. Removed from the route.' },
-      { key:'already_customer',label:'Customer',       icon:'&#11088;',  color:'#4a9eff', bg:'rgba(74,158,255,0.08)',  border:'rgba(74,158,255,0.3)',   tip:'Already ours.' }
+      { key:'already_customer',label:'Customer',       icon:'&#11088;',  color:'#4a9eff', bg:'rgba(74,158,255,0.08)',  border:'rgba(74,158,255,0.3)',   tip:'Already ours.' },
+      { key:'disqualified',    label:"DQ'd",           icon:'&#128711;', color:'#94a3b8', bg:'rgba(148,163,184,0.1)',  border:'rgba(148,163,184,0.35)', tip:'Not a property we can work — commercial building, no solar, apartment, mobile home. Removed from BOTH the door route and the dialer.' }
     ];
     var CV_DOOR_LABELS = (function(){ var m = { booked:'✅ Booked!' }; CV_DOOR_OUTCOMES.forEach(function(o){ m[o.key] = o.label; }); return m; })();
+
+    // Why a property can't be worked at all. Deliberately short — this is tapped on a
+    // phone at a door — and shared verbatim with the dialer so one DQ means one thing.
+    var CV_DQ_REASONS = [
+      { key:'commercial',  label:'Commercial',      icon:'&#127970;', tip:'Office, retail, industrial — not a residence.' },
+      { key:'no_solar',    label:'No Solar',        icon:'&#9728;',   tip:'No panels on the roof. Nothing for us to service.' },
+      { key:'multi_unit',  label:'Apartment/Condo', icon:'&#127976;', tip:'Multi-unit — the roof is not the occupant\'s to decide on.' },
+      { key:'mobile_home', label:'Mobile Home',     icon:'&#128666;', tip:'Not a parcel we can retrofit.' },
+      { key:'vacant',      label:'Vacant/Gone',     icon:'&#128683;', tip:'Empty lot, demolished, or under construction.' },
+      { key:'other',       label:'Other',           icon:'&#10067;',  tip:'Something else disqualifies it — add a note.' }
+    ];
+    var CV_DQ_LABELS = (function(){ var m = {}; CV_DQ_REASONS.forEach(function(r){ m[r.key] = r.label; }); return m; })();
 
     var _cvReopenId = null;   // a knocked door the rep pulled back up from the session log
     // renderSales() rebuilds dashBody wholesale, and the GPS watch calls it every few
@@ -22501,7 +22676,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // — the same column the dialer's callbacks use — so a door come-back and a phone
     // callback are one concept, and _cvCbDue floats it to the top when its time lands.
     var _cvCbFor = null;
-    window.canvassComeBack = function(id) { _cvCbFor = id; renderSales(); };
+    var _cvDqFor = null;   // door awaiting a DQ reason — same "pick first, write after" gate
+    window.canvassComeBack = function(id) { _cvCbFor = id; _cvDqFor = null; renderSales(); };
     window.canvassCancelComeBack = function() { _cvCbFor = null; renderSales(); };
 
     window.canvassSaveComeBack = async function(id, iso) {
@@ -22521,6 +22697,31 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         if (r.error) console.warn('come-back time not saved (run 20260702_black_box_dialer.sql):', r.error.message);
       } catch(e) {}
       await window.canvassKnock(id, 'come_back');
+    };
+
+    // DQ needs a REASON before it writes anything — same "no silent write" rule as
+    // Come Back's time picker. A door removed from every future route with no recorded
+    // reason is indistinguishable from one lost to a bug.
+    function _cvDqPickerHtml(lead) {
+      var h = '<div style="margin-top:10px;padding:12px;background:rgba(148,163,184,0.07);border:1px solid rgba(148,163,184,0.3);border-radius:12px;">';
+      h += '<div style="font-size:0.72rem;font-weight:700;color:#94a3b8;margin-bottom:2px;">Why is this one out?</div>';
+      h += '<div style="font-size:0.66rem;color:#666;margin-bottom:9px;line-height:1.5;">Removes it from the door route <b>and</b> the dialer, permanently. An admin can restore it from Black Box &rarr; Archived.</div>';
+      h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:7px;">';
+      CV_DQ_REASONS.forEach(function(r) {
+        h += '<button onclick="canvassSaveDq(\''+lead.id+'\',\''+r.key+'\')" title="'+r.tip+'" style="width:auto;margin:0;padding:11px 8px;background:rgba(148,163,184,0.1);border:1px solid rgba(148,163,184,0.3);color:#cbd5e1;border-radius:10px;font-size:0.74rem;font-weight:700;cursor:pointer;">'+r.icon+' '+r.label+'</button>';
+      });
+      h += '</div>';
+      h += '<button onclick="canvassCancelDq()" style="width:auto;margin-top:9px;background:none;border:none;color:#555;cursor:pointer;font-size:0.7rem;text-decoration:underline;padding:0;">Cancel</button>';
+      h += '</div>';
+      return h;
+    }
+    window.canvassDisqualify = function(id) { _cvDqFor = id; _cvCbFor = null; renderSales(); };
+    window.canvassCancelDq   = function()   { _cvDqFor = null; renderSales(); };
+    window.canvassSaveDq = async function(id, reason) {
+      _cvDqFor = null;
+      var lead = canvassLeads.find(function(l){ return l.id === id; });
+      if (lead) lead.dq_reason = reason;
+      await window.canvassKnock(id, 'disqualified', { dqReason: reason });
     };
 
     function _cvComeBackPickerHtml(lead) {
@@ -22908,6 +23109,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var r = await client.from('customers').select(SEL)
           .eq('lead_source', 'orphaned_list')
           .is('sold_type', null)
+          // DQ'd doors are archived, which is what keeps them out of BOTH motions.
+          // The dialer has always filtered this; the route never did.
+          .or('archived.is.null,archived.eq.false')
           .not('lat', 'is', null)
           .gte('lat', bx.latMin).lte('lat', bx.latMax)
           .gte('lng', bx.lngMin).lte('lng', bx.lngMax)
@@ -23007,6 +23211,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         result = await client.from('customers').select(SEL)
           .eq('lead_source', 'orphaned_list')
           .is('sold_type', null)
+          .or('archived.is.null,archived.eq.false')
           .order('lead_score', { ascending: false })
           .limit(80);
       }
@@ -23089,16 +23294,24 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }
     }
 
-    window.canvassKnock = async function(id, knockStatus) {
+    window.canvassKnock = async function(id, knockStatus, opts) {
+      opts = opts || {};
       var lead = canvassLeads.find(function(l){ return l.id === id; });
       if (!lead) return;
       var now = new Date().toISOString();
       var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
-      await c2.from('customers').update({ knock_status: knockStatus, knocked_at: now, knocked_by: person.id }).eq('id', id);
-      lead.knock_status = knockStatus;
-      lead.knocked_at = now;
-      lead.knocked_by = person.id;
-      bbLogActivity(id, 'door_knock', knockStatus, '', { rep_name: person.name || person.id, rec: lead }); // shared feed — dialers see knock outcomes
+      var upd = { knock_status: knockStatus, knocked_at: now, knocked_by: person.id };
+      // A DQ has to remove the property from BOTH motions, not just this one — the whole
+      // point is that nobody works it again. `archived` is the only existing column that
+      // does that (the dialer already filters it, and the canvass queries now do too),
+      // and it keeps the record restorable from the admin Archived modal rather than
+      // destroying it. Deliberately NOT `dnc`: that is a phone-consent flag a door rep
+      // must never be able to set, and NOT `black_box:false`, which means "activated".
+      if (knockStatus === 'disqualified') upd.archived = true;
+      await c2.from('customers').update(upd).eq('id', id);
+      Object.assign(lead, upd);
+      var dqNote = opts.dqReason ? ('Disqualified — ' + (CV_DQ_LABELS[opts.dqReason] || opts.dqReason)) : '';
+      bbLogActivity(id, 'door_knock', knockStatus, dqNote, { rep_name: person.name || person.id, rec: lead }); // shared feed — dialers see knock outcomes
       // Save to session history
       try {
         var hist = JSON.parse(localStorage.getItem('bbKnockHistory') || '[]');
