@@ -210,16 +210,54 @@ exports.handler = async function() {
             byDate[date].c += conv;
             if (channel === 'Organic Search') byDate[date].o += sessions;
           });
-          metricRows.forEach(m => {
-            const g = byDate[m.date];
-            if (g) { m.ga_sessions = g.s; m.ga_organic_sessions = g.o; m.ga_conversions = g.c; }
+          // ⚠️ UNION the GA4 dates with the Search Console dates — never merge only
+          // INTO them. Search Console returning zero rows is a legitimate answer for
+          // a site with no impressions (exactly this site's situation since July),
+          // and an inner join then silently discards a perfectly good GA4 response.
+          // The portal shows nothing and it reads as "the Property ID is wrong"
+          // rather than "GSC is empty" — two very different problems.
+          const byRowDate = {};
+          metricRows.forEach(m => { byRowDate[m.date] = m; });
+          Object.keys(byDate).forEach(date => {
+            const g = byDate[date];
+            let m = byRowDate[date];
+            if (!m) { m = { date }; byRowDate[date] = m; metricRows.push(m); }
+            m.ga_sessions = g.s; m.ga_organic_sessions = g.o; m.ga_conversions = g.c;
           });
-          summary.ga4 = true;
+          summary.ga4Days = Object.keys(byDate).length;
+          summary.ga4 = summary.ga4Days > 0;
+          if (!summary.ga4) {
+            summary.ga4Reason = 'ga4_no_rows';
+            summary.ga4Hint = 'GA4 answered normally but reported no sessions in the window.';
+          }
         } else {
-          console.warn('seo-insights: GA4 report failed', gaResp.status, (await gaResp.text()).slice(0, 200));
+          const detail = (await gaResp.text()).slice(0, 200);
+          const pid = process.env.GA4_PROPERTY_ID;
+          summary.ga4Reason = 'ga4_http_' + gaResp.status;
+          summary.ga4Hint =
+            gaResp.status === 403 ? 'The service account cannot read GA4 property ' + pid + '. Add its client_email as a Viewer in GA4 → Admin → Property Access Management.'
+          : gaResp.status === 404 ? 'GA4 property ' + pid + ' not found. Check the numeric Property ID in GA4 → Admin → Property Settings (not the G- measurement ID).'
+          : gaResp.status === 401 ? 'GA4 auth rejected — the service-account key is disabled or rotated.'
+          : 'GA4 Data API returned ' + gaResp.status + '.';
+          console.warn('seo-insights: GA4 report failed', gaResp.status, detail);
         }
-      } catch (e) { console.warn('seo-insights: GA4 skipped —', e.message); }
+      } catch (e) {
+        summary.ga4Reason = 'ga4_error';
+        summary.ga4Hint = String(e.message).slice(0, 200);
+        console.warn('seo-insights: GA4 skipped —', e.message);
+      }
+    } else {
+      summary.ga4Reason = 'ga4_not_configured';
+      summary.ga4Hint = 'GA4_PROPERTY_ID is not set, so no Analytics numbers are pulled.';
     }
+
+    // PostgREST rejects a bulk insert whose objects have differing keys
+    // (PGRST102 "All object keys must match"), and after the union some rows
+    // carry GA4 columns while others don't. Normalise every row to one shape.
+    const COLS = ['date', 'clicks', 'impressions', 'ctr', 'position',
+                  'ga_sessions', 'ga_organic_sessions', 'ga_conversions'];
+    metricRows.forEach(m => { COLS.forEach(c => { if (m[c] === undefined) m[c] = null; }); });
+    metricRows.sort((a, b) => a.date < b.date ? -1 : 1);
 
     await supaUpsert('seo_metrics', metricRows, 'date');
     summary.daily = metricRows.length;
@@ -227,7 +265,10 @@ exports.handler = async function() {
     // in the window) and must not look like a broken credential. supaUpsert returns
     // early on an empty array, so without this the run writes nothing and still says
     // ok — indistinguishable from the failure that actually took this sync down.
-    summary.emptyWindow = metricRows.length === 0;
+    // Judged on the Search Console rows specifically — after the union above,
+    // metricRows can be non-empty purely from GA4, which would otherwise hide
+    // the fact that GSC itself reported nothing.
+    summary.emptyWindow = daily.length === 0;
 
     // 3. Top queries + pages, last 7 days → snapshot keyed to the window end date
     const qStart = iso(daysAgo(9));
@@ -246,7 +287,9 @@ exports.handler = async function() {
     console.log('seo-insights:', JSON.stringify(summary));
     await writeStatus(summary.emptyWindow ? 'ok_no_rows' : 'ok', {
       days: summary.daily, queries: summary.queries, pages: summary.pages,
-      ga4: summary.ga4, site, window: start + '→' + end,
+      ga4: summary.ga4, ga4Days: summary.ga4Days || 0,
+      ga4Reason: summary.ga4Reason || null, ga4Hint: summary.ga4Hint || null,
+      site, window: start + '→' + end,
       hint: summary.emptyWindow
         ? 'Google answered normally but reported zero impressions for the whole window. The credential is fine — the site genuinely has no search visibility.'
         : null
