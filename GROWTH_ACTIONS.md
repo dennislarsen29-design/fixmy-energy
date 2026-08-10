@@ -17,7 +17,8 @@ Full audit: https://claude.ai/code/artifact/0c2828a2-6213-43cd-8afd-e13b19c8aff7
 
 ## ⏰ Check back — Google Ads (set 2026-08-10, review 2026-08-11 onward)
 Campaign went live 2026-08-10 at $20/day (Performance Max) to burn a **$980 credit — expiry not confirmed; check Billing → Promotions**. Come back after ~24h of spend and answer:
-- ☐ **Is "Book appointment" recording anything yet?** It read **0.00** on Aug 10. If it is still zero after real clicks, the tag is broken, not the traffic.
+- ☐ **Set up the conversion on the new `/booked` URL** (shipped 2026-08-10). Google Ads → Conversions → Website → URL contains `/booked`, **Count = One**. Then delete the inline block in `booked.html` marked `⚠️ REMOVE THIS BLOCK`, or bookings count twice.
+- ☐ **Is "Book appointment" recording anything yet?** It read **0.00** on Aug 10 — note this is the *expected* output until a paid click lands, because the conversion is gated on gclid/gbraid. Not proof of a broken tag.
 - ☐ **Did the wrong search themes get replaced?** All 15 were UK energy-switching terms ("dual fuel comparison", "switch energy supplier online"). 21 correct ones supplied.
 - ☐ **Was "TechSol - Number click 26592" demoted to Secondary?** 32 conversions, set Primary — a leftover phone-click action from a prior setup. While it is Primary the bid strategy optimises toward number clicks, not booked evaluations.
 - ☐ **Was one of the two duplicate "Book appointment" actions demoted?** Both were Primary (one GA4, one Website tag) — double-counting the moment they start firing.

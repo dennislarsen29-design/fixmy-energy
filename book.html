@@ -297,7 +297,7 @@ gtag('config','AW-18121666624');
 (function() {
   try {
     var q = new URLSearchParams(location.search);
-    var keys = ['utm_source','utm_medium','utm_campaign','utm_term','utm_content','gclid','fbclid'];
+    var keys = ['utm_source','utm_medium','utm_campaign','utm_term','utm_content','gclid','gbraid','wbraid','fbclid'];
     var saved = JSON.parse(sessionStorage.getItem('fmAttribution') || '{}');
     var changed = false;
     keys.forEach(function(k) { var v = q.get(k); if (v) { saved[k] = v; changed = true; } });
@@ -471,14 +471,36 @@ async function bookSlot(btn) {
       }, getAttribution()))
     }).catch(function(){});
 
-    document.getElementById('captureCard').style.display = 'none';
-    document.getElementById('confirmedWrap').style.display = 'block';
-
     // The appointment only truly booked if GHL returned an appointment id with no
     // error. The contact/lead is captured either way — so on appointment failure we
     // must NOT claim a confirmed booking (nobody would show up), but we also don't
     // want to lose the lead. Show an honest "request received, we'll confirm" state.
     var _appointmentBooked = !!result.appointmentId && !result.apptError;
+
+    // ── Hand off to /booked ────────────────────────────────────────────────
+    // The confirmation lives on its own URL so conversion tracking can trigger
+    // on a page load rather than a JS event. The payload rides in sessionStorage
+    // rather than query params on purpose: email/phone in the URL would leak
+    // into GA4 page paths, Google Ads reports, referrer headers and browser
+    // history. /booked therefore stays a clean, param-free URL.
+    try {
+      sessionStorage.setItem('fmBooking', JSON.stringify({
+        id: result.appointmentId || ('req_' + Date.now()),
+        label: label,
+        appointmentBooked: _appointmentBooked,
+        email: em || null,
+        phone10: ph.replace(/\D/g, '').slice(-10)
+      }));
+      window.location.href = '/booked';
+      return;
+    } catch (e) {
+      // sessionStorage unavailable (locked-down private mode). Fall through to
+      // the original in-page confirmation so the customer is never stranded.
+    }
+
+    document.getElementById('captureCard').style.display = 'none';
+    document.getElementById('confirmedWrap').style.display = 'block';
+
     if (!_appointmentBooked) {
       document.getElementById('confirmedHeadline').textContent = 'Request Received!';
       document.getElementById('confirmedSub1').textContent = 'Thanks! We have your details for your requested time:';
@@ -518,7 +540,7 @@ async function bookSlot(btn) {
       // Only count this as a Google Ads conversion when the session actually
       // carried a paid click (gclid) — otherwise organic/direct/referral
       // bookings inflate the ad campaign's own conversion count.
-      if (getAttribution().gclid) {
+      if (function(a){return !!(a.gclid||a.gbraid||a.wbraid);}(getAttribution())) {
         gtag('event', 'conversion', { send_to: 'AW-18121666624/u8R7COLKt7AcEMDgisFD', value: 1.0, currency: 'USD' });
       }
     }
