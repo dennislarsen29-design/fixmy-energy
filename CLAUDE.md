@@ -519,6 +519,24 @@ Three field requests on the Black Box card. All three land on **both** Doors and
 - Verified in `scratchpad/test-owner-contacts.js` (26 assertions). **Gated both ways** — restoring the vendor line fails step 4, and removing the company blocklist reproduces "Properties Caroline" *and* "LLC Caroline" exactly.
 - ⚠️ **Harness traps hit here:** a `'[^']*vendor[^']*'` regex spans newlines and matches explanatory **comments**, failing with the code perfectly correct — strip comments first. And counting `_bbOwnerPeopleHtml(lead)` matched the function *definition* as well as its two call sites; count the mount (`h += …`), not the name.
 
+### The REAL cause of "Loading dial queue… forever" — a ReferenceError, not the network (fixed 2026-08-11)
+⚠️ **The network-timeout entry below was a wrong diagnosis.** It is a genuine hardening fix and stays, but it was never the cause. The dialer was broken by the **"one shared page shell" refactor (`c78892f`, 2026-08-08)**, which replaced the counters block by line range and **silently swallowed eight declarations** along with the empty-state early return:
+```js
+var list = buckets[bbDialFilter] || [];
+var pinnedLead = bbDialResolveCurrentLead(buckets);
+var isPinned = !!(bbDialPinnedId && pinnedLead);
+if (!isPinned && !list.length) { …empty state…; return; }
+var lead = isPinned ? pinnedLead : list[0];
+var _nm, name, ph, phDisplay, ksLabel, cbDue…
+```
+Everything below reads them, so **`renderBBDialerView` threw `ReferenceError: isPinned is not defined` on every render** — *after* the queue had already loaded successfully.
+- ⚠️ **The throw was completely silent.** `dashBody` still held the previous `"Loading dial queue…"` markup, so a ReferenceError looked exactly like a slow network. `bbDialLoaded` was `true` and `bbDialLoading` `false` the whole time — the data was there, the screen just never got redrawn.
+- **Second silent deletion from the same commit** — CLAUDE.md already records `canvassAddDoor` being lost the same way. ⚠️ **Never replace a block in `portal.html` by line range.** Anchor on unique markers, and afterwards check that every identifier the surrounding code reads still has a declaration.
+- **`renderBBDialerView` is now wrapped in a try/catch** that paints the error plus a "↻ Reload the queue" button. A render failure must never be indistinguishable from a slow load again.
+- **How it was finally found:** by *booting the real view* in Chromium (`scratchpad/test-dialer-boot.js`) instead of reasoning about the source. Three earlier diagnoses — network stall, scope error, cached deploy — were all wrong because the page was only ever *loaded*, never *driven*. ⚠️ **Loading a page proves nothing about a view you have not opened.** The pageerror appeared within one second of actually entering the dialer.
+- Verified: queue clears in <1s, real card renders, zero page errors. **Gated both ways** — removing the restored declarations reproduces `ReferenceError: isPinned is not defined` exactly.
+- ⚠️ **Harness trap, fourth instance:** the card renders `NEXT CALL` (`text-transform:uppercase`), so a case-sensitive `/Next Call/` against `innerText` failed with the code perfectly correct. **Any assertion against innerText of styled text must be case-insensitive.**
+
 ### "Loading dial queue… / Loading your week…" forever (fixed 2026-08-11)
 Reported from an iPad on **LTE**: the Dialing view stuck on both placeholders with no error. **Not a regression** — `git diff HEAD~3 -- portal.html` showed neither loader had been touched. The cause is that **neither `bbDialLoadQueue()` nor `bbLoadRepScore()` had a network timeout**, while `loadAdminDashboard` has raced a 12s one since forever.
 - ⚠️ **A stalled request neither resolves NOR rejects.** Both loaders already had `.catch` handlers, so a *thrown* error recovered fine — a **hang** is not a throw, so nothing fired. `try/catch/finally` cannot cover this; only a race can.

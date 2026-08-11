@@ -7575,7 +7575,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // so this is the only way to tell from a phone which build is actually live —
   // an iPad cannot view source, and a stale cached portal is indistinguishable
   // from a fix that did not work.
-  window.PORTAL_BUILD = '2026-08-11b';
+  window.PORTAL_BUILD = '2026-08-11c';
   try {
     document.addEventListener('DOMContentLoaded', function() {
       var el = document.getElementById('portalBuild');
@@ -10125,6 +10125,33 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += window._bbControlsRowHtml('call');
     h += window._bbMapBlockHtml('call');
 
+    // ⚠️ RESTORED 2026-08-11. The "one shared page shell" refactor (c78892f) replaced
+    // the counters block by line range and silently swallowed these declarations along
+    // with the empty-state early return. Everything below reads list/lead/isPinned, so
+    // renderBBDialerView threw ReferenceError on EVERY render — after the queue had
+    // already loaded — leaving the previous "Loading dial queue…" HTML on screen with
+    // no error. Same family as canvassAddDoor being deleted by the same commit.
+    var list = buckets[bbDialFilter] || [];
+    var pinnedLead = bbDialResolveCurrentLead(buckets);
+    var isPinned = !!(bbDialPinnedId && pinnedLead);
+    if (!isPinned && !list.length) {
+      var emptyMsg = bbDialLoadError ? 'Could not load the queue — see the error above, then tap Refresh.'
+                   : bbDialFilter === 'fresh' ? 'No fresh leads left to dial — check Callbacks or import more leads.'
+                   : bbDialFilter === 'callbacks' ? 'No callbacks scheduled.' : 'Nothing worked yet — get dialing!';
+      h += '<div style="text-align:center;padding:40px 20px;background:rgba(255,255,255,0.03);border:1px dashed rgba(255,255,255,0.1);border-radius:14px;color:#666;font-size:0.8rem;">'+emptyMsg+'</div>';
+      h += '</div>';
+      document.getElementById('dashBody').innerHTML = h;
+      return;
+    }
+
+    var lead = isPinned ? pinnedLead : list[0];
+    var _nm = _bbLeadDisplayName(lead);
+    var name = _nm.display || '—';
+    var ph = (lead.phone||'').replace(/\D/g,'');
+    var phDisplay = ph.length === 10 ? '('+ph.slice(0,3)+') '+ph.slice(3,6)+'-'+ph.slice(6) : lead.phone;
+    var ksLabel = { interested:'&#10003; Knocked: Interested', not_home:'&#128683; Knocked: Not Home', not_interested:'&#128078; Knocked: NI', already_customer:'&#11088; Already Customer' }[lead.knock_status] || '';
+    var cbDue = lead.callback_at ? new Date(lead.callback_at) : null;
+
     // ── Current lead card ──
     h += '<div data-tour="card" style="background:rgba(255,255,255,0.05);border:2px solid '+(isPinned?'rgba(74,158,255,0.45)':'rgba(232,121,58,0.4)')+';border-radius:16px;padding:18px;margin-bottom:12px;">';
     h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:6px;">';
@@ -10288,6 +10315,26 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }, 0);
     }
   };
+
+  // ⚠️ A throw inside the render used to be COMPLETELY SILENT: dashBody still held the
+  // previous "Loading dial queue…" markup, so a ReferenceError looked exactly like a
+  // slow network and cost hours to find. Any render failure now says so and offers a
+  // way out, instead of leaving a rep staring at a placeholder.
+  (function() {
+    var _inner = window.renderBBDialerView;
+    window.renderBBDialerView = function() {
+      try { return _inner.apply(this, arguments); }
+      catch (e) {
+        console.error('Dialer render failed:', e);
+        var b = document.getElementById('dashBody');
+        if (b) b.innerHTML = '<div style="text-align:center;padding:40px 20px;">'
+          + '<div style="font-size:0.85rem;font-weight:700;color:#f87171;margin-bottom:6px;">The dialer hit an error while drawing this screen.</div>'
+          + '<div style="font-size:0.72rem;color:#999;margin-bottom:12px;">Your queue and your notes are safe. ' + esc(String(e && e.message || e)) + '</div>'
+          + '<button onclick="bbDialLoaded=false;bbDialLoadError=null;renderBBDialerView()" style="width:auto;margin:0;padding:9px 20px;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:100px;font-size:0.78rem;font-weight:700;cursor:pointer;">&#8635; Reload the queue</button>'
+          + '</div>';
+      }
+    };
+  })();
 
   window.bbDialSwitchRightTab = function(tab) { bbDialRightTab = tab; renderBBDialerView(); };
 
