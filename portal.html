@@ -9394,7 +9394,92 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return _aiConsentAt ? '[Transcription consent given ' + _aiConsentAt + ']\n' : '';
   }
 
-  var _bbAiRec = null, _bbAiActive = false, _bbAiFinal = '';
+  var _bbAiRec = null, _bbAiActive = false, _bbAiFinal = '', _bbAiLeadId = '';
+
+  // ── Never lose a transcript ──────────────────────────────────────────────────
+  // Reps disposition WITHOUT pressing "Stop & Summarize" — that is how the tool is
+  // actually used, not a mistake to train out. The old code only ever saved from that
+  // button, so a real conversation lived in _bbAiFinal until the NEXT recording reset
+  // it to '' and the whole call was gone. Every write path now harvests first.
+  var _aiLastFail = null;   // keeps the admin-only diagnosis available after a fallback
+  var AI_SUMMARY_WAIT_MS = 8000;   // past this the raw transcript is saved instead
+
+  // Stop recognition and hand back whatever was said. Clears state so the next lead
+  // can never inherit — or overwrite — this conversation.
+  function _bbAiHarvest() {
+    var t = (_bbAiFinal || '').trim(), id = _bbAiLeadId;
+    if (!_bbAiActive && !t) return null;
+    _bbAiActive = false;
+    if (_bbAiRec) { try { _bbAiRec.stop(); } catch(e){} _bbAiRec = null; }
+    _bbAiFinal = ''; _bbAiLeadId = '';
+    _bbAiSetBtn(false);
+    return t ? { transcript: t, leadId: id } : null;
+  }
+  function _cvAiHarvest() {
+    var t = (_cvAiFinal || '').trim(), id = _cvAiLeadId, lead = _cvAiLead;
+    if (!_cvAiActive && !t) return null;
+    _cvAiActive = false;
+    if (_cvAiRec) { try { _cvAiRec.stop(); } catch(e){} _cvAiRec = null; }
+    _cvAiFinal = ''; _cvAiLeadId = '';
+    _cvAiSetBtn(id, false);
+    return t ? { transcript: t, leadId: id, lead: lead } : null;
+  }
+
+  // Summarize, but never let the AI call be the reason a note is lost: it is bounded by
+  // AI_SUMMARY_WAIT_MS and every failure path returns null so the caller falls back to
+  // the raw words.
+  async function _aiSummarize(transcript, lead) {
+    var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    var timer = setTimeout(function(){ if (ctrl) try { ctrl.abort(); } catch(e){} }, AI_SUMMARY_WAIT_MS);
+    try {
+      var opts = {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          transcript: String(transcript).slice(0, 12000),
+          lead: {
+            name: (((lead||{}).first_name||'')+' '+((lead||{}).last_name||'')).trim(),
+            installer: (lead||{}).original_installer || '',
+            address: (lead||{}).address || ''
+          }
+        })
+      };
+      if (ctrl) opts.signal = ctrl.signal;
+      // ⚠️ Raced against a hard timer rather than relying on the abort signal alone.
+      // AbortController only helps if the transport honours it; a hung request that
+      // ignores the signal would otherwise park the rep on a spinner mid-shift. The
+      // budget has to be a guarantee, not a request.
+      var d = await Promise.race([
+        fetch('/.netlify/functions/dialer-notes', opts).then(function(r){ return r.json(); }),
+        new Promise(function(res){ setTimeout(function(){ res(null); }, AI_SUMMARY_WAIT_MS); })
+      ]);
+      if (d && d.note && !d.error) { _aiLastFail = null; return d; }
+      _aiLastFail = d || null;
+      return null;
+    } catch (e) { _aiLastFail = { error: 'AI summary unavailable', detail: String(e && e.message || e) }; return null; }
+    finally { clearTimeout(timer); }
+  }
+
+  // Turn a harvest into note text for the disposition being written. A summary is nicer,
+  // but the RAW TRANSCRIPT IS ALWAYS KEPT — an unsummarized note is infinitely better
+  // than a lost call.
+  async function _aiNoteFromHarvest(h, channel, dispoLeadId, statusEl) {
+    if (!h || !h.transcript) return '';
+    if (statusEl) statusEl.textContent = 'saving your AI note…';
+    var d = await _aiSummarize(h.transcript, h.lead || {});
+    var note = _aiConsentTag() + (d && d.note
+      ? d.note
+      : '🎙 Transcript (AI summary unavailable): ' + h.transcript.slice(0, 4000));
+    // The recording belonged to a DIFFERENT lead than the one being dispositioned —
+    // the queue moved on, or the rep switched cards. Write it to the lead it actually
+    // belongs to rather than mislabelling another customer's record or dropping it.
+    if (h.leadId && dispoLeadId && h.leadId !== dispoLeadId) {
+      try { await bbLogActivity(h.leadId, channel, null, note); } catch(e) {}
+      if (statusEl) statusEl.textContent = '✓ saved to the lead it was recorded on';
+      return '';
+    }
+    if (statusEl) statusEl.textContent = '✓ saved with the disposition';
+    return note;
+  }
   function _bbAiSetBtn(recording) {
     var b = document.getElementById('bbAiBtn'); if (!b) return;
     if (recording) {
@@ -9419,8 +9504,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     var panel = document.getElementById('bbAiPanel');
     _bbAiFinal = ''; _bbAiActive = true;
+    // Bind the recording to the lead it started on, so a queue move can never
+    // attach this conversation to a different customer.
+    try { _bbAiLeadId = (bbDialResolveCurrentLead(bbDialBuckets()) || {}).id || ''; } catch(e) { _bbAiLeadId = ''; }
     if (panel) { panel.style.display = 'block'; }
-    var st = document.getElementById('bbAiStatus'); if (st) st.textContent = '● recording';
+    var st = document.getElementById('bbAiStatus');
+    // Say it plainly: the rep does not have to remember to press Stop.
+    if (st) st.textContent = '● recording — saved automatically when you disposition';
     _bbAiSetBtn(true);
     _bbAiRec = new SR();
     _bbAiRec.continuous = true;
@@ -9465,47 +9555,35 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return 'AI summary unavailable right now — your transcript is saved above, just type the note below.';
   }
 
-  function _bbAiStop() {
-    _bbAiActive = false;
-    if (_bbAiRec) { try { _bbAiRec.stop(); } catch(e){} _bbAiRec = null; }
-    _bbAiSetBtn(false);
+  // Shares _bbAiHarvest + _aiSummarize with the disposition path on purpose: two
+  // separate save routines is exactly how this feature lost notes in the first place.
+  async function _bbAiStop() {
     var st = document.getElementById('bbAiStatus');
-    var transcript = _bbAiFinal.trim();
-    if (transcript.length < 25) {
+    var buckets = bbDialBuckets();
+    var lead = bbDialResolveCurrentLead(buckets) || (buckets[bbDialFilter]||[])[0] || {};
+    var h = _bbAiHarvest();
+    if (!h || h.transcript.length < 25) {
       if (st) st.textContent = 'too short to summarize — type the note manually';
       return;
     }
     if (st) st.textContent = 'summarizing…';
-    var buckets = bbDialBuckets();
-    var lead = bbDialResolveCurrentLead(buckets) || (buckets[bbDialFilter]||[])[0] || {};
-    fetch('/.netlify/functions/dialer-notes', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        transcript: transcript.slice(0, 12000),
-        lead: {
-          name: ((lead.first_name||'')+' '+(lead.last_name||'')).trim(),
-          installer: lead.original_installer || '',
-          address: lead.address || ''
-        }
-      })
-    }).then(function(r){ return r.json(); }).then(async function(data) {
-      if (data.error) { var _e = new Error(data.error); _e._data = data; throw _e; }
-      var noteEl = document.getElementById('bbDialNote');
-      if (noteEl && data.note) {
-        noteEl.value = (noteEl.value ? noteEl.value.trim() + '\n' : '') + data.note;
-      }
-      // Auto-save to the lead immediately — don't rely on the rep also tapping a
-      // disposition button afterward (that was silently losing notes). Outcome stays
-      // null/un-dispositioned here; the rep still picks the real disposition separately.
-      if (data.note && lead.id) { try { await bbLogActivity(lead.id, 'dialer', null, _aiConsentTag() + data.note); } catch(e) {} }
-      if (st) {
-        var oc = data.suggested_outcome && BB_DIAL_OUTCOMES[data.suggested_outcome];
+    var d = await _aiSummarize(h.transcript, lead);
+    var noteText = (d && d.note)
+      ? d.note
+      : '🎙 Transcript (AI summary unavailable): ' + h.transcript.slice(0, 4000);
+    var noteEl = document.getElementById('bbDialNote');
+    if (noteEl) noteEl.value = (noteEl.value ? noteEl.value.trim() + '\n' : '') + noteText;
+    // Always persist, summarized or not.
+    var saveId = h.leadId || lead.id;
+    if (saveId) { try { await bbLogActivity(saveId, 'dialer', null, _aiConsentTag() + noteText); } catch(e) {} }
+    if (st) {
+      if (d) {
+        var oc = d.suggested_outcome && BB_DIAL_OUTCOMES[d.suggested_outcome];
         st.innerHTML = '&#10003; saved to lead' + (oc ? ' &middot; suggests: <span style="color:'+oc.color+';font-weight:700;">'+oc.label+'</span>' : '');
+      } else {
+        st.textContent = '✓ transcript saved. ' + _aiNoteFailText(_aiLastFail, null);
       }
-    }).catch(function(e) {
-      console.warn('AI note summarize failed:', e && e._data ? e._data : e);
-      if (st) st.textContent = _aiNoteFailText(e && e._data, e);
-    });
+    }
   }
 
   // ── Canvass door-knock AI note-taker (2026-07-24) ──────────────────────────
@@ -9543,7 +9621,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var box = document.getElementById('cvAiTranscript_'+leadId);
     _cvAiFinal = ''; _cvAiActive = true; _cvAiTarget = targetId; _cvAiLeadId = leadId;
     _cvAiLead = (adminCustomers||[]).find(function(c){ return c.id === leadId; }) || { id: leadId };
-    var st = document.getElementById('cvAiStatus_'+leadId); if (st) st.textContent = '● recording';
+    var st = document.getElementById('cvAiStatus_'+leadId);
+    if (st) st.textContent = '● recording — saved automatically when you pick an outcome';
     _cvAiSetBtn(leadId, true);
     _cvAiRec = new SR();
     _cvAiRec.continuous = true; _cvAiRec.interimResults = true; _cvAiRec.lang = 'en-US';
@@ -9556,30 +9635,28 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     _cvAiRec.onerror = function(ev){ if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') { _cvAiActive = false; _cvAiSetBtn(leadId, false); if (box) box.textContent = 'Microphone access denied — allow the mic for fixmy.energy, then try again.'; } };
     try { _cvAiRec.start(); } catch(e) { console.warn('cv SR start failed:', e); }
   }
-  function _cvAiStop() {
-    _cvAiActive = false;
-    var leadId = _cvAiLeadId;
-    if (_cvAiRec) { try { _cvAiRec.stop(); } catch(e){} _cvAiRec = null; }
-    _cvAiSetBtn(leadId, false);
+  async function _cvAiStop() {
+    var h = _cvAiHarvest();
+    var leadId = h ? h.leadId : _cvAiLeadId;
     var st = document.getElementById('cvAiStatus_'+leadId);
-    var transcript = _cvAiFinal.trim();
-    if (transcript.length < 25) { if (st) st.textContent = 'too short to summarize — type the note manually'; return; }
+    if (!h || h.transcript.length < 25) {
+      if (st) st.textContent = 'too short to summarize — type the note manually';
+      return;
+    }
     if (st) st.textContent = 'summarizing…';
-    var lead = _cvAiLead || {};
-    fetch('/.netlify/functions/dialer-notes', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ transcript: transcript.slice(0, 12000), lead: { name: ((lead.first_name||'')+' '+(lead.last_name||'')).trim(), installer: lead.original_installer || '', address: lead.address || '' } })
-    }).then(function(r){ return r.json(); }).then(async function(data){
-      if (data.error) { var _e = new Error(data.error); _e._data = data; throw _e; }
-      var noteEl = document.getElementById(_cvAiTarget);
-      if (noteEl && data.note) {
-        noteEl.value = (noteEl.value ? noteEl.value.trim() + '\n' : '') + data.note;
-        var wrap = noteEl.parentNode; if (wrap && wrap.style && wrap.style.display === 'none') wrap.style.display = 'block';
-      }
-      // Auto-save to the lead immediately — see _bbAiStop for the same fix + rationale.
-      if (data.note && leadId) { try { await bbLogActivity(leadId, 'door_knock', null, _aiConsentTag() + data.note); } catch(e) {} }
-      if (st) { var oc = data.suggested_outcome; st.innerHTML = '&#10003; saved to lead' + (oc ? ' &middot; suggests: <span style="color:#c4a3f0;font-weight:700;">'+esc(String(oc))+'</span>' : ''); }
-    }).catch(function(e){ console.warn('cv AI summarize failed:', e && e._data ? e._data : e); if (st) st.textContent = _aiNoteFailText(e && e._data, e); });
+    var d = await _aiSummarize(h.transcript, h.lead || {});
+    var noteText = (d && d.note)
+      ? d.note
+      : '🎙 Transcript (AI summary unavailable): ' + h.transcript.slice(0, 4000);
+    var noteEl = document.getElementById(_cvAiTarget);
+    if (noteEl) {
+      noteEl.value = (noteEl.value ? noteEl.value.trim() + '\n' : '') + noteText;
+      var wrap = noteEl.parentNode; if (wrap && wrap.style && wrap.style.display === 'none') wrap.style.display = 'block';
+      // Mirror into the draft state too, or the next GPS-tick re-render drops it.
+      if (leadId) { _cvNoteOpen[leadId] = true; _cvNoteDraft[leadId] = noteEl.value; }
+    }
+    if (leadId) { try { await bbLogActivity(leadId, 'door_knock', null, _aiConsentTag() + noteText); } catch(e) {} }
+    if (st) st.textContent = d ? '✓ saved to lead' : ('✓ transcript saved. ' + _aiNoteFailText(_aiLastFail, null));
   }
 
   // ── Email field (2026-07-23) — Black Box leads often arrive without an email
@@ -10190,6 +10267,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (!lead) return;
     if (bbDialPinnedId) bbDialPinnedId = null; // disposition done — return to normal queue flow
     var note = ((document.getElementById('bbDialNote')||{}).value || '').trim();
+    // ⚠️ THE fix for "AI notes get lost": a rep dispositioning mid-recording is the
+    // normal flow, not an error. Harvest before anything else so the conversation is
+    // written WITH the outcome, summarized if the API answers in time and raw if not.
+    var _aiH = _bbAiHarvest();
+    if (_aiH) {
+      var _aiNote = await _aiNoteFromHarvest(_aiH, 'dialer', lead.id, document.getElementById('bbAiStatus'));
+      if (_aiNote) note = note ? (note + '\n' + _aiNote) : _aiNote;
+    }
     var now = new Date().toISOString();
     var client = supabase.createClient(SUPA_URL, SUPA_KEY);
 
@@ -23311,7 +23396,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       await c2.from('customers').update(upd).eq('id', id);
       Object.assign(lead, upd);
       var dqNote = opts.dqReason ? ('Disqualified — ' + (CV_DQ_LABELS[opts.dqReason] || opts.dqReason)) : '';
-      bbLogActivity(id, 'door_knock', knockStatus, dqNote, { rep_name: person.name || person.id, rec: lead }); // shared feed — dialers see knock outcomes
+      // Same rule as the dialer: a live recording, and anything the rep typed into the
+      // note box but never pressed Save on, must survive dispositioning this door.
+      var _parts = [dqNote];
+      var _typed = (_cvNoteDraft[id] || '').trim();
+      if (_typed) { _parts.push(_typed); _cvNoteDraft[id] = ''; _cvNoteOpen[id] = false; }
+      var _aiH = _cvAiHarvest();
+      if (_aiH) {
+        var _aiNote = await _aiNoteFromHarvest(_aiH, 'door_knock', id, document.getElementById('cvAiStatus_'+id));
+        if (_aiNote) _parts.push(_aiNote);
+      }
+      bbLogActivity(id, 'door_knock', knockStatus, _parts.filter(Boolean).join('\n'), { rep_name: person.name || person.id, rec: lead }); // shared feed — dialers see knock outcomes
       // Save to session history
       try {
         var hist = JSON.parse(localStorage.getItem('bbKnockHistory') || '[]');
