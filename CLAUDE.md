@@ -519,6 +519,19 @@ Three field requests on the Black Box card. All three land on **both** Doors and
 - Verified in `scratchpad/test-owner-contacts.js` (26 assertions). **Gated both ways** — restoring the vendor line fails step 4, and removing the company blocklist reproduces "Properties Caroline" *and* "LLC Caroline" exactly.
 - ⚠️ **Harness traps hit here:** a `'[^']*vendor[^']*'` regex spans newlines and matches explanatory **comments**, failing with the code perfectly correct — strip comments first. And counting `_bbOwnerPeopleHtml(lead)` matched the function *definition* as well as its two call sites; count the mount (`h += …`), not the name.
 
+### A door booking could complete with no phone number (fixed 2026-08-11)
+Reported with a real lead: booked at the door, activated into the pipeline, name and email present, **phone blank**. Black Box leads usually arrive with no phone — the door *is* where you get it — and the confirm step rendered the script line with a placeholder:
+```js
+phone: lead.phone || '(no phone yet)'
+```
+So the rep read *"I have **(no phone yet)** — is that the best number to reach you?"* with a **✓ Confirmed** button underneath, ticked it, and booked an appointment nobody could be called about. ⚠️ **`allOk` counted confirmations, never values** — that is the whole bug.
+- **`CV_CONFIRM_ITEMS` entries now carry `required:true`** (name + phone). `_cvBkValueOf` / `_cvBkMissing` are the one place that decides whether a field actually holds something: a blank, a `@pending.fixmy.energy` placeholder email, or a phone that isn't 10 clean digits all count as missing.
+- A missing required field renders **"＋ Add phone"** (amber) instead of "✓ Confirmed", **Next stays disabled**, and a line names what is still outstanding. `canvassBkConfirm` also re-routes to the prompt rather than ticking a blank, so a stale render can't slip past.
+- The Fix prompt refuses a malformed number and stores clean digits — same rule as `bbSavePhone`.
+- ⚠️ **Email is deliberately NOT required.** A door rep who can't get an email must still be able to book; the `@pending.fixmy.energy` placeholder exists for exactly that. Only name and phone block.
+- Verified in `scratchpad/test-book-phone.js` (18 assertions). **Gated both ways** — neutering `_cvBkMissing` reproduces the report exactly, including the blank phone being confirmable.
+- ⚠️ **Harness note:** `"(619) 555-0100 ext"` strips to exactly 10 digits and *is* valid — the real malformed case is an extension carrying digits (`x1234`). A test case that looks wrong but isn't will fail against correct code.
+
 ### The REAL cause of "Loading dial queue… forever" — a ReferenceError, not the network (fixed 2026-08-11)
 ⚠️ **The network-timeout entry below was a wrong diagnosis.** It is a genuine hardening fix and stays, but it was never the cause. The dialer was broken by the **"one shared page shell" refactor (`c78892f`, 2026-08-08)**, which replaced the counters block by line range and **silently swallowed eight declarations** along with the empty-state early return:
 ```js

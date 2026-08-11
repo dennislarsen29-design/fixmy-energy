@@ -7575,7 +7575,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // so this is the only way to tell from a phone which build is actually live —
   // an iPad cannot view source, and a stale cached portal is indistinguishable
   // from a fix that did not work.
-  window.PORTAL_BUILD = '2026-08-11c';
+  window.PORTAL_BUILD = '2026-08-11d';
   try {
     document.addEventListener('DOMContentLoaded', function() {
       var el = document.getElementById('portalBuild');
@@ -22995,8 +22995,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // What the rep reads back. Keys map to editable lead fields so "Fix it" can correct
     // it on the spot rather than booking against a wrong number.
     var CV_CONFIRM_ITEMS = [
-      { key:'name',  label:'Name',        say:'Can I confirm I have your name right — {v}?',                    field:'name'    },
-      { key:'phone', label:'Phone',       say:'I have {v} — is that the best number to reach you?',             field:'phone'   },
+      // ⚠️ `required` means the booking cannot complete without a real value. A Black
+      // Box lead usually has NO phone — the door IS where we get it — and the confirm
+      // step used to render "I have (no phone yet)…" with a Confirmed button under it,
+      // so a rep could tick it and book an appointment with no way to reach anyone.
+      { key:'name',  label:'Name',        say:'Can I confirm I have your name right — {v}?',                    field:'name',   required:true },
+      { key:'phone', label:'Phone',       say:'I have {v} — is that the best number to reach you?',             field:'phone',  required:true },
       { key:'email', label:'Email',       say:'And your email is {v}? That is where the confirmation goes.',    field:'email'   },
       { key:'addr',  label:'Address',     say:'We will be coming to {v} — correct?',                            field:'address' },
       { key:'appt',  label:'Appointment', say:'So we are set for {v}. Does that still work?',                   field:null      },
@@ -23117,8 +23121,23 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     };
     window.canvassBkStep = function(n) { if (_cvBk) { _cvBk.step = n; _cvBkRender(); } };
     window.canvassBkSet = function(k, v) { if (_cvBk) { _cvBk[k] = v; _cvBkRender(); } };
+    // Blank, or a placeholder we generated ourselves, is not a value.
+    function _cvBkValueOf(item, lead) {
+      if (!item.field) return 'ok';
+      if (item.field === 'name') return ((lead.first_name||'') + ' ' + (lead.last_name||'')).trim();
+      var v = String(lead[item.field] || '').trim();
+      if (item.field === 'email' && /@pending\.fixmy\.energy$/i.test(v)) return '';
+      if (item.field === 'phone' && v.replace(/\D/g,'').replace(/^1/,'').length !== 10) return '';
+      return v;
+    }
+    function _cvBkMissing(item, lead) { return !!item.required && !_cvBkValueOf(item, lead); }
+
     window.canvassBkConfirm = function(k) {
       if (!_cvBk) return;
+      var it = CV_CONFIRM_ITEMS.find(function(i){ return i.key === k; });
+      // Belt and braces: the button is not rendered when a required value is missing,
+      // but a stale render must not be able to tick it either.
+      if (it && _cvBkMissing(it, _cvBk.lead)) { canvassBkFix(k); return; }
       _cvBk.confirmed[k] = true;
       _cvBkRender();
     };
@@ -23138,6 +23157,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var parts = v.split(/\s+/);
         upd.first_name = parts.shift() || null;
         upd.last_name  = parts.join(' ') || null;
+      } else if (item.field === 'phone') {
+        var d = v.replace(/\D/g, '').replace(/^1/, '');
+        if (v && d.length !== 10) { alert('That phone number needs 10 digits — nothing was saved.'); return; }
+        upd.phone = d.length === 10 ? d : null;
       } else {
         upd[item.field] = v || null;
       }
@@ -23299,13 +23322,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             h += '<div style="font-size:0.76rem;color:#8DC63F;font-weight:700;">&#10003; Confirmed</div>';
           } else {
             h += '<div style="display:flex;gap:7px;flex-wrap:wrap;">';
-            h += '<button onclick="canvassBkConfirm(\''+item.key+'\')" style="width:auto;margin:0;flex:1;padding:11px;background:rgba(141,198,63,0.14);border:1px solid rgba(141,198,63,0.45);color:#8DC63F;border-radius:100px;font-size:0.78rem;font-weight:700;cursor:pointer;">&#10003; Confirmed</button>';
+            if (_cvBkMissing(item, lead)) {
+              h += '<button onclick="canvassBkFix(\''+item.key+'\')" style="width:auto;margin:0;flex:1;padding:11px;background:rgba(245,158,11,0.16);border:1px solid rgba(245,158,11,0.5);color:#f59e0b;border-radius:100px;font-size:0.78rem;font-weight:700;cursor:pointer;">&#43; Add ' + esc(item.label.toLowerCase()) + '</button>';
+            } else {
+              h += '<button onclick="canvassBkConfirm(\''+item.key+'\')" style="width:auto;margin:0;flex:1;padding:11px;background:rgba(141,198,63,0.14);border:1px solid rgba(141,198,63,0.45);color:#8DC63F;border-radius:100px;font-size:0.78rem;font-weight:700;cursor:pointer;">&#10003; Confirmed</button>';
+            }
             if (item.field) h += '<button onclick="canvassBkFix(\''+item.key+'\')" style="width:auto;margin:0;flex:0 0 auto;padding:11px 16px;background:transparent;border:1px solid rgba(255,255,255,0.14);color:#888;border-radius:100px;font-size:0.78rem;font-weight:700;cursor:pointer;">&#9998; Fix it</button>';
             h += '</div>';
           }
           h += '</div>';
         });
-        var allOk = doneCount === CV_CONFIRM_ITEMS.length;
+        var missing = CV_CONFIRM_ITEMS.filter(function(i){ return _cvBkMissing(i, lead); });
+        var allOk = doneCount === CV_CONFIRM_ITEMS.length && !missing.length;
+        if (missing.length) {
+          h += '<div style="font-size:0.72rem;color:#f59e0b;margin-top:10px;line-height:1.5;">&#9888; Still needed before this can be booked: <b>'
+            + esc(missing.map(function(i){ return i.label.toLowerCase(); }).join(', ')) + '</b>. Ask at the door and tap Add.</div>';
+        }
         h += '<div style="display:flex;gap:8px;margin-top:14px;">';
         h += '<button onclick="canvassBkStep(0)" style="width:auto;margin:0;flex:0 0 auto;padding:13px 20px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.14);color:#aaa;border-radius:100px;font-size:0.82rem;font-weight:700;cursor:pointer;">&#8592; Back</button>';
         h += '<button onclick="canvassBkStep(2)"'+(allOk?'':' disabled')+' style="flex:1;margin:0;padding:13px;border:none;border-radius:100px;font-size:0.86rem;font-weight:800;cursor:'+(allOk?'pointer':'not-allowed')+';background:'+(allOk?'#8DC63F':'rgba(255,255,255,0.08)')+';color:'+(allOk?'#1A1A1A':'#555')+';">Next &#8594; ('+doneCount+'/'+CV_CONFIRM_ITEMS.length+')</button>';
