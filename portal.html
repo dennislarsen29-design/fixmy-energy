@@ -7575,7 +7575,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // so this is the only way to tell from a phone which build is actually live —
   // an iPad cannot view source, and a stale cached portal is indistinguishable
   // from a fix that did not work.
-  window.PORTAL_BUILD = '2026-08-11a';
+  window.PORTAL_BUILD = '2026-08-11b';
   try {
     document.addEventListener('DOMContentLoaded', function() {
       var el = document.getElementById('portalBuild');
@@ -8573,6 +8573,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (!s) return { display: '', surname: '', isEntity: false };
     // Trailing recording date the assessor appends: "… TRUST 05-04-15", "… TR 4-1-09".
     s = s.replace(/\s+(TR\s+)?\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4}\s*$/i, '').trim();
+    // …and the truncated form the roll sometimes carries ("… TRUST 09-27-"), which
+    // the full-date pattern above misses and which renders as visible junk.
+    s = s.replace(/\s+(TR\s+)?\d{1,2}[-\/]\d{1,2}[-\/]?\s*$/i, '').trim();
     var isEntity = BB_ENTITY_RX.test(s) || /\bTRS?\b\s*$/i.test(s);
     // A dangling "TR"/"TRS" is the roll's abbreviation for trust — it reads as a typo
     // on screen, and the TRUST badge already carries the meaning.
@@ -8598,12 +8601,85 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       'style="display:inline-block;margin-left:7px;padding:1px 7px;background:rgba(155,109,232,0.15);color:#c4a3f0;border-radius:10px;font-size:0.58rem;font-weight:700;vertical-align:middle;">TRUST</span>';
   }
 
-  // One line telling the rep exactly who to ask for, when the card name isn't a person.
-  function _bbAskForHtml(parsed) {
-    if (!parsed || parsed.human || !parsed.surname) return '';
-    return '<div style="font-size:0.72rem;color:#c4a3f0;margin-bottom:6px;">&#128100; Ask for: <b>the ' +
-      esc(parsed.surname) + ' household</b>' + (parsed.isEntity ? ' &mdash; the county lists a trust, not a person' : '') + '</div>';
+  /* ── Both people on title ───────────────────────────────────────────────────
+     The assessor writes a couple as SURNAME FIRST1 & FIRST2, and a family trust
+     keeps that shape: "BYRNE RAYMOND & SANDRA REVOCABLE FAMILY TRUST 09-27-".
+     Both spouses are sitting in a string we were collapsing to one surname, so a
+     rep asked for "the Byrne household" when they could have asked for Raymond
+     or Sandra by name.
+     Returns [{first, last, full}] — first entry is the primary. Empty when the
+     string carries no usable given name (a pure company, or surname only). */
+  function _bbOwnerContacts(raw) {
+    var p = _bbOwnerParse(raw);
+    if (!p.display) return [];
+    // Work from the cleaned display string, then drop everything from the first
+    // entity word on — "REVOCABLE FAMILY TRUST" is not a person's name.
+    var s = String(p.display).replace(/\s+/g, ' ').trim();
+    // ⚠️ A company never names a person. "CAROLINE PROPERTIES LLC" would otherwise
+    // yield the contact "Properties Caroline" — a fabricated human a rep would then
+    // ask for by name at the door. Family/living TRUSTS are deliberately NOT blocked:
+    // those genuinely carry both spouses, which is the whole point of this parser.
+    if (/\b(PROPERTIES|INVESTMENTS|HOLDINGS|MANAGEMENT|ENTERPRISES|REALTY|ASSOCIATES|GROUP|DEVELOPMENT|VENTURES|CAPITAL|LLC|L\.?L\.?C|INC|CORP|CORPORATION|COMPANY|PARTNERS?|LP|LTD)\b/i.test(s)) return [];
+    var cut = s.search(/\b(Revocable|Irrevocable|Living|Family|Survivors?|Trust|Trustee|Estate|Et Al)\b/i);
+    if (cut > 0) s = s.slice(0, cut).trim();
+    var tokens = s.split(/[\s&]+/).filter(Boolean);
+    if (tokens.length < 2) return [];
+    var last = tokens.shift();
+    var out = [], seen = {};
+    tokens.forEach(function(t) {
+      // Single letters are middle initials, not people ("STRICKER MICHAEL&AMIE F").
+      if (t.length < 2) return;
+      var k = t.toLowerCase();
+      if (seen[k]) return;
+      seen[k] = 1;
+      out.push({ first: t, last: last, full: t + ' ' + last });
+    });
+    return out;
   }
+
+  // One line telling the rep exactly who to ask for. Names both spouses when the
+  // title carries them, since "Ask for Raymond or Sandra" beats "the household".
+  function _bbAskForHtml(parsed, lead) {
+    if (!parsed || parsed.human || !parsed.surname) return '';
+    var people = lead ? _bbOwnerContacts(lead.title_owner) : [];
+    var who = people.length
+      ? '<b>' + esc(people.map(function(c){ return c.first; }).join(' or ')) + ' ' + esc(parsed.surname) + '</b>'
+      : '<b>the ' + esc(parsed.surname) + ' household</b>';
+    return '<div style="font-size:0.72rem;color:#c4a3f0;margin-bottom:6px;">&#128100; Ask for: ' + who +
+      (parsed.isEntity ? ' &mdash; the county lists a trust, not a person' : '') + '</div>';
+  }
+
+  // Tap either spouse to make them the contact on the record. No migration — this
+  // fills the existing first_name/last_name, which every card, script and export
+  // already prefers over the roll string.
+  function _bbOwnerPeopleHtml(lead) {
+    if (!lead || (lead.first_name && lead.last_name)) return '';
+    var people = _bbOwnerContacts(lead.title_owner);
+    if (!people.length) return '';
+    var h = '<div style="font-size:0.68rem;color:#888;margin-bottom:6px;">&#128101; On title: ';
+    people.forEach(function(c, i) {
+      h += (i ? ' ' : '') + '<button onclick="bbUseOwnerContact(\'' + lead.id + '\',\'' + esc(c.first) + '\',\'' + esc(c.last) + '\')" '
+        + 'title="Set ' + esc(c.full) + ' as the contact on this lead" '
+        + 'style="width:auto;margin:0;padding:2px 9px;background:rgba(155,109,232,0.12);border:1px solid rgba(155,109,232,0.35);color:#c4a3f0;border-radius:100px;font-size:0.66rem;font-weight:700;cursor:pointer;">'
+        + esc(c.full) + '</button>';
+    });
+    h += '</div>';
+    return h;
+  }
+  window.bbUseOwnerContact = async function(id, first, last) {
+    try {
+      var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+      await client.from('customers').update({ first_name: first, last_name: last }).eq('id', id);
+      [bbDialQueue,
+       (typeof window._cvLeadsRef === 'function' ? window._cvLeadsRef() : []),
+       (typeof adminCustomers !== 'undefined' ? adminCustomers : [])].forEach(function(arr) {
+        var rec = (arr || []).find(function(x){ return x.id === id; });
+        if (rec) { rec.first_name = first; rec.last_name = last; }
+      });
+    } catch(e) { console.warn('Owner contact save failed:', e); }
+    if (typeof renderSales === 'function' && typeof salesView !== 'undefined' && salesView === 'canvass') renderSales();
+    else if (typeof renderBBDialerView === 'function') renderBBDialerView();
+  };
 
   /* ── Trustee inference ──────────────────────────────────────────────────────
      No parcel source will ever name a trustee — the county's owner of record IS
@@ -8626,9 +8702,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (!roll.isEntity) return '';
     var last = String(lead.last_name || '').trim();
     if (!last) {
+      // ⚠️ Rep-facing text must never describe how a lead was built — which vendors
+      // we buy from, which lookups ran, what the enrichment pipeline does. That is
+      // proprietary and it is not actionable at a door. Say what the REP should do.
+      // Admins get the internal detail; nobody else does.
+      var internal = (typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE === 'admin')
+        ? ' <span style="color:#555;">(admin: no skip-traced name on file yet)</span>' : '';
       return '<div style="font-size:0.68rem;color:#777;margin-bottom:6px;line-height:1.4;">'
-        + 'No trustee name yet &mdash; owner lookup can\'t fix a trust (the county\'s owner really is the trust). '
-        + '<b style="color:#c4a3f0;">Skip-trace resolves this one.</b></div>';
+        + 'The county lists the trust rather than a person, so use the name on the card '
+        + 'and get their real name once they answer.' + internal + '</div>';
     }
     var human = ((lead.first_name || '') + ' ' + last).trim();
     var match = _bbSurnameKey(last) && _bbSurnameKey(last) === _bbSurnameKey(roll.surname);
@@ -9843,6 +9925,69 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '</span>' +
     '</div>';
   }
+  // Mirrors bbEmailRowHtml. Rendered right beside it, so Doors and Dialing both
+  // get phone editing from one renderer rather than two that can drift.
+  function bbPhoneRowHtml(lead) {
+    var phone = lead.phone || '';
+    var id = lead.id || '';
+    return '<div id="bbPhoneRow" style="font-size:0.72rem;margin-bottom:8px;">' +
+      '<span style="cursor:pointer;color:#888;" onclick="bbEditPhone(\''+id+'\')" title="Tap to correct or add the homeowner\'s phone number">' +
+        '&#128222; ' + (phone ? esc(_bbFmtPhone(phone)) : '<span style="color:#f59e0b;">No phone on file</span>') +
+        ' <span style="color:#4a9eff;text-decoration:underline;">'+(phone?'edit':'add')+'</span>' +
+      '</span>' +
+    '</div>';
+  }
+  function _bbFmtPhone(v) {
+    var d = String(v || '').replace(/\D/g, '');
+    if (d.length === 11 && d[0] === '1') d = d.slice(1);
+    return d.length === 10 ? '(' + d.slice(0,3) + ') ' + d.slice(3,6) + '-' + d.slice(6) : String(v || '');
+  }
+  window.bbEditPhone = function(id) {
+    var row = document.getElementById('bbPhoneRow'); if (!row) return;
+    var lead = window._bbFindLeadById(id);
+    if (!lead && typeof bbDialBuckets === 'function') {
+      var buckets = bbDialBuckets();
+      lead = bbDialResolveCurrentLead(buckets) || (buckets[bbDialFilter]||[])[0];
+    }
+    lead = lead || {};
+    window._bbEmailEditing = id;   // reuses the same guard: suppresses the Doors GPS-tick re-render
+    row.innerHTML = '<div style="display:flex;gap:6px;align-items:center;">' +
+      '<input id="bbPhoneInput" type="tel" inputmode="tel" value="'+esc(_bbFmtPhone(lead.phone || ''))+'" placeholder="(619) 555-0100" style="flex:1;min-width:0;background:#111;border:1px solid rgba(74,158,255,0.4);border-radius:8px;color:#fff;padding:7px 10px;font-size:0.78rem;box-sizing:border-box;">' +
+      '<button onclick="bbSavePhone(\''+id+'\')" style="width:auto;flex-shrink:0;padding:7px 14px;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;">Save</button>' +
+    '</div><div id="bbPhoneErr" style="font-size:0.64rem;color:#f87171;margin-top:4px;display:none;"></div>';
+    var inp = document.getElementById('bbPhoneInput');
+    if (inp) { inp.focus(); inp.select(); inp.addEventListener('keypress', function(ev){ if (ev.key === 'Enter') bbSavePhone(id); }); }
+  };
+  window.bbSavePhone = async function(id) {
+    var inp = document.getElementById('bbPhoneInput'); if (!inp) return;
+    var digits = inp.value.replace(/\D/g, '');
+    if (digits.length === 11 && digits[0] === '1') digits = digits.slice(1);
+    // ⚠️ Refuse a malformed number rather than saving it. A half-typed phone that
+    // silently persists is worse than none — the dialer would call it forever.
+    if (inp.value.trim() && digits.length !== 10) {
+      var errEl = document.getElementById('bbPhoneErr');
+      if (errEl) { errEl.textContent = 'Needs 10 digits — nothing saved.'; errEl.style.display = 'block'; }
+      inp.focus();
+      return;
+    }
+    var val = digits.length === 10 ? digits : null;
+    var row = document.getElementById('bbPhoneRow');
+    if (row) row.innerHTML = '<span style="font-size:0.72rem;color:#888;">Saving&hellip;</span>';
+    try {
+      var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+      await client.from('customers').update({ phone: val }).eq('id', id);
+      [bbDialQueue,
+       (typeof window._cvLeadsRef === 'function' ? window._cvLeadsRef() : []),
+       (typeof adminCustomers !== 'undefined' ? adminCustomers : [])].forEach(function(arr) {
+        var rec = (arr || []).find(function(x){ return x.id === id; });
+        if (rec) rec.phone = val;
+      });
+    } catch(e) { console.warn('Phone save failed:', e); }
+    window._bbEmailEditing = null;
+    var lead2 = window._bbFindLeadById(id) || { id: id, phone: val };
+    if (row) row.outerHTML = bbPhoneRowHtml(lead2);
+  };
+
   window.bbEditEmail = function(id) {
     var row = document.getElementById('bbEmailRow'); if (!row) return;
     var lead = window._bbFindLeadById(id);
@@ -9996,13 +10141,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var dialInOutage = bbOutageHasZip(dialZip);
     h += '<div style="font-size:1.15rem;font-weight:800;margin-bottom:2px;">'+esc(name)+_bbEntityBadgeHtml(_nm)+(dialIsSDCP?'<span style="display:inline-block;margin-left:7px;padding:1px 7px;background:rgba(0,150,255,0.15);color:#4AABF7;border-radius:10px;font-size:0.58rem;font-weight:700;vertical-align:middle;">SDCP</span>':'')+(dialInOutage?bbOutageBadgeHtml():'')+'</div>';
     h += '<div style="font-size:0.78rem;color:#888;margin-bottom:6px;">'+esc(lead.address||'—')+'</div>';
-    h += _bbAskForHtml(_nm);
+    h += _bbAskForHtml(_nm, lead);
+    h += _bbOwnerPeopleHtml(lead);
     h += _bbTrusteeNote(lead);
     h += _bbAbsenteeNote(lead);
     // A dialer who hears the real name on the phone had nowhere to put it — these are the
     // same controls the door rep has, not a second copy.
     h += _bbOwnerControlsHtml(lead);
-    h += bbEmailRowHtml(lead);
+    h += bbPhoneRowHtml(lead);
+            h += bbEmailRowHtml(lead);
     var badges = '';
     if (lead.original_installer) badges += '<span style="display:inline-block;padding:2px 9px;background:rgba(255,170,0,0.12);color:#ffaa00;border-radius:100px;font-size:0.62rem;font-weight:700;margin-right:6px;">'+esc(lead.original_installer)+'</span>';
     if (ksLabel) badges += '<span style="display:inline-block;padding:2px 9px;background:rgba(74,158,255,0.12);color:#4a9eff;border-radius:100px;font-size:0.62rem;font-weight:700;margin-right:6px;">'+ksLabel+'</span>';
@@ -21685,11 +21832,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             var _doorNm = _bbLeadDisplayName(lead);
             var doorOwner = _doorNm.display || '';
             if (doorOwner) h += '<div style="font-size:0.8rem;font-weight:600;color:#F3EDE3;margin-bottom:2px;">&#128100; '+esc(doorOwner)+_bbEntityBadgeHtml(_doorNm)+'</div>';
-            h += _bbAskForHtml(_doorNm);
+            h += _bbAskForHtml(_doorNm, lead);
+            h += _bbOwnerPeopleHtml(lead);
             h += _bbTrusteeNote(lead);
             h += _bbAbsenteeNote(lead);
             // Same inline email row the dialer has. Matters here because the magic-link
             // photo upload after a doorstep booking needs a real address on file.
+            h += bbPhoneRowHtml(lead);
             h += bbEmailRowHtml(lead);
             if (lead.apn) h += '<div style="font-size:0.62rem;color:#555;margin-bottom:2px;">APN '+esc(lead.apn)+'</div>';
             // Always available, not just when blank — the common case is looking the owner
