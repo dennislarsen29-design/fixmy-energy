@@ -7570,6 +7570,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
   var bbDialQueue = [];
   var bbDialLoaded = false;
+  var bbDialLoadError = '';   // set when the queue load times out, so the UI can say so
   var bbDialLoading = false;
   var bbDialFilter = 'fresh'; // fresh | callbacks | worked
   var bbDialPriorityIds = [];
@@ -8175,6 +8176,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // are not what the gauge measures — a rep can have a great week of inputs and a slow
   // week of outcomes, and the scoreboard should say so rather than just look bad.
   var _bbScore = null, _bbScoreAt = 0, _bbScoreLoading = false;
+
+  // ⚠️ Neither the dial queue nor this scoreboard had a network timeout. On a stalled
+  // mobile connection the request never settles — it does not reject either, so the
+  // existing .catch handlers never fire — the "loading" guard latches true, and the
+  // panel reads "Loading…" forever with no error and no way back except a full reload.
+  // Same family as the _bbEnrichRunning stuck-flag bug, except a HANG rather than a
+  // throw, which is why try/catch/finally alone was not enough. The admin dashboard has
+  // raced a 12s timeout since forever; these two never got it.
+  var BB_NET_TIMEOUT_MS = 15000;
+  function _bbWithTimeout(p, what, ms) {
+    return Promise.race([p, new Promise(function(_, rej){
+      setTimeout(function(){ rej(new Error('timeout: ' + (what || 'request'))); }, ms || BB_NET_TIMEOUT_MS);
+    })]);
+  }
   var BB_SCORE_TTL = 120000;   // 2 min — cheap enough to keep fresh, quiet enough not to thrash
 
   function _bbScoreBar(val, target, colour) {
@@ -8200,9 +8215,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
                 todayKnocks: 0, todayDials: 0, hoursOk: true, byDay: [0,0,0,0,0,0,0] };
     try {
       var c = supabase.createClient(SUPA_URL, SUPA_KEY);
-      var act = await c.from('lead_activity')
+      var act = await _bbWithTimeout(c.from('lead_activity')
         .select('channel,outcome,created_at,rep_name')
-        .gte('created_at', wkStart).limit(4000);
+        .gte('created_at', wkStart).limit(4000), 'weekly activity');
       (act.data || []).forEach(function(r) {
         if (_repCanonical(r.rep_name) !== _repCanonical(rep)) return;
         var isDoor = r.channel === 'door_knock', isDial = r.channel === 'dialer';
@@ -8214,7 +8229,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         if (['warm','booked','not_interested','come_back','renter','already_customer'].indexOf(r.outcome) >= 0) out.contacts++;
         if (r.outcome === 'booked') out.booked++;
       });
-      var sh = await c.from('rep_shifts').select('started_at,ended_at,rep_name').gte('started_at', wkStart).limit(500);
+      var sh = await _bbWithTimeout(c.from('rep_shifts').select('started_at,ended_at,rep_name').gte('started_at', wkStart).limit(500), 'shifts');
       if (sh.error) { out.hoursOk = false; }
       else {
         (sh.data || []).forEach(function(r) {
@@ -8228,8 +8243,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           out.byDay[dow === 0 ? 6 : dow - 1] += hrs;
         });
       }
-    } catch(e) { out.hoursOk = false; }
-    _bbScore = out; _bbScoreAt = Date.now(); _bbScoreLoading = false;
+    } catch(e) {
+      out.hoursOk = false;
+      // Distinguish "couldn't reach the database" from a real week of zeros — the two
+      // look identical otherwise, which is what made this hard to report.
+      out.netFail = true; out.netReason = String(e && e.message || e).slice(0, 80);
+    } finally {
+      // Released on EVERY path, including the timeout, so a later attempt can retry
+      // instead of the guard latching for the rest of the session.
+      _bbScoreLoading = false;
+    }
+    _bbScore = out; _bbScoreAt = Date.now();
     return out;
   };
 
@@ -8246,6 +8270,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var d = _bbScore;
     if (!d) {
       return '<div id="bbScoreboard" style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:14px;padding:14px;margin-bottom:14px;font-size:0.72rem;color:#666;text-align:center;">Loading your week&hellip;</div>';
+    }
+    // A week of genuine zeros and a failed fetch must not look identical.
+    if (d.netFail) {
+      return '<div id="bbScoreboard" style="background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.3);border-radius:14px;padding:12px;margin-bottom:14px;font-size:0.72rem;color:#f87171;text-align:center;">'
+        + "Couldn't load your week &mdash; weak signal. "
+        + '<button onclick="_bbScore=null;bbLoadRepScore(true).then(function(){var e=document.getElementById(\'bbScoreboard\');if(e)e.outerHTML=window._bbRepScoreboardHtml(window._bbScoreMode||\'call\');});" style="width:auto;margin:0;padding:4px 12px;background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.4);color:#f87171;border-radius:100px;font-size:0.68rem;font-weight:700;cursor:pointer;">&#8635; Retry</button>'
+        + '</div>';
     }
     var hrs = d.hours, pct = Math.min(100, Math.round((hrs / WEEKLY_HOURS_TARGET) * 100));
     var left = Math.max(0, WEEKLY_HOURS_TARGET - hrs);
@@ -9886,10 +9917,29 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       document.getElementById('dashBody').innerHTML = h;
       if (!bbDialLoading) {
         bbDialLoading = true;
-        bbDialLoadQueue().then(function(){ bbDialLoading = false; renderBBDialerView(); })
-          .catch(function(e){ bbDialLoading = false; bbDialLoaded = true; console.warn('Dial queue load failed:', e); renderBBDialerView(); });
+        // Raced against a hard timeout: a stalled request neither resolves NOR rejects,
+        // so without this the .catch below can never fire and the panel reads
+        // "Loading dial queue…" until the rep reloads the whole page.
+        _bbWithTimeout(bbDialLoadQueue(), 'dial queue').then(function(){
+          bbDialLoading = false; bbDialLoadError = ''; renderBBDialerView();
+        }).catch(function(e){
+          bbDialLoading = false; bbDialLoaded = true;
+          bbDialLoadError = String(e && e.message || e).indexOf('timeout') >= 0
+            ? 'The connection timed out loading your queue.'
+            : 'Could not load your queue.';
+          console.warn('Dial queue load failed:', e);
+          renderBBDialerView();
+        });
       }
       return;
+    }
+
+    if (bbDialLoadError) {
+      h += '<div style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.35);border-radius:12px;padding:14px;margin-bottom:12px;text-align:center;">'
+        + '<div style="font-size:0.78rem;font-weight:700;color:#f87171;margin-bottom:4px;">' + esc(bbDialLoadError) + '</div>'
+        + '<div style="font-size:0.7rem;color:#999;margin-bottom:9px;">Usually a weak signal. Nothing is lost \u2014 tap to retry.</div>'
+        + '<button onclick="bbDialLoadError=\'\';bbDialLoaded=false;renderBBDialerView()" style="width:auto;margin:0;padding:8px 18px;background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.45);color:#f87171;border-radius:100px;font-size:0.75rem;font-weight:700;cursor:pointer;">&#8635; Try again</button>'
+        + '</div>';
     }
 
     var buckets = bbDialBuckets();
