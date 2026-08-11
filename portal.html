@@ -791,6 +791,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // ⚠️ The rep-agreement login check MUST exclude these rows, or a sub-sheet ack would
   // look like the newest "agreement" at the wrong version and force a re-sign.
   var SUB_SHEET_ACK_SOURCE = 'sub_sheet_ack';
+  // ⚠️ rep_agreements is a shared ledger: the signed rep agreement, sub-sheet
+  // acknowledgements, and (now) training certifications all live in it, told apart by
+  // `source`. The login gate reads "the newest agreement" out of this table and compares
+  // its version to REP_AGREEMENT_VERSION — so ANY non-agreement row it picks up forces
+  // every rep to re-sign. The old check excluded sub_sheet_ack by name and would have
+  // grabbed a training cert. Anything added here must be excluded here too.
+  // ⚠️ Legacy rows predate the `source` column and are NULL — those ARE agreements, which
+  // is also why this cannot be a server-side .neq() (NULL <> 'x' is NULL, not true).
+  var TRAINING_CERT_PREFIX = 'training_cert:';
+  function _isRepAgreementRow(r) {
+    var src = r && r.source;
+    if (!src) return true;
+    if (src === SUB_SHEET_ACK_SOURCE) return false;
+    if (String(src).indexOf(TRAINING_CERT_PREFIX) === 0) return false;
+    return true;
+  }
   var _ssAckPerson = {};
   async function _subSheetAcked(person) {
     var key = 'subSheetAck_' + ((person && person.id) || '') + '_' + SUB_SHEET_VERSION;
@@ -7575,7 +7591,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // so this is the only way to tell from a phone which build is actually live —
   // an iPad cannot view source, and a stale cached portal is indistinguishable
   // from a fix that did not work.
-  window.PORTAL_BUILD = '2026-08-11d';
+  window.PORTAL_BUILD = '2026-08-11e';
   try {
     document.addEventListener('DOMContentLoaded', function() {
       var el = document.getElementById('portalBuild');
@@ -7954,65 +7970,185 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   //
   // Progress is per-rep in localStorage — a new hire can stop and resume, and an admin can
   // replay it any time from the Training tab to see exactly what a hire sees.
+  // ── Training modules ──────────────────────────────────────────────────────
+  // Tracks STACK. A setter certifies on foundations + doors + dialing; a tech adds
+  // closing. When a setter is promoted, the modules they already passed stay passed and
+  // only `closing` is outstanding — which is why certification is recorded PER MODULE
+  // rather than as one training_completed flag.
+  var TRAINING_VERSION = 't1';
+  var BB_TRAINING_MODULES = {
+    foundations: { label: 'Foundations',    blurb: 'Why anyone talks to us, the rules, and the screen itself.' },
+    doors:       { label: 'Doors',          blurb: 'Working a route and knocking.' },
+    dialing:     { label: 'Dialing',        blurb: 'Working the queue and the call.' },
+    closing:     { label: 'Closing',        blurb: 'The evaluation, the proposal, and getting paid.' }
+  };
+  // Unknown/blank roles fall back to the setter track — the safe default is MORE
+  // training, never less.
+  var BB_TRAINING_TRACKS = {
+    setter: ['foundations','doors','dialing'],
+    dialer: ['foundations','doors','dialing'],
+    tech:   ['foundations','doors','dialing','closing'],
+    rep:    ['foundations','doors','dialing','closing'],
+    admin:  ['foundations','doors','dialing','closing']
+  };
+  function bbTrainingTrackFor(role) {
+    return BB_TRAINING_TRACKS[String(role || '').toLowerCase()] || BB_TRAINING_TRACKS.setter;
+  }
+  // The steps a given role actually has to sit through, in authored order.
+  function bbTourStepsFor(role) {
+    var track = bbTrainingTrackFor(role);
+    return BB_TOUR_STEPS.filter(function(st){ return track.indexOf(st.mod || 'foundations') >= 0; });
+  }
+
   var BB_TOUR_STEPS = [
-    { id:'welcome', kind:'read', title:'Welcome', body:
+    { id:'welcome', mod:'foundations', kind:'read', title:'Welcome', body:
       '<p style="margin:0 0 10px;">This takes about fifteen minutes. By the end you will know <b>what we do</b>, <b>what to say</b>, and <b>which buttons to press</b>.</p>'
       + '<p style="margin:0 0 10px;">You can stop at any point and pick up where you left off.</p>'
       + '<p style="margin:0;color:#8a8578;font-size:0.8rem;">Two motions, one job: <b>Doors</b> is knocking, <b>Dialing</b> is calling. Everything else in here works the same way for both.</p>' },
 
-    { id:'why', kind:'read', title:'Why anyone talks to us', body:
+    { id:'why', mod:'foundations', kind:'read', title:'Why anyone talks to us', body:
       '<p style="margin:0 0 10px;">Every lead in your queue is a home whose solar installer <b>went out of business</b> — SunPower, Titan, Sunnova, Sullivan and others.</p>'
       + '<p style="margin:0 0 10px;">The panels are still on the roof. The warranty on the hardware is usually still good. What disappeared is <b>anyone to call</b> — nobody files the claim, nobody does the labour, nobody notices when production drops.</p>'
-      + '<p style="margin:0;">That is the whole business. You are not selling. You are the person who shows up.</p>' },
+      + '<p style="margin:0;">That is the whole business. You are not selling. You are the person who shows up.</p>' ,
+      check:{ q:'What actually happened to the homeowners in your queue?',
+              options:['Their panels stopped working','Their installer went out of business','They fell behind on payments'],
+              answer:1,
+              why:'The panels are still there and the hardware warranty is usually still good \u2014 what disappeared is anyone to call.' } },
 
-    { id:'structure', kind:'script', stage:'flow', which:'call', title:'The structure of a contact' },
-    { id:'opener',    kind:'script', stage:'opener', which:'call', title:'1 · The opener' },
-    { id:'qualify',   kind:'script', stage:'qualify', which:'call', title:'2 · Qualify' },
-    { id:'branch',    kind:'script', stage:'pain', which:'call', title:'3 · The three beats' },
-    { id:'expect',    kind:'script', stage:'expectations', which:'call', title:'4 · Set expectations' },
-    { id:'book',      kind:'script', stage:'book', which:'call', title:'5 · Book it' },
-    { id:'objections',kind:'script', stage:'objections', which:'call', title:'Objections' },
+    { id:'structure', mod:'dialing', kind:'script', stage:'flow', which:'call', title:'The structure of a contact' },
+    { id:'opener',    mod:'dialing', kind:'script', stage:'opener', which:'call', title:'1 · The opener' ,
+      check:{ q:'The opener names two specific facts about their system. Which two?',
+              options:['The price and the savings','Who installed it and what year','The panel brand and the roof type'],
+              answer:1,
+              why:'Naming the installer and the install year is what separates you from a robocall \u2014 it proves you know this exact house.' } },
+    { id:'qualify',   mod:'dialing', kind:'script', stage:'qualify', which:'call', title:'2 · Qualify' ,
+      check:{ q:'What is the first thing you ask in Qualify?',
+              options:['What is your monthly bill?','Have you had a technician out since the install?','Are you the homeowner?'],
+              answer:1,
+              why:'It is the least threatening question available, the answer is almost always no, and it establishes the service gap before money ever comes up.' } },
+    { id:'branch',    mod:'dialing', kind:'script', stage:'pain', which:'call', title:'3 · The three beats' ,
+      check:{ q:'A homeowner says their bill is only about $30 a month. What comes FIRST?',
+              options:['Suggest a battery so they can store more','The utility\u2019s problem \u2014 peak hours and changing credit rules','Ask what they paid for the system'],
+              answer:1,
+              why:'Beat 1 is always about SDG&E, not about them, so nobody gets defensive. Their situation only comes in at Beat 2.' } },
+    { id:'expect',    mod:'dialing', kind:'script', stage:'expectations', which:'call', title:'4 · Set expectations' ,
+      check:{ q:'They ask what this is going to cost them. What is true?',
+              options:['It is free, with no obligation \u2014 and free to reschedule','Free, but there is a fee if they no-show','It depends on the size of the system'],
+              answer:0,
+              why:'There is no no-show fee. Both scripts say free and free to move \u2014 promising a charge is the contradiction we removed.' } },
+    { id:'book',      mod:'dialing', kind:'script', stage:'book', which:'call', title:'5 · Book it' ,
+      check:{ q:'Before you hang up or walk away, what must you confirm out loud?',
+              options:['Just the day \u2014 we text the time later','The date AND the two-hour arrival window','That they will call us back to confirm'],
+              answer:1,
+              why:'Confirming both out loud is the single biggest thing that stops no-shows. Book inside 48 hours where you can.' } },
+    { id:'objections',mod:'dialing', kind:'script', stage:'objections', which:'call', title:'Objections' ,
+      check:{ q:'A homeowner says \u201ctake me off your list.\u201d What do you do?',
+              options:['Apologise and try one more angle','Mark DNC \u2014 it is scripted and mandatory','Note it and call back next month'],
+              answer:1,
+              why:'DNC is not optional and not a judgement call. Mark it and move on.' } },
 
-    { id:'tour-score', kind:'tour', sel:'#bbScoreboard', title:'Your week', body:
+    { id:'tour-score', mod:'foundations', kind:'tour', sel:'#bbScoreboard', title:'Your week', body:
       'Hours from <b>Doors and Dialing combined</b>, against the 30-hour weekly goal. It clocks you in automatically from your logged work — there is no button to press or forget. Tap it to see your day-by-day and your inputs.' },
-    { id:'tour-mode', kind:'tour', sel:'[data-tour="mode"]', title:'Doors / Dialing', body:
+    { id:'tour-mode', mod:'foundations', kind:'tour', sel:'[data-tour="mode"]', title:'Doors / Dialing', body:
       'Switch motions here. The page below is deliberately identical either way — only the action changes.' },
-    { id:'tour-counters', kind:'tour', sel:'[data-tour="counters"]', title:'What is in front of you', body:
+    { id:'tour-counters', mod:'foundations', kind:'tour', sel:'[data-tour="counters"]', title:'What is in front of you', body:
       'On Doors: how much of the route is left. On Dialing: your queue, and tapping one filters to it.' },
-    { id:'tour-focus', kind:'tour', sel:'[data-tour="controls"]', title:'Focus and the script', body:
+    { id:'tour-focus', mod:'foundations', kind:'tour', sel:'[data-tour="controls"]', title:'Focus and the script', body:
       'Focus sorts good leads to the top &mdash; it never hides anything, so you can always work the door in front of you. On the right, the script panel and the printable one-sheet.' },
-    { id:'tour-map', kind:'tour', sel:'[data-tour="map"]', title:'The map', body:
+    { id:'tour-map', mod:'foundations', kind:'tour', sel:'[data-tour="map"]', title:'The map', body:
       'Doors shows where you are standing and the doors around you. Dialing centres on the home you are calling. Tap any pin to jump to that lead next.' },
-    { id:'tour-card', kind:'tour', sel:'[data-tour="card"]', title:'The card', body:
+    { id:'tour-card', mod:'foundations', kind:'tour', sel:'[data-tour="card"]', title:'The card', body:
       'Everything about this one home: who owns it, who installed it, whether it is a rental, the roof from above, and the buttons to call, text or knock.' },
-    { id:'tour-ai', kind:'tour', sel:'[data-tour="card"]', title:'AI Notes', body:
+    { id:'tour-ai', mod:'foundations', kind:'tour', sel:'[data-tour="card"]', title:'AI Notes', body:
       'Tap <b>&#127908; AI Notes</b> before you start talking. It listens, writes the note for you and saves it to the lead. You still choose the disposition yourself.' },
 
-    { id:'rules', kind:'read', title:'Four rules that matter', body:
+    { id:'rules', mod:'foundations', kind:'read', title:'Four rules that matter', body:
       '<ol style="margin:0 0 0 18px;padding:0;line-height:1.9;">'
       + '<li><b>Never talk down the old installer.</b> It makes the tech\'s job harder and makes you sound like a pitch.</li>'
       + '<li><b>Never sell on the phone or at the door.</b> You are asking for a free look. That is all.</li>'
       + '<li><b>Never quote a price or an incentive.</b> "That is exactly what the tech figures out."</li>'
       + '<li><b>Confirm the date AND the two-hour window out loud</b> before you hang up or walk away.</li>'
-      + '</ol>' },
+      + '</ol>' ,
+      check:{ q:'Which of these are you NEVER allowed to do?',
+              options:['Say that incentives exist','Name a dollar amount or a specific incentive programme','Tell them the technician will put it in writing'],
+              answer:1,
+              why:'You may say incentives exist. You may never name a programme, a percentage or a figure, and never say it is guaranteed \u2014 anything specific comes out of the evaluation, in writing.' } },
 
-    { id:'done', kind:'read', title:'That is it', body:
+    { id:'done', mod:'foundations', kind:'read', title:'That is it', body:
       '<p style="margin:0 0 10px;">Everything here is on the screen when you need it — the script panel walks you through it live, and <b>&#128196; One sheet</b> prints the whole thing.</p>'
       + '<p style="margin:0;">Start with Dialing if you are nervous. Start with Doors if you would rather move.</p>' }
   ];
 
   function _bbTourKey() { return 'bbTourDone_' + (window._bbDialerPersonId || CURRENT_ROLE || 'x'); }
+  function _bbTourRole() {
+    try { if (typeof person !== 'undefined' && person && person.role) return person.role; } catch(e) {}
+    return CURRENT_ROLE || 'setter';
+  }
+  // Every navigation and progress calculation runs off THIS list, never BB_TOUR_STEPS —
+  // otherwise a setter's progress bar counts closing steps they will never be shown.
+  function _bbTourSteps() { return bbTourStepsFor(_bbTourRole()); }
+
+  // ── Comprehension checks ──────────────────────────────────────────────────
+  // A wrong answer explains itself and lets them retry the same question — nobody can
+  // fail out. What IS recorded is whether they got it right first try, which is the
+  // number worth coaching from in a 1:1.
+  var _bbTourAnswered = {};   // stepId -> true once correct
+  var _bbTourFirstTry = {};   // stepId -> true if correct on the first attempt
+  var _bbTourTried    = {};   // stepId -> attempts so far
+  var _bbTourPicked   = null; // index the rep just tapped, for showing feedback
+  window.bbTourScore = function() {
+    var steps = _bbTourSteps().filter(function(st){ return st.check; });
+    var clean = steps.filter(function(st){ return _bbTourFirstTry[st.id]; }).length;
+    return { total: steps.length, clean: clean,
+             pct: steps.length ? Math.round((clean / steps.length) * 100) : 100 };
+  };
+  window.bbTourAnswer = function(i) {
+    var st = _bbTourSteps()[_bbTourIdx];
+    if (!st || !st.check || _bbTourAnswered[st.id]) return;
+    _bbTourTried[st.id] = (_bbTourTried[st.id] || 0) + 1;
+    _bbTourPicked = i;
+    if (i === st.check.answer) {
+      _bbTourAnswered[st.id] = true;
+      if (_bbTourTried[st.id] === 1) _bbTourFirstTry[st.id] = true;
+    }
+    _bbTourRender();
+  };
+  function _bbTourCheckHtml(st) {
+    if (!st.check) return '';
+    var c = st.check, done = !!_bbTourAnswered[st.id], picked = _bbTourPicked;
+    var h = '<div style="margin-top:14px;padding:13px;background:rgba(155,109,232,0.07);border:1px solid rgba(155,109,232,0.3);border-radius:12px;">';
+    h += '<div style="font-size:0.62rem;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;color:#c4a3f0;margin-bottom:6px;">Check yourself</div>';
+    h += '<div style="font-size:0.85rem;font-weight:700;color:#f0ede6;margin-bottom:10px;line-height:1.5;">' + esc(c.q) + '</div>';
+    c.options.forEach(function(opt, i) {
+      var isRight = i === c.answer;
+      var chosen  = picked === i;
+      var bg = 'rgba(255,255,255,0.04)', bd = 'rgba(255,255,255,0.12)', col = '#ddd';
+      if (done && isRight)          { bg = 'rgba(141,198,63,0.16)'; bd = 'rgba(141,198,63,0.5)'; col = '#8DC63F'; }
+      else if (!done && chosen)     { bg = 'rgba(239,68,68,0.12)';  bd = 'rgba(239,68,68,0.45)'; col = '#f87171'; }
+      h += '<button onclick="bbTourAnswer(' + i + ')"' + (done ? ' disabled' : '') +
+           ' style="display:block;width:100%;margin:0 0 7px;padding:10px 12px;text-align:left;background:' + bg +
+           ';border:1px solid ' + bd + ';color:' + col + ';border-radius:10px;font-size:0.8rem;line-height:1.45;cursor:' +
+           (done ? 'default' : 'pointer') + ';">' + esc(opt) + '</button>';
+    });
+    if (done) {
+      h += '<div style="font-size:0.76rem;color:#8DC63F;line-height:1.55;margin-top:6px;">&#10003; ' + esc(c.why) + '</div>';
+    } else if (picked != null) {
+      h += '<div style="font-size:0.76rem;color:#f59e0b;line-height:1.55;margin-top:6px;">Not quite &mdash; ' + esc(c.why) + ' Try again.</div>';
+    }
+    h += '</div>';
+    return h;
+  }
   window.bbTourCompleted = function() { try { return localStorage.getItem(_bbTourKey()) === '1'; } catch(e) { return false; } };
   var _bbTourIdx = 0;
 
   window.bbStartTour = function(fromStep) {
     _bbTourIdx = 0;
     if (fromStep) {
-      var k = BB_TOUR_STEPS.findIndex(function(s){ return s.id === fromStep; });
+      var k = _bbTourSteps().findIndex(function(s){ return s.id === fromStep; });
       if (k >= 0) _bbTourIdx = k;
     } else {
       try { var saved = parseInt(localStorage.getItem(_bbTourKey() + '_at') || '0', 10);
-            if (saved > 0 && saved < BB_TOUR_STEPS.length) _bbTourIdx = saved; } catch(e) {}
+            if (saved > 0 && saved < _bbTourSteps().length) _bbTourIdx = saved; } catch(e) {}
     }
     if (!document.getElementById('bbTourHost')) {
       var host = document.createElement('div');
@@ -8022,12 +8158,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     _bbTourRender();
   };
   window.bbTourNext = function() {
+    // A step carrying an unanswered check cannot be skipped past.
+    var cur = _bbTourSteps()[_bbTourIdx];
+    if (cur && cur.check && !_bbTourAnswered[cur.id]) return;
     _bbTourIdx++;
+    _bbTourPicked = null;
     try { localStorage.setItem(_bbTourKey() + '_at', String(_bbTourIdx)); } catch(e) {}
-    if (_bbTourIdx >= BB_TOUR_STEPS.length) { bbTourFinish(); return; }
+    if (_bbTourIdx >= _bbTourSteps().length) { bbTourFinish(); return; }
     _bbTourRender();
   };
-  window.bbTourBack = function() { if (_bbTourIdx > 0) { _bbTourIdx--; _bbTourRender(); } };
+  window.bbTourBack = function() { if (_bbTourIdx > 0) { _bbTourIdx--; _bbTourPicked = null; _bbTourRender(); } };
   window.bbTourClose = function() {
     var h = document.getElementById('bbTourHost'); if (h) h.remove();
     document.body.classList.remove('bb-tour-open');
@@ -8044,7 +8184,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   }
 
   function _bbTourRender() {
-    var st = BB_TOUR_STEPS[_bbTourIdx];
+    var steps = _bbTourSteps();
+    var st = steps[_bbTourIdx];
     var host = document.getElementById('bbTourHost');
     if (!st || !host) return;
     document.body.classList.add('bb-tour-open');
@@ -8068,23 +8209,27 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       body = st.body || '';
     }
 
-    var pct = Math.round(((_bbTourIdx + 1) / BB_TOUR_STEPS.length) * 100);
+    var pct = Math.round(((_bbTourIdx + 1) / steps.length) * 100);
     var h = '<div class="bb-tour-scrim"></div>';
     h += '<div class="bb-tour-card">';
     h += '<div style="height:4px;border-radius:100px;background:rgba(255,255,255,0.1);margin-bottom:12px;overflow:hidden;">'
        + '<div style="height:100%;width:' + pct + '%;background:#8DC63F;"></div></div>';
     h += '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:8px;">';
     h += '<div style="font-size:0.95rem;font-weight:800;color:#8DC63F;">' + esc(st.title) + '</div>';
-    h += '<div style="font-size:0.66rem;color:#666;white-space:nowrap;">' + (_bbTourIdx + 1) + ' of ' + BB_TOUR_STEPS.length + '</div>';
+    h += '<div style="font-size:0.66rem;color:#666;white-space:nowrap;">' + (_bbTourIdx + 1) + ' of ' + steps.length + '</div>';
     h += '</div>';
     if (st.kind === 'tour' && !target) {
       h += '<div style="font-size:0.7rem;color:#f59e0b;margin-bottom:8px;">This one lives on the other tab &mdash; here is what it does.</div>';
     }
-    h += '<div style="font-size:0.85rem;line-height:1.6;color:#e8e4da;max-height:46vh;overflow-y:auto;">' + body + '</div>';
+    h += '<div style="font-size:0.85rem;line-height:1.6;color:#e8e4da;max-height:46vh;overflow-y:auto;">' + body + _bbTourCheckHtml(st) + '</div>';
     h += '<div style="display:flex;gap:8px;margin-top:14px;align-items:center;">';
     if (_bbTourIdx > 0) h += '<button onclick="bbTourBack()" style="width:auto;margin:0;padding:9px 16px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.14);color:#aaa;border-radius:100px;font-size:0.78rem;font-weight:700;cursor:pointer;">Back</button>';
-    h += '<button onclick="bbTourNext()" style="flex:1;margin:0;padding:11px;background:#8DC63F;border:none;color:#1A1A1A;border-radius:100px;font-size:0.85rem;font-weight:800;cursor:pointer;">'
-       + (_bbTourIdx === BB_TOUR_STEPS.length - 1 ? 'Finish' : 'Next') + '</button>';
+    var locked = !!(st.check && !_bbTourAnswered[st.id]);
+    h += '<button onclick="bbTourNext()"' + (locked ? ' disabled' : '') +
+         ' style="flex:1;margin:0;padding:11px;background:' + (locked ? 'rgba(255,255,255,0.08)' : '#8DC63F') +
+         ';border:none;color:' + (locked ? '#555' : '#1A1A1A') + ';border-radius:100px;font-size:0.85rem;font-weight:800;cursor:' +
+         (locked ? 'not-allowed' : 'pointer') + ';">'
+       + (locked ? 'Answer to continue' : (_bbTourIdx === steps.length - 1 ? 'Finish' : 'Next')) + '</button>';
     h += '<button onclick="bbTourClose()" title="Close — your place is saved." style="width:auto;margin:0;padding:9px 14px;background:none;border:none;color:#666;font-size:0.74rem;cursor:pointer;">Later</button>';
     h += '</div></div>';
     host.innerHTML = h;
@@ -21222,7 +21367,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         // Filter sub-sheet acks client-side rather than with .neq(): `source <> 'x'` is
         // NULL for a NULL source in SQL, so a server-side neq would silently drop every
         // legacy row that predates the source column.
-        var agrRow = (agrRes.data || []).find(function(x){ return x.source !== SUB_SHEET_ACK_SOURCE; }) || null;
+        var agrRow = (agrRes.data || []).find(_isRepAgreementRow) || null;
         var agr = { data: agrRow, error: agrRes.error };
         if (agr.data) {
           agreementSigned = (agr.data.agreement_version === REP_AGREEMENT_VERSION);
