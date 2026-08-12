@@ -6466,6 +6466,24 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
   };
 
+  // ── Session log writer — ONE door, ONE entry ───────────────────────────────
+  // All three callers used to `unshift` blind, so re-dispositioning a door added a
+  // SECOND row. That is not an edge case: canvassReopen exists precisely so a rep can
+  // pull a knocked door back up and re-disposition it, so the log filled with the same
+  // house twice — the older copy showing a stale outcome, and both rendering as buttons
+  // that do the same thing. The log is "doors I worked", not an append-only audit trail:
+  // lead_activity is the audit trail, and it still records every disposition.
+  // Defined in block 1 so the admin canvass and the rep route share one implementation.
+  window._cvPushKnockHistory = function(entry) {
+    if (!entry || !entry.id) return;
+    try {
+      var hist = JSON.parse(localStorage.getItem('bbKnockHistory') || '[]');
+      hist = hist.filter(function(h){ return h && h.id !== entry.id; });
+      hist.unshift(entry);
+      localStorage.setItem('bbKnockHistory', JSON.stringify(hist.slice(0, 25)));
+    } catch(e){}
+  };
+
   window.adminCanvassKnock = async function(id, knockStatus) {
     var lead = adminCanvassLeads.find(function(l){ return l.id === id; });
     if (!lead) return;
@@ -6475,12 +6493,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     lead.knock_status = knockStatus; lead.knocked_at = now; lead.knocked_by = 'admin';
     bbLogActivity(id, 'door_knock', knockStatus, ''); // shared feed — dialers see knock outcomes
     // Save to session history
-    try {
-      var hist = JSON.parse(localStorage.getItem('bbKnockHistory') || '[]');
-      hist.unshift({id:id, address:lead.address, name:((lead.first_name||'')+' '+(lead.last_name||'')).trim(), knockStatus:knockStatus, ts:now, distMi:lead._distMi||null});
-      if (hist.length > 25) hist = hist.slice(0,25);
-      localStorage.setItem('bbKnockHistory', JSON.stringify(hist));
-    } catch(e){}
+    window._cvPushKnockHistory({id:id, address:lead.address, name:((lead.first_name||'')+' '+(lead.last_name||'')).trim(), knockStatus:knockStatus, ts:now, distMi:lead._distMi||null});
     adminCanvassLeads.sort(function(a,b) {
       if (a.knock_status && !b.knock_status) return 1;
       if (!a.knock_status && b.knock_status) return -1;
@@ -7769,7 +7782,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // so this is the only way to tell from a phone which build is actually live —
   // an iPad cannot view source, and a stale cached portal is indistinguishable
   // from a fix that did not work.
-  window.PORTAL_BUILD = '2026-08-12f';
+  window.PORTAL_BUILD = '2026-08-12g';
   try {
     document.addEventListener('DOMContentLoaded', function() {
       var el = document.getElementById('portalBuild');
@@ -23893,11 +23906,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         await bbLogActivity(lead.id, 'door_knock', 'booked',
           'Booked at the door for ' + _cvBkApptLabel(), { rep_name: person.name || person.id, rec: lead });
       } catch(e) {}
-      try {
-        var hist = JSON.parse(localStorage.getItem('bbKnockHistory') || '[]');
-        hist.unshift({ id: lead.id, address: lead.address, knockStatus: 'booked', ts: new Date().toISOString() });
-        localStorage.setItem('bbKnockHistory', JSON.stringify(hist.slice(0, 25)));
-      } catch(e) {}
+      // Carries `name` like every other entry — a booked door used to lose it.
+      window._cvPushKnockHistory({ id: lead.id, address: lead.address,
+        name: ((lead.first_name||'')+' '+(lead.last_name||'')).trim(),
+        knockStatus: 'booked', ts: new Date().toISOString() });
       _cvBk = null;
       var slot = document.getElementById('editorSlot');
       if (slot) slot.innerHTML = '';
@@ -24391,12 +24403,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }
       bbLogActivity(id, 'door_knock', knockStatus, _parts.filter(Boolean).join('\n'), { rep_name: person.name || person.id, rec: lead }); // shared feed — dialers see knock outcomes
       // Save to session history
-      try {
-        var hist = JSON.parse(localStorage.getItem('bbKnockHistory') || '[]');
-        hist.unshift({id:id, address:lead.address, name:((lead.first_name||'')+' '+(lead.last_name||'')).trim(), knockStatus:knockStatus, ts:now, distMi:lead._distMi||null});
-        if (hist.length > 25) hist = hist.slice(0,25);
-        localStorage.setItem('bbKnockHistory', JSON.stringify(hist));
-      } catch(e){}
+      window._cvPushKnockHistory({id:id, address:lead.address, name:((lead.first_name||'')+' '+(lead.last_name||'')).trim(), knockStatus:knockStatus, ts:now, distMi:lead._distMi||null});
       if (window.fieldLogKnock) window.fieldLogKnock(person.id);
       // Re-dispositioning a door pulled back up from the session log returns the rep to
       // the live route rather than leaving them parked on a door they just finished.
