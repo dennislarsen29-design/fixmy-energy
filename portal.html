@@ -6355,14 +6355,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (!a.knock_status && b.knock_status) return -1;
       return (a._distMi!=null?a._distMi:9999) - (b._distMi!=null?b._distMi:9999);
     });
-    if (knockStatus === 'interested') {
-      await c2.from('customers').update({ step: 1, lead_category: 'fixmy', sold_type: null, black_box: false }).eq('id', id);
-      var rec = adminCustomers.find(function(r){ return r.id === id; });
-      if (rec) { rec.step = 1; rec.lead_category = 'fixmy'; rec.black_box = false; }
-      renderAdminView('dashboard'); // Canvass view has no #editorSlot — switch to Leads first
-      setTimeout(function(){ openLeadEditor(id); }, 100);
-      return;
-    }
+    // ⚠️ 'interested'/'warm' used to activate the lead here too (black_box:false + step 1)
+    // and jump to the editor. Removed 2026-08-12 with the matching rep-side block: only a
+    // BOOKING moves a prospect out of Black Box. Leaving this in would have let the exact
+    // same bug back in from the admin canvass card.
     renderAdminCanvassView();
   };
 
@@ -7642,7 +7638,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // so this is the only way to tell from a phone which build is actually live —
   // an iPad cannot view source, and a stale cached portal is indistinguishable
   // from a fix that did not work.
-  window.PORTAL_BUILD = '2026-08-12c';
+  window.PORTAL_BUILD = '2026-08-12d';
   try {
     document.addEventListener('DOMContentLoaded', function() {
       var el = document.getElementById('portalBuild');
@@ -23627,36 +23623,68 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var endISO = new Date(start.getTime() + _cvBkMins() * 60000).toISOString();
       var st = document.getElementById('cvBkStatus');
       if (st) { st.style.color = '#888'; st.textContent = 'Booking the appointment…'; }
-      try {
-        var r = await fetch('/.netlify/functions/ghl-book', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            firstName: lead.first_name || '', lastName: lead.last_name || '',
-            phone: lead.phone || '', email: lead.email || null,
-            address: lead.address || null, startISO: startISO, endISO: endISO, customerId: lead.id
-          })
-        });
-        var result = await r.json();
-        // ghl-book returns ok:true even when the calendar itself rejects the slot — a real
-        // booking needs an appointmentId with no apptError, same check the dialer uses.
-        var booked = !!result.appointmentId && !result.apptError;
-        if (!r.ok || !result.ok || !booked) {
-          throw new Error(result.error || (result.apptError && result.apptError.body) || 'the calendar rejected the appointment');
+      // A retry after a failed SAVE must not book a second calendar appointment.
+      if (!_cvBk.ghlOk) {
+        try {
+          var r = await fetch('/.netlify/functions/ghl-book', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              firstName: lead.first_name || '', lastName: lead.last_name || '',
+              phone: lead.phone || '', email: lead.email || null,
+              address: lead.address || null, startISO: startISO, endISO: endISO, customerId: lead.id
+            })
+          });
+          var result = await r.json();
+          // ghl-book returns ok:true even when the calendar itself rejects the slot — a real
+          // booking needs an appointmentId with no apptError, same check the dialer uses.
+          var booked = !!result.appointmentId && !result.apptError;
+          if (!r.ok || !result.ok || !booked) {
+            throw new Error(result.error || (result.apptError && result.apptError.body) || 'the calendar rejected the appointment');
+          }
+          _cvBk.ghlOk = true;
+        } catch(e) {
+          if (st) st.textContent = '';
+          if (!confirm('Could not book the calendar appointment (' + e.message + ').\n\nSave it as booked anyway and fix the calendar later?')) return;
+          _cvBk.ghlOk = true;   // rep chose to proceed; don't re-ask on a save retry
         }
-      } catch(e) {
-        if (st) st.textContent = '';
-        if (!confirm('Could not book the calendar appointment (' + e.message + ').\n\nSave it as booked anyway and fix the calendar later?')) return;
       }
       if (st) { st.style.color = '#888'; st.textContent = 'Saving…'; }
+      // ⚠️ THIS WRITE IS WHAT MAKES IT A LEAD, and it used to be `try { … } catch(e) {}`
+      // with no error check at all. supabase-js RETURNS {error} rather than throwing, so
+      // a rejected write was invisible twice over: the rep saw the card disappear, the
+      // note got logged as "booked", the route re-sorted — and nothing reached the
+      // database. That is the "booked at the door but never showed up in Leads" report.
+      var _saveErr = null;
       try {
         var c = supabase.createClient(SUPA_URL, SUPA_KEY);
-        await c.from('customers').update({
+        var _res = await c.from('customers').update({
           knock_status: 'booked', knocked_at: new Date().toISOString(), knocked_by: person.id,
           diagnostic_date: startISO, arrival_end: endISO,
           rep_id: person.id, step: 1, lead_category: 'fixmy', sold_type: null, black_box: false
-        }).eq('id', lead.id);
-      } catch(e) {}
-      Object.assign(lead, { knock_status: 'booked', diagnostic_date: startISO, rep_id: person.id, step: 1 });
+        }).eq('id', lead.id).select('id');
+        if (_res && _res.error) _saveErr = _res.error.message || 'the database rejected the update';
+        // A successful call that matched NO row is still a failure — wrong id, or RLS
+        // filtering the row out. Silently "succeeding" on zero rows is how this hides.
+        else if (_res && Array.isArray(_res.data) && !_res.data.length) _saveErr = 'no matching lead was updated';
+      } catch(e) { _saveErr = e.message || String(e); }
+      if (_saveErr) {
+        // Do NOT clear _cvBk, do NOT log the activity as booked, do NOT drop the door
+        // from the route. The appointment may exist in GHL, so the rep has to know.
+        var _msg = 'The appointment was NOT saved to the lead (' + _saveErr + ').\n\n'
+          + 'The calendar booking went through — tap Confirm Booking again to retry the save. '
+          + 'If it keeps failing, tell an admin BEFORE you leave this door.';
+        // ⚠️ Never let a missing element swallow this. Same trap as uploadPhotos() and
+        // #photoStatus: the one message the rep MUST see cannot depend on a container
+        // that only exists on one step.
+        if (st) {
+          st.style.color = '#ef4444';
+          st.innerHTML = '&#9888; ' + esc(_msg).replace(/\n/g, '<br>');
+        } else {
+          alert('⚠️ ' + _msg);
+        }
+        return;
+      }
+      Object.assign(lead, { knock_status: 'booked', diagnostic_date: startISO, rep_id: person.id, step: 1, black_box: false });
       try {
         await bbLogActivity(lead.id, 'door_knock', 'booked',
           'Booked at the door for ' + _cvBkApptLabel(), { rep_name: person.name || person.id, rec: lead });
@@ -24123,7 +24151,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (!lead) return;
       var now = new Date().toISOString();
       var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+      // ⚠️ 'warm' does NOT activate the lead. Per Dennis (2026-08-12): a warm door stays
+      // in Black Box / Quarantined until it is BOOKED. Booking is the only thing that
+      // moves a prospect into Leads. This also makes Doors agree with Dialing, which
+      // has only ever activated on `booked` — Doors was the outlier, and a warm door
+      // was landing in Admin → Leads with no appointment behind it.
+      // rep_id is still stamped so the rep keeps ownership of the door they worked.
       var upd = { knock_status: knockStatus, knocked_at: now, knocked_by: person.id };
+      if (knockStatus === 'warm' || knockStatus === 'interested') upd.rep_id = person.id;
       // A DQ has to remove the property from BOTH motions, not just this one — the whole
       // point is that nobody works it again. `archived` is the only existing column that
       // does that (the dialer already filters it, and the canvass queries now do too),
@@ -24157,17 +24192,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // the live route rather than leaving them parked on a door they just finished.
       if (_cvReopenId === id) _cvReopenId = null;
       _cvSortRoute();   // knocked doors fall to the end; same comparator as everywhere else
-      // 'warm' is the door equivalent of the dialer's warm: a real conversation with no
-      // appointment. It earns a place in the real pipeline, same as the old 'interested'
-      // did, but the rep stays on the route instead of being thrown into the editor —
-      // they're standing on a sidewalk with more doors to knock.
-      if (knockStatus === 'warm' || knockStatus === 'interested') {
-        var updates = { rep_id: person.id, step: 1, lead_category: 'fixmy', sold_type: null, black_box: false };
-        await c2.from('customers').update(updates).eq('id', id);
-        var recInAll = allRecords.find(function(r){ return r.id === id; });
-        if (recInAll) Object.assign(recInAll, updates);
-        else allRecords.push(Object.assign({}, lead, updates));
-      }
+      // (the warm-activation block that used to live here is gone — see the note on
+      //  `upd` above. A warm door leaves the route because _cvIsOpen excludes any
+      //  knock_status other than come_back, so nothing else was needed to retire it.)
       renderSales();
     };
 

@@ -555,6 +555,27 @@ Extends the 2026-08-08 New Hire Walkthrough rather than replacing it. Decisions 
 - **Certificate** (`_bbTourCertify`) renders instantly off `bbTourScore()` with tiers (Perfect run / Passed clean / Certified), the modules earned, and `window.print()` behind a `body.bb-cert-open` print block. ⚠️ The DB write is **fire-and-forget** — a failed insert must never cost a rep the certificate they just earned. It also stamps `team_members.training_completed`, so the Team tab flag is now earned rather than ticked by hand.
 - ⚠️ **A harness that re-defines the functions it is testing proves nothing about the shipped code.** `test-training.js` redefines the cert helpers for isolation, and reverting the real exemption did not fail it. The behavioural coverage is in `test-training-boot.js`; the static file now says so and asserts the shipped line by source.
 
+### Warm stays in Black Box; a booking that silently didn't save (2026-08-12, per Dennis)
+Two field reports with opposite symptoms, two different causes.
+- **A warm door landed in Admin → Leads.** By design at the time: `canvassKnock` wrote `{step:1, lead_category:'fixmy', black_box:false}` on `warm`/`interested`. **Per Dennis this is wrong — a warm door stays in Black Box / Quarantined until it is BOOKED.** Removed from `canvassKnock` *and* from `adminCanvassKnock`, which carried its own copy and would have let the bug straight back in from the admin card. ⚠️ **Dialing was already right** — `bbDialCommit` only activates on `booked` — so Doors was the outlier and this is now parity, not a new rule. `rep_id` is still stamped so the rep keeps ownership. Nothing else was needed to retire the door: `_cvIsOpen` already excludes any `knock_status` other than `come_back`.
+- ⚠️ **Only FOUR places may set `black_box:false`**: the door booking commit, the dialer booking commit, the admin "activate" button, and Doors' explicit "Save to My Leads". The harness counts them. If a fifth appears, something is activating leads that shouldn't.
+- **"Booked at the door, never showed up in Leads."** `canvassCommitBooking` ended with:
+  ```js
+  try { await c.from('customers').update({…}).eq('id', lead.id); } catch(e) {}
+  ```
+  ⚠️ **supabase-js RETURNS `{error}` — it does not throw** — so a rejected write was invisible twice over: the `catch` was empty *and* nothing read `error`. The rep saw the card disappear, the note logged as "booked", the route re-sort — and nothing reached the database. **The GHL call was checked meticulously while the write that actually creates the lead was not checked at all.**
+  - Now `.select('id')` + an explicit `error` check, and **a write matching ZERO rows counts as a failure** (wrong id, or RLS filtering the row out) — "succeeding" on zero rows is exactly how this hides.
+  - On failure it does **not** clear `_cvBk`, **does not** log a `booked` activity row, and **does not** drop the door from the route; the rep gets the real reason and a retry. `_cvBk.ghlOk` makes the retry skip the calendar so it can't double-book.
+  - ⚠️ The error must not depend on `#cvBkStatus`, which only exists on step 3 — it falls back to `alert()`. Same trap as `uploadPhotos()` and `#photoStatus`.
+- **The diagnostic fingerprint**, for finding past instances: a `lead_activity` row with `outcome='booked'` whose `customers` row still has `black_box = true`. That combination is only producible by this bug.
+  ```sql
+  select c.id, c.first_name, c.last_name, c.address, c.black_box, c.knock_status, a.created_at
+  from lead_activity a join customers c on c.id = a.customer_id
+  where a.outcome = 'booked' and c.black_box is true order by a.created_at desc;
+  ```
+- ⚠️ **A second, older explanation for the same symptom**, fixed the same day: before build `2026-08-12b` a GPS tick rebuilt `#editorSlot` empty mid-booking, so a rep part-way through the 3-step flow could have it vanish with nothing written. Both causes produce "I booked it and it isn't there"; only this one leaves a `booked` activity row behind, which is how to tell them apart.
+- Verified in `scratchpad/test-warm-booked.js` (18 assertions). **Gated both ways** — restoring the warm activation reproduces the Rios report, and re-swallowing the error reproduces the Wilton fingerprint exactly.
+
 ### SDCP badge audit (2026-08-12) — the report was wrong, the audit found two real bugs
 Reported from a door at **1136 Via Felicidad, Escondido 92029**: *"this ZIP is SDCP and there's no badge."* **The missing badge was correct.** SDCP's member agencies are the cities of **San Diego, Chula Vista, Encinitas, Imperial Beach, La Mesa, National City** plus the **unincorporated county** (enrolled April 2023). **Escondido is Clean Energy Alliance**, along with Carlsbad, Del Mar, Solana Beach, San Marcos (Apr 2023) and Oceanside/Vista (Apr 2024). Poway, Santee, El Cajon, Lemon Grove and Coronado have no CCA. ⚠️ **Do not add a North County city to `SDCP_ZIPS`** — that is CEA territory and the two are different providers.
 - **Bug 1 — there were TWO `SDCP_ZIPS`.** A second identical 69-zip `Set` inside the admin Black Box renderer **shadowed** the module-level one. Byte-identical at the time, with nothing keeping them so. Deleted; there is now exactly one, asserted in the harness.
