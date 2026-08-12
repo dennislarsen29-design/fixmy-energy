@@ -7607,7 +7607,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // so this is the only way to tell from a phone which build is actually live —
   // an iPad cannot view source, and a stale cached portal is indistinguishable
   // from a fix that did not work.
-  window.PORTAL_BUILD = '2026-08-12a';
+  window.PORTAL_BUILD = '2026-08-12b';
   try {
     document.addEventListener('DOMContentLoaded', function() {
       var el = document.getElementById('portalBuild');
@@ -22501,6 +22501,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           catch(e) { console.warn('doors map failed:', e); }
         }, 0);
       }
+      // _cvUiBusy() stops the GPS tick, but renderSales is called from plenty of other
+      // places. Repaint an open booking from state rather than leaving the rep with
+      // _cvBk set and a blank editorSlot — the booking is not lost, just invisible.
+      if (_cvBk && document.getElementById('editorSlot')) _cvBkRender();
     }
 
     window.setTrainingTab = function(v) { sessionStorage.setItem('trainingTab_'+person.id,v); salesView='training'; renderSales(); };
@@ -22996,6 +23000,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // An in-progress email edit is exactly as destructible as a typed note — the GPS
       // watch re-renders every few seconds and would throw the input away mid-keystroke.
       if (window._bbEmailEditing) return true;
+      // ⚠️ A booking in progress is the most destructible thing on this screen: three
+      // steps, a typed time, six confirm ticks and photo uploads, all rendered into
+      // #editorSlot — which renderSales() rebuilds empty on every GPS tick. Same rule
+      // as the note box and the email edit.
+      if (_cvBk) return true;
       return Object.keys(_cvNoteOpen).some(function(k){ return _cvNoteOpen[k]; });
     }
     // Lets block-1 helpers (bbEmailRowHtml/bbSaveEmail, owner controls) reach the live
@@ -23451,7 +23460,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     window.canvassStartBooking = async function(id) {
       var lead = canvassLeads.find(function(l){ return l.id === id; });
       if (!lead) return;
-      _cvBk = { id: id, lead: lead, step: 0, date: '', start: '', confirmed: {} };
+      _cvBk = { id: id, lead: lead, step: 0, date: '', start: '', mins: 120, custom: false, confirmed: {} };
       currentJobId = id;
       try { await loadJobPhotos(id); } catch(e) {}
       _cvBkRender();
@@ -23464,6 +23473,35 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     };
     window.canvassBkStep = function(n) { if (_cvBk) { _cvBk.step = n; _cvBkRender(); } };
     window.canvassBkSet = function(k, v) { if (_cvBk) { _cvBk[k] = v; _cvBkRender(); } };
+
+    // ── Manual time override ───────────────────────────────────────────────────
+    // The six preset windows cover the common case, but the homeowner is standing
+    // right there and says "I get home at 5:45" or "give me an hour, not two". A
+    // preset grid cannot express that, so the rep was writing a time they had not
+    // actually agreed to. Dialing has had free entry (bbBookToggleManual) since it
+    // was built; this is Doors catching up.
+    var CV_BK_PRESETS = ['08:00','10:00','12:00','14:00','16:00','18:00'];
+    // ⚠️ The window length is no longer a constant. It is read out loud at confirm,
+    // written to arrival_end, and sent to GHL — every one of those must agree, so
+    // they all go through here rather than repeating `2 * 3600000`.
+    var CV_BK_LENGTHS = [{ m:60, l:'1 hr' }, { m:90, l:'1&frac12; hr' }, { m:120, l:'2 hr' }, { m:180, l:'3 hr' }];
+    function _cvBkMins() { return (_cvBk && _cvBk.mins) || 120; }
+    function _cvBkStartDate() {
+      if (!_cvBk || !_cvBk.date || !_cvBk.start) return null;
+      var d = new Date(_cvBk.date + 'T' + _cvBk.start);
+      return isNaN(d.getTime()) ? null : d;
+    }
+    window.canvassBkCustom = function(on) {
+      if (!_cvBk) return;
+      _cvBk.custom = !!on;
+      // ⚠️ Coming back OUT of custom must drop a non-preset start. Leaving 17:45
+      // selected while the grid shows nothing highlighted reads as "no time picked"
+      // and would book 5:45 anyway.
+      if (!on && _cvBk.start && CV_BK_PRESETS.indexOf(_cvBk.start) < 0) _cvBk.start = '';
+      if (!on) _cvBk.mins = 120;
+      _cvBkRender();
+    };
+    window.canvassBkMins = function(n) { if (_cvBk) { _cvBk.mins = n; _cvBkRender(); } };
     // Blank, or a placeholder we generated ourselves, is not a value.
     function _cvBkValueOf(item, lead) {
       if (!item.field) return 'ok';
@@ -23535,10 +23573,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     };
 
     function _cvBkApptLabel() {
-      if (!_cvBk || !_cvBk.date || !_cvBk.start) return '';
-      var d = new Date(_cvBk.date + 'T' + _cvBk.start);
-      if (isNaN(d.getTime())) return '';
-      var end = new Date(d.getTime() + 2 * 3600000);
+      var d = _cvBkStartDate();
+      if (!d) return '';
+      var end = new Date(d.getTime() + _cvBkMins() * 60000);
       var fmt = function(x){ var hh = x.getHours() % 12 || 12; var mm = x.getMinutes(); return hh + (mm ? ':' + String(mm).padStart(2,'0') : '') + (x.getHours() < 12 ? 'am' : 'pm'); };
       return d.toLocaleDateString('en-US', { weekday:'long', month:'long', day:'numeric' }) + ', ' + fmt(d) + '–' + fmt(end);
     }
@@ -23546,9 +23583,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     window.canvassCommitBooking = async function() {
       if (!_cvBk) return;
       var lead = _cvBk.lead;
-      var start = new Date(_cvBk.date + 'T' + _cvBk.start);
+      var start = _cvBkStartDate();
+      if (!start) return;
       var startISO = start.toISOString();
-      var endISO = new Date(start.getTime() + 2 * 3600000).toISOString();
+      var endISO = new Date(start.getTime() + _cvBkMins() * 60000).toISOString();
       var st = document.getElementById('cvBkStatus');
       if (st) { st.style.color = '#888'; st.textContent = 'Booking the appointment…'; }
       try {
@@ -23627,18 +23665,48 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '<div style="font-size:1.02rem;font-weight:800;margin-bottom:10px;">When are we coming out?</div>';
         h += '<label style="display:block;font-size:0.68rem;color:#888;margin-bottom:3px;">Date</label>';
         h += '<input type="date" value="'+esc(_cvBk.date)+'" min="'+today.toISOString().slice(0,10)+'" onchange="canvassBkSet(\'date\',this.value)" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:9px;color:#fff;padding:12px;font-size:0.9rem;margin-bottom:12px;box-sizing:border-box;"/>';
-        h += '<label style="display:block;font-size:0.68rem;color:#888;margin-bottom:5px;">Arrival window (2 hours)</label>';
-        h += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:14px;">';
-        ['08:00','10:00','12:00','14:00','16:00','18:00'].forEach(function(t) {
-          var on = _cvBk.start === t;
-          var hh = parseInt(t,10); var lbl = (hh % 12 || 12) + (hh < 12 ? 'am' : 'pm') + '–' + ((hh+2) % 12 || 12) + ((hh+2) < 12 ? 'am' : 'pm');
-          h += '<button onclick="canvassBkSet(\'start\',\''+t+'\')" style="width:auto;margin:0;padding:12px 4px;border-radius:10px;font-size:0.76rem;font-weight:700;cursor:pointer;'
-            + (on ? 'background:rgba(141,198,63,0.18);border:1px solid rgba(141,198,63,0.5);color:#8DC63F;' : 'background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);color:#999;')
-            + '">'+lbl+'</button>';
-        });
-        h += '</div>';
+        if (!_cvBk.custom) {
+          h += '<label style="display:block;font-size:0.68rem;color:#888;margin-bottom:5px;">Arrival window (2 hours)</label>';
+          h += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px;">';
+          CV_BK_PRESETS.forEach(function(t) {
+            var on = _cvBk.start === t;
+            var hh = parseInt(t,10); var lbl = (hh % 12 || 12) + (hh < 12 ? 'am' : 'pm') + '–' + ((hh+2) % 12 || 12) + ((hh+2) < 12 ? 'am' : 'pm');
+            h += '<button onclick="canvassBkSet(\'start\',\''+t+'\')" style="width:auto;margin:0;padding:12px 4px;border-radius:10px;font-size:0.76rem;font-weight:700;cursor:pointer;'
+              + (on ? 'background:rgba(141,198,63,0.18);border:1px solid rgba(141,198,63,0.5);color:#8DC63F;' : 'background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);color:#999;')
+              + '">'+lbl+'</button>';
+          });
+          h += '</div>';
+          h += '<button onclick="canvassBkCustom(true)" style="width:auto;margin:0 0 14px;padding:8px 14px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);border-radius:100px;color:#4a9eff;font-size:0.74rem;font-weight:700;cursor:pointer;">&#9881; Pick an exact time</button>';
+        } else {
+          // Manual override — any start time, any window length.
+          h += '<div style="background:rgba(74,158,255,0.06);border:1px solid rgba(74,158,255,0.25);border-radius:11px;padding:12px 13px;margin-bottom:12px;">';
+          h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:9px;gap:8px;">';
+          h += '<span style="font-size:0.68rem;font-weight:800;text-transform:uppercase;letter-spacing:0.06em;color:#4a9eff;">&#9881; Exact time</span>';
+          h += '<button onclick="canvassBkCustom(false)" style="width:auto;margin:0;padding:0;background:none;border:none;color:#888;font-size:0.7rem;cursor:pointer;text-decoration:underline;">&#8592; standard windows</button>';
+          h += '</div>';
+          h += '<label style="display:block;font-size:0.68rem;color:#888;margin-bottom:3px;">Arrival starts at</label>';
+          h += '<input type="time" value="'+esc(_cvBk.start)+'" onchange="canvassBkSet(\'start\',this.value)" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:9px;color:#fff;padding:11px 12px;font-size:0.9rem;margin-bottom:10px;box-sizing:border-box;"/>';
+          h += '<label style="display:block;font-size:0.68rem;color:#888;margin-bottom:5px;">Window length</label>';
+          h += '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;">';
+          CV_BK_LENGTHS.forEach(function(o) {
+            var on = _cvBkMins() === o.m;
+            h += '<button onclick="canvassBkMins('+o.m+')" style="width:auto;margin:0;padding:10px 2px;border-radius:9px;font-size:0.74rem;font-weight:700;cursor:pointer;'
+              + (on ? 'background:rgba(141,198,63,0.18);border:1px solid rgba(141,198,63,0.5);color:#8DC63F;' : 'background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);color:#999;')
+              + '">'+o.l+'</button>';
+          });
+          h += '</div>';
+          h += '</div>';
+        }
+        // Say it back before they can move on — a custom window is exactly the case
+        // where the rep and the homeowner can walk away with different times.
+        var _bkStart = _cvBkStartDate();
+        var _bkPast = !!(_bkStart && _bkStart.getTime() < Date.now());
+        if (_bkStart) {
+          h += '<div style="font-size:0.8rem;font-weight:700;color:'+(_bkPast?'#f59e0b':'#8DC63F')+';margin-bottom:'+(_bkPast?'4px':'12px')+';">&#128197; '+esc(_cvBkApptLabel())+'</div>';
+        }
+        if (_bkPast) h += '<div style="font-size:0.72rem;color:#f59e0b;margin-bottom:12px;line-height:1.5;">That time has already passed &mdash; pick a later one.</div>';
         h += '<div style="font-size:0.7rem;color:#666;line-height:1.5;margin-bottom:16px;">Book inside 48 hours where you can &mdash; the further out it sits, the more no-shows.</div>';
-        var ready0 = !!(_cvBk.date && _cvBk.start);
+        var ready0 = !!(_cvBk.date && _cvBk.start) && !_bkPast;
         h += '<button onclick="canvassBkStep(1)"'+(ready0?'':' disabled')+' style="width:100%;padding:14px;border:none;border-radius:100px;font-size:0.88rem;font-weight:800;cursor:'+(ready0?'pointer':'not-allowed')+';background:'+(ready0?'#8DC63F':'rgba(255,255,255,0.08)')+';color:'+(ready0?'#1A1A1A':'#555')+';">Next &#8594;</button>';
       }
 
