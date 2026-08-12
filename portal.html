@@ -451,6 +451,101 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   ];
 
 
+  // ── Closers (the "Tech" second role) ───────────────────────────────────────
+  // Per Dennis (2026-08-12): everyone is onboarded as a Setter; an admin grants the
+  // ADDITIONAL role of Tech (closer). A booking routes to the setter themselves when
+  // they can close, and to Dennis when they cannot.
+  //
+  // ⚠️ Stored in pipeline_state, NOT a team_members column, on purpose. PostgREST 400s
+  // the WHOLE query on one unknown column, several migrations in this repo have sat
+  // unapplied for weeks, and a team_members select that 400s takes the Team tab down
+  // for everyone. This needs no migration and works the moment it deploys.
+  var CLOSER_STATE_KEY  = 'closers';
+  var DEFAULT_CLOSER_ID = 'tech4';            // Dennis Larsen — the fallback closer
+  // Day-one fallback, used ONLY until an admin saves the list from the Team tab. Both
+  // spellings of Cristina/Christina are here deliberately: TECHS says "Cristina Huang"
+  // and a name typed into the dialer prompt may not match either exactly.
+  var CLOSER_SEED_NAMES = ['dennis larsen','cristina huang','christina huang',
+                           'christina hackman','cristina hackman'];
+  var _closerState = null;                    // { ids:[], names:[] } once loaded
+
+  function _closerNorm(s) { return String(s || '').trim().toLowerCase(); }
+
+  window.bbLoadClosers = async function(force) {
+    if (_closerState && !force) return _closerState;
+    try {
+      var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var r = await c.from('pipeline_state').select('value').eq('key', CLOSER_STATE_KEY).maybeSingle();
+      var v = r && r.data && r.data.value;
+      if (typeof v === 'string') { try { v = JSON.parse(v); } catch(e) { v = null; } }
+      if (v && Array.isArray(v.ids)) {
+        _closerState = { ids: v.ids, names: (v.names || []).map(_closerNorm), seeded: false };
+        return _closerState;
+      }
+    } catch(e) { /* table missing or unreachable — fall through to the seed */ }
+    // No saved list yet: fall back to the seed names so routing is correct on day one.
+    _closerState = { ids: [DEFAULT_CLOSER_ID], names: CLOSER_SEED_NAMES.slice(), seeded: true };
+    return _closerState;
+  };
+
+  // person = { id, name }. Kept synchronous-safe: callers await bbLoadClosers() first.
+  window.bbIsCloser = function(person) {
+    if (!person) return false;
+    var st = _closerState || { ids: [DEFAULT_CLOSER_ID], names: CLOSER_SEED_NAMES.slice() };
+    if (person.id && st.ids.indexOf(person.id) > -1) return true;
+    return st.names.indexOf(_closerNorm(person.name)) > -1;
+  };
+
+  // Where a booking made by `person` should land.
+  window.bbCloserForBooking = function(person) {
+    return window.bbIsCloser(person) ? (person && person.id) || DEFAULT_CLOSER_ID : DEFAULT_CLOSER_ID;
+  };
+
+  // Human name for a rep_id, for "Closing: …". Falls back to the id rather than going
+  // blank — an unknown id is information, an empty string is not.
+  window._closerLabel = function(id) {
+    if (!id) return 'Unassigned';
+    var m = (typeof adminTeamMembers !== 'undefined' ? adminTeamMembers : []).find(function(x){ return x.id === id; });
+    if (m && m.name) return m.name;
+    var t = TECHS.find(function(x){ return x.id === id; });
+    return (t && t.name) || id;
+  };
+
+  // Lets the Team tab tell "no list saved yet" from "a saved list that happens to match".
+  window._closerStatePeek = function(){ return _closerState; };
+
+  window.teamSaveClosers = async function() {
+    var msg = document.getElementById('teamCloserMsg');
+    var boxes = Array.prototype.slice.call(document.querySelectorAll('.teamCloserCb'));
+    var list = boxes.filter(function(b){ return b.checked || b.disabled; })
+                    .map(function(b){ return { id: b.getAttribute('data-id'), name: b.getAttribute('data-name') }; });
+    if (msg) { msg.style.color = '#888'; msg.textContent = 'Saving…'; }
+    try {
+      await window.bbSaveClosers(list);
+      if (msg) { msg.style.color = '#8DC63F'; msg.textContent = '✓ Saved — ' + list.length + ' can close'; }
+    } catch(e) {
+      // ⚠️ Never report a save that did not happen: the whole point of this list is
+      // that bookings route by it.
+      if (msg) { msg.style.color = '#ef4444'; msg.textContent = '⚠ Not saved: ' + (e.message || 'unknown error'); }
+    }
+  };
+
+  window.bbSaveClosers = async function(list) {
+    // list = [{id, name}, …] — store BOTH so a rep whose id changes (or who only ever
+    // appears as a typed name in lead_activity) still resolves.
+    var payload = { ids: list.map(function(x){ return x.id; }).filter(Boolean),
+                    names: list.map(function(x){ return _closerNorm(x.name); }).filter(Boolean) };
+    // Dennis is the fallback target for every non-closer booking — he must always be
+    // able to close, or those leads land on a portal that cannot work them.
+    if (payload.ids.indexOf(DEFAULT_CLOSER_ID) < 0) payload.ids.push(DEFAULT_CLOSER_ID);
+    var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var res = await c.from('pipeline_state').upsert(
+      { key: CLOSER_STATE_KEY, value: payload, updated_at: new Date().toISOString() }, { onConflict: 'key' });
+    if (res && res.error) throw new Error(res.error.message);
+    _closerState = { ids: payload.ids, names: payload.names, seeded: false };
+    return _closerState;
+  };
+
   var GHL_WEBHOOK               = 'https://services.leadconnectorhq.com/hooks/gXWwbOVymY0iRfj7c1It/webhook-trigger/032a0503-c92f-4711-89c0-0a4659e8e4ff';
   var GHL_PROPOSAL_WEBHOOK      = 'https://services.leadconnectorhq.com/hooks/gXWwbOVymY0iRfj7c1It/webhook-trigger/224ee5c6-85c3-42d7-99e9-0ccee6d821af';
   var GHL_DIAG_AGREEMENT_WEBHOOK = 'https://services.leadconnectorhq.com/hooks/gXWwbOVymY0iRfj7c1It/webhook-trigger/f17004a5-5956-4d13-b7f0-a11098bac586';
@@ -2383,6 +2478,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     adminView = 'team';
     var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button><button class="portal-tab active" onclick="renderTeamView()">&#128101; Team &amp; Hiring</button><button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button><button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button><a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a></div>';
     document.getElementById('dashBody').innerHTML = portalNav + '<p style="color:#aaa;padding:20px 0;">Loading team data...</p>';
+    // Closing roles drive where every booking lands — load before rendering the roster.
+    try { await window.bbLoadClosers(true); } catch(e) {}
 
     // Fetch agreement records and credential overrides from Supabase
     var agreements = [], credOverrides = [], teamFetchError = '';
@@ -2594,6 +2691,38 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       members.forEach(function(u){ h += compactRepTile(u, roleDisplay[u.role]||u.role, sec.ag); });
       h += '</div>';
     });
+
+    // ── Closing (Tech) — the additional role ─────────────────────────────────
+    // Everyone is onboarded as a Setter; this is where an admin grants the second
+    // role. It decides where a booking lands: a setter who can close keeps their own
+    // booking, everyone else's goes to Dennis.
+    (function(){
+      var pool = activeMembers.filter(function(m){ return ['rep','tech','setter','dialer'].indexOf(m.role) > -1 && m.name; });
+      if (!pool.length) return;
+      var st = window._closerStatePeek ? window._closerStatePeek() : null;
+      h += '<div style="margin-top:20px;padding:14px 16px;background:rgba(74,158,255,0.05);border:1px solid rgba(74,158,255,0.22);border-radius:12px;">';
+      h += '<div style="font-size:0.8rem;font-weight:800;margin-bottom:2px;">&#127919; Closing (Tech) enabled</div>';
+      h += '<div style="font-size:0.7rem;color:#888;line-height:1.5;margin-bottom:10px;">Whoever is ticked here can close their own bookings. Everyone else\'s booked appointments route to '
+         + esc(window._closerLabel(DEFAULT_CLOSER_ID)) + ' automatically &mdash; they still get setter credit and can follow it under &ldquo;Booked by me&rdquo;.</div>';
+      if (st && st.seeded) {
+        h += '<div style="font-size:0.68rem;color:#f59e0b;margin-bottom:9px;">&#9888; Using the built-in default list until you save this once.</div>';
+      }
+      h += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:6px;margin-bottom:11px;">';
+      pool.forEach(function(m){
+        var on = window.bbIsCloser(m);
+        var isDefault = m.id === DEFAULT_CLOSER_ID;
+        h += '<label style="display:flex;align-items:center;gap:8px;padding:8px 11px;background:rgba(255,255,255,0.04);border:1px solid '
+          + (on ? 'rgba(141,198,63,0.4)' : 'rgba(255,255,255,0.1)') + ';border-radius:9px;font-size:0.76rem;cursor:'+(isDefault?'not-allowed':'pointer')+';">'
+          + '<input type="checkbox" class="teamCloserCb" data-id="'+esc(m.id)+'" data-name="'+esc(m.name)+'"'
+          + (on ? ' checked' : '') + (isDefault ? ' disabled' : '') + ' style="width:auto;margin:0;flex-shrink:0;">'
+          + '<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(m.name)
+          + (isDefault ? ' <span style="color:#666;font-size:0.66rem;">(always)</span>' : '') + '</span></label>';
+      });
+      h += '</div>';
+      h += '<button onclick="teamSaveClosers()" style="width:auto;margin:0;padding:8px 18px;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:100px;font-size:0.76rem;font-weight:700;cursor:pointer;">Save closing roles</button>';
+      h += '<span id="teamCloserMsg" style="font-size:0.72rem;color:#888;margin-left:10px;"></span>';
+      h += '</div>';
+    })();
 
     // Hidden modal overlay for rep detail (populated by openRepModal)
     h += '<div id="repModalOverlay" onclick="if(event.target===this)closeRepModal()" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.72);z-index:9000;overflow-y:auto;padding:24px 12px;">'+
@@ -7638,7 +7767,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // so this is the only way to tell from a phone which build is actually live —
   // an iPad cannot view source, and a stale cached portal is indistinguishable
   // from a fix that did not work.
-  window.PORTAL_BUILD = '2026-08-12d';
+  window.PORTAL_BUILD = '2026-08-12e';
   try {
     document.addEventListener('DOMContentLoaded', function() {
       var el = document.getElementById('portalBuild');
@@ -10896,9 +11025,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         lead.diagnostic_date = act.diagnostic_date; lead.arrival_window = act.arrival_window;
       }
       if (CURRENT_ROLE !== 'admin' && window._bbDialerPersonId) {
-        act.rep_id = window._bbDialerPersonId;        // booked by a rep — assign them the lead
-        act.setter_name = bbRepName();                // dialer = setter (drives the 20% split if a
-        lead.setter_name = act.setter_name;           // different closer is assigned later; self-gen otherwise)
+        // Same routing rule as Doors: the setter keeps the lead when they can close,
+        // otherwise it lands on Dennis's portal. setter_name always records who booked
+        // it, which is what drives the 20% setter / 20% closer split.
+        var _dialPerson = { id: window._bbDialerPersonId, name: bbRepName() };
+        try { await window.bbLoadClosers(); } catch(e) {}
+        act.rep_id = window.bbCloserForBooking(_dialPerson);
+        act.setter_name = _dialPerson.name;
+        lead.setter_name = act.setter_name;
       }
       await client.from('customers').update(act).eq('id', lead.id);
       lead.black_box = false;
@@ -10910,8 +11044,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         setTimeout(function(){ if (typeof openLeadEditor === 'function') openLeadEditor(lead.id); }, 100);
         return;
       } else if (typeof window.salesSetView === 'function') {
+        // A handed-off lead is not on this rep's portal to edit — opening the editor
+        // would silently do nothing. Send them to Leads, where it shows read-only under
+        // "Booked by me", and tell them who is closing it.
+        var _handedOff = act.rep_id && act.rep_id !== window._bbDialerPersonId;
         window.salesSetView('leads');
-        setTimeout(function(){ if (typeof window.salesEditLead === 'function') window.salesEditLead(lead.id); }, 100);
+        if (_handedOff) alert('✅ Booked — nice work.\n\nThis one goes to a closing Tech. You keep credit for setting it, and you can follow it under "Booked by me".');
+        else setTimeout(function(){ if (typeof window.salesEditLead === 'function') window.salesEditLead(lead.id); }, 100);
         return;
       }
     }
@@ -21645,6 +21784,21 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // Fetch this person's accounts by rep_id
     var r1 = await client.from('customers').select('*').eq('rep_id', person.id).or('archived.is.null,archived.eq.false').order('created_at', {ascending:false});
     var allRecords = r1.data || [];
+
+    // ── "Booked by me" — a setter's handed-off deals, READ ONLY ───────────────
+    // When a setter who cannot close books a lead it is assigned to a closing Tech, so
+    // it never appears in the query above. Their 20% rides on it, so they keep sight of
+    // it. Matched on setter_name (there is no setter_id column) — the same string-match
+    // the commission split already relies on.
+    var handedOff = [];
+    try { await window.bbLoadClosers(); } catch(e) {}
+    if (person.name && !window.bbIsCloser(person)) {
+      var rh = await client.from('customers').select('*')
+        .eq('setter_name', person.name).neq('rep_id', person.id)
+        .or('archived.is.null,archived.eq.false')
+        .order('diagnostic_date', { ascending: false }).limit(100);
+      handedOff = (rh.data || []);
+    }
     allRecords.sort(function(a,b){ return new Date(b.created_at)-new Date(a.created_at); });
     adminCustomers = allRecords; // allow openProposalBuilder/sendProposal to resolve records by id
 
@@ -21813,6 +21967,33 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           h += '<div class="sales-card-grid">';
           viewLeads.forEach(function(l) { h += buildLeadCard(l); });
           h += '</div>'; // .sales-card-grid
+        }
+
+        // ── Booked by me (read-only) ────────────────────────────────────────
+        // Deals this rep set that a closing Tech is running. Not editable — two people
+        // editing one appointment is how a customer gets called twice with two times.
+        if (handedOff.length) {
+          h += '<div style="margin-top:22px;padding-top:16px;border-top:1px solid rgba(255,255,255,0.08);">';
+          h += '<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:4px;">';
+          h += '<span style="font-size:0.82rem;font-weight:800;">&#129309; Booked by me</span>';
+          h += '<span style="font-size:0.7rem;color:#8DC63F;font-weight:700;">'+handedOff.length+'</span>';
+          h += '</div>';
+          h += '<div style="font-size:0.7rem;color:#777;line-height:1.5;margin-bottom:10px;">You set these &mdash; a closing Tech is running them. You still earn the setter share. View only.</div>';
+          handedOff.forEach(function(l) {
+            var nm = ((l.first_name||'')+' '+(l.last_name||'')).trim() || l.title_owner || 'No name';
+            var when = l.diagnostic_date ? new Date(l.diagnostic_date) : null;
+            var whenTxt = when && !isNaN(when.getTime())
+              ? when.toLocaleString('en-US',{ weekday:'short', month:'short', day:'numeric', hour:'numeric', minute:'2-digit' })
+              : 'No appointment date';
+            var closer = _closerLabel(l.rep_id);
+            h += '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:11px 13px;margin-bottom:7px;">';
+            h += '<div style="font-size:0.85rem;font-weight:700;margin-bottom:2px;">'+esc(nm)+'</div>';
+            h += '<div style="font-size:0.72rem;color:#888;margin-bottom:4px;">'+esc(l.address||'')+'</div>';
+            h += '<div style="font-size:0.72rem;color:#8DC63F;font-weight:600;">&#128197; '+esc(whenTxt)+'</div>';
+            h += '<div style="font-size:0.68rem;color:#666;margin-top:3px;">Closing: '+esc(closer)+(l.step ? ' &middot; step '+l.step : '')+'</div>';
+            h += '</div>';
+          });
+          h += '</div>';
         }
       }
 
@@ -23655,12 +23836,25 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // note got logged as "booked", the route re-sorted — and nothing reached the
       // database. That is the "booked at the door but never showed up in Leads" report.
       var _saveErr = null;
+      // Who closes this. Loaded (and cached) before the write so a stale roster can't
+      // silently route a booking to the wrong portal.
+      var _bkCloserId = person.id;
+      try { await window.bbLoadClosers(); _bkCloserId = window.bbCloserForBooking(person); } catch(e) {}
       try {
         var c = supabase.createClient(SUPA_URL, SUPA_KEY);
         var _res = await c.from('customers').update({
           knock_status: 'booked', knocked_at: new Date().toISOString(), knocked_by: person.id,
           diagnostic_date: startISO, arrival_end: endISO,
-          rep_id: person.id, step: 1, lead_category: 'fixmy', sold_type: null, black_box: false
+          // ⚠️ setter_name was MISSING here until 2026-08-12 while the dialer's booking
+          // has always stamped it. It is what drives the 20% setter / 20% closer split
+          // in edRecordFixmySplit — without it a door-booked deal pays the closer the
+          // full 40% and the rep who knocked the door gets nothing. Dialing-only money
+          // logic on a two-motion product is exactly the standing-rule failure.
+          // rep_id is the CLOSER, which is the setter themselves when they can close and
+          // Dennis when they cannot. setter_name always records who actually booked it,
+          // so the split math and the setter's own "Booked by me" list both work.
+          rep_id: _bkCloserId, setter_name: (person.name || person.id),
+          step: 1, lead_category: 'fixmy', sold_type: null, black_box: false
         }).eq('id', lead.id).select('id');
         if (_res && _res.error) _saveErr = _res.error.message || 'the database rejected the update';
         // A successful call that matched NO row is still a failure — wrong id, or RLS
@@ -23684,7 +23878,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         }
         return;
       }
-      Object.assign(lead, { knock_status: 'booked', diagnostic_date: startISO, rep_id: person.id, step: 1, black_box: false });
+      Object.assign(lead, { knock_status: 'booked', diagnostic_date: startISO, rep_id: _bkCloserId,
+                            setter_name: (person.name || person.id), step: 1, black_box: false });
       try {
         await bbLogActivity(lead.id, 'door_knock', 'booked',
           'Booked at the door for ' + _cvBkApptLabel(), { rep_name: person.name || person.id, rec: lead });

@@ -132,6 +132,10 @@ async function boot(page, opts) {
       const u = await page.evaluate(() => window.__updates);
       if (u.some(x => x.black_box === false && x.step === 1)) ok('booking DOES activate into Leads');
       else bad('a clean booking did not activate: ' + JSON.stringify(u));
+      // Without setter_name the 20/20 split cannot be computed and the door rep is
+      // paid nothing — the dialer has always stamped it, Doors never did.
+      if (u.some(x => x.setter_name === 'New Hire')) ok('the door rep is credited as the setter');
+      else bad('setter_name not stamped — a door-booked deal loses the setter split');
       const closed = await page.evaluate(() => (document.getElementById('editorSlot') || {}).innerHTML === '');
       if (closed) ok('the booking panel closes on success');
       else bad('panel left open after a successful save');
@@ -212,11 +216,22 @@ async function boot(page, opts) {
       if (/_saveErr/.test(SRC) && /\.select\('id'\)/.test(SRC)) ok('the booking write is checked');
       else bad('booking write is unchecked again');
       // Only bookings and explicit admin/rep actions may activate.
-      // Count only DB writes — the Object.assign that mirrors the saved row locally is
-      // not an activation site.
-      const dbActs = SRC.split('\n').filter(l => /black_box: ?false/.test(l) && !/Object\.assign/.test(l) && !/^\s*\/\//.test(l));
-      if (dbActs.length === 4) ok('exactly 4 DB activation sites (door booking, dialer booking, activate button, Save to My Leads)');
-      else bad(dbActs.length + ' DB activation sites:\n      ' + dbActs.map(l => l.trim().slice(0, 80)).join('\n      '));
+      // Assert the four legitimate activation sites BY NAME. A count is brittle here —
+      // both a per-line filter and an Object.assign strip misfired against correct code.
+      const sites = {
+        'admin activate button': /activateBlackBoxLead[\s\S]{0,900}?black_box: false/,
+        'dialer booking':        /if \(outcome === 'booked'\)[\s\S]{0,200}?black_box: false/,
+        'Save to My Leads':      /lead_source: 'self_generated', black_box: false/,
+        'door booking':          /rep_id: _bkCloserId[\s\S]{0,300}?black_box: false/
+      };
+      const absent = Object.keys(sites).filter(k => !sites[k].test(SRC));
+      if (!absent.length) ok('all 4 legitimate activation sites intact');
+      else bad('missing activation site(s): ' + absent.join(', '));
+      // And the disposition handler must contain none.
+      const knockFn = (SRC.match(/window\.canvassKnock = async function[\s\S]*?\n    \};/) || [''])[0]
+        .split('\n').filter(l => !/^\s*\/\//.test(l)).join('\n');
+      if (!/black_box: ?false/.test(knockFn)) ok('canvassKnock activates nothing');
+      else bad('canvassKnock can still activate a lead');
     }
 
   } finally {
