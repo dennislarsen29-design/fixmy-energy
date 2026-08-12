@@ -6264,8 +6264,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     for (var _bi = 0; _bi < _steps.length; _bi++) {
       var _bx = _canvassGeoBox(adminCanvassUserLat, adminCanvassUserLng, _steps[_bi]);
       // DQ'd doors are archived — excluded here for the same reason as the rep route.
+      // Both conditions go in ONE and=(…) rather than two separate &or= params — that is
+      // the form already proven in the dialer query. Booked leads are excluded here too.
       var adminParams = 'lead_source=eq.orphaned_list&sold_type=is.null&lat=not.is.null'
-        + '&or=(archived.is.null,archived.eq.false)&select=' + adminSEL
+        + '&and=(or(archived.is.null,archived.eq.false),or(black_box.is.null,black_box.eq.true))&select=' + adminSEL
         + '&lat=gte.' + _bx.latMin + '&lat=lte.' + _bx.latMax
         + '&lng=gte.' + _bx.lngMin + '&lng=lte.' + _bx.lngMax
         + '&limit=1000';
@@ -7767,7 +7769,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // so this is the only way to tell from a phone which build is actually live —
   // an iPad cannot view source, and a stale cached portal is indistinguishable
   // from a fix that did not work.
-  window.PORTAL_BUILD = '2026-08-12e';
+  window.PORTAL_BUILD = '2026-08-12f';
   try {
     document.addEventListener('DOMContentLoaded', function() {
       var el = document.getElementById('portalBuild');
@@ -9214,8 +9216,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // surface in bbDialBuckets()'s Worked bucket + the Recent Calls sidebar.
     var recentCutoff = new Date(Date.now() - 7*24*3600*1000).toISOString();
     // Dialable predicate, shared by the main window query and the Focus-ZIP query below.
+    // ⚠️ `black_box.eq.false` must be EXCLUDED, not merely un-required. Membership was
+    // `black_box=true OR lead_source='orphaned_list'`, and a booking sets black_box=false
+    // while leaving lead_source alone — so a booked lead stayed dialable. Worse, a lead
+    // booked at the DOOR has no dial_status, so it landed in **Fresh**: a customer with a
+    // confirmed appointment sitting at the top of someone's call list. Booked means out
+    // of the queue, both motions. (`is.null` is kept — plenty of rows predate the column.)
     var dialableAnd = '&and=(or(sold_type.is.null,dialed_at.gt.' + recentCutoff + '),'
       + 'or(black_box.eq.true,lead_source.eq.orphaned_list,dialed_at.gt.' + recentCutoff + '),'
+      + 'or(black_box.is.null,black_box.eq.true,dialed_at.gt.' + recentCutoff + '),'
       + 'or(dnc.is.null,dnc.eq.false),or(archived.is.null,archived.eq.false))';
     // ORDER matters: there are far more dialable leads (~13k) than this 2000-row cap, and
     // PostgREST without an explicit order returns an arbitrary slice — so the same handful
@@ -9225,7 +9234,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       + '&order=lead_score.desc.nullslast&limit=2000';
     var filtersBase = 'sold_type=is.null' // pre-migration fallback: no dialed_at column to relax against
       + '&phone=not.is.null&phone=neq.'
-      + '&and=(or(black_box.eq.true,lead_source.eq.orphaned_list),or(dnc.is.null,dnc.eq.false),or(archived.is.null,archived.eq.false))'
+      + '&and=(or(black_box.eq.true,lead_source.eq.orphaned_list),or(black_box.is.null,black_box.eq.true),or(dnc.is.null,dnc.eq.false),or(archived.is.null,archived.eq.false))'
       + '&order=lead_score.desc.nullslast&limit=2000';
     var lastErr = null;
     var q = async function(sel, f) {
@@ -9247,7 +9256,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var data = await q(selFull, filters);
     if (!data) { // dialer columns not migrated yet
       usedSel = BB_DIAL_SEL_BASE;
-      usedAnd = '&and=(or(black_box.eq.true,lead_source.eq.orphaned_list),or(dnc.is.null,dnc.eq.false),or(archived.is.null,archived.eq.false))';
+      usedAnd = '&and=(or(black_box.eq.true,lead_source.eq.orphaned_list),or(black_box.is.null,black_box.eq.true),or(dnc.is.null,dnc.eq.false),or(archived.is.null,archived.eq.false))';
       data = await q(BB_DIAL_SEL_BASE, filtersBase);
     }
     if (!data) bbDialLoadError = lastErr || 'Unknown error';
@@ -24158,6 +24167,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           // DQ'd doors are archived, which is what keeps them out of BOTH motions.
           // The dialer has always filtered this; the route never did.
           .or('archived.is.null,archived.eq.false')
+          // ⚠️ Booked means out of Black Box. Without this, a lead booked on the PHONE
+          // has no knock_status, so _cvIsOpen treats it as untouched and it comes back
+          // as an unknocked door — someone knocking a customer who already has an
+          // appointment. The door-booked case was masked by knock_status='booked'.
+          .or('black_box.is.null,black_box.eq.true')
           .not('lat', 'is', null)
           .gte('lat', bx.latMin).lte('lat', bx.latMax)
           .gte('lng', bx.lngMin).lte('lng', bx.lngMax)
@@ -24258,6 +24272,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           .eq('lead_source', 'orphaned_list')
           .is('sold_type', null)
           .or('archived.is.null,archived.eq.false')
+          .or('black_box.is.null,black_box.eq.true')   // booked leads are out of Black Box
           .order('lead_score', { ascending: false })
           .limit(80);
       }
