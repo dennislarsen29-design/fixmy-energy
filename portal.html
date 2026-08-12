@@ -364,6 +364,16 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
       box-shadow: 0 0 0 3px #8DC63F, 0 0 0 9999px rgba(0,0,0,0.72);
       border-radius: 14px;
     }
+@media print {
+  body.bb-cert-open > *:not(#bbTourHost) { display: none !important; }
+  body.bb-cert-open .bb-tour-scrim { display: none !important; }
+  body.bb-cert-open #bbTourHost, body.bb-cert-open .bb-cert-card {
+    position: static !important; width: auto !important; max-width: none !important;
+    background: #fff !important; color: #111 !important; border: 1px solid #999 !important;
+    box-shadow: none !important; transform: none !important;
+  }
+  body.bb-cert-open .bb-cert-card button { display: none !important; }
+}
     .bb-tour-card {
       position: fixed; z-index: 99995; left: 50%; transform: translateX(-50%);
       bottom: 18px; width: calc(100% - 28px); max-width: 560px;
@@ -7591,7 +7601,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // so this is the only way to tell from a phone which build is actually live —
   // an iPad cannot view source, and a stale cached portal is indistinguishable
   // from a fix that did not work.
-  window.PORTAL_BUILD = '2026-08-11e';
+  window.PORTAL_BUILD = '2026-08-11f';
   try {
     document.addEventListener('DOMContentLoaded', function() {
       var el = document.getElementById('portalBuild');
@@ -7849,8 +7859,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // same size, same weight, same colour-when-active. These are the top-level mode switch
     // for the whole product, so they should read as loudly as those do.
     var catTabStyle = 'width:auto;margin-top:0;padding:9px 22px;border:none;border-radius:100px;font-size:0.82rem;font-weight:800;cursor:pointer;transition:all 0.15s;white-space:nowrap;';
+    var _gated = (CURRENT_ROLE !== 'admin' && typeof window.bbTrainingComplete === 'function'
+                  && typeof person !== 'undefined' && person && !window.bbTrainingComplete(person.role));
     function pill(id, label, active, colour, count) {
       var badge = (count != null) ? ' (' + count + ')' : '';
+      if (_gated) {
+        // Reads as locked instead of bouncing the rep somewhere with no explanation.
+        return '<button onclick="salesSetView(\''+id+'\')" title="Finish training to unlock" style="'+catTabStyle
+          + 'background:rgba(255,255,255,0.05);color:#555;">&#128274; '+label+'</button>';
+      }
       return '<button onclick="salesSetView(\''+id+'\')" style="'+catTabStyle
         + (active ? 'background:'+colour+';color:#1A1A1A;box-shadow:0 2px 10px '+colour+'55;'
                   : 'background:rgba(255,255,255,0.07);color:#888;')
@@ -7999,6 +8016,50 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var track = bbTrainingTrackFor(role);
     return BB_TOUR_STEPS.filter(function(st){ return track.indexOf(st.mod || 'foundations') >= 0; });
   }
+
+  // -- Certification (per module, no migration) -------------------------------
+  // Stored as rep_agreements rows: source = 'training_cert:<module>', version =
+  // TRAINING_VERSION. Bumping TRAINING_VERSION re-certifies everyone, which is what you
+  // want when the pitch materially changes.
+  window._bbCerts = {};
+  // A module with NO authored steps is trivially satisfied. Without this the hard gate
+  // below would lock every rep out of Doors and Dialing forever, because `doors` and
+  // `closing` have no content yet and so could never be certified.
+  function bbModuleHasContent(mod) {
+    return BB_TOUR_STEPS.some(function(st){ return (st.mod || 'foundations') === mod; });
+  }
+  function bbSetCertsFromRows(rows) {
+    var out = {};
+    (rows || []).forEach(function(r) {
+      var src = String((r && r.source) || '');
+      if (src.indexOf(TRAINING_CERT_PREFIX) !== 0) return;
+      var mod = src.slice(TRAINING_CERT_PREFIX.length);
+      if (!out[mod]) out[mod] = { version: r.agreement_version, at: r.signed_at };
+    });
+    window._bbCerts = out;
+  }
+  window.bbModuleCertified = function(mod) {
+    if (!bbModuleHasContent(mod)) return true;
+    var c = window._bbCerts[mod];
+    return !!(c && c.version === TRAINING_VERSION);
+  };
+  window.bbModulesOutstanding = function(role) {
+    return bbTrainingTrackFor(role).filter(function(m){ return bbModuleHasContent(m) && !bbModuleCertified(m); });
+  };
+  window.bbTrainingComplete = function(role) { return bbModulesOutstanding(role).length === 0; };
+  window.bbCertifyModules = async function(mods, personId, personName) {
+    if (!mods || !mods.length || !personId) return;
+    var now = new Date().toISOString();
+    try {
+      var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+      await c.from('rep_agreements').insert(mods.map(function(m) {
+        return { rep_id: personId, rep_name: personName || '', rep_legal_name: personName || '',
+                 signed_at: now, source: TRAINING_CERT_PREFIX + m, agreement_version: TRAINING_VERSION };
+      }));
+      mods.forEach(function(m){ window._bbCerts[m] = { version: TRAINING_VERSION, at: now }; });
+      await c.from('team_members').update({ training_completed: true }).eq('id', personId);
+    } catch(e) { console.warn('[training] certification save failed:', e); }
+  };
 
   var BB_TOUR_STEPS = [
     { id:'welcome', mod:'foundations', kind:'read', title:'Welcome', body:
@@ -8171,13 +8232,65 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   window.bbTourClose = function() {
     var h = document.getElementById('bbTourHost'); if (h) h.remove();
     document.body.classList.remove('bb-tour-open');
+    document.body.classList.remove('bb-cert-open');
     _bbTourClearSpot();
-  };
-  window.bbTourFinish = function() {
-    try { localStorage.setItem(_bbTourKey(), '1'); localStorage.removeItem(_bbTourKey() + '_at'); } catch(e) {}
-    bbTourClose();
     if (typeof renderSales === 'function' && window._bbTourWasSales) renderSales();
   };
+  window.bbTourFinish = async function() {
+    try { localStorage.setItem(_bbTourKey(), '1'); localStorage.removeItem(_bbTourKey() + '_at'); } catch(e) {}
+    var role = _bbTourRole();
+    var mods = bbTrainingTrackFor(role).filter(bbModuleHasContent);
+    var pid = null, pname = '';
+    try { if (typeof person !== 'undefined' && person) { pid = person.id; pname = person.name || ''; } } catch(e) {}
+    if (!pid) pid = window._bbDialerPersonId || null;
+    _bbTourCertify(mods, pid, pname);
+  };
+
+  // The certificate is the payoff, so it renders immediately off what the rep already
+  // did -- the DB write happens behind it and never blocks the screen.
+  function _bbTourCertify(mods, pid, pname) {
+    var sc = bbTourScore();
+    var host = document.getElementById('bbTourHost');
+    if (host) {
+      var tier = sc.pct === 100 ? { label: 'Perfect run', icon: '&#127942;', col: '#facc15' }
+               : sc.pct >= 80   ? { label: 'Passed clean', icon: '&#127941;', col: '#8DC63F' }
+               :                  { label: 'Certified',    icon: '&#9989;',   col: '#4a9eff' };
+      var h = '<div class="bb-tour-scrim"></div><div class="bb-tour-card bb-cert-card">';
+      h += '<div style="text-align:center;">';
+      h += '<div style="font-size:2.6rem;line-height:1;margin-bottom:6px;">' + tier.icon + '</div>';
+      h += '<div style="font-size:0.62rem;font-weight:800;text-transform:uppercase;letter-spacing:0.14em;color:#8a8578;">Solar Review</div>';
+      h += '<div style="font-size:1.25rem;font-weight:800;color:' + tier.col + ';margin:2px 0 2px;">' + tier.label + '</div>';
+      h += '<div style="font-size:0.8rem;color:#bbb;margin-bottom:14px;">' + esc(pname || 'Certified rep') + '</div>';
+      h += '<div style="display:flex;gap:8px;justify-content:center;margin-bottom:14px;flex-wrap:wrap;">';
+      h += '<div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:9px 16px;">'
+         + '<div style="font-size:1.15rem;font-weight:800;color:' + tier.col + ';">' + sc.clean + '/' + sc.total + '</div>'
+         + '<div style="font-size:0.6rem;color:#888;text-transform:uppercase;letter-spacing:0.06em;">first try</div></div>';
+      h += '<div style="background:rgba(255,255,255,0.05);border-radius:12px;padding:9px 16px;">'
+         + '<div style="font-size:1.15rem;font-weight:800;color:' + tier.col + ';">' + sc.pct + '%</div>'
+         + '<div style="font-size:0.6rem;color:#888;text-transform:uppercase;letter-spacing:0.06em;">score</div></div>';
+      h += '</div>';
+      h += '<div style="font-size:0.66rem;font-weight:800;text-transform:uppercase;letter-spacing:0.07em;color:#666;margin-bottom:6px;">Modules earned</div>';
+      h += '<div style="display:flex;gap:6px;justify-content:center;flex-wrap:wrap;margin-bottom:14px;">';
+      mods.forEach(function(m) {
+        var lbl = (BB_TRAINING_MODULES[m] || {}).label || m;
+        h += '<span style="padding:4px 12px;background:rgba(141,198,63,0.14);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:100px;font-size:0.7rem;font-weight:700;">&#10003; ' + esc(lbl) + '</span>';
+      });
+      h += '</div>';
+      h += '<div style="font-size:0.68rem;color:#666;margin-bottom:14px;">' + new Date().toLocaleDateString('en-US', { month:'long', day:'numeric', year:'numeric' }) + ' &middot; ' + esc(TRAINING_VERSION) + '</div>';
+      h += '</div>';
+      h += '<div style="display:flex;gap:8px;">';
+      h += '<button onclick="window.print()" style="width:auto;margin:0;flex:0 0 auto;padding:11px 16px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.14);color:#aaa;border-radius:100px;font-size:0.78rem;font-weight:700;cursor:pointer;">&#128424; Save</button>';
+      h += '<button onclick="bbTourClose()" style="flex:1;margin:0;padding:12px;background:#8DC63F;border:none;color:#1A1A1A;border-radius:100px;font-size:0.88rem;font-weight:800;cursor:pointer;">Start working &#8594;</button>';
+      h += '</div></div>';
+      host.innerHTML = h;
+      document.body.classList.add('bb-cert-open');
+    }
+    _bbTourClearSpot();
+    // Fire-and-forget: a failed write must not cost the rep their certificate screen.
+    Promise.resolve(bbCertifyModules(mods, pid, pname)).then(function() {
+      if (typeof renderSales === 'function' && window._bbTourWasSales) renderSales();
+    });
+  }
   function _bbTourClearSpot() {
     var prev = document.querySelector('.bb-tour-spot');
     if (prev) prev.classList.remove('bb-tour-spot');
@@ -21362,8 +21475,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         // localStorage; on an iPad with history cleared there is no localStorage, so the
         // rep was re-prompted, signed again, added another row, and made it permanent.
         // Newest row wins; duplicates are a legitimate audit trail, not an error.
+        // Limit raised from 10: training certs now share this table, and a rep with
+        // several module certs plus a re-cert could otherwise push their actual
+        // agreement out of the window and look unsigned.
         var agrRes = await agc.from('rep_agreements').select('id,agreement_version,signed_at,source')
-          .eq('rep_id', person.id).order('signed_at', { ascending: false }).limit(10);
+          .eq('rep_id', person.id).order('signed_at', { ascending: false }).limit(50);
+        bbSetCertsFromRows(agrRes.data);
         // Filter sub-sheet acks client-side rather than with .neq(): `source <> 'x'` is
         // NULL for a NULL source in SQL, so a server-side neq would silently drop every
         // legacy row that predates the source column.
@@ -22182,6 +22299,38 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         (function(){
           var done = window.bbTourCompleted();
           var at = 0; try { at = parseInt(localStorage.getItem('bbTourDone_' + (person.id||'') + '_at') || '0', 10) || 0; } catch(e) {}
+
+          // A rep bounced here by the gate must be told why, not just dumped on a tab.
+          if (window._bbGateNotice) {
+            var wanted = window._bbGateNotice === 'canvass' ? 'Doors' : 'Dialing';
+            h += '<div style="background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.4);border-radius:14px;padding:14px 16px;margin-bottom:14px;">'
+               + '<div style="font-size:0.85rem;font-weight:800;color:#f59e0b;margin-bottom:4px;">&#128274; ' + wanted + ' is locked</div>'
+               + '<div style="font-size:0.76rem;color:#bbb;line-height:1.55;">Finish your training below and it unlocks straight away. It takes about fifteen minutes and you can stop and resume any time.</div>'
+               + '</div>';
+            window._bbGateNotice = null;
+          }
+
+          // Per-module status, so a promoted rep can see exactly what is outstanding.
+          (function() {
+            var track = bbTrainingTrackFor(person.role);
+            var real  = track.filter(bbModuleHasContent);
+            if (!real.length) return;
+            h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">';
+            real.forEach(function(m) {
+              var okd = bbModuleCertified(m), lbl = (BB_TRAINING_MODULES[m] || {}).label || m;
+              h += '<span title="' + esc((BB_TRAINING_MODULES[m] || {}).blurb || '') + '" style="padding:4px 12px;border-radius:100px;font-size:0.7rem;font-weight:700;'
+                 + (okd ? 'background:rgba(141,198,63,0.14);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;'
+                        : 'background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);color:#777;')
+                 + '">' + (okd ? '&#10003; ' : '&#9675; ') + esc(lbl) + '</span>';
+            });
+            // Modules on the track with no content yet are named, so an empty track does
+            // not silently read as "fully trained".
+            track.filter(function(m){ return !bbModuleHasContent(m); }).forEach(function(m) {
+              var lbl = (BB_TRAINING_MODULES[m] || {}).label || m;
+              h += '<span title="Not written yet" style="padding:4px 12px;border-radius:100px;font-size:0.7rem;font-weight:700;background:rgba(255,255,255,0.03);border:1px dashed rgba(255,255,255,0.14);color:#555;">' + esc(lbl) + ' &middot; coming soon</span>';
+            });
+            h += '</div>';
+          })();
           h += '<div style="background:' + (done ? 'rgba(255,255,255,0.04)' : 'rgba(141,198,63,0.09)')
              + ';border:1px solid ' + (done ? 'rgba(255,255,255,0.1)' : 'rgba(141,198,63,0.4)')
              + ';border-radius:14px;padding:14px 16px;margin-bottom:16px;">';
@@ -22539,6 +22688,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       openNewLead(person.id, person.name, config.setterMode);
     };
     window.salesSetView = function(v) {
+      // Hard gate: no knocking and no dialing until the track is certified. Admin is
+      // never gated -- you have to be able to replay training and see what a hire sees.
+      if ((v === 'canvass' || v === 'dialer') && CURRENT_ROLE !== 'admin'
+          && typeof window.bbTrainingComplete === 'function' && !window.bbTrainingComplete(person.role)) {
+        window._bbGateNotice = v;
+        salesView = 'training';
+        try { sessionStorage.setItem('salesView_'+person.id, 'training'); } catch(e) {}
+        renderSales();
+        return;
+      }
       if (v !== 'canvass' && _canvassWatchId !== null) {
         try { navigator.geolocation.clearWatch(_canvassWatchId); } catch(e){}
         _canvassWatchId = null;

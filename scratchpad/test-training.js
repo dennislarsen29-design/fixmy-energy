@@ -163,6 +163,97 @@ function literal(name, open) {
       else bad('the booking confirmation rule is not covered');
     }
 
+
+    // ── 4-6. certification, gate, certificate ───────────────────────────────
+    console.log('\n[4] per-module certification');
+    {
+      // Modules with no authored content must be trivially satisfied, or the hard gate
+      // locks the whole company out of Doors and Dialing forever.
+      const cert = await page.evaluate(() => {
+        window.BB_TOUR_STEPS = window.BB_TOUR_STEPS;
+        window.TRAINING_VERSION = 't1';
+        window.TRAINING_CERT_PREFIX = 'training_cert:';
+        window._bbCerts = {};
+        window.bbModuleHasContent = (mod) => window.BB_TOUR_STEPS.some(st => (st.mod || 'foundations') === mod);
+        window.bbModuleCertified = (mod) => {
+          if (!window.bbModuleHasContent(mod)) return true;
+          const c = window._bbCerts[mod];
+          return !!(c && c.version === window.TRAINING_VERSION);
+        };
+        window.bbModulesOutstanding = (role) =>
+          window.bbTrainingTrackFor(role).filter(m => window.bbModuleHasContent(m) && !window.bbModuleCertified(m));
+        window.bbTrainingComplete = (role) => window.bbModulesOutstanding(role).length === 0;
+        const before = window.bbModulesOutstanding('setter');
+        window._bbCerts = { foundations: { version: 't1' }, dialing: { version: 't1' } };
+        const after = window.bbModulesOutstanding('setter');
+        window._bbCerts = { foundations: { version: 't0' }, dialing: { version: 't1' } };
+        const stale = window.bbModulesOutstanding('setter');
+        return { before, after, stale, doorsEmpty: !window.bbModuleHasContent('doors') };
+      });
+      if (cert.doorsEmpty) ok('doors has no authored content (as expected today)');
+      else bad('doors unexpectedly has content — recheck this assertion');
+      // ⚠ These helpers are RE-DEFINED above for isolation, so this only proves the
+      // shape of the rule, not the shipped code. The behavioural gate — that a rep who
+      // finished everything available is not locked out by an empty module — lives in
+      // scratchpad/test-training-boot.js, which drives the real portal.
+      if (!cert.before.includes('doors')) ok('an empty module never blocks (shape only — see test-training-boot.js)');
+      else bad('empty module blocks the gate: the whole company would be locked out');
+      if (/bbModuleHasContent\(m\) && !bbModuleCertified\(m\)/.test(SRC)) ok('shipped bbModulesOutstanding filters content-less modules');
+      else bad('the shipped filter would lock reps out on an unwritten module');
+      if (cert.before.length === 2) ok('an untrained setter owes foundations + dialing');
+      else bad('outstanding wrong: ' + JSON.stringify(cert.before));
+      if (cert.after.length === 0) ok('certifying both clears the track');
+      else bad('still outstanding after certification: ' + JSON.stringify(cert.after));
+      if (cert.stale.includes('foundations')) ok('a stale TRAINING_VERSION re-opens that module');
+      else bad('version bump does not force re-certification');
+
+      const src = SRC;
+      if (/source: TRAINING_CERT_PREFIX \+ m/.test(src)) ok('cert rows use the training_cert: prefix');
+      else bad('cert row source wrong');
+      if (/\.limit\(50\)/.test(src)) ok('the agreement fetch window was widened for cert rows');
+      else bad('limit(10) would push the real agreement out of the window');
+      if (/bbSetCertsFromRows\(agrRes\.data\)/.test(src)) ok('certs derive from the same login fetch');
+      else bad('certs not loaded');
+      if (/training_completed: true/.test(src)) ok('roll-up flag is earned, not ticked by hand');
+      else bad('team_members.training_completed never set');
+    }
+
+    console.log('\n[5] the hard gate');
+    {
+      const gate = SRC.match(/window\.salesSetView = function\(v\)[\s\S]*?\n    \};/);
+      if (gate && /v === 'canvass' \|\| v === 'dialer'/.test(gate[0])) ok('gate covers both Doors and Dialing');
+      else bad('gate misses a surface');
+      if (gate && /CURRENT_ROLE !== 'admin'/.test(gate[0])) ok('admin is never gated');
+      else bad('admin would be locked out of their own portal');
+      if (gate && /salesView = 'training'/.test(gate[0])) ok('an uncertified rep is routed to training');
+      else bad('no redirect');
+      if (gate && /_bbGateNotice = v/.test(gate[0])) ok('records which surface they wanted');
+      else bad('rep would land on training with no explanation');
+      if (/is locked<\/div>/.test(SRC)) ok('training tab explains the lock');
+      else bad('no gate notice rendered');
+      if (/&#128274; '\+label\+'/.test(SRC)) ok('the pills render as locked rather than silently bouncing');
+      else bad('pills give no hint');
+    }
+
+    console.log('\n[6] the certificate');
+    {
+      if (/function _bbTourCertify\(mods, pid, pname\)/.test(SRC)) ok('certificate screen exists');
+      else bad('no certificate');
+      const c = SRC.match(/function _bbTourCertify[\s\S]*?\n  \}/);
+      if (c && /bbTourScore\(\)/.test(c[0])) ok('shows the first-try score');
+      else bad('no score on the certificate');
+      if (c && /Perfect run|Passed clean/.test(c[0])) ok('tiers the result (gamified)');
+      else bad('no tiering');
+      if (c && /Modules earned/.test(c[0])) ok('lists the modules earned');
+      else bad('modules not shown');
+      if (c && /window\.print\(\)/.test(c[0])) ok('printable');
+      else bad('no print control');
+      if (/body\.bb-cert-open > \*:not\(#bbTourHost\)/.test(SRC)) ok('print CSS isolates the certificate');
+      else bad('printing would dump the whole portal');
+      if (c && /Promise\.resolve\(bbCertifyModules/.test(c[0])) ok('the DB write never blocks the screen');
+      else bad('a failed write would cost the rep their certificate');
+    }
+
   } finally {
     await browser.close();
   }
