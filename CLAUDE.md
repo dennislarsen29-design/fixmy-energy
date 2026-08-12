@@ -519,6 +519,20 @@ Three field requests on the Black Box card. All three land on **both** Doors and
 - Verified in `scratchpad/test-owner-contacts.js` (26 assertions). **Gated both ways** — restoring the vendor line fails step 4, and removing the company blocklist reproduces "Properties Caroline" *and* "LLC Caroline" exactly.
 - ⚠️ **Harness traps hit here:** a `'[^']*vendor[^']*'` regex spans newlines and matches explanatory **comments**, failing with the code perfectly correct — strip comments first. And counting `_bbOwnerPeopleHtml(lead)` matched the function *definition* as well as its two call sites; count the mount (`h += …`), not the name.
 
+### An anonymous "Rep" row on every per-rep report (fixed 2026-08-11)
+Spotted on Team → Dialers: a row labelled just **`Rep`** with 0.8h and real dials, next to the named roster. Same family as the "Admin" split documented above — a generic label reaching `lead_activity.rep_name` — but a different cause, and this one loses the person entirely rather than splitting them.
+- **Root cause, two halves.** `window._bbDialerPersonName` / `_bbDialerPersonId` were assigned **inside the `salesView === 'canvass'` branch** of `renderSales`, and the dialer branch (`else if (salesView === 'dialer') { renderBBDialerView(); return; }`) **returns above it**. So a rep who went straight to **Dialing without ever opening Doors** never had an identity set. `bbRepName()` then fell through to `prompt(...) || 'Rep'` — and **cached the dismissed prompt in `localStorage.bbDialerRepName`**, so every call from that device was stamped `Rep` from then on.
+- **Fix:** both assignments hoisted to the top of `renderSales`, before any view branch — identity is now set no matter which surface the rep lands on. And a blank/dismissed prompt is **never persisted**; it returns `'Unidentified rep'` for that one write instead of poisoning the device.
+- ⚠️ **Do not add `Rep` to `REP_ALIASES`.** The Admin aliases map a known label to a known person; `Rep` is anonymous by construction and could be more than one human. Identify them from `lead_activity.rep_id` (which `bbRepId()` sets from `_bbDialerPersonId`, falling back to the role string) and rename the rows.
+- **Repair SQL** — identify, then rename:
+```sql
+select rep_id, channel, count(*), min(created_at), max(created_at)
+from lead_activity where rep_name = 'Rep' group by 1,2 order by 5 desc;
+update lead_activity set rep_name = '<real name>' where rep_name = 'Rep' and rep_id = '<their id>';
+```
+  The affected device also needs `localStorage.bbDialerRepName` cleared, or it keeps stamping the old value until the rep next opens Doors.
+- ⚠️ **Same lesson as the dialer `isPinned` bug: state assigned inside one view branch is not available to the others.** Anything the whole portal depends on belongs above the branch.
+
 ### Training module — modules, role tracks, comprehension checks (2026-08-11, per Dennis)
 Extends the 2026-08-08 New Hire Walkthrough rather than replacing it. Decisions from Dennis: **hard gate** (no dialing or knocking until certified), **explain-and-retry** on a wrong answer (nobody fails out), **server-backed versioned certification**, and **role-based tracks that STACK** — "in the event that a setter is promoted to a Tech, they would only need to complete the latter portion."
 - ⚠️ **THE PREREQUISITE, and it would have been a severe bug.** `rep_agreements` is a shared ledger — signed agreement, sub-sheet acks, and now training certs, told apart by `source`. The login gate picked "the agreement" with `find(x => x.source !== SUB_SHEET_ACK_SOURCE)`, so **the first training cert written would have been read as the rep agreement**, failed the `REP_AGREEMENT_VERSION` check, and forced *every rep* to re-sign. Replaced with `_isRepAgreementRow(r)`: NULL source ⇒ agreement (legacy rows predate the column), `sub_sheet_ack` and anything prefixed `training_cert:` ⇒ not. **Anything else stored in this table must be excluded there too.** Still client-side: a server-side `.neq()` evaluates NULL for legacy rows and would drop them.

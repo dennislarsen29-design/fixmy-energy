@@ -7601,7 +7601,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // so this is the only way to tell from a phone which build is actually live —
   // an iPad cannot view source, and a stale cached portal is indistinguishable
   // from a fix that did not work.
-  window.PORTAL_BUILD = '2026-08-11f';
+  window.PORTAL_BUILD = '2026-08-11g';
   try {
     document.addEventListener('DOMContentLoaded', function() {
       var el = document.getElementById('portalBuild');
@@ -7773,7 +7773,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // split his own dialing across two rows on every per-rep report ("Dennis Larsen"
     // when he dialed from the sales portal, "Admin" when from the admin portal).
     if (CURRENT_ROLE === 'admin') return ADMIN_DIALER_NAME;
-    var n = prompt('Your name (shown on call notes):') || 'Rep';
+    // ⚠️ A dismissed or blank prompt must NOT be cached. It used to fall through to the
+    // literal 'Rep', get written to localStorage, and then stamp every call that rep
+    // made from that device — showing up as an anonymous "Rep" row on every report with
+    // no way to tell who it was. Nothing is stored unless they actually typed a name.
+    var n = (prompt('Your name (shown on call notes):') || '').trim();
+    if (!n) return 'Unidentified rep';
     try { localStorage.setItem('bbDialerRepName', n); } catch(e){}
     return n;
   }
@@ -21643,6 +21648,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     function renderSales() {
       var h = '<div id="editorSlot"></div>';
 
+      // ⚠️ Identity must be set before ANY view branches. These used to live inside the
+      // `salesView === 'canvass'` branch, and the dialer branch returns above it — so a
+      // rep who went straight to Dialing without ever opening Doors had no name set.
+      // bbRepName() then prompted, and a dismissed prompt fell through to the literal
+      // string 'Rep', which was cached and stamped on every call they made after.
+      window._bbDialerPersonName = person.name || null;
+      window._bbDialerPersonId = person.id || null;
+
       // Welcome banner (first login after onboarding, shown once per session after agreement signed)
       var _showWelcome = agreementSigned && (function(){ try { return !!sessionStorage.getItem('showWelcome_' + person.id); } catch(e){ return false; } })();
       if (_showWelcome) {
@@ -21917,8 +21930,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
       // ── Canvass / Black Box view ─────────────────────────────────────────────
       else if (salesView === 'canvass') {
-        window._bbDialerPersonName = person.name || null;
-        window._bbDialerPersonId = person.id || null;
         h += '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px;">';
         h += '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">';
         h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#8DC63F;">&#128682; Doors &mdash; Prospecting Route</div>';
