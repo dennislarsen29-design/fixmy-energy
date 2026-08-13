@@ -120,9 +120,38 @@ exports.handler = async function (event) {
     return { statusCode: 200, headers: cors, body: JSON.stringify({ ok: true, sdge_incident_count: sdgeFeatures.length, zips: zips.length, log }) };
   } catch (e) {
     stamp('ERROR: ' + e.message);
+    // ⚠️ This used to return 500 and write NOTHING, so a broken feed left the last good
+    // snapshot in place (or no row at all) and the portal rendered zero outage badges —
+    // exactly what a genuinely calm night looks like. A failing path must never be
+    // indistinguishable from a real negative. Record the failure instead, keeping the
+    // last known zips so a transient blip doesn't blank the badges mid-shift.
+    try {
+      const prev = await readSnapshot(supaHeaders);
+      await upsertSnapshot(supaHeaders, {
+        synced_at: prev && prev.synced_at || null,   // NOT now — the data did not refresh
+        failed_at: new Date().toISOString(),
+        error: e.message,
+        sdge_incident_count: prev ? prev.sdge_incident_count : null,
+        zips: (prev && Array.isArray(prev.zips)) ? prev.zips : [],
+        log
+      });
+    } catch (e2) { stamp('could not record the failure: ' + e2.message); }
     return { statusCode: 500, headers: cors, body: JSON.stringify({ error: e.message, log }) };
   }
 };
+
+// Last stored snapshot, so a failed run can preserve the previous zips rather than
+// blanking the badges while it retries 20 minutes later.
+async function readSnapshot(supaHeaders) {
+  try {
+    const r = await fetch(SUPA_REST + '/pipeline_state?key=eq.sdge_outages&select=value', { headers: supaHeaders });
+    if (!r.ok) return null;
+    const rows = await r.json();
+    if (!Array.isArray(rows) || !rows.length) return null;
+    const v = rows[0].value;
+    return typeof v === 'string' ? JSON.parse(v) : v;
+  } catch (e) { return null; }
+}
 
 async function upsertSnapshot(supaHeaders, snapshot) {
   await fetch(SUPA_REST + '/pipeline_state', {
