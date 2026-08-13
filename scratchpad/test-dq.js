@@ -73,11 +73,14 @@ function literal(name) {
     // ── 2. DQ archives, and archiving is what removes it from both ───────────
     console.log('\n[2] DQ writes archived, never dnc');
     {
-      const knock = SRC.match(/window\.canvassKnock = async function[\s\S]{0,1400}?bbLogActivity/);
-      const body = knock ? knock[0] : '';
-      if (/knockStatus === 'disqualified'\) upd\.archived = true/.test(body)) ok('door DQ sets archived');
+      // ⚠️ Was a fixed-size window from the function start — canvassKnock grew past it
+      // (warm-activation removal, closer-routing comments) and the window silently
+      // stopped matching real code. Anchor on the statement itself instead.
+      const dqLine = SRC.match(/if \(knockStatus === 'disqualified'\) upd\.archived = true;/);
+      if (dqLine) ok('door DQ sets archived');
       else bad('door DQ does not archive');
-      if (!/upd\.dnc/.test(body)) ok('door DQ never sets dnc (rep must not kill phone eligibility)');
+      const knockFn = (SRC.match(/window\.canvassKnock = async function[\s\S]*?\n    \};/) || [''])[0];
+      if (!/upd\.dnc/.test(knockFn)) ok('door DQ never sets dnc (rep must not kill phone eligibility)');
       else bad('door DQ touches dnc');
 
       const dial = SRC.match(/if \(outcome === 'disqualified'\) updates\.archived = true;/);
@@ -103,7 +106,10 @@ function literal(name) {
       if (fb && /archived\.is\.null,archived\.eq\.false/.test(fb[0])) ok('rep no-GPS fallback excludes archived');
       else bad('no-GPS fallback still serves archived doors');
 
-      if (/or=\(archived\.is\.null,archived\.eq\.false\)&select=' \+ adminSEL/.test(SRC)) ok('admin canvass excludes archived');
+      // ⚠️ Shape changed 2026-08-12 (test-booked-exit.js): a second top-level &or= was
+      // folded into one and=(or(...),or(...)) alongside the black_box exclusion added
+      // then. Same archived-exclusion guarantee, different literal string.
+      if (/and=\(or\(archived\.is\.null,archived\.eq\.false\),or\(black_box/.test(SRC)) ok('admin canvass excludes archived');
       else bad('admin canvass still serves archived doors');
 
       // The dialer already had this — assert it didn't regress.

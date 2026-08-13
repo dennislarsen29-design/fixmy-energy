@@ -284,6 +284,51 @@ exports.handler = async function() {
     summary.queries = queries.length;
     summary.pages = pages.length;
 
+    // 4. Campaign-source breakdown, same 30-day window → seo_campaigns snapshot.
+    // Answers "which source/campaign actually produces bookings" without any Google
+    // Ads API access — GA4 already carries sessionSource/Medium/CampaignName for every
+    // session, Ads or otherwise, as long as gclid/gbraid landed correctly (they do —
+    // book.html/index.html/thank-you.html all capture them, see CLAUDE.md).
+    // ⚠️ Independently guarded, like every optional add-on here: a missing
+    // seo_campaigns table (unapplied migration) or a Data API hiccup must not take
+    // down the GSC/GA4 pull above, which is the part everything else depends on.
+    if (process.env.GA4_PROPERTY_ID) {
+      try {
+        const campResp = await fetch('https://analyticsdata.googleapis.com/v1beta/properties/' + process.env.GA4_PROPERTY_ID + ':runReport', {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            dateRanges: [{ startDate: start, endDate: end }],
+            dimensions: [{ name: 'sessionSource' }, { name: 'sessionMedium' }, { name: 'sessionCampaignName' }],
+            metrics: [{ name: 'sessions' }, { name: 'keyEvents' }],
+            orderBys: [{ metric: { metricName: 'keyEvents' }, desc: true }],
+            limit: 200
+          })
+        });
+        if (campResp.ok) {
+          const camp = await campResp.json();
+          const campaignRows = (camp.rows || []).map(r => ({
+            date: end,
+            source: r.dimensionValues[0].value || '(not set)',
+            medium: r.dimensionValues[1].value || '(not set)',
+            campaign: r.dimensionValues[2].value || '(not set)',
+            sessions: parseInt(r.metricValues[0].value || '0', 10),
+            key_events: parseInt(r.metricValues[1].value || '0', 10)
+          }));
+          await supaUpsert('seo_campaigns', campaignRows, 'date,source,medium,campaign');
+          summary.campaigns = campaignRows.length;
+        } else {
+          summary.campaignsReason = 'http_' + campResp.status;
+          console.warn('seo-insights: campaign breakdown failed', campResp.status, (await campResp.text()).slice(0, 200));
+        }
+      } catch (e) {
+        // A missing table (PGRST205, unapplied migration) lands here too — expected
+        // until 20260813_seo_campaigns.sql is run, and deliberately non-fatal.
+        summary.campaignsReason = 'error: ' + e.message;
+        console.warn('seo-insights: campaign breakdown skipped —', e.message);
+      }
+    }
+
     console.log('seo-insights:', JSON.stringify(summary));
     await writeStatus(summary.emptyWindow ? 'ok_no_rows' : 'ok', {
       days: summary.daily, queries: summary.queries, pages: summary.pages,
