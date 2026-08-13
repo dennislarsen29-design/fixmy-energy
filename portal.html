@@ -5942,8 +5942,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         if (!ownerName) {
           h += '<button id="bbVerifyBtn_'+lead.id+'" onclick="adminCanvassVerifyOwner(\''+lead.id+'\')" title="Looks up the current property owner via Regrid parcel data (free). Confirms the homeowner name before you knock or call." style="width:auto;margin-top:0;display:inline-block;font-size:0.7rem;font-weight:700;color:#ffaa00;background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.3);border-radius:100px;padding:4px 12px;cursor:pointer;margin-bottom:10px;">&#128269; Verify Owner</button>';
         }
-        var gpNoteTop = _parseNotes(lead.notes||'').slice(-1)[0];
-        if (gpNoteTop) h += '<div style="font-size:0.7rem;color:#666;margin-bottom:10px;font-style:italic;">'+esc(gpNoteTop.by)+': '+esc(gpNoteTop.text.slice(0,60))+(gpNoteTop.text.length>60?'…':'')+'</div>';
+        h += _cvNotesFeedHtml(lead);
         h += '<a href="'+mapsUrl+'" target="_blank" style="display:inline-block;font-size:0.75rem;font-weight:700;color:#4a9eff;text-decoration:none;background:rgba(74,158,255,0.08);border:1px solid rgba(74,158,255,0.25);border-radius:100px;padding:6px 14px;margin-bottom:8px;">&#128506; Get Directions</a>';
         var gpPh = (lead.phone||'').replace(/\D/g,'');
         var gpRealEmail = (lead.email && !lead.email.endsWith('@pending.fixmy.energy')) ? lead.email : null;
@@ -5977,8 +5976,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '<button onclick="adminCanvassKnock(\''+lead.id+'\',\'already_customer\')" style="padding:14px 8px;border:1px solid rgba(74,158,255,0.3);border-radius:12px;background:rgba(74,158,255,0.08);color:#4a9eff;font-size:0.8rem;font-weight:700;cursor:pointer;">&#11088; Already Customer</button>';
         h += '</div>';
         // Note preview + inline note input
-        var gpNotePreview = _parseNotes(lead.notes||'').slice(-1)[0];
-        if (gpNotePreview) h += '<div style="font-size:0.7rem;color:#666;margin-top:10px;font-style:italic;border-top:1px solid rgba(255,255,255,0.06);padding-top:8px;">'+esc(gpNotePreview.by)+': '+esc(gpNotePreview.text.slice(0,80))+(gpNotePreview.text.length>80?'…':'')+'</div>';
+        h += '<div style="margin-top:10px;border-top:1px solid rgba(255,255,255,0.06);padding-top:8px;">' + _cvNotesFeedHtml(lead) + '</div>';
         h += '<div style="margin-top:8px;">';
         h += '<button onclick="(function(w){var el=w.document.getElementById(\'gpNi_'+lead.id+'\');el.style.display=el.style.display===\'none\'?\'block\':\'none\';})(window)" style="width:auto;margin-top:0;background:none;border:none;color:#555;cursor:pointer;font-size:0.7rem;padding:0;text-decoration:underline;">&#128221; Add Note</button>';
         // AI Notes sits OUTSIDE the collapsed note box — buried inside it, a rep at the
@@ -6482,6 +6480,50 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       hist.unshift(entry);
       localStorage.setItem('bbKnockHistory', JSON.stringify(hist.slice(0, 25)));
     } catch(e){}
+  };
+
+  // ── Notes feed on a door card ──────────────────────────────────────────────
+  // Collapsed by default (a rep at a door wants the card short), expanding to the same
+  // bbDialFeedHtml the dialer uses. ⚠️ Open state lives OUTSIDE the DOM — the canvass
+  // GPS watch re-renders every few seconds and would otherwise slam it shut, the same
+  // rule as the note box and the booking flow.
+  window._cvFeedOpen = window._cvFeedOpen || {};
+  window._cvNotesFeedHtml = function(lead) {
+    var entries = _parseNotes(lead.notes || '');
+    var open = !!window._cvFeedOpen[lead.id];
+    // ⚠️ Match BOTH mic glyphs. dialer-notes.js prefixes its summary with 🎙 (U+1F399)
+    // while the AI Notes button renders 🎤 (U+1F3A4) — counting only one of them would
+    // silently miss AI notes depending on which path wrote them.
+    var aiCount = entries.filter(function(e){
+      var t = String(e.text || '');
+      return t.indexOf('🎙') > -1 || t.indexOf('🎤') > -1;
+    }).length;
+    var h = '<div style="margin-bottom:10px;">';
+    h += '<button onclick="canvassToggleNotes(\''+lead.id+'\')" style="width:auto;margin:0;padding:4px 0;background:none;border:none;color:#888;font-size:0.7rem;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:6px;">'
+      + '<span>' + (open ? '&#9660;' : '&#9654;') + ' &#128212; Notes'
+      + (entries.length ? ' (' + entries.length + ')' : '')
+      + '</span>'
+      + (aiCount ? '<span title="AI-transcribed conversation notes" style="font-size:0.6rem;font-weight:700;padding:1px 7px;background:rgba(155,109,232,0.14);color:#c4a3f0;border-radius:100px;">&#127897; ' + aiCount + '</span>' : '')
+      + '</button>';
+    if (!entries.length) {
+      h += '<div style="font-size:0.68rem;color:#555;font-style:italic;">No notes yet — first touch.</div></div>';
+      return h;
+    }
+    if (open) {
+      h += '<div style="margin-top:4px;">' + bbDialFeedHtml(lead) + '</div>';
+    } else {
+      // Collapsed still shows the newest note — but with enough room to be readable.
+      var last = entries[entries.length - 1];
+      var txt = String(last.text || '');
+      h += '<div style="font-size:0.7rem;color:#666;font-style:italic;line-height:1.5;">'
+        + esc(last.by || '') + ': ' + esc(txt.slice(0, 160)) + (txt.length > 160 ? '…' : '') + '</div>';
+    }
+    return h + '</div>';
+  };
+  window.canvassToggleNotes = function(id) {
+    window._cvFeedOpen[id] = !window._cvFeedOpen[id];
+    if (typeof renderSales === 'function' && CURRENT_ROLE !== 'admin') renderSales();
+    else if (typeof renderAdminCanvassView === 'function') renderAdminCanvassView();
   };
 
   window.adminCanvassKnock = async function(id, knockStatus) {
@@ -7782,7 +7824,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // so this is the only way to tell from a phone which build is actually live —
   // an iPad cannot view source, and a stale cached portal is indistinguishable
   // from a fix that did not work.
-  window.PORTAL_BUILD = '2026-08-12g';
+  window.PORTAL_BUILD = '2026-08-12h';
   try {
     document.addEventListener('DOMContentLoaded', function() {
       var el = document.getElementById('portalBuild');
@@ -22430,8 +22472,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             // up in LandGlide and typing it in afterwards, and correcting a wrong name
             // matters as much as filling an empty one.
             h += _bbOwnerControlsHtml(lead);
-            var tNotePreview = _parseNotes(lead.notes||'').slice(-1)[0];
-            if (tNotePreview) h += '<div style="font-size:0.7rem;color:#666;margin-bottom:10px;font-style:italic;">'+esc(tNotePreview.by)+': '+esc(tNotePreview.text.slice(0,60))+(tNotePreview.text.length>60?'…':'')+'</div>';
+            // ⚠️ This used to be the LAST note only, truncated to 60 characters — so an
+            // AI summary (several sentences) was cut to a fragment, and any later note
+            // hid it entirely. The transcripts were always being saved; a rep just could
+            // not read them. Dialing has had a proper 4-entry feed all along, so this is
+            // the same renderer rather than a second one that can drift.
+            h += _cvNotesFeedHtml(lead);
             h += '<a href="'+mapsUrl+'" target="_blank" style="display:inline-block;font-size:0.75rem;font-weight:700;color:#4a9eff;text-decoration:none;background:rgba(74,158,255,0.08);border:1px solid rgba(74,158,255,0.25);border-radius:100px;padding:6px 14px;margin-bottom:8px;">🗺 Get Directions</a>';
             var tPh = (lead.phone||'').replace(/\D/g,'');
             var tRealEmail = (lead.email && !lead.email.endsWith('@pending.fixmy.energy')) ? lead.email : null;
