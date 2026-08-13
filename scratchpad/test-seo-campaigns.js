@@ -218,6 +218,57 @@ async function run(scenario) {
       else bad('the schedule line was lost');
     }
 
+    console.log('\n[8] the campaign result reaches the persisted status row, not just the HTTP body');
+    {
+      // writeStatus() takes an explicit field allow-list rather than spreading
+      // ...summary — a real gap that hid this exact feature during troubleshooting:
+      // campaigns/campaignsReason were computed correctly and present in the raw HTTP
+      // response, but silently absent from pipeline_state, the one surface anyone
+      // actually checks to diagnose this function without wading through Netlify logs.
+      const { calls } = await run({});
+      const statusWrite = calls.upserts.find(u => u.table === 'pipeline_state');
+      if (!statusWrite) { bad('no pipeline_state write captured'); }
+      else {
+        const value = JSON.parse(statusWrite.rows.value);
+        if (value.campaigns === 3) ok('the persisted status row carries the real campaign count');
+        else bad('campaigns missing or wrong in the persisted status: ' + JSON.stringify(value));
+      }
+
+      // And the failure path: a broken campaign report must be readable from the
+      // status row too, not just from re-deriving it via a manual SQL/log hunt.
+      baseEnv();
+      const sa = { client_email: 'svc@proj.iam.gserviceaccount.com', private_key: PEM };
+      const fetchImpl2 = async (url, opts) => {
+        const u = String(url);
+        if (u.includes('app_config')) return { ok: true, json: async () => [{ value: sa }] };
+        if (u.includes('oauth2.googleapis.com/token')) return { ok: true, json: async () => ({ access_token: 'tok' }) };
+        if (u.includes('searchanalytics')) {
+          const body = JSON.parse(opts.body);
+          if (body.dimensions[0] === 'date') return { ok: true, json: async () => ({ rows: [{ keys: ['2026-08-11'], clicks: 1, impressions: 10, ctr: 0.1, position: 5 }] }) };
+          return { ok: true, json: async () => ({ rows: [] }) };
+        }
+        if (u.includes('analyticsdata.googleapis.com') && opts.body.includes('sessionCampaignName'))
+          return { ok: false, status: 403, text: async () => 'forbidden' };
+        if (u.includes('analyticsdata.googleapis.com')) return { ok: true, json: async () => ({ rows: [] }) };
+        if (u.includes('/rest/v1/')) return { ok: true, text: async () => '' };
+        return { ok: true, json: async () => ({}), text: async () => '' };
+      };
+      const fn2 = loadWithStubs(fetchImpl2);
+      const captured = [];
+      const origFetch = global.fetch;
+      global.fetch = async (url, opts) => {
+        const r = await fetchImpl2(url, opts);
+        if (String(url).includes('/rest/v1/pipeline_state') && opts && opts.method === 'POST') captured.push(JSON.parse(opts.body));
+        return r;
+      };
+      await fn2.handler({ httpMethod: 'GET' }, {});
+      global.fetch = origFetch;
+      const statusRow = captured.find(c => c.key === 'seo_sync_status');
+      const val = statusRow ? JSON.parse(statusRow.value) : null;
+      if (val && val.campaignsReason === 'http_403') ok('a failed campaign report is also readable straight from the status row (http_403)');
+      else bad('campaign failure reason not surfaced in the status row: ' + JSON.stringify(val));
+    }
+
     console.log('\n[4] portal wiring');
     {
       const fs = require('fs');

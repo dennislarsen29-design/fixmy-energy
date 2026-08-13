@@ -348,10 +348,19 @@ exports.handler = async function() {
     }
 
     console.log('seo-insights:', JSON.stringify(summary));
+    // ⚠️ writeStatus() takes an explicit field list rather than spreading ...summary —
+    // deliberate, so a stray field on `summary` can't leak into the persisted status
+    // unreviewed. But that means every new summary field has to be added HERE too, or
+    // it's silently invisible to the one diagnostic surface built for troubleshooting
+    // this function — exactly what happened to campaigns/campaignsReason: computed
+    // correctly, present in the raw HTTP response, absent from every status check run
+    // against pipeline_state while debugging why the campaign report looked broken.
     await writeStatus(summary.emptyWindow ? 'ok_no_rows' : 'ok', {
       days: summary.daily, queries: summary.queries, pages: summary.pages,
       ga4: summary.ga4, ga4Days: summary.ga4Days || 0,
       ga4Reason: summary.ga4Reason || null, ga4Hint: summary.ga4Hint || null,
+      campaigns: summary.campaigns != null ? summary.campaigns : null,
+      campaignsReason: summary.campaignsReason || null,
       site, window: start + '→' + end,
       hint: summary.emptyWindow
         ? 'Google answered normally but reported zero impressions for the whole window. The credential is fine — the site genuinely has no search visibility.'
