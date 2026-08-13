@@ -136,8 +136,36 @@ const srv = http.createServer((_, res) => { res.writeHead(200, {'Content-Type':'
       const scripts = SRC.slice(SRC.indexOf('function cvScriptBodyHtml'), SRC.length);
       if (/Did your solar keep anything/.test(SRC)) ok('both scripts ask the one question that lands');
       else bad('the key question is missing');
-      if (/Do NOT quote a battery, a price/.test(SRC)) ok('and both forbid quoting a price or naming an incentive');
+      if (/Do not quote a battery, a price/i.test(SRC)) ok('and both forbid quoting a price or naming an incentive');
       else bad('no guard on pricing — a rep would quote a battery on an outage call');
+    }
+
+    console.log('\n[7] the outage is a HOOK — it must hand back to the evaluation pitch');
+    {
+      // Per Dennis: weave the outage line back into the solar evaluation pitch, with
+      // battery still the last resort. The branch must not become a separate pitch that
+      // skips Qualify and the Bill Branch.
+      const call = SRC.slice(SRC.indexOf("inOutage ? _bbWarn"), SRC.indexOf("if (stage === 'qualify')"));
+      const door = SRC.slice(SRC.indexOf("c.outage ? ("), SRC.indexOf("case 'qualify': return ("));
+
+      [['call', call], ['door', door]].forEach(([which, txt]) => {
+        if (/that&rsquo;s not (actually )?why/i.test(txt) || /not actually why/i.test(txt))
+          ok(which + ' script pivots back to the real reason for the visit');
+        else bad(which + ' script never returns to the reason-for-call');
+        if (/Qualify/.test(txt)) ok(which + ' script sends them into Qualify as normal');
+        else bad(which + ' script skips Qualify — the pitch is thrown out');
+        if (/last resort/i.test(txt) && /[Oo]nly if THEY/.test(txt))
+          ok(which + ' script keeps battery reactive / last resort');
+        else bad(which + ' script does not hold battery back');
+      });
+      if (/Bill Branch/.test(door)) ok('door script explicitly routes through the Bill Branch three beats');
+      else bad('door script drops the Bill Branch');
+      // The old wording told the rep to end the call on the outage — that is what
+      // "throwing the pitch out" looked like.
+      if (!/get off the phone/i.test(SRC)) ok('no "book it and get off the phone" shortcut left');
+      else bad('the branch still terminates the call early');
+      if (!/straight to the normal ask/i.test(SRC)) ok('no jump straight to the ask, skipping qualification');
+      else bad('still jumps to the ask');
     }
 
   } finally {
