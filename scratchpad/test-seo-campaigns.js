@@ -202,6 +202,22 @@ async function run(scenario) {
       else bad(missing.length + ' of ' + returnStarts.length + ' response(s) missing an explicit Content-Type');
     }
 
+    console.log('\n[7] the function URL is testable without hitting the default sync timeout');
+    {
+      const fs = require('fs');
+      const toml = fs.readFileSync(path.join(__dirname, '..', 'netlify.toml'), 'utf8');
+      // A manual GET to a scheduled function's URL is a plain HTTP call, NOT a scheduled
+      // invocation — it does not inherit the 15-min background-function budget the
+      // nightly run gets, only the synchronous default (~10s). This function makes 6-7
+      // sequential Google/Supabase round trips even after parallelizing the two GA4
+      // calls, so the default ceiling silently wasn't enough for manual testing.
+      const block = (toml.match(/\[functions\."seo-insights"\][\s\S]*?(?=\n\[|$)/) || [''])[0];
+      if (/timeout\s*=\s*26/.test(block)) ok('seo-insights has an explicit 26s timeout override, matching permitstack-pull');
+      else bad('no timeout override — manual test invocations can still silently exceed the default synchronous limit');
+      if (/schedule\s*=/.test(block)) ok('the nightly schedule is preserved alongside the new timeout');
+      else bad('the schedule line was lost');
+    }
+
     console.log('\n[4] portal wiring');
     {
       const fs = require('fs');
