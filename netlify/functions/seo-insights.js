@@ -148,19 +148,19 @@ async function loadServiceAccount() {
 exports.handler = async function() {
   if (!process.env.SUPA_SERVICE_KEY) {
     console.error('seo-insights: SUPA_SERVICE_KEY not set');
-    return { statusCode: 500, body: JSON.stringify({ error: 'SUPA_SERVICE_KEY not set' }) };
+    return { statusCode: 500, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: 'SUPA_SERVICE_KEY not set' }) };
   }
 
   let sa;
   try { sa = await loadServiceAccount(); }
   catch (e) {
     await writeStatus('failed', { reason: 'credential_unreadable', hint: e.message.slice(0, 200) });
-    return { statusCode: 500, body: JSON.stringify({ error: e.message }) };
+    return { statusCode: 500, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: e.message }) };
   }
   if (!sa || !sa.client_email || !sa.private_key) {
     console.log('seo-insights: no service-account key found in app_config — skipping (see GROWTH_ACTIONS.md)');
     await writeStatus('skipped', { reason: 'no_credential', hint: 'No service-account key in app_config (key = gsc_service_account). See the header of seo-insights.js.' });
-    return { statusCode: 200, body: JSON.stringify({ skipped: 'service account not configured — insert it into app_config (see function header)' }) };
+    return { statusCode: 200, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ skipped: 'service account not configured — insert it into app_config (see function header)' }) };
   }
 
   const site = process.env.GSC_SITE_URL || 'sc-domain:fixmy.energy';
@@ -183,19 +183,44 @@ exports.handler = async function() {
       ctr: r.ctr, position: r.position
     }));
 
-    // 2. GA4 sessions/conversions by date (optional) — merged into the same rows
-    if (process.env.GA4_PROPERTY_ID) {
+    // 2 & 4. GA4 sessions-by-date AND GA4 sessions-by-campaign are two independent
+    // Data API calls sharing the same token — fired CONCURRENTLY rather than back to
+    // back. This function makes up to 9 sequential external round trips end to end
+    // (app_config, token exchange, GSC daily, GSC queries+pages, 3 Supabase upserts,
+    // both GA4 reports); adding the campaign report as a second sequential Google call
+    // pushed a cold start further into Netlify's execution-time risk, which showed up
+    // in the field as the manual test URL returning nothing at all — not an error,
+    // just silence, because the invocation never finished. Promise.all here removes
+    // one full round trip from the critical path at zero behavior change.
+    const ga4PropertyId = process.env.GA4_PROPERTY_ID;
+    const [gaRespResult, campRespResult] = await Promise.all([
+      ga4PropertyId ? fetch('https://analyticsdata.googleapis.com/v1beta/properties/' + ga4PropertyId + ':runReport', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          dateRanges: [{ startDate: start, endDate: end }],
+          dimensions: [{ name: 'date' }, { name: 'sessionDefaultChannelGroup' }],
+          metrics: [{ name: 'sessions' }, { name: 'keyEvents' }],
+          limit: 500
+        })
+      }).catch(e => ({ __fetchError: e })) : Promise.resolve(null),
+      ga4PropertyId ? fetch('https://analyticsdata.googleapis.com/v1beta/properties/' + ga4PropertyId + ':runReport', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          dateRanges: [{ startDate: start, endDate: end }],
+          dimensions: [{ name: 'sessionSource' }, { name: 'sessionMedium' }, { name: 'sessionCampaignName' }],
+          metrics: [{ name: 'sessions' }, { name: 'keyEvents' }],
+          orderBys: [{ metric: { metricName: 'keyEvents' }, desc: true }],
+          limit: 200
+        })
+      }).catch(e => ({ __fetchError: e })) : Promise.resolve(null)
+    ]);
+
+    if (ga4PropertyId) {
       try {
-        const gaResp = await fetch('https://analyticsdata.googleapis.com/v1beta/properties/' + process.env.GA4_PROPERTY_ID + ':runReport', {
-          method: 'POST',
-          headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            dateRanges: [{ startDate: start, endDate: end }],
-            dimensions: [{ name: 'date' }, { name: 'sessionDefaultChannelGroup' }],
-            metrics: [{ name: 'sessions' }, { name: 'keyEvents' }],
-            limit: 500
-          })
-        });
+        if (gaRespResult && gaRespResult.__fetchError) throw gaRespResult.__fetchError;
+        const gaResp = gaRespResult;
         if (gaResp.ok) {
           const ga = await gaResp.json();
           const byDate = {};
@@ -284,27 +309,20 @@ exports.handler = async function() {
     summary.queries = queries.length;
     summary.pages = pages.length;
 
-    // 4. Campaign-source breakdown, same 30-day window → seo_campaigns snapshot.
-    // Answers "which source/campaign actually produces bookings" without any Google
-    // Ads API access — GA4 already carries sessionSource/Medium/CampaignName for every
-    // session, Ads or otherwise, as long as gclid/gbraid landed correctly (they do —
-    // book.html/index.html/thank-you.html all capture them, see CLAUDE.md).
+    // 4. Campaign-source breakdown, same 30-day window → seo_campaigns snapshot. The
+    // fetch already happened above, concurrently with the per-date GA4 report — this
+    // is just processing the response. Answers "which source/campaign actually
+    // produces bookings" without any Google Ads API access — GA4 already carries
+    // sessionSource/Medium/CampaignName for every session, Ads or otherwise, as long
+    // as gclid/gbraid landed correctly (they do — book.html/index.html/thank-you.html
+    // all capture them, see CLAUDE.md).
     // ⚠️ Independently guarded, like every optional add-on here: a missing
     // seo_campaigns table (unapplied migration) or a Data API hiccup must not take
     // down the GSC/GA4 pull above, which is the part everything else depends on.
     if (process.env.GA4_PROPERTY_ID) {
       try {
-        const campResp = await fetch('https://analyticsdata.googleapis.com/v1beta/properties/' + process.env.GA4_PROPERTY_ID + ':runReport', {
-          method: 'POST',
-          headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            dateRanges: [{ startDate: start, endDate: end }],
-            dimensions: [{ name: 'sessionSource' }, { name: 'sessionMedium' }, { name: 'sessionCampaignName' }],
-            metrics: [{ name: 'sessions' }, { name: 'keyEvents' }],
-            orderBys: [{ metric: { metricName: 'keyEvents' }, desc: true }],
-            limit: 200
-          })
-        });
+        if (campRespResult && campRespResult.__fetchError) throw campRespResult.__fetchError;
+        const campResp = campRespResult;
         if (campResp.ok) {
           const camp = await campResp.json();
           const campaignRows = (camp.rows || []).map(r => ({
@@ -339,11 +357,11 @@ exports.handler = async function() {
         ? 'Google answered normally but reported zero impressions for the whole window. The credential is fine — the site genuinely has no search visibility.'
         : null
     });
-    return { statusCode: 200, body: JSON.stringify({ ok: true, ...summary }) };
+    return { statusCode: 200, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ok: true, ...summary }) };
   } catch (e) {
     const c = classifyFailure(e);
     console.error('seo-insights:', c.reason, '—', e.message);
     await writeStatus('failed', { reason: c.reason, hint: c.hint, site, detail: String(e.message).slice(0, 300) });
-    return { statusCode: 500, body: JSON.stringify({ error: e.message, reason: c.reason, hint: c.hint, ...summary }) };
+    return { statusCode: 500, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ error: e.message, reason: c.reason, hint: c.hint, ...summary }) };
   }
 };

@@ -143,6 +143,65 @@ async function run(scenario) {
       else bad('direct traffic misclassified as paid');
     }
 
+    console.log('\n[5] the two GA4 calls run CONCURRENTLY, not back to back');
+    {
+      // This function makes up to 9 sequential external round trips end to end; adding
+      // the campaign report as a second back-to-back Google API call pushed a cold
+      // start further into Netlify's execution-time risk (reported in the field as the
+      // manual test URL going silent). Prove the fix: both mock fetches sleep 60ms —
+      // sequential would take >=120ms for the pair, concurrent should take ~60-90ms.
+      baseEnv();
+      const sa = { client_email: 'svc@proj.iam.gserviceaccount.com', private_key: PEM };
+      const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+      const dispatchOrder = [];
+      const fetchImpl = async (url, opts) => {
+        const u = String(url);
+        if (u.includes('app_config')) return { ok: true, json: async () => [{ value: sa }] };
+        if (u.includes('oauth2.googleapis.com/token')) return { ok: true, json: async () => ({ access_token: 'tok' }) };
+        if (u.includes('searchanalytics')) {
+          const body = JSON.parse(opts.body);
+          if (body.dimensions[0] === 'date') return { ok: true, json: async () => ({ rows: [{ keys: ['2026-08-11'], clicks: 1, impressions: 10, ctr: 0.1, position: 5 }] }) };
+          return { ok: true, json: async () => ({ rows: [] }) };
+        }
+        if (u.includes('analyticsdata.googleapis.com')) {
+          const body = JSON.parse(opts.body);
+          const which = body.dimensions.some(d => d.name === 'sessionCampaignName') ? 'campaign' : 'date';
+          dispatchOrder.push(which + ':start');
+          await sleep(60);
+          dispatchOrder.push(which + ':end');
+          return { ok: true, json: async () => ({ rows: [] }) };
+        }
+        if (u.includes('/rest/v1/')) return { ok: true, text: async () => '' };
+        return { ok: true, json: async () => ({}), text: async () => '' };
+      };
+      const fn = loadWithStubs(fetchImpl);
+      const t0 = Date.now();
+      await fn.handler({ httpMethod: 'GET' }, {});
+      const elapsed = Date.now() - t0;
+      if (elapsed < 115) ok('both GA4 calls overlap — total time ' + elapsed + 'ms for two 60ms calls');
+      else bad('calls ran sequentially — took ' + elapsed + 'ms (expected under 115ms if concurrent)');
+      const bothStartedBeforeEitherEnded =
+        dispatchOrder.indexOf('date:start') < dispatchOrder.indexOf('campaign:end') &&
+        dispatchOrder.indexOf('campaign:start') < dispatchOrder.indexOf('date:end');
+      if (bothStartedBeforeEitherEnded) ok('the campaign fetch was dispatched before the date fetch resolved');
+      else bad('dispatch order shows serialization: ' + dispatchOrder.join(' → '));
+    }
+
+    console.log('\n[6] every response sets Content-Type so a browser reliably renders the body');
+    {
+      const fs = require('fs');
+      const src = fs.readFileSync(path.join(__dirname, '..', 'netlify', 'functions', 'seo-insights.js'), 'utf8');
+      // The naive [^}]* regex stops at the first '}' it meets, which is inside the
+      // JSON.stringify({...}) call itself — match on the statement's OPENING instead.
+      const returnStarts = (src.match(/return \{ statusCode: \d+,/g) || []);
+      const missing = returnStarts.filter(function(r) {
+        const idx = src.indexOf(r);
+        return !src.slice(idx, idx + 80).includes("'Content-Type': 'application/json'");
+      });
+      if (returnStarts.length >= 5 && !missing.length) ok('all ' + returnStarts.length + ' return paths set Content-Type explicitly');
+      else bad(missing.length + ' of ' + returnStarts.length + ' response(s) missing an explicit Content-Type');
+    }
+
     console.log('\n[4] portal wiring');
     {
       const fs = require('fs');
