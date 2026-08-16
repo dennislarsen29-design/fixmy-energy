@@ -1,6 +1,8 @@
 // Called after Stripe payment succeeds — verifies payment, updates Supabase, fires GHL webhook.
 // ENV vars required: STRIPE_SECRET_KEY, SUPA_SERVICE_KEY, GHL_API_KEY
 
+const { sendMetaEvent } = require('./lib/meta-capi');
+
 const SUPA_URL        = 'https://kbtobyoumvbcxfbugsid.supabase.co';
 const GHL_LOCATION_ID = 'gXWwbOVymY0iRfj7c1It';
 const GHL_FROM_NUMBER = process.env.GHL_SMS_FROM_NUMBER || undefined;
@@ -27,7 +29,7 @@ exports.handler = async function(event) {
     return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Invalid JSON' }) };
   }
 
-  const { token, paymentIntentId, signature, signedAt, repairAuthInitial, signingLocation } = body;
+  const { token, paymentIntentId, signature, signedAt, repairAuthInitial, signingLocation, fbp, fbc } = body;
   if (!token || !paymentIntentId || !signature) {
     return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'token, paymentIntentId and signature required' }) };
   }
@@ -109,11 +111,12 @@ exports.handler = async function(event) {
 
   console.log('sign-complete: paid+signed for', c.first_name, c.last_name, '(', customerId, ') from IP', signingIp);
 
+  const chargedAmount = (pi.amount_received != null ? pi.amount_received : pi.amount) / 100;
+
   // Record the transaction in the payments ledger (idempotent on the
   // PaymentIntent id — safe across client retries). Non-fatal: the customer
   // flags above are already set, and the nightly reconcile catches gaps.
   try {
-    const chargedAmount = (pi.amount_received != null ? pi.amount_received : pi.amount) / 100;
     const ledgerResp = await fetch(SUPA_URL + '/rest/v1/payments?on_conflict=stripe_payment_intent_id', {
       method: 'POST',
       headers: { ...supaHeaders, 'Prefer': 'resolution=ignore-duplicates,return=minimal' },
@@ -131,6 +134,24 @@ exports.handler = async function(event) {
     });
     if (!ledgerResp.ok) console.warn('sign-complete: ledger insert failed', ledgerResp.status, (await ledgerResp.text()).slice(0, 200));
   } catch(e) { console.warn('sign-complete: ledger insert error —', e.message); }
+
+  // Server-side Meta Conversions API — this is the real dollar-value
+  // conversion (a paid, signed diagnostic), and the one worth optimizing ad
+  // spend against. Uses the same event id as the client-side fbq('Purchase')
+  // fired on sign.html so Meta dedupes rather than double-counting. Never
+  // blocks or fails the response — payment is already captured and recorded
+  // above by this point.
+  try {
+    await sendMetaEvent({
+      eventName: 'Purchase',
+      eventId: 'purchase_' + paymentIntentId,
+      eventSourceUrl: 'https://fixmy.energy/sign',
+      email: c.email, phone: c.phone, firstName: c.first_name, lastName: c.last_name,
+      clientIp: signingIp, userAgent: signingUserAgent,
+      fbp, fbc,
+      value: chargedAmount, currency: pi.currency || 'usd',
+    });
+  } catch(e) { console.warn('meta-capi Purchase error:', e.message); }
 
   // Fire GHL webhook to notify agreement signed + invoice paid
   if (GHL_API_KEY) {

@@ -2,6 +2,8 @@
 // POST /.netlify/functions/ghl-book
 // Body: { firstName, lastName, phone, email, address, startISO, endISO }
 
+const { sendMetaEvent } = require('./lib/meta-capi');
+
 const GHL_BASE    = 'https://services.leadconnectorhq.com';
 // "Evaluation" calendar — the initial Tech visit booked from /book (NOT the post-payment Diagnostic visit).
 const CALENDAR_ID = process.env.GHL_EVAL_CALENDAR_ID || 'UjlvHxE8AlyhG5frBkqr';
@@ -50,7 +52,7 @@ exports.handler = async function(event) {
     return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Invalid JSON' }) };
   }
 
-  const { firstName, lastName, phone, email, address, startISO, endISO, customerId } = payload;
+  const { firstName, lastName, phone, email, address, startISO, endISO, customerId, fbp, fbc } = payload;
   if (!startISO || (!phone && !email))
     return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'startISO + phone or email required' }) };
 
@@ -123,6 +125,24 @@ exports.handler = async function(event) {
   } catch(e) {
     apptError = { status: 0, body: e.message };
     console.error('GHL appointment create failed:', e.message);
+  }
+
+  // Server-side Meta Conversions API — mirrors the client-side fbq('Schedule')
+  // fired on /booked, using the same event id (schedule_<appointmentId>) so
+  // Meta dedupes the two into one event instead of double-counting. Only
+  // fires on a real appointment, and never blocks/fails the booking itself.
+  if (appointmentId) {
+    try {
+      await sendMetaEvent({
+        eventName: 'Schedule',
+        eventId: 'schedule_' + appointmentId,
+        eventSourceUrl: 'https://fixmy.energy/book',
+        email, phone, firstName, lastName,
+        clientIp: (event.headers['x-forwarded-for'] || '').split(',')[0].trim() || undefined,
+        userAgent: event.headers['user-agent'],
+        fbp, fbc,
+      });
+    } catch(e) { console.warn('meta-capi Schedule error:', e.message); }
   }
 
   // ── 3. Upsert Supabase ─────────────────────────────────────────────────────
