@@ -193,6 +193,12 @@ exports.handler = async function(event) {
         : { diagnostic_date: startISO, arrival_window: arrivalWindow, lead_source: 'inbound_web', step: 1, black_box: false };
       if (firstName) patch.first_name = firstName;
       if (lastName)  patch.last_name  = lastName;
+      // A re-booking always carries a real phone/email from the form — write
+      // it whenever present so a lead whose contact info was ever blank (a
+      // prior partial capture, a manual edit, a merge) gets it restored on
+      // the next booking instead of staying permanently missing.
+      if (phone) patch.phone = phone;
+      if (email) patch.email = email;
       await fetch(`${SUPA_URL}/rest/v1/customers?id=eq.${existingId}`, {
         method:  'PATCH',
         headers: { ...supaHeaders, Prefer: 'return=representation' },
