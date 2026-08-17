@@ -11452,14 +11452,21 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (s) s.textContent = 'Stopping after the current lead…';
   };
 
-  // Meta Custom Audience export — a CSV of Black Box leads (phone/email known,
-  // not DNC) in the shape Meta Ads Manager's Customer List uploader expects.
+  // Meta Custom Audience export — a CSV of every Black Box lead with a phone
+  // or email, in the shape Meta Ads Manager's Customer List uploader expects.
   // Nothing is sent to Meta from here; this is a local file the admin uploads
   // themselves at Audiences → Create Audience → Customer List. Filtered
   // client-side (not via a second .or() on the query) — this file has a
   // documented case where stacking multiple .or() calls on one query wasn't
   // proven to combine correctly, so archived is the only server-side filter
-  // and dnc/phone/email are checked after the fetch.
+  // and phone/email presence is checked after the fetch.
+  //
+  // DNC is deliberately NOT excluded here (per Dennis, 2026-08-16): the dnc
+  // flag records a phone-contact opt-out under TCPA/the National DNC
+  // Registry, which governs telemarketing calls and texts to a number — it
+  // has no bearing on Meta ad audience matching, where no call or text is
+  // ever placed. Do not add a dnc filter back into this export on the
+  // assumption it's the same kind of consent; it isn't.
   window.bbExportMetaAudience = async function() {
     _bbEnrichOverlay('<div style="font-size:0.78rem;font-weight:800;color:#7fb3ff;margin-bottom:4px;">&#128228; Meta Custom Audience Export</div>'
       + '<div id="bbEnrichOvStatus" style="font-size:0.72rem;color:#bbb;">Loading leads&hellip;</div>');
@@ -11467,7 +11474,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var c = supabase.createClient(SUPA_URL, SUPA_KEY);
       var rows = [], off = 0;
       while (true) {
-        var r = await c.from('customers').select('first_name,last_name,email,phone,dnc')
+        var r = await c.from('customers').select('first_name,last_name,email,phone')
           .eq('lead_source', 'orphaned_list')
           .or('archived.is.null,archived.eq.false')
           .order('id', { ascending: true }).range(off, off + 999);
@@ -11478,10 +11485,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         if (r.data.length < 1000) break;
         off += 1000;
       }
-      var usable = rows.filter(function(l) { return !l.dnc && (l.email || l.phone); });
+      var usable = rows.filter(function(l) { return l.email || l.phone; });
       if (!usable.length) {
         _bbEnrichOverlay('<div style="font-size:0.78rem;font-weight:800;color:#ef4444;margin-bottom:4px;">&#10005; Nothing to export</div>'
-          + '<div style="font-size:0.72rem;color:#bbb;">No non-DNC Black Box leads with a phone or email were found.</div>'
+          + '<div style="font-size:0.72rem;color:#bbb;">No Black Box leads with a phone or email were found.</div>'
           + '<a href="javascript:void(0)" onclick="_bbEnrichOverlayClose()" style="display:inline-block;margin-top:8px;font-size:0.72rem;color:#7fb3ff;">Dismiss</a>');
         return;
       }
@@ -11501,7 +11508,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       a.download = 'meta_custom_audience_blackbox_' + new Date().toISOString().slice(0, 10) + '.csv';
       a.click();
       _bbEnrichOverlay('<div style="font-size:0.78rem;font-weight:800;color:#8DC63F;margin-bottom:4px;">&#10003; Export complete</div>'
-        + '<div style="font-size:0.72rem;color:#bbb;">' + usable.length.toLocaleString() + ' of ' + rows.length.toLocaleString() + ' Black Box leads exported (had phone/email, not DNC).</div>'
+        + '<div style="font-size:0.72rem;color:#bbb;">' + usable.length.toLocaleString() + ' of ' + rows.length.toLocaleString() + ' Black Box leads exported (had phone or email; DNC leads included — TCPA covers phone contact, not ad matching).</div>'
         + '<div style="font-size:0.68rem;color:#888;margin-top:6px;">Upload at Meta Ads Manager → Audiences → Create Audience → Customer List. Meta hashes the file itself — nothing here is pre-hashed.</div>'
         + '<a href="javascript:void(0)" onclick="_bbEnrichOverlayClose()" style="display:inline-block;margin-top:8px;font-size:0.72rem;color:#7fb3ff;">Dismiss</a>');
     } catch (e) {
@@ -11556,13 +11563,58 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
   };
 
+  // ── Lead Funnel visual — Sourced → Owner Known → Contact Known → Activated ──
+  // A magnitude progression, so one hue ramping light→dark per stage (never a
+  // different hue per stage — that would wrongly imply four unrelated
+  // categories instead of one population narrowing down). Activated is the
+  // real conversion out of Black Box, qualitatively different from the
+  // enrichment stages before it, so it alone breaks to green — matching how
+  // this codebase already uses green for "done/converted" everywhere else in
+  // Black Box. Each stage's real count/percent is always the text label —
+  // only the bar width gets a visibility floor, never the number shown.
+  function _bbFunnelVisualHtml(total, ownerKnown, contactKnown, activated, dupeNote) {
+    if (!total) return '';
+    var stages = [
+      { label: 'Sourced', value: total, color: '#2f6fb8',
+        lever: 'Nightly permit pipeline + Import tab — deduped on the way in (street+zip key)' },
+      { label: 'Owner Known', value: ownerKnown, color: '#4a9eff',
+        leverHtml: '<a href="javascript:void(0)" onclick="adminCanvassEnrichAll()" style="color:#7fb3ff;">&#128269; Run Owner Lookup</a> &middot; <a href="javascript:void(0)" onclick="bbShowParcelImport()" style="color:#7fb3ff;">&#128230; County File</a>' },
+      { label: 'Contact Known', value: contactKnown, color: '#8ec7ff',
+        leverHtml: '<a href="javascript:void(0)" onclick="adminCanvassSubmitSkipTrace(' + (total - contactKnown) + ')" style="color:#7fb3ff;">&#128222; Skip Trace</a> (paid, fills the rest)' },
+      { label: 'Activated', value: activated, color: '#8DC63F',
+        lever: 'Driven by rep activity — Doors & Dialing knock/dial this pool (see Team &rarr; Dialers)' }
+    ];
+    var rows = stages.map(function(s) {
+      var pct = total ? (s.value / total * 100) : 0;
+      var barWidth = Math.max(pct, 1.2); // visibility floor on the bar only — label always shows the real number
+      var leverLine = s.leverHtml || s.lever;
+      return '<div style="margin-bottom:9px;">'
+        + '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px;">'
+        +   '<span style="font-size:0.72rem;font-weight:700;color:#eee;">' + s.label + '</span>'
+        +   '<span style="font-size:0.72rem;color:#999;font-variant-numeric:tabular-nums;">' + s.value.toLocaleString() + ' &middot; ' + pct.toFixed(pct < 1 ? 2 : 0) + '%</span>'
+        + '</div>'
+        + '<div style="background:rgba(255,255,255,0.06);border-radius:5px;height:10px;overflow:hidden;">'
+        +   '<div style="width:' + barWidth.toFixed(2) + '%;height:100%;background:' + s.color + ';border-radius:5px;"></div>'
+        + '</div>'
+        + '<div style="font-size:0.66rem;color:#777;margin-top:3px;">' + leverLine + '</div>'
+        + '</div>';
+    }).join('');
+    return '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:12px 14px;margin-bottom:10px;">'
+      + '<div style="font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;color:#666;margin-bottom:10px;">Lead Funnel &mdash; each stage is a subset of the one above it</div>'
+      + rows
+      + (dupeNote ? '<div style="font-size:0.64rem;color:#5a8a5a;margin-top:2px;border-top:1px solid rgba(255,255,255,0.06);padding-top:7px;">&#10003; ' + dupeNote + '</div>' : '')
+      + '</div>';
+  }
+
   window.adminCanvassLoadEnrichBar = async function() {
     var bar = document.getElementById('bbEnrichBar');
     if (!bar) return;
     var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
-    var { count: total }     = await c2.from('customers').select('id',{count:'exact',head:true}).eq('lead_source','orphaned_list').is('sold_type',null);
-    var { count: noContact } = await c2.from('customers').select('id',{count:'exact',head:true}).eq('lead_source','orphaned_list').is('sold_type',null).is('phone',null).is('email',null);
-    var { count: noOwner }   = await c2.from('customers').select('id',{count:'exact',head:true}).eq('lead_source','orphaned_list').is('sold_type',null).is('title_owner',null).or('phone.not.is.null,email.not.is.null');
+    var { count: total }      = await c2.from('customers').select('id',{count:'exact',head:true}).eq('lead_source','orphaned_list').is('sold_type',null);
+    var { count: noContact }  = await c2.from('customers').select('id',{count:'exact',head:true}).eq('lead_source','orphaned_list').is('sold_type',null).is('phone',null).is('email',null);
+    var { count: noOwner }    = await c2.from('customers').select('id',{count:'exact',head:true}).eq('lead_source','orphaned_list').is('sold_type',null).is('title_owner',null).or('phone.not.is.null,email.not.is.null');
+    var { count: ownerKnown } = await c2.from('customers').select('id',{count:'exact',head:true}).eq('lead_source','orphaned_list').is('sold_type',null).not('title_owner','is',null);
+    var { count: activated }  = await c2.from('customers').select('id',{count:'exact',head:true}).eq('lead_source','orphaned_list').eq('black_box',false);
     // Trust/LLC-owned leads with no human name on file. These are NOT an owner-lookup
     // failure — the county's owner of record genuinely is the trust, so no parcel source
     // will ever resolve them. Skip-trace is the only thing that will, so they get counted
@@ -11576,9 +11628,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       trustNoHuman = tr.count || 0;
     } catch(e) {}
 
-    total = total||0; noContact = noContact||0; noOwner = noOwner||0;
+    total = total||0; noContact = noContact||0; noOwner = noOwner||0; ownerKnown = ownerKnown||0; activated = activated||0;
     window._bbBlackBoxTotal = total; // share with Lead Insights header
     window._bbTrustNoHuman = trustNoHuman;
+    var funnelHtml = _bbFunnelVisualHtml(total, ownerKnown, total - noContact, activated);
     var statEl = document.getElementById('bbStatImported');
     if (statEl) statEl.textContent = total.toLocaleString();
     if (!bar) return;
@@ -11601,9 +11654,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
 
     if (noContact === 0 && noOwner === 0) {
-      bar.innerHTML = '<div style="background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.2);border-radius:10px;padding:10px 14px;font-size:0.75rem;color:#8DC63F;font-weight:700;">&#10003; All '+total+' leads fully enriched — owner + contact on file</div>';
+      bar.innerHTML = funnelHtml + '<div style="background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.2);border-radius:10px;padding:10px 14px;font-size:0.75rem;color:#8DC63F;font-weight:700;">&#10003; All '+total+' leads fully enriched — owner + contact on file</div>';
     } else if (noContact === 0 && noOwner > 0) {
-      bar.innerHTML = '<div style="background:rgba(255,170,0,0.07);border:1px solid rgba(255,170,0,0.2);border-radius:10px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">'
+      bar.innerHTML = funnelHtml + '<div style="background:rgba(255,170,0,0.07);border:1px solid rgba(255,170,0,0.2);border-radius:10px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">'
         + '<div><div style="font-size:0.75rem;font-weight:700;color:#ffaa00;">'+noOwner+' leads missing owner name</div>'
         + '<div style="font-size:0.68rem;color:#888;margin-top:1px;">All leads have phone/email &mdash; run Regrid owner lookup to fill the remaining '+noOwner+' title owners</div></div>'
         + '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
@@ -11611,7 +11664,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         + '<button onclick="bbShowParcelImport()" title="Bulk-import owner names from the SanGIS county parcel file (the $25 data drive). Reads the CSV on this device only — nothing is uploaded. Matches on APN, then street+zip." style="width:auto;margin-top:0;background:none;border:1px solid rgba(74,158,255,0.35);border-radius:100px;color:#4a9eff;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#128230; County File</button>'
         + '<button onclick="bbScanDuplicates()" title="Finds addresses with more than one lead and merges them into a single record — the survivor absorbs any phone, email or owner name the duplicates had, and their call history moves across. Shows a preview before anything changes." style="width:auto;margin-top:0;background:none;border:1px solid rgba(255,170,0,0.35);border-radius:100px;color:#ffaa00;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#128260; Merge Duplicates</button>'
         + '<button onclick="bbScanCommercial()" title="Finds parcels that are not workable homes — commercial buildings, HOA common areas, mobile homes, suites — and lets you confirm before any are removed. Nothing changes until you approve the list." style="width:auto;margin-top:0;background:none;border:1px solid rgba(148,163,184,0.4);border-radius:100px;color:#94a3b8;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#128711; Commercial</button>'
-        + '<button onclick="bbExportMetaAudience()" title="Exports every non-DNC Black Box lead with a phone or email as a CSV formatted for Meta Ads Manager\'s Custom Audience upload (Audiences → Create Audience → Customer List). Nothing is sent to Meta directly — you upload the file yourself." style="width:auto;margin-top:0;background:none;border:1px solid rgba(74,144,226,0.4);border-radius:100px;color:#7fb3ff;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#128228; Meta Audience CSV</button>'
+        + '<button onclick="bbExportMetaAudience()" title="Exports every Black Box lead with a phone or email (DNC included — that flag covers phone/text contact, not ad matching) as a CSV formatted for Meta Ads Manager\'s Custom Audience upload (Audiences → Create Audience → Customer List). Nothing is sent to Meta directly — you upload the file yourself." style="width:auto;margin-top:0;background:none;border:1px solid rgba(74,144,226,0.4);border-radius:100px;color:#7fb3ff;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#128228; Meta Audience CSV</button>'
         + '<button onclick="adminCanvassEnrichAll()" title="FREE — looks up missing property owner names via SANDAG/Regrid parcel GIS data and fills title_owner on every lead missing one. No per-lead cost." style="width:auto;margin-top:0;background:rgba(255,170,0,0.12);color:#ffaa00;border:1px solid rgba(255,170,0,0.35);border-radius:100px;padding:8px 18px;font-size:0.78rem;font-weight:800;cursor:pointer;white-space:nowrap;">&#128269; Run Owner Lookup</button>'
         + '</div></div>';
     } else {
@@ -11635,10 +11688,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         + '<button onclick="bbScanDuplicates()" title="Finds addresses with more than one lead and merges them into a single record — the survivor absorbs any phone, email or owner name the duplicates had, and their call history moves across. Shows a preview before anything changes." style="width:auto;margin-top:0;background:none;border:1px solid rgba(255,170,0,0.35);border-radius:100px;color:#ffaa00;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#128260; Merge Duplicates</button>'
         + '<button onclick="bbScanCommercial()" title="Finds parcels that are not workable homes — commercial buildings, HOA common areas, mobile homes, suites — and lets you confirm before any are removed. Nothing changes until you approve the list." style="width:auto;margin-top:0;background:none;border:1px solid rgba(148,163,184,0.4);border-radius:100px;color:#94a3b8;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#128711; Commercial</button>'
         + '<button onclick="bbRecoverSkipTraces(false)" title="Walks every Tracerfy queue you have ever paid for, re-reads the results, and fills in names, phones and emails that were never applied. Shows what it would write before anything changes." style="width:auto;margin-top:0;background:none;border:1px solid rgba(155,109,232,0.4);border-radius:100px;color:#c4a3f0;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#9851; Recover Skip Traces</button>'
-        + '<button onclick="bbExportMetaAudience()" title="Exports every non-DNC Black Box lead with a phone or email as a CSV formatted for Meta Ads Manager\'s Custom Audience upload (Audiences → Create Audience → Customer List). Nothing is sent to Meta directly — you upload the file yourself." style="width:auto;margin-top:0;background:none;border:1px solid rgba(74,144,226,0.4);border-radius:100px;color:#7fb3ff;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#128228; Meta Audience CSV</button>'
+        + '<button onclick="bbExportMetaAudience()" title="Exports every Black Box lead with a phone or email (DNC included — that flag covers phone/text contact, not ad matching) as a CSV formatted for Meta Ads Manager\'s Custom Audience upload (Audiences → Create Audience → Customer List). Nothing is sent to Meta directly — you upload the file yourself." style="width:auto;margin-top:0;background:none;border:1px solid rgba(74,144,226,0.4);border-radius:100px;color:#7fb3ff;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#128228; Meta Audience CSV</button>'
         + traceBtns
         + '</div>';
-      bar.innerHTML = '<div style="background:rgba(239,68,68,0.07);border:1px solid rgba(239,68,68,0.2);border-radius:10px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">'
+      bar.innerHTML = funnelHtml + '<div style="background:rgba(239,68,68,0.07);border:1px solid rgba(239,68,68,0.2);border-radius:10px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">'
         + '<div><div style="font-size:0.75rem;font-weight:700;color:#ef4444;">'+noContact+' leads have no contact info</div>'
         + '<div style="font-size:0.68rem;color:#888;margin-top:1px;">'+(total-noContact)+' of '+total+' have phone or email &mdash; GIS owner lookup is free &middot; skip-trace adds phone/email (paid)</div></div>'
         + actionBtn + '</div>';
