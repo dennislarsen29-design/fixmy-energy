@@ -11452,6 +11452,65 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (s) s.textContent = 'Stopping after the current lead…';
   };
 
+  // Meta Custom Audience export — a CSV of Black Box leads (phone/email known,
+  // not DNC) in the shape Meta Ads Manager's Customer List uploader expects.
+  // Nothing is sent to Meta from here; this is a local file the admin uploads
+  // themselves at Audiences → Create Audience → Customer List. Filtered
+  // client-side (not via a second .or() on the query) — this file has a
+  // documented case where stacking multiple .or() calls on one query wasn't
+  // proven to combine correctly, so archived is the only server-side filter
+  // and dnc/phone/email are checked after the fetch.
+  window.bbExportMetaAudience = async function() {
+    _bbEnrichOverlay('<div style="font-size:0.78rem;font-weight:800;color:#7fb3ff;margin-bottom:4px;">&#128228; Meta Custom Audience Export</div>'
+      + '<div id="bbEnrichOvStatus" style="font-size:0.72rem;color:#bbb;">Loading leads&hellip;</div>');
+    try {
+      var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var rows = [], off = 0;
+      while (true) {
+        var r = await c.from('customers').select('first_name,last_name,email,phone,dnc')
+          .eq('lead_source', 'orphaned_list')
+          .or('archived.is.null,archived.eq.false')
+          .order('id', { ascending: true }).range(off, off + 999);
+        if (r.error || !r.data || !r.data.length) break;
+        rows = rows.concat(r.data);
+        var st = document.getElementById('bbEnrichOvStatus');
+        if (st) st.textContent = 'Loading leads… ' + rows.length.toLocaleString();
+        if (r.data.length < 1000) break;
+        off += 1000;
+      }
+      var usable = rows.filter(function(l) { return !l.dnc && (l.email || l.phone); });
+      if (!usable.length) {
+        _bbEnrichOverlay('<div style="font-size:0.78rem;font-weight:800;color:#ef4444;margin-bottom:4px;">&#10005; Nothing to export</div>'
+          + '<div style="font-size:0.72rem;color:#bbb;">No non-DNC Black Box leads with a phone or email were found.</div>'
+          + '<a href="javascript:void(0)" onclick="_bbEnrichOverlayClose()" style="display:inline-block;margin-top:8px;font-size:0.72rem;color:#7fb3ff;">Dismiss</a>');
+        return;
+      }
+      var header = 'email,phone,fn,ln';
+      var lines = [header];
+      usable.forEach(function(l) {
+        var email = (l.email || '').trim().toLowerCase().replace(/"/g, '""');
+        var digits = (l.phone || '').replace(/[^0-9]/g, '');
+        if (digits.length === 11 && digits[0] === '1') digits = digits.slice(1);
+        var fn = (l.first_name || '').replace(/"/g, '""');
+        var ln = (l.last_name || '').replace(/"/g, '""');
+        lines.push('"' + email + '","' + digits + '","' + fn + '","' + ln + '"');
+      });
+      var blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'meta_custom_audience_blackbox_' + new Date().toISOString().slice(0, 10) + '.csv';
+      a.click();
+      _bbEnrichOverlay('<div style="font-size:0.78rem;font-weight:800;color:#8DC63F;margin-bottom:4px;">&#10003; Export complete</div>'
+        + '<div style="font-size:0.72rem;color:#bbb;">' + usable.length.toLocaleString() + ' of ' + rows.length.toLocaleString() + ' Black Box leads exported (had phone/email, not DNC).</div>'
+        + '<div style="font-size:0.68rem;color:#888;margin-top:6px;">Upload at Meta Ads Manager → Audiences → Create Audience → Customer List. Meta hashes the file itself — nothing here is pre-hashed.</div>'
+        + '<a href="javascript:void(0)" onclick="_bbEnrichOverlayClose()" style="display:inline-block;margin-top:8px;font-size:0.72rem;color:#7fb3ff;">Dismiss</a>');
+    } catch (e) {
+      _bbEnrichOverlay('<div style="font-size:0.78rem;font-weight:800;color:#ef4444;margin-bottom:4px;">&#10005; Export failed</div>'
+        + '<div style="font-size:0.72rem;color:#bbb;">' + (e && e.message ? e.message : 'Unknown error') + '</div>'
+        + '<a href="javascript:void(0)" onclick="_bbEnrichOverlayClose()" style="display:inline-block;margin-top:8px;font-size:0.72rem;color:#7fb3ff;">Dismiss</a>');
+    }
+  };
+
   // Skip-trace recovery, behind a button instead of a pasted URL. Netlify's MCP manages
   // sites and deploys — it has no operation that invokes a deployed function — so anything
   // an admin needs to run belongs in the portal like every other action here.
@@ -11552,6 +11611,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         + '<button onclick="bbShowParcelImport()" title="Bulk-import owner names from the SanGIS county parcel file (the $25 data drive). Reads the CSV on this device only — nothing is uploaded. Matches on APN, then street+zip." style="width:auto;margin-top:0;background:none;border:1px solid rgba(74,158,255,0.35);border-radius:100px;color:#4a9eff;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#128230; County File</button>'
         + '<button onclick="bbScanDuplicates()" title="Finds addresses with more than one lead and merges them into a single record — the survivor absorbs any phone, email or owner name the duplicates had, and their call history moves across. Shows a preview before anything changes." style="width:auto;margin-top:0;background:none;border:1px solid rgba(255,170,0,0.35);border-radius:100px;color:#ffaa00;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#128260; Merge Duplicates</button>'
         + '<button onclick="bbScanCommercial()" title="Finds parcels that are not workable homes — commercial buildings, HOA common areas, mobile homes, suites — and lets you confirm before any are removed. Nothing changes until you approve the list." style="width:auto;margin-top:0;background:none;border:1px solid rgba(148,163,184,0.4);border-radius:100px;color:#94a3b8;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#128711; Commercial</button>'
+        + '<button onclick="bbExportMetaAudience()" title="Exports every non-DNC Black Box lead with a phone or email as a CSV formatted for Meta Ads Manager\'s Custom Audience upload (Audiences → Create Audience → Customer List). Nothing is sent to Meta directly — you upload the file yourself." style="width:auto;margin-top:0;background:none;border:1px solid rgba(74,144,226,0.4);border-radius:100px;color:#7fb3ff;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#128228; Meta Audience CSV</button>'
         + '<button onclick="adminCanvassEnrichAll()" title="FREE — looks up missing property owner names via SANDAG/Regrid parcel GIS data and fills title_owner on every lead missing one. No per-lead cost." style="width:auto;margin-top:0;background:rgba(255,170,0,0.12);color:#ffaa00;border:1px solid rgba(255,170,0,0.35);border-radius:100px;padding:8px 18px;font-size:0.78rem;font-weight:800;cursor:pointer;white-space:nowrap;">&#128269; Run Owner Lookup</button>'
         + '</div></div>';
     } else {
@@ -11575,6 +11635,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         + '<button onclick="bbScanDuplicates()" title="Finds addresses with more than one lead and merges them into a single record — the survivor absorbs any phone, email or owner name the duplicates had, and their call history moves across. Shows a preview before anything changes." style="width:auto;margin-top:0;background:none;border:1px solid rgba(255,170,0,0.35);border-radius:100px;color:#ffaa00;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#128260; Merge Duplicates</button>'
         + '<button onclick="bbScanCommercial()" title="Finds parcels that are not workable homes — commercial buildings, HOA common areas, mobile homes, suites — and lets you confirm before any are removed. Nothing changes until you approve the list." style="width:auto;margin-top:0;background:none;border:1px solid rgba(148,163,184,0.4);border-radius:100px;color:#94a3b8;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#128711; Commercial</button>'
         + '<button onclick="bbRecoverSkipTraces(false)" title="Walks every Tracerfy queue you have ever paid for, re-reads the results, and fills in names, phones and emails that were never applied. Shows what it would write before anything changes." style="width:auto;margin-top:0;background:none;border:1px solid rgba(155,109,232,0.4);border-radius:100px;color:#c4a3f0;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#9851; Recover Skip Traces</button>'
+        + '<button onclick="bbExportMetaAudience()" title="Exports every non-DNC Black Box lead with a phone or email as a CSV formatted for Meta Ads Manager\'s Custom Audience upload (Audiences → Create Audience → Customer List). Nothing is sent to Meta directly — you upload the file yourself." style="width:auto;margin-top:0;background:none;border:1px solid rgba(74,144,226,0.4);border-radius:100px;color:#7fb3ff;font-size:0.72rem;cursor:pointer;padding:6px 14px;white-space:nowrap;">&#128228; Meta Audience CSV</button>'
         + traceBtns
         + '</div>';
       bar.innerHTML = '<div style="background:rgba(239,68,68,0.07);border:1px solid rgba(239,68,68,0.2);border-radius:10px;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">'
