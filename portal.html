@@ -11507,6 +11507,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       a.href = URL.createObjectURL(blob);
       a.download = 'meta_custom_audience_blackbox_' + new Date().toISOString().slice(0, 10) + '.csv';
       a.click();
+      // Snapshot the export so the Lead Funnel's Meta Audience row can show a
+      // real number instead of "we don't know" — same pipeline_state pattern
+      // used for the SDG&E outage/zip-boundary snapshots elsewhere in this file.
+      try {
+        await c.from('pipeline_state').upsert({
+          key: 'meta_audience_export',
+          value: JSON.stringify({ count: usable.length, total_pool: rows.length }),
+          updated_at: new Date().toISOString()
+        });
+      } catch (e) {}
+      if (typeof adminCanvassLoadFunnel === 'function') setTimeout(adminCanvassLoadFunnel, 500);
       _bbEnrichOverlay('<div style="font-size:0.78rem;font-weight:800;color:#8DC63F;margin-bottom:4px;">&#10003; Export complete</div>'
         + '<div style="font-size:0.72rem;color:#bbb;">' + usable.length.toLocaleString() + ' of ' + rows.length.toLocaleString() + ' Black Box leads exported (had phone or email; DNC leads included — TCPA covers phone contact, not ad matching).</div>'
         + '<div style="font-size:0.68rem;color:#888;margin-top:6px;">Upload at Meta Ads Manager → Audiences → Create Audience → Customer List. Meta hashes the file itself — nothing here is pre-hashed.</div>'
@@ -13316,6 +13327,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         'Email Found': { text: '&#128222; Go to Skip Trace &rarr;', onclick: "document.getElementById('bbStage3').scrollIntoView({behavior:'smooth'})" },
         'Activated':   { text: '&#128203; Go work leads &rarr;',    onclick: "document.getElementById('bbStage5').scrollIntoView({behavior:'smooth'})" }
       };
+      // Meta Audience isn't part of the sourced→activated waterfall above (it's
+      // a slice of "has phone or email," not a stage those leads pass through
+      // on the way to Activated — its count can be far larger than Activated's,
+      // which would read as a nonsensical negative "drop" if folded into that
+      // loop). Rendered as its own row instead: real count from the last export
+      // snapshot in pipeline_state, Meta's own brand blue so it visually reads
+      // as "sent to an external platform," not another internal pipeline stage.
+      var metaAudience = null;
+      try {
+        var { data: maRows } = await c2.from('pipeline_state').select('value,updated_at').eq('key', 'meta_audience_export').limit(1);
+        if (maRows && maRows[0]) {
+          var maVal = JSON.parse(maRows[0].value || '{}');
+          metaAudience = { count: maVal.count || 0, exportedAt: maRows[0].updated_at };
+        }
+      } catch (e) {}
+
       var h = '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:14px 16px;">';
       h += '<div style="font-size:0.72rem;font-weight:700;color:#ccc;margin-bottom:2px;">&#128201; Lead Funnel</div>';
       h += '<div style="font-size:0.64rem;color:#666;margin-bottom:12px;">Where leads are stuck or not yet fully enriched</div>';
@@ -13339,6 +13366,27 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         }
         h += '</div>';
       });
+      // Meta Audience row — width scaled against the same "top" (Permits Sourced)
+      // so its bar is visually comparable to the stages above, but it never
+      // participates in the drop-off waterfall math.
+      var maCount = metaAudience ? metaAudience.count : 0;
+      var maPct = top ? Math.round(maCount / top * 100) : 0;
+      var maWhen = metaAudience && metaAudience.exportedAt
+        ? new Date(metaAudience.exportedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+        : null;
+      h += '<div style="margin-top:4px;padding-top:11px;border-top:1px dashed rgba(255,255,255,0.1);">';
+      h += '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px;">';
+      h += '<span style="font-size:0.72rem;color:#ccc;font-weight:600;">&#128228; Meta Audience</span>';
+      h += '<span style="font-size:0.72rem;color:#1877F2;font-weight:800;">' + maCount.toLocaleString() + '</span>';
+      h += '</div>';
+      h += '<div style="background:rgba(255,255,255,0.06);border-radius:100px;height:7px;overflow:hidden;">';
+      h += '<div style="background:#1877F2;height:7px;border-radius:100px;width:' + Math.max(maPct, maCount ? 1 : 0) + '%;"></div>';
+      h += '</div>';
+      h += '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-top:2px;">';
+      h += '<div style="font-size:0.6rem;color:#777;">' + (maWhen ? 'Last exported ' + maWhen + ' &mdash; re-export to refresh with newly enriched leads' : 'Not exported yet') + '</div>';
+      h += '<button onclick="bbExportMetaAudience()" style="width:auto;margin-top:0;padding:3px 10px;background:rgba(24,119,242,0.12);border:1px solid rgba(24,119,242,0.4);color:#7fb3ff;border-radius:100px;font-size:0.6rem;font-weight:700;cursor:pointer;white-space:nowrap;">&#128228; ' + (maWhen ? 'Re-export' : 'Export now') + ' &rarr;</button>';
+      h += '</div>';
+      h += '</div>';
       h += '</div>';
       el.innerHTML = h;
     } catch(e) {
