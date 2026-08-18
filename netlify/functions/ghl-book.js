@@ -99,6 +99,23 @@ exports.handler = async function(event) {
     return { statusCode: 502, headers: cors, body: JSON.stringify({ error: 'GHL contact upsert failed', detail: e.message }) };
   }
 
+  // contacts/upsert's `tags` array only reliably lands on a brand-new contact —
+  // confirmed live 2026-08-17: an existing contact (re-upserted, as most repeat
+  // bookings are) kept only its original tags and never gained 'no-automation'
+  // even though it was in the upsert body. The dedicated add-tags endpoint works
+  // on both new and existing contacts, so call it explicitly instead of trusting
+  // upsert to append. Non-blocking — a tag failure must never stop the booking.
+  if (!shouldNotify) {
+    try {
+      const tagResp = await fetch(`${GHL_BASE}/contacts/${contactId}/tags`, {
+        method: 'POST',
+        headers: ghlHeaders,
+        body: JSON.stringify({ tags: ['no-automation'] }),
+      });
+      if (!tagResp.ok) console.warn('GHL add-tags failed:', tagResp.status, (await tagResp.text()).slice(0, 200));
+    } catch(e) { console.warn('GHL add-tags error:', e.message); }
+  }
+
   // ── 2. Book appointment ────────────────────────────────────────────────────
   const assignedUserId = await resolveAssignedUserId(ghlHeaders);
   let appointmentId;
