@@ -52,9 +52,17 @@ exports.handler = async function(event) {
     return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Invalid JSON' }) };
   }
 
-  const { firstName, lastName, phone, email, address, startISO, endISO, customerId, fbp, fbc } = payload;
+  const { firstName, lastName, phone, email, address, startISO, endISO, customerId, fbp, fbc, notify } = payload;
   if (!startISO || (!phone && !email))
     return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'startISO + phone or email required' }) };
+
+  // Setter-entered leads (Ronda's mail/phone-sourced appointments, etc.) still need
+  // a real GHL calendar appointment so ops/techs see them — they just must not
+  // trigger the calendar's automated confirmation SMS/email, since the homeowner
+  // hasn't actually confirmed anything themselves yet. Callers opt out per-booking
+  // with { notify: false }; every other caller (public /book, dialer, Doors,
+  // admin re-book) is unaffected and keeps the existing toNotify:true behavior.
+  const shouldNotify = notify !== false;
 
   const ghlHeaders = {
     'Content-Type': 'application/json',
@@ -75,7 +83,12 @@ exports.handler = async function(event) {
         email:     email     || undefined,
         phone:     phone     || undefined,
         address1:  address   || undefined,
-        tags:      ['booking-confirmed'],
+        // 'no-automation' matches the tag already sent on the manual-entry setter
+        // path below (GHL_WEBHOOK) — lets any GHL Workflow keyed off this calendar's
+        // "Appointment Booked" trigger filter these out too, in case that calendar's
+        // confirmation is workflow-driven rather than (or in addition to) the
+        // calendar's own Notifications-tab template that toNotify gates directly.
+        tags:      shouldNotify ? ['booking-confirmed'] : ['booking-confirmed', 'no-automation'],
       }),
     });
     const upsertData = await upsertResp.json();
@@ -111,7 +124,7 @@ exports.handler = async function(event) {
         // automations (which otherwise default off for API-created appointments).
         ignoreDateRange:          true,
         ignoreFreeSlotValidation: true,
-        toNotify:                 true,
+        toNotify:                 shouldNotify,
       }),
     });
     const apptData = await apptResp.json();
