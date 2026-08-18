@@ -105,6 +105,10 @@ exports.handler = async function(event) {
   // even though it was in the upsert body. The dedicated add-tags endpoint works
   // on both new and existing contacts, so call it explicitly instead of trusting
   // upsert to append. Non-blocking — a tag failure must never stop the booking.
+  // tagResult rides back in the response body (not just console.log) so the
+  // caller — and Dennis, live, via the portal — can see exactly what GHL did
+  // without needing Netlify function log access.
+  let tagResult = null;
   if (!shouldNotify) {
     try {
       const tagResp = await fetch(`${GHL_BASE}/contacts/${contactId}/tags`, {
@@ -112,8 +116,13 @@ exports.handler = async function(event) {
         headers: ghlHeaders,
         body: JSON.stringify({ tags: ['no-automation'] }),
       });
-      if (!tagResp.ok) console.warn('GHL add-tags failed:', tagResp.status, (await tagResp.text()).slice(0, 200));
-    } catch(e) { console.warn('GHL add-tags error:', e.message); }
+      const tagData = await tagResp.json().catch(function(){ return {}; });
+      tagResult = { ok: tagResp.ok, status: tagResp.status, tags: tagData?.tags || tagData?.contact?.tags || null, raw: JSON.stringify(tagData).slice(0, 300) };
+      if (!tagResp.ok) console.warn('GHL add-tags failed:', tagResp.status, tagResult.raw);
+    } catch(e) {
+      tagResult = { ok: false, error: e.message };
+      console.warn('GHL add-tags error:', e.message);
+    }
   }
 
   // ── 2. Book appointment ────────────────────────────────────────────────────
@@ -263,6 +272,6 @@ exports.handler = async function(event) {
   return {
     statusCode: 200,
     headers: cors,
-    body: JSON.stringify({ ok: true, contactId, appointmentId, apptError }),
+    body: JSON.stringify({ ok: true, contactId, appointmentId, apptError, notifySuppressed: !shouldNotify, tagResult }),
   };
 };
