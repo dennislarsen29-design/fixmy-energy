@@ -20110,8 +20110,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             '<button class="type-btn" data-type="setter-dennis" onclick="setLeadType(this)">Setter - Dennis</button>'+
             '<button class="type-btn" data-type="setter-other" onclick="setLeadType(this)">Setter - Other</button>'+
             '<button class="type-btn" data-type="inbound" onclick="setLeadType(this)">&#129302; Quoya</button>'+
-          '</div>'+
-          '<div id="nlAutoNote" style="padding:8px 14px;background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.2);border-radius:8px;font-size:0.72rem;color:#ffaa00;margin-bottom:16px;">&#128222; <strong>Setter lead:</strong> No confirmation SMS/email will be sent.</div>'
+          '</div>'
+        : '')+
+        // Rendered whenever this is a setter-mode form — admin's "+ New Lead" AND
+        // Ronda/Dennis's own portal (which never shows the Lead Type buttons above,
+        // since repId is already known there). Dennis takes these calls himself too,
+        // not just Ronda, so this can't be tied to "which rep is logged in" — it's a
+        // per-lead toggle, defaulted on, that either of them can flip off when the
+        // automations SHOULD go out (e.g. the homeowner is live on the line right now).
+        (isSetterForm ?
+          '<input type="hidden" id="nlNoAutomation" value="1"/>'+
+          '<div id="nlAutoNote">'+nlAutomationNoteHtml(true)+'</div>'
         : '')+
         '<div class="editor-section-title">Business Line</div>'+
         '<div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;">'+
@@ -20333,10 +20342,40 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     btn.classList.add('active');
     var type = btn.dataset.type;
     document.getElementById('nlType').value = type;
+    // Per-type DEFAULT for the No Automations toggle — a Quoya/inbound lead is a real
+    // customer-initiated booking (automations should fire); every setter-* type is
+    // Dennis or Ronda on a call (automations should NOT fire by default). Either can
+    // still be flipped manually afterward via nlSetNoAutomation — this only sets the
+    // starting point when the lead type changes.
+    var noAutoEl = document.getElementById('nlNoAutomation');
+    if (noAutoEl) noAutoEl.value = (type === 'inbound') ? '0' : '1';
     var note = document.getElementById('nlAutoNote');
-    if (!note) return;
-    if (type==='inbound') { note.style.background='rgba(141,198,63,0.06)'; note.style.borderColor='rgba(141,198,63,0.2)'; note.style.color='#8DC63F'; note.innerHTML='&#127760; <strong>Inbound lead:</strong> Magic link and confirmation sent via GHL.'; }
-    else { note.style.background='rgba(255,170,0,0.08)'; note.style.borderColor='rgba(255,170,0,0.2)'; note.style.color='#ffaa00'; note.innerHTML='&#128222; <strong>Setter lead:</strong> No confirmation SMS/email. Follow-up automation only.'; }
+    if (note) note.innerHTML = nlAutomationNoteHtml(noAutoEl ? noAutoEl.value === '1' : type !== 'inbound');
+  }
+
+  // Explicit "No Automations" toggle — 2026-08-18, per Dennis. Both he and Ronda take
+  // setter-sourced calls (mail/phone leads) where the customer hasn't confirmed
+  // anything themselves, so GHL's confirmation SMS/email must not fire — but either of
+  // them can flip it off for the rare case the customer IS live on the line and the
+  // automation is actually welcome. Defaults ON for every setter-* lead type.
+  function nlAutomationNoteHtml(on) {
+    return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px;'
+      + (on ? 'background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.2);' : 'background:rgba(141,198,63,0.06);border:1px solid rgba(141,198,63,0.2);')
+      + 'border-radius:8px;margin-bottom:16px;">'
+      + '<div style="font-size:0.72rem;color:' + (on ? '#ffaa00' : '#8DC63F') + ';line-height:1.4;">'
+      + (on ? '&#128222; <strong>No Automations</strong><br>No confirmation SMS/email will be sent.'
+             : '&#127760; <strong>Automations ON</strong><br>Confirmation SMS/email WILL be sent.')
+      + '</div>'
+      + '<button type="button" onclick="nlSetNoAutomation(' + !on + ')" style="width:auto;flex-shrink:0;padding:6px 14px;border-radius:100px;font-size:0.7rem;font-weight:700;cursor:pointer;'
+      + (on ? 'background:rgba(255,170,0,0.16);border:1px solid rgba(255,170,0,0.5);color:#ffaa00;' : 'background:rgba(141,198,63,0.16);border:1px solid rgba(141,198,63,0.5);color:#8DC63F;')
+      + '">' + (on ? 'Turn OFF' : 'Turn ON') + '</button>'
+      + '</div>';
+  }
+  function nlSetNoAutomation(on) {
+    var el = document.getElementById('nlNoAutomation');
+    if (el) el.value = on ? '1' : '0';
+    var note = document.getElementById('nlAutoNote');
+    if (note) note.innerHTML = nlAutomationNoteHtml(on);
   }
 
   function nlLeadSourceChanged(val) {
@@ -20961,9 +21000,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           // Setter-entered leads (Ronda's mail/phone leads, Dennis-set, Other) still book a
           // real appointment on the Solar Evaluation calendar — it just must not fire GHL's
           // automated confirmation SMS/email, since this is the setter confirming on the
-          // homeowner's behalf, not the homeowner booking themselves. Matches the amber
-          // "No confirmation SMS/email will be sent" note shown above on this form.
-          var _isSetterType = type.indexOf('setter-') === 0;
+          // homeowner's behalf, not the homeowner booking themselves. Driven by the explicit
+          // "No Automations" toggle on this form (defaults on for setter-* types, off for
+          // Quoya/inbound) rather than the lead type alone — either Ronda or Dennis can
+          // override it per-lead for the rare case the automation is actually wanted.
+          var _isSetterType = (document.getElementById('nlNoAutomation')||{}).value === '1';
           var _bookResp = await fetch('/.netlify/functions/ghl-book', {
             method: 'POST', headers: {'Content-Type':'application/json'},
             body: JSON.stringify({ firstName: first, lastName: newLead.last_name||'', phone: phone, email: email, address: addr, startISO: fixmySlotStart, endISO: fixmySlotEnd, notify: !_isSetterType })
