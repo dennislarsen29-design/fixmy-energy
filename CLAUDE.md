@@ -87,6 +87,19 @@ Pipeline via `solar_status` field using `NS_STATUSES` object:
 - **Tech/Sales** — setter lead capture + personal dashboard
 - **Customer** — magic-link self-service portal
 
+### A rep session could render the real admin dashboard (fixed 2026-08-19 — real bug, not cosmetic)
+Reported: Ronda (Setter) saw the full admin nav (Team & Hiring / Agents / Finance / Personal / Business Model) above her own scoped Leads view. **Root cause:** `loadRepDashboard` auto-opens the New Lead form on login (`autoOpenForm:true`); if she completed it before `loadSalesDashboard`'s async setup reached the line assigning `window.salesRefresh`, the confirmation panel's "Done" button fell back to calling `renderAdminView(adminView)` directly — a plain global function with **no role check**, callable from any session. It looked scoped to just her 1 lead only by coincidence: `loadSalesDashboard` repurposes the same `adminCustomers` global that `renderAdminView` reads from, filled with only her own records. Team & Hiring / Agents / Finance / Personal run their **own unscoped queries** and would have shown her the real company-wide data, not a filtered view — this was a data-exposure bug, not a stray button.
+- **Fix:** `_adminOnlyGuard()` (near `CURRENT_ROLE`, top of the file) is called first in every admin-only render function — `renderAdminView`, `renderJobsView`, `renderAdminCanvassView`, `renderScheduleView`, `renderTeamView`, `renderAgentsView`, `renderFinanceView`, `renderPersonalView`. A non-admin session bounces to `window.salesRefresh()` (their own dashboard) instead of ever executing the admin view's body — closes this structurally so no future stray call anywhere in the file can leak admin data to a rep, setter, or Ops partner again. `_closeNewLeadRefresh()` also fixes the actual race (retries `salesRefresh` once instead of falling through to admin).
+- ⚠️ **Any new admin-only `render*View()` function must call `_adminOnlyGuard()` as its first line.** This is not enforced automatically.
+
+### Per-role portal access (as of 2026-08-19, post-fix)
+| Role | Login routes to | What they can reach |
+|---|---|---|
+| **Admin** (`ADMIN_CODE`) | `loadAdminDashboard()` → `renderAdminView()` | Everything — Leads, Jobs, Black Box (admin pipeline/ops screen via `renderAdminCanvassView`), Team & Hiring, Schedule, Agents, Finance, Personal (Dennis-only, also gated server-side by `PERSONAL_ACCESS_KEY`), Business Model (external link) |
+| **Ops partner** (`OPS_PARTNERS`, ops1-ops4) | `loadOpsDashboard()` | Own separate nav, scoped to `assigned_ops` — never touches any admin `render*View()` function |
+| **Tech/Sales/Setter/Dialer** (`TECHS`/`SALES_REPS`/`SETTERS`, tech2/tech3/tech4/tech5/rep1/setter1) | `loadSalesDashboard()` via `loadTechDashboard`/`loadRepDashboard`/`loadSetterDashboard` | Own `renderSales()` view only, scoped to `rep_id` — Leads/Jobs/Black Box (their own canvass+dialer, not the admin pipeline screen)/Field (ops-assigned only)/Appts/Map (setter mode)/Training. Now structurally blocked from every admin-only tab by `_adminOnlyGuard()` |
+| **Customer** | `loadCustomerDashboard()` | Self-service magic-link portal only, no shared nav at all |
+
 ## Tech Portal — Rep ID System
 - Each tech sees only their own leads via `rep_id` filter: `.eq('rep_id', person.id)`
 - Tech IDs: `tech4` = Dennis Larsen, `tech2` = Ranie, `tech3` = Michael Smith, `rep1` = Ronda, `setter1` = Setter
