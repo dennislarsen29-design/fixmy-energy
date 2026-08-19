@@ -424,6 +424,32 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   var ADMIN_EMAIL   = 'admin@fixmy.energy';
   var CURRENT_ROLE = 'customer'; // customer | rep | ops | admin
 
+  // Defense-in-depth guard for the admin-only render* functions (renderAdminView,
+  // renderJobsView, renderAdminCanvassView, renderScheduleView, renderTeamView,
+  // renderAgentsView, renderFinanceView, renderPersonalView). Found 2026-08-19: a
+  // Setter (Ronda) landed on the full admin Leads dashboard — including the admin nav
+  // (Team & Hiring / Agents / Finance / Personal / Business Model) — after creating a
+  // lead through her own auto-opened New Lead form. Root cause: createNewLead()'s
+  // "Done" button falls back to `renderAdminView(adminView)` whenever
+  // `window.salesRefresh` isn't defined yet (a real race — loadSalesDashboard's async
+  // setup chain hadn't reached the line that assigns it), and `renderAdminView` is a
+  // plain global function callable from ANY session, admin or not. It only looked
+  // "scoped to just her" by coincidence — loadSalesDashboard repurposes the same
+  // `adminCustomers` global that renderAdminView reads from, filled with only her own
+  // records. Team & Hiring / Agents / Finance / Personal run their OWN unscoped
+  // queries and would show REAL company-wide data to a rep, not a filtered view — this
+  // is a data-exposure bug, not just a stray nav button. Every admin-only render
+  // function now calls this first; a non-admin session gets bounced back to their own
+  // dashboard (or a no-op if salesRefresh genuinely isn't available) instead of ever
+  // executing the admin view's body.
+  function _adminOnlyGuard() {
+    if (typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE !== 'admin') {
+      if (typeof window.salesRefresh === 'function') window.salesRefresh();
+      return true;
+    }
+    return false;
+  }
+
   // Field reps (outside sales)
   var SALES_REPS = [
     { email: 'ronda@fixmy.energy', code: 'ronda2026', name: 'Ronda', id: 'rep1', agreementSigned: false },
@@ -1315,6 +1341,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (ne) { ne.focus(); try { ne.setSelectionRange(caret, caret); } catch(e){} }
   };
   function renderAdminView(view) {
+    if (_adminOnlyGuard()) return;
     adminView = view;
     // All unsold, non-black-box leads, split by category
     var allLeads = adminCustomers.filter(function(x){ return !x.sold_type && !x.black_box; });
@@ -1610,6 +1637,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
   // ── JOBS TAB ───────────────────────────────────────────────────────────────
   function renderJobsView() {
+    if (_adminOnlyGuard()) return;
     adminView = 'jobs';
     var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab active" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button><button class="portal-tab" onclick="renderTeamView()">&#128101; Team &amp; Hiring</button><button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button><button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button><a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a></div>';
     var allJobs = adminCustomers.filter(function(c){ return !!c.sold_type; });
@@ -2472,6 +2500,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   };
 
   async function renderTeamView(subTab) {
+    if (_adminOnlyGuard()) return;
     subTab = subTab || sessionStorage.getItem('teamSubView') || 'team';
     if (subTab === 'social') subTab = 'team';   // Socials moved to the Personal tab
     sessionStorage.setItem('teamSubView', subTab);
@@ -3493,6 +3522,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
   // ── SCHEDULE TAB ─────────────────────────────────────────────────────────────
   function renderScheduleView() {
+    if (_adminOnlyGuard()) return;
     adminView = 'schedule';
     var portalNav = '<div class="portal-tab-nav">'+
       '<button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
@@ -4576,6 +4606,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   }
 
   async function renderAgentsView() {
+    if (_adminOnlyGuard()) return;
     adminView = 'agents';
     if (!window._agentChatHistory) window._agentChatHistory = [];
     if (!window._agentChatDisplay) window._agentChatDisplay = [];
@@ -5818,6 +5849,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
   // ── Admin Canvass View ─────────────────────────────────────────────────────
   function renderAdminCanvassView() {
+    if (_adminOnlyGuard()) return;
     adminView = 'canvass';
     var portalNav = '<div class="portal-tab-nav">'+
       '<button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
@@ -14096,6 +14128,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // ═══════════════════════════════════════════════════════════════════════════
 
   async function renderFinanceView() {
+    if (_adminOnlyGuard()) return;
     adminView = 'finance';
     var portalNav = '<div class="portal-tab-nav">'+
       '<button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
@@ -16012,6 +16045,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   }
 
   window.renderPersonalView = function() {
+    if (_adminOnlyGuard()) return;
     adminView = 'personal';
     if (personalSubTab === 'bookkeeper') return renderBookkeeperView();
     if (personalSubTab === 'loans')      return renderLoanTabView();
@@ -20916,6 +20950,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (statusEl) statusEl.textContent = '✓ Booked — confirmation sent to customer.';
   };
 
+  // Closes the New Lead confirmation panel and refreshes whichever dashboard is
+  // actually behind it. window.salesRefresh not being defined yet (loadSalesDashboard's
+  // async setup hadn't reached the line that assigns it) used to fall straight through
+  // to renderAdminView — a real bug that briefly showed a rep the full admin dashboard
+  // (2026-08-19). renderAdminView now self-guards via _adminOnlyGuard, so this can never
+  // leak admin data again, but it's still worth retrying salesRefresh once instead of
+  // silently doing nothing to a non-admin rep who hit the race.
+  function _closeNewLeadRefresh() {
+    closeLeadEditor();
+    if (typeof window.salesRefresh === 'function') { window.salesRefresh(); return; }
+    if (typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE === 'admin' && typeof renderAdminView === 'function') { renderAdminView(adminView); return; }
+    setTimeout(function(){ if (typeof window.salesRefresh === 'function') window.salesRefresh(); }, 500);
+  }
+
   async function createNewLead() {
     var phone=(document.getElementById('nlPhone').value||'').trim();
     var digits=phone.replace(/[^0-9]/g,''); if(digits.length===11&&digits[0]==='1') digits=digits.slice(1);
@@ -21051,10 +21099,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '<div style="display:flex;flex-direction:column;gap:10px;margin-top:14px;">'+
             '<button onclick="navigator.clipboard.writeText(\''+mlLink+'\').then(function(){this.textContent=\'✓ Copied!\';},function(){prompt(\'Copy link:\',\''+mlLink+'\');}).bind(this)" style="width:100%;padding:13px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);border-radius:10px;color:#4a9eff;font-size:0.88rem;font-weight:700;cursor:pointer;">🔗 Copy Customer Portal Link</button>'+
             '<a href="'+GHL_BOOKING+'" target="_blank" style="display:block;width:100%;padding:13px;background:#8DC63F;border:none;border-radius:10px;color:#1A1A1A;font-size:0.88rem;font-weight:700;cursor:pointer;text-decoration:none;box-sizing:border-box;text-align:center;">📅 Open Booking Calendar</a>'+
-            '<button onclick="closeLeadEditor();if(typeof window.salesRefresh===\'function\')window.salesRefresh();else if(typeof renderAdminView===\'function\')renderAdminView(adminView);" style="width:100%;padding:11px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;color:#666;font-size:0.82rem;cursor:pointer;">Done</button>'+
+            '<button onclick="_closeNewLeadRefresh()" style="width:100%;padding:11px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;color:#666;font-size:0.82rem;cursor:pointer;">Done</button>'+
           '</div></div>';
       } else {
-        setTimeout(function(){closeLeadEditor();if(typeof window.salesRefresh==='function')window.salesRefresh();else if(typeof adminCustomers!=='undefined'&&adminCustomers&&adminCustomers.length)renderAdminView(adminView);},1400);
+        setTimeout(_closeNewLeadRefresh, 1400);
       }
     }catch(e){ alert('Failed: '+e.message); if(btn){btn.textContent='Create Lead';btn.disabled=false;} }
   }
