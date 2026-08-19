@@ -1,34 +1,11 @@
-// eval-analysis.js — Quoya's read on a guided Solar Evaluation.
-//
-// inverter-analysis.js already did vision + web research on inverter photos, but it was a
-// manual button in the admin job view and it stopped at "here are the findings". This is
-// the version the field flow needs: it sees every evaluation photo (hardware, production
-// screenshots, utility bill), knows what we actually sell, and returns something a rep with
-// no solar background can act on — a plain-English diagnosis, what to say to the homeowner,
-// and the specific catalog items to put in the proposal.
-//
-// When it can't diagnose confidently it returns QUESTIONS instead of a guess. That is the
-// whole point: a confident wrong answer handed to a non-expert reaches the customer.
-//
-// POST { photos:[{url,label}], hardware:{brand,model,serial,platform}, utility, notes,
-//        answers:{}, catalog:[{option_key,title,service_type,default_price}],
-//        lead:{address,system_size,install_year,original_installer,monthly_bill} }
-const ANTHROPIC_KEY = process.env.ANTHROPIC_KEY;
-const MODEL = 'claude-opus-5';
+// Shared Quoya evaluation-analysis logic, used by eval-analysis-background.js.
+// Extracted 2026-08-19 when the synchronous eval-analysis.js was retired in favor of a
+// background function + lead_evaluations polling — Netlify's 26s synchronous cap was
+// cutting off a slow vision+web-search run mid-flight ("Quoya took too long" in the
+// field). Keeping the prompt/tool/photo-ranking logic in one place so there is only ever
+// one implementation to edit.
 
-const ALLOWED_ORIGINS = [
-  'https://fixmy.energy', 'https://www.fixmy.energy', 'http://localhost:8888'
-];
-function corsFor(event) {
-  const origin = (event.headers && (event.headers.origin || event.headers.Origin)) || '';
-  const allow = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
-  return {
-    'Content-Type': 'application/json',
-    'Access-Control-Allow-Origin': allow,
-    'Access-Control-Allow-Headers': 'Content-Type',
-    'Access-Control-Allow-Methods': 'POST, OPTIONS'
-  };
-}
+const MODEL = 'claude-opus-5';
 
 // Photo labels that are worth spending vision tokens on, most diagnostic first. A full
 // evaluation can carry 20+ images; sending all of them is slow and mostly redundant.
@@ -152,17 +129,10 @@ Rules:
 
 Call report_evaluation exactly once.`;
 
-exports.handler = async function (event) {
-  const CORS = corsFor(event);
-  if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers: CORS, body: '' };
-  if (event.httpMethod !== 'POST') return { statusCode: 405, headers: CORS, body: 'Method Not Allowed' };
-  if (!ANTHROPIC_KEY) return { statusCode: 200, headers: CORS, body: JSON.stringify({ error: 'AI analysis unavailable', detail: 'ANTHROPIC_KEY not set', code: 'config' }) };
-
-  let body;
-  try { body = JSON.parse(event.body || '{}'); }
-  catch { return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: 'Invalid JSON' }) }; }
-
-  // Payload reconstructed rather than forwarded — same hardening as claude-vision.js.
+// Runs the full analysis. Returns { out } on success, or { error: { message, detail, code } }.
+// Never throws — every failure path is caught and classified so the caller always has
+// something safe to persist.
+async function runEvalAnalysis(anthropicKey, body) {
   const photos   = Array.isArray(body.photos) ? body.photos.filter(p => p && typeof p.url === 'string') : [];
   const hardware = body.hardware || {};
   const lead     = body.lead || {};
@@ -213,7 +183,7 @@ exports.handler = async function (event) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': ANTHROPIC_KEY,
+        'x-api-key': anthropicKey,
         'anthropic-version': '2023-06-01',
         // Required for the web_search server tool. Omitting it fails EVERY call — the
         // exact bug that stopped finance-agent.js producing a single report for weeks.
@@ -239,7 +209,7 @@ exports.handler = async function (event) {
       if (/credit balance/i.test(raw)) code = 'credit';
       else if (res.status === 429) code = 'rate_limit';
       else if (res.status === 401 || res.status === 403) code = 'auth';
-      return { statusCode: 200, headers: CORS, body: JSON.stringify({ error: 'Quoya analysis unavailable', detail: raw.slice(0, 300), code }) };
+      return { error: { message: 'Quoya analysis unavailable', detail: raw.slice(0, 300), code } };
     }
 
     const data = await res.json();
@@ -247,7 +217,7 @@ exports.handler = async function (event) {
     if (!call) {
       const text = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n').slice(0, 600);
       console.error('[eval-analysis] no tool call. stop_reason=' + data.stop_reason);
-      return { statusCode: 200, headers: CORS, body: JSON.stringify({ error: 'Quoya analysis unavailable', detail: text || 'no tool call', code: 'upstream' }) };
+      return { error: { message: 'Quoya analysis unavailable', detail: text || 'no tool call', code: 'upstream' } };
     }
 
     const out = call.input || {};
@@ -266,9 +236,11 @@ exports.handler = async function (event) {
       ' images=' + ranked.length +
       ' keys=' + ((out.proposal_prefill && out.proposal_prefill.option_keys) || []).join(','));
 
-    return { statusCode: 200, headers: CORS, body: JSON.stringify(out) };
+    return { out };
   } catch (e) {
     console.error('[eval-analysis] ' + e.message);
-    return { statusCode: 200, headers: CORS, body: JSON.stringify({ error: 'Quoya analysis unavailable', detail: e.message, code: 'upstream' }) };
+    return { error: { message: 'Quoya analysis unavailable', detail: e.message, code: 'upstream' } };
   }
-};
+}
+
+module.exports = { runEvalAnalysis };

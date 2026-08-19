@@ -7052,7 +7052,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   ];
 
   var _evId = null, _evRec = null, _evStepIdx = 0, _evRow = null;
-  var _evBusy = false, _evAnalyzing = false;
+  var _evBusy = false, _evAnalyzing = false, _evPollTimer = null;
   var _evLocal = { brand: '', model: '', serial: '', platform: '', utility: '', skipped: {}, answers: {} };
 
   function _evPhotos() { return (jobPhotos[_evId] || []); }
@@ -7132,7 +7132,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   window.closeEvalWizard = function() {
     var s = document.getElementById('editorSlot');
     if (s) s.innerHTML = '';
-    _evId = null; _evRec = null; _evRow = null;
+    if (_evPollTimer) { clearTimeout(_evPollTimer); _evPollTimer = null; }
+    _evId = null; _evRec = null; _evRow = null; _evAnalyzing = false;
   };
 
   window.evGoStep = function(i) {
@@ -7202,34 +7203,44 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     _evRender();
   };
 
+  // Fires the analysis as a Netlify background function (up to 15 min budget, vs. the
+  // 26s synchronous cap this used to hit mid-run on a slow vision+web-search pass — the
+  // exact "Analysis didn't run — Quoya took too long" report from the field 2026-08-19)
+  // and polls lead_evaluations for the result instead of waiting on one HTTP response.
+  // The background function owns writing analysis/questions/status/error to the row;
+  // this only ever reads it back.
   window.evRunAnalysis = async function() {
     if (_evAnalyzing || !_evId) return;
     _evAnalyzing = true;
-    _evSave({ status: 'analyzing' });
+    await _evSave({ status: 'analyzing' });
     _evRender();
+    if (!_evRow || !_evRow.id) {
+      // 20260808_lead_evaluations.sql isn't applied on this environment — _evSave
+      // degrades silently with no row to poll, so there is nothing to fire.
+      _evRow = _evRow || {};
+      _evRow._err = 'The evaluation table isn\'t set up on this environment yet — tell Dennis.';
+      _evAnalyzing = false;
+      _evRender();
+      return;
+    }
+
+    var catalog = [];
     try {
-      var catalog = [];
-      try {
-        var cc = supabase.createClient(SUPA_URL, SUPA_KEY);
-        var cr = await cc.from('proposal_catalog').select('option_key,title,service_type,default_price')
-          .eq('is_active', true).order('sort_order');
-        catalog = (cr.data || []);
-      } catch(e) {}
+      var cc = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var cr = await cc.from('proposal_catalog').select('option_key,title,service_type,default_price')
+        .eq('is_active', true).order('sort_order');
+      catalog = (cr.data || []);
+    } catch(e) {}
 
-      function flat(raw) { return _parseNotes(raw || '').map(function(e){ return e.text; }).join('\n'); }
-      var notes = [flat(_evRec.notes), flat(_evRec.field_notes), flat(_evRec.assessment_notes)]
-        .filter(Boolean).join('\n').trim();
+    function flat(raw) { return _parseNotes(raw || '').map(function(e){ return e.text; }).join('\n'); }
+    var notes = [flat(_evRec.notes), flat(_evRec.field_notes), flat(_evRec.assessment_notes)]
+      .filter(Boolean).join('\n').trim();
 
-      // Netlify caps a synchronous function at 26s and this does vision + web search, so
-      // a slow run can be cut off upstream. Abort a bit later than that so the rep gets a
-      // real message instead of a hung spinner. If this turns out to bite in production
-      // the fix is to move the call to a *-background function that writes the result to
-      // lead_evaluations and have this poll for it.
-      var ctrl = new AbortController();
-      var killer = setTimeout(function(){ ctrl.abort(); }, 30000);
-      var r = await fetch('/.netlify/functions/eval-analysis', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: ctrl.signal,
+    try {
+      var r = await fetch('/.netlify/functions/eval-analysis-background', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          evalId: _evRow.id,
           photos: _evPhotos().map(function(p){ return { url: p.url, label: p.label || p.Label || '' }; }),
           hardware: { brand: _evLocal.brand, model: _evLocal.model, serial: _evLocal.serial, platform: _evLocal.platform },
           utility: (UTILITY_HELP[_evLocal.utility] || {}).label || _evLocal.utility,
@@ -7243,34 +7254,60 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           }
         })
       });
-      clearTimeout(killer);
-      var data = await r.json();
-      if (data.error) {
-        _evRow = _evRow || {};
-        _evRow._err = (CURRENT_ROLE === 'admin' && data.detail)
-          ? data.error + ' — ' + data.detail
-          : 'Quoya couldn\'t analyze this right now. Your photos are all saved — try again in a minute.';
-      } else {
-        _evRow = _evRow || {};
-        _evRow._err = null;
-        _evRow.analysis  = data.confident ? data : null;
-        _evRow.questions = data.confident ? null : (data.questions || []);
-        await _evSave({
-          analysis: _evRow.analysis, questions: _evRow.questions,
-          status: data.confident ? 'ready' : 'needs_input',
-          analyzed_at: new Date().toISOString()
-        });
+      if (!r.ok && r.status !== 202) {
+        var t = await r.text().catch(function(){ return ''; });
+        throw new Error(t || ('HTTP ' + r.status));
       }
     } catch(e) {
-      _evRow = _evRow || {};
-      _evRow._err = (e && e.name === 'AbortError')
-        ? 'Quoya took too long on this one. Your photos are all saved — tap Try again, and if it keeps timing out tell Dennis.'
-        : 'Quoya couldn\'t analyze this right now. Your photos are all saved — try again in a minute.';
-    } finally {
+      _evRow._err = 'Couldn\'t start Quoya\'s analysis — check your connection and try again.';
       _evAnalyzing = false;
       _evRender();
+      return;
     }
+
+    _evPollAnalysis(_evRow.id, 0);
   };
+
+  // Background job budget is 15 min; this only needs to cover the realistic case (vision
+  // + web search, usually well under a minute). 40 tries * 3s = 2 min of polling before
+  // giving up client-side — the job itself keeps running either way, so reopening the
+  // wizard later picks up the finished result via the normal _evLoadRow restore.
+  var EV_POLL_MS = 3000, EV_POLL_MAX = 40;
+  function _evPollAnalysis(rowId, tries) {
+    if (_evPollTimer) { clearTimeout(_evPollTimer); _evPollTimer = null; }
+    if (!_evId || !_evRow || _evRow.id !== rowId) return; // wizard closed or moved on
+    _evPollTimer = setTimeout(async function() {
+      var row = null;
+      try {
+        var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+        var res = await c.from('lead_evaluations').select('*').eq('id', rowId).limit(1);
+        row = (res.data && res.data[0]) || null;
+      } catch(e) {}
+      if (!_evId || !_evRow || _evRow.id !== rowId) return; // wizard closed mid-poll
+
+      if (row && row.status === 'ready') {
+        _evRow = row; _evRow._err = null;
+        _evAnalyzing = false; _evRender(); return;
+      }
+      if (row && row.status === 'needs_input') {
+        _evRow = row; _evRow._err = null;
+        _evAnalyzing = false; _evRender(); return;
+      }
+      if (row && row.status === 'failed') {
+        _evRow = row;
+        _evRow._err = (CURRENT_ROLE === 'admin' && row.error)
+          ? row.error
+          : 'Quoya couldn\'t analyze this right now. Your photos are all saved — tap Try again.';
+        _evAnalyzing = false; _evRender(); return;
+      }
+      if (tries + 1 >= EV_POLL_MAX) {
+        _evRow = row || _evRow;
+        _evRow._err = 'This is taking longer than usual. Your photos are all saved and Quoya is still working — check back in a minute, or tell Dennis if it never finishes.';
+        _evAnalyzing = false; _evRender(); return;
+      }
+      _evPollAnalysis(rowId, tries + 1);
+    }, EV_POLL_MS);
+  }
 
   // Hand off to the internal builder with Quoya's picks already selected, so the rep's
   // only job is pricing. Catalog keys are matched exactly — Quoya is given the real
