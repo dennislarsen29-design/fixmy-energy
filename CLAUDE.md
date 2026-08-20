@@ -60,9 +60,12 @@ These are Standard Operating Procedures. Do not re-ask how the business lines wo
 - **Travel reimbursements:** Top Tier only, manual entries, owed to the rep.
 - Data model: `job_costs` (per-job pending/paid cost line items) + `commissions` (kind: rep_commission | override | travel_reimbursement; status: sold | paid) tables — migration `20260707_accounting.sql`.
 
-### 2. Top Tier
-- **Model:** sales rep + manager override payscale ONLY. Solar Review does NOT charge the customer — Top Tier charges the customer.
-- **Accounting requirements:** track sold commissions, paid commissions, and travel reimbursements. Nothing else.
+### 2. Top Tier — ⚠️ RELATIONSHIP ENDED 2026-08-20, per Dennis (AUTHORITATIVE)
+No longer doing business with Top Tier. **All 35 `lead_category='top_tier'` customer rows were archived** (`archived=true`) on 2026-08-20 — none were sold jobs (`sold_type` was null on all of them), so there was no in-flight commission/accounting cleanup needed. Restorable from Admin → 🗄 Archived if that ever changes.
+- **The "⭐ Top Tier" button was removed from the New Lead form** (`portal.html`, the shared admin+setter "Business Line" picker) so a new Top Tier lead can no longer be created. `nlSetCat('top_tier')` is now unreachable from the UI but was left defined rather than deleted — it degrades safely (`document.getElementById('nlCatTT')` returns null, already guarded).
+- **Deliberately left in place:** the Top Tier category tabs/filters in admin Leads and the sales rep dashboard (will just always read 0 going forward), the lead editor's Business Line dropdown option (only relevant if an archived TT lead is ever manually restored), and all Finance/Commissions code that renders historical Top Tier override/commission entries (`finRenderCommissions`, deposit classification "Top Tier" button, P&L labels) — this is **past financial data that still needs to report correctly**, not new pipeline usage. Same reasoning as never deleting a Business Line's accounting history when a line goes dormant.
+- **Model (historical, kept for reference):** sales rep + manager override payscale ONLY. Solar Review did NOT charge the customer — Top Tier charged the customer.
+- **Accounting requirements (historical):** track sold commissions, paid commissions, and travel reimbursements. Nothing else.
 
 ### 3. New Solar
 - **Model:** installs currently through **Trio and Axia** as the installers. Sales rep + manager override payscale ONLY. Solar Review does NOT charge the customer — the solar provider charges the customer.
@@ -1153,7 +1156,7 @@ Reported: uploaded the Utility Bill during a Site Evaluation, and it never showe
 - Add Netlify PAT to `.claude/settings.local.json` to enable Netlify MCP
 - **Google Maps API key restriction:** Previously caused a tech issue when restricted — leave unrestricted for now. Revisit carefully if security becomes a concern.
 - Battery Retrofit Agreement flow (needs agreement template content from Dennis)
-- Top Tier pipeline (planned — see plan file)
+- ~~Top Tier pipeline (planned — see plan file)~~ — moot, see "RELATIONSHIP ENDED 2026-08-20" under Top Tier above.
 - Antoinette M2/M3 milestone invoicing (planned — see plan file)
 - **GHL field mapping (optional cleanup):** Change First Name from `{{trigger.full_name}}` → `{{trigger.firstName}}`, add Last Name → `{{trigger.lastName}}` — works either way with current payload
 - **fixmy.energy/check:** Live at `/check` (redirects to FAQ section on main site); installer-specific pages live at `/sunpower`, `/titan`, `/sunnova`, `/mosaic`, etc.
