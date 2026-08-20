@@ -17630,6 +17630,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (opt.remove_reinstall && opt.remove_reinstall.panels > 0) {
         build.rr = { on: true, panels: opt.remove_reinstall.panels, chargePerPanel: opt.remove_reinstall.charge_per_panel || 0 };
       }
+      // Same reload-authoritative treatment as price (below) — a saved redline is real dealer
+      // cost that was actually used for the sent commission, and must survive the next edit
+      // instead of silently recomputing to $0 the moment a custom line item is present.
+      if (build.redline > 0) {
+        build.dealerCostManual = true;
+        build.baseDealerCost = build.redline - _propAddonCost(build);
+      }
       // The saved price is authoritative on reload — treat it as a manual entry whose base
       // excludes the add-ons, so reopening a proposal shows the price that was actually
       // sent rather than a value recomputed from the catalog.
@@ -17667,6 +17674,26 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     build.priceManual = true;
     build.basePrice = (parseFloat(val) || 0) - _propAddonCharge(build);
     window._propUpdateTotal(optIdx);   // recomputes price + participate price
+    _propRenderBuilds();
+  };
+
+  // Manual Dealer Cost — same shape/reason as _propSetPriceManual above, for the redline
+  // side of the commission math. Needed whenever the deal isn't (fully) built from catalog
+  // items with a known default_price, e.g. a custom line item — see _propRecalcRedline.
+  window._propSetRedlineManual = function(optIdx, val) {
+    var build = _propBuilds[optIdx];
+    if (!build) return;
+    build.dealerCostManual = true;
+    build.baseDealerCost = (parseFloat(val) || 0) - _propAddonCost(build);
+    _propRecalcRedline(optIdx);
+    _propRenderBuilds();
+  };
+  window._propResetRedlineAuto = function(optIdx) {
+    var build = _propBuilds[optIdx];
+    if (!build) return;
+    build.dealerCostManual = false;
+    build.baseDealerCost = 0;
+    _propRecalcRedline(optIdx);
     _propRenderBuilds();
   };
 
@@ -17978,7 +18005,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // ── PROPOSAL MENU BUILDER HELPERS ─────────────────────────────────────────
 
   function _propInitBuild() {
-    return { lineItems: [], price: 0, basePrice: 0, priceManual: false, deposit: 0, participate: false, partPrice: null, teslaRebate: 0, sdcpRebate: 0, redline: 0, auroraImg: '', auroraPortal: '', nonExport: false, restoreArray: false, arrayOutputPct: 25, reroof: null, rr: null };
+    return { lineItems: [], price: 0, basePrice: 0, priceManual: false, deposit: 0, participate: false, partPrice: null, teslaRebate: 0, sdcpRebate: 0, redline: 0, baseDealerCost: 0, dealerCostManual: false, auroraImg: '', auroraPortal: '', nonExport: false, restoreArray: false, arrayOutputPct: 25, reroof: null, rr: null };
   }
   // Reroof squares from surface area (100 sq ft = 1 square). Cost is a fixed $700/sq
   // (the sub-sheet rate); the charge-per-square is the editable retail the rep sets.
@@ -18053,7 +18080,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       .reduce(function(s, li){ return s + (parseFloat(li.price)||0); }, 0);
     // Reroof ($700/sq) and R&R ($225/panel) are sub-sheet dealer costs → redline →
     // commission math. Their per-unit CHARGE is retail and adds to the System Price.
-    build.redline = lineSum + _propAddonCost(build);
+    // ⚠️ Custom line items (typed via "+ custom line item") carry no known dealer cost and
+    // are deliberately excluded from lineSum — so a proposal built wholly or partly from
+    // custom items used to redline at $0, and the commission preview forced itself to $0
+    // right alongside it regardless of the real System Price ("$15,500 - $12,500 shows as
+    // zero" reported 2026-08-20). dealerCostManual mirrors priceManual: the rep can type the
+    // real dealer cost directly, and it survives later edits the same way a manual System
+    // Price does.
+    var dealerBase = build.dealerCostManual ? (parseFloat(build.baseDealerCost) || 0) : lineSum;
+    build.redline = dealerBase + _propAddonCost(build);
     // ⚠️ The System Price must not be recomputed from scratch once the rep has typed one.
     // This previously did `build.price = lineSum + reroofCharge` unconditionally, so
     // entering a price and THEN the reroof squares silently discarded the typed price —
@@ -18356,6 +18391,18 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       h += '<input type="number" id="propManualPrice_'+optIdx+'" value="'+Math.round(build.price)+'" step="1" onchange="_propSetPriceManual('+optIdx+',this.value)" style="width:100%;background:#0e0e0e;border:1px solid rgba(141,198,63,0.2);border-radius:6px;color:#8DC63F;font-weight:700;padding:5px 7px;font-size:0.78rem;box-sizing:border-box;"/></div>';
       h += '</div>';
 
+      // Dealer Cost (redline) — editable. Catalog items already carry a known dealer cost
+      // (auto-summed below), but a custom line item carries none, so without this a proposal
+      // built from one shows Rep commission stuck at $0 no matter the System Price.
+      h += '<div style="display:grid;grid-template-columns:1fr auto;gap:6px;align-items:end;margin-bottom:10px;">';
+      h += '<div><label style="font-size:0.6rem;color:#888;display:block;margin-bottom:2px;">Dealer Cost / Redline ($)'+(build.dealerCostManual?' <span style="color:#f59e0b;">&mdash; manual</span>':' <span style="color:#555;">&mdash; auto from catalog</span>')+'</label>';
+      h += '<input type="number" id="propManualRedline_'+optIdx+'" value="'+Math.round(build.redline)+'" step="1" onchange="_propSetRedlineManual('+optIdx+',this.value)" style="width:100%;background:#0e0e0e;border:1px solid rgba(255,255,255,0.12);border-radius:6px;color:#ccc;font-weight:700;padding:5px 7px;font-size:0.78rem;box-sizing:border-box;"/></div>';
+      if (build.dealerCostManual) h += '<button onclick="_propResetRedlineAuto('+optIdx+')" style="width:auto;padding:6px 10px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:6px;color:#888;font-size:0.66rem;font-weight:700;cursor:pointer;white-space:nowrap;">&#8635; Auto</button>';
+      h += '</div>';
+      if (!build.lineItems.some(function(li){ return !li.isCustom; }) && !build.dealerCostManual) {
+        h += '<div style="font-size:0.62rem;color:#ef4444;margin-top:-6px;margin-bottom:10px;">&#9888; No catalog item selected — dealer cost is $0 and Rep commission will show $0. Type the real dealer cost above, or add a catalog item.</div>';
+      }
+
       // Participate Program — 30% off lease-to-own (very visible, per Dennis 2026-07-16).
       // Renders the propPartPrice_<idx> input that sendProposal/previewProposal already read.
       var _partOn = !!build.participate;
@@ -18419,7 +18466,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '<span style="font-size:0.7rem;color:#555;">Dealer cost</span><span style="font-size:0.75rem;color:#555;">$'+Math.round(build.redline).toLocaleString('en-US')+'</span>';
         h += '</div>';
         h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">';
-        h += '<span style="font-size:0.72rem;color:'+_commColor+';font-weight:700;">Rep commission</span><span style="font-size:0.88rem;color:'+_commColor+';font-weight:800;">$'+Math.max(0,_oComm).toLocaleString('en-US')+'</span>';
+        h += '<span style="font-size:0.7rem;color:#555;">Gross commission (price &minus; dealer cost)</span><span style="font-size:0.75rem;color:#555;">$'+Math.max(0,Math.round(_custPays-build.redline)).toLocaleString('en-US')+'</span>';
+        h += '</div>';
+        h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">';
+        h += '<span style="font-size:0.72rem;color:'+_commColor+';font-weight:700;">Rep commission (40% of gross)</span><span style="font-size:0.88rem;color:'+_commColor+';font-weight:800;">$'+Math.max(0,_oComm).toLocaleString('en-US')+'</span>';
         h += '</div>';
         if (_oComm < _commMin) {
           h += '<div style="font-size:0.65rem;color:#ef4444;margin-top:2px;">&#9888; Below $1,000 minimum &mdash; admin approval required to send</div>';
