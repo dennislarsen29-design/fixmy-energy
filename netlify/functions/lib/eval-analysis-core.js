@@ -16,6 +16,22 @@ const VISION_PRIORITY = [
 ];
 const MAX_IMAGES = 8;
 
+// A modern phone photo can run 5-15MB unresized, and this project has no image-resize
+// library available (no `sharp`, nothing installed) — the fetched bytes go straight to
+// base64 as-is. With no cap, 8 full-resolution photos could both (a) exceed Anthropic's
+// per-request size limit outright ("request_too_large", confirmed live 2026-08-19 on a
+// real evaluation) and (b) risk OOM-killing the whole Netlify function while buffering
+// them — a hard process crash bypasses every try/catch, which is almost certainly why a
+// separate evaluation the same day got stuck at status='analyzing' forever with no error
+// ever written. Anthropic also gains nothing from more than ~1568px on the long edge —
+// larger just gets downscaled server-side — so a byte cap costs no real accuracy.
+const MAX_SINGLE_IMAGE_BYTES = 8 * 1024 * 1024;   // skip any one image over this, raw
+const MAX_TOTAL_B64_BYTES    = 24 * 1024 * 1024;  // stop adding images once the running
+                                                    // base64 total would cross this —
+                                                    // leaves headroom under Anthropic's
+                                                    // ~32MB request cap for the tool
+                                                    // schema, system prompt and text.
+
 function rankPhotos(photos) {
   return photos.slice().sort((a, b) => {
     const ia = VISION_PRIORITY.indexOf(a.label || '');
@@ -31,7 +47,12 @@ async function toImageBlock(p) {
     const ct = (r.headers.get('content-type') || 'image/jpeg').split(';')[0].trim();
     // A PDF utility bill can't go down the vision path — it's passed as a document block.
     if (!/^image\/(jpeg|png|gif|webp)$/.test(ct)) return null;
-    const b64 = Buffer.from(await r.arrayBuffer()).toString('base64');
+    const buf = Buffer.from(await r.arrayBuffer());
+    if (buf.length > MAX_SINGLE_IMAGE_BYTES) {
+      console.warn('[eval-analysis] skipping oversized photo', p.url, buf.length, 'bytes');
+      return null;
+    }
+    const b64 = buf.toString('base64');
     return { type: 'image', source: { type: 'base64', media_type: ct, data: b64 } };
   } catch (e) {
     console.warn('[eval-analysis] photo fetch failed', p.url, e.message);
@@ -144,12 +165,24 @@ async function runEvalAnalysis(anthropicKey, body) {
   try {
     const ranked = rankPhotos(photos).slice(0, MAX_IMAGES);
     const blocks = [];
+    let b64Total = 0, includedImages = 0;
     for (const p of ranked) {
       const b = await toImageBlock(p);
-      if (b) {
-        blocks.push({ type: 'text', text: `Photo — ${p.label || 'unlabeled'}:` });
-        blocks.push(b);
+      if (!b) continue;
+      const size = b.source.data.length;
+      // Stop once the NEXT image would cross the budget, rather than the current running
+      // total — a strict running-total check would still let one huge image slip through
+      // right at the boundary. Images already earlier in VISION_PRIORITY order are kept;
+      // this only ever trims off the least-diagnostic tail.
+      if (b64Total + size > MAX_TOTAL_B64_BYTES) {
+        console.warn('[eval-analysis] image budget reached at', includedImages, 'images —',
+          'dropping', p.label || 'unlabeled', 'and anything lower-priority');
+        break;
       }
+      b64Total += size;
+      includedImages++;
+      blocks.push({ type: 'text', text: `Photo — ${p.label || 'unlabeled'}:` });
+      blocks.push(b);
     }
 
     const ctx = [];
@@ -233,7 +266,7 @@ async function runEvalAnalysis(anthropicKey, body) {
     }
     console.log('[eval-analysis] confident=' + !!out.confident +
       ' questions=' + ((out.questions || []).length) +
-      ' images=' + ranked.length +
+      ' images=' + includedImages + '/' + ranked.length +
       ' keys=' + ((out.proposal_prefill && out.proposal_prefill.option_keys) || []).join(','));
 
     return { out };
