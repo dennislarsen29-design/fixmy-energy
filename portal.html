@@ -5391,8 +5391,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return msg.includes('cors') || msg.includes('network') || msg.includes('failed to fetch') || msg.includes('load failed') || msg.includes('typeerror');
   }
 
-  async function uploadPhotos(files) {
+  async function uploadPhotos(files, forcedLabel) {
     if (!files.length || !currentJobId) return;
+    // forcedLabel is captured ONCE here, in this call's own local scope — never read from
+    // window._evForceLabel per-file inside the loop below. Two slot uploads fired in quick
+    // succession (a rep tapping through Inverter/MSP/Utility Bill slots at a door before the
+    // first one's async chain finished) used to race on that shared global: whichever call's
+    // onchange fired last stomped it before the earlier call's loop reached the read, so some
+    // photos saved with the WRONG label and others with label:null. See canvassBkUpload/evUpload.
+    var _forcedLabelForThisCall = (typeof forcedLabel !== 'undefined' && forcedLabel !== null) ? forcedLabel : (window._evForceLabel || null);
     // Status element differs by context: admin/ops job view uses #photoStatus,
     // the Tech/Sales lead editor uses #sePhotoStatus. Falling back to a dummy
     // keeps uploads working from any context — previously a missing #photoStatus
@@ -5473,7 +5480,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // The evaluation wizard always knows which slot it asked for, so it stamps the
       // category up front (same as the customer portal's upload cards) instead of
       // leaving the categorizer to guess. Quoya still runs its quality pass.
-      var forced = window._evForceLabel || null;
+      var forced = _forcedLabelForThisCall;
       var photoRecord = {
         job_id: String(currentJobId),
         url: publicUrl,
@@ -7184,12 +7191,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (st) { st.style.color = '#8DC63F'; st.textContent = 'Uploading ' + files.length + ' file' + (files.length > 1 ? 's' : '') + '…'; }
     _evBusy = true;
     try {
-      window._evForceLabel = label;
-      await uploadPhotos(files);
+      // Passed as an explicit argument, not just window._evForceLabel — a second slot tapped
+      // before this upload finishes must not be able to relabel these photos mid-flight.
+      await uploadPhotos(files, label);
     } catch(e) {
       if (st) { st.style.color = '#ef4444'; st.textContent = 'Upload failed: ' + e.message; }
     } finally {
-      window._evForceLabel = null;
       _evBusy = false;
     }
     try { await loadJobPhotos(_evId); } catch(e) {}
@@ -24405,11 +24412,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (st) { st.style.color = '#8DC63F'; st.textContent = 'Uploading…'; }
       currentJobId = _cvBk.id;
       try {
-        window._evForceLabel = label;   // the slot already knows its category
-        await uploadPhotos(files);
+        // Passed as an explicit argument (the slot already knows its category) — NOT via
+        // window._evForceLabel. A rep tapping through multiple slots at a door before the
+        // first upload finished used to race on that shared global; see uploadPhotos().
+        await uploadPhotos(files, label);
       } catch(e) {
         if (st) { st.style.color = '#ef4444'; st.textContent = 'Upload failed: ' + e.message; }
-      } finally { window._evForceLabel = null; }
+      }
       try { await loadJobPhotos(_cvBk.id); } catch(e) {}
       inputEl.value = '';
       _cvBkRender();
