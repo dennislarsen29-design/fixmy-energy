@@ -17651,6 +17651,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       build.partPriceManual = build.partPrice != null && Math.round(build.partPrice) !== Math.round((opt.price||0) * 0.70);
       build.teslaRebate= opt.tesla_rebate || 0;
       build.sdcpRebate = opt.sdcp_rebate  || 0;
+      // A saved proposal only ever carries a non-zero sdcp_rebate when the rep had
+      // confirmed eligibility at send time (see sendProposal/previewProposal below) —
+      // reopening it should show that confirmed state, not reset to unconfirmed.
+      build.sdcpQualified = !!opt.sdcp_qualified || (opt.sdcp_rebate||0) > 0;
       build.redline    = opt.redline || 0;
       build.nonExport  = !!opt.non_export;
       build.restoreArray   = !!opt.restore_array;
@@ -17910,7 +17914,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         line_items: build.lineItems.map(function(li){ return { id: li.id || null, name: li.name, price: li.price, isCustom: !!li.isCustom }; })
       };
       if (build.teslaRebate) opt.tesla_rebate = build.teslaRebate;
-      if (build.sdcpRebate)  opt.sdcp_rebate  = build.sdcpRebate;
+      // Only ever sent when the rep has explicitly confirmed eligibility (the checkbox
+      // above build.sdcpQualified) — territory alone is not enough, per Dennis: this also
+      // needs the system near net-zero/positive AND SDCP's own qualification. An
+      // unconfirmed figure must never reach a customer-facing proposal.
+      if (build.sdcpRebate && build.sdcpQualified) { opt.sdcp_rebate = build.sdcpRebate; opt.sdcp_qualified = true; }
       opt.aurora_image_url  = aImgEl  ? (aImgEl.value.trim()  || null) : null;
       opt.aurora_portal_url = aPortEl ? (aPortEl.value.trim() || null) : null;
       if (build.nonExport) opt.non_export = true;
@@ -18041,7 +18049,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // ── PROPOSAL MENU BUILDER HELPERS ─────────────────────────────────────────
 
   function _propInitBuild() {
-    return { lineItems: [], price: 0, basePrice: 0, priceManual: false, deposit: 0, participate: false, partPrice: null, teslaRebate: 0, sdcpRebate: 0, redline: 0, baseDealerCost: 0, dealerCostManual: false, auroraImg: '', auroraPortal: '', nonExport: false, restoreArray: false, arrayOutputPct: 25, reroof: null, rr: null };
+    return { lineItems: [], price: 0, basePrice: 0, priceManual: false, deposit: 0, participate: false, partPrice: null, teslaRebate: 0, sdcpRebate: 0, sdcpQualified: false, redline: 0, baseDealerCost: 0, dealerCostManual: false, auroraImg: '', auroraPortal: '', nonExport: false, restoreArray: false, arrayOutputPct: 25, reroof: null, rr: null };
   }
   // Reroof squares from surface area (100 sq ft = 1 square). Cost is a fixed $700/sq
   // (the sub-sheet rate); the charge-per-square is the editable retail the rep sets.
@@ -18464,8 +18472,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '</div>';
         h += '<div style="font-size:0.62rem;color:#555;margin-top:5px;">'+(build.partPriceManual ? 'Manual override &mdash; no longer tracking 70% of System Price.' : 'Auto-tracks 70% of System Price &mdash; edit to override.')+'</div>';
       }
-      if (_isSdcpZip) {
-        h += '<div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.06);font-size:0.68rem;color:#4a9eff;font-weight:600;">&#9889; SDCP territory (zip '+_zipM2[1]+') &mdash; community power battery rebate applies'+(build.sdcpRebate>0 ? ': <span style="font-weight:800;">&minus;$'+Math.round(build.sdcpRebate).toLocaleString('en-US')+'</span>' : ' once a Powerwall is added (amount from battery catalog item)')+'</div>';
+      if (_isSdcpZip && build.sdcpRebate > 0) {
+        h += '<div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.06);">';
+        h += '<div style="font-size:0.68rem;color:#4a9eff;font-weight:600;margin-bottom:6px;">&#9889; SDCP territory (zip '+_zipM2[1]+') &mdash; battery may qualify for &minus;$'+Math.round(build.sdcpRebate).toLocaleString('en-US')+'</div>';
+        h += '<div style="font-size:0.64rem;color:#888;line-height:1.5;margin-bottom:6px;">Eligible only if the system is close to net-zero or net-positive to the grid, AND upon SDCP\'s own qualification &mdash; territory alone is not enough.</div>';
+        h += '<label style="display:flex;align-items:center;gap:7px;cursor:pointer;">'+
+               '<input type="checkbox" '+(build.sdcpQualified?'checked':'')+' onchange="_propToggleSdcpQualified('+optIdx+')" style="width:15px;height:15px;accent-color:#4a9eff;cursor:pointer;"/>'+
+               '<span style="font-size:0.68rem;color:'+(build.sdcpQualified?'#4a9eff':'#aaa')+';font-weight:700;">Confirmed close to net-zero/positive &mdash; include as pending SDCP qualification</span>'+
+             '</label>';
+        h += '</div>';
+      } else if (_isSdcpZip) {
+        h += '<div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.06);font-size:0.68rem;color:#4a9eff;font-weight:600;">&#9889; SDCP territory (zip '+_zipM2[1]+') &mdash; battery incentive may apply once a Powerwall is added</div>';
       }
       h += '</div>';
 
@@ -18491,9 +18508,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '<span style="font-size:0.7rem;color:#666;">Tesla rebate</span><span style="font-size:0.78rem;color:#8DC63F;">&minus;$'+Math.round(build.teslaRebate).toLocaleString('en-US')+'</span>';
         h += '</div>';
       }
-      if (build.sdcpRebate > 0) {
+      if (build.sdcpRebate > 0 && build.sdcpQualified) {
         h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">';
-        h += '<span style="font-size:0.7rem;color:#4a9eff;">SDCP rebate</span><span style="font-size:0.78rem;color:#4a9eff;">&minus;$'+Math.round(build.sdcpRebate).toLocaleString('en-US')+'</span>';
+        h += '<span style="font-size:0.7rem;color:#4a9eff;">SDCP incentive (pending SDCP qualification)</span><span style="font-size:0.78rem;color:#4a9eff;">&minus;$'+Math.round(build.sdcpRebate).toLocaleString('en-US')+'</span>';
         h += '</div>';
       }
       h += '<div style="border-top:1px solid rgba(255,255,255,0.07);margin:6px 0;"></div>';
@@ -18555,6 +18572,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (_propBuilds[optIdx]) { _propBuilds[optIdx].nonExport = !_propBuilds[optIdx].nonExport; _propRenderBuilds(); }
   };
 
+  // SDCP battery incentive eligibility (2026-08-21, per Dennis — AUTHORITATIVE): the
+  // dollar amount is NOT tied to which catalog SKU was picked (it used to only live on
+  // the panels-bundle row, so a battery-only retrofit silently priced it at $0 — the
+  // Arturo Ma report). Real eligibility is (1) SDCP territory — zip-checked automatically
+  // above, (2) the system is close to net-zero or net-positive to the grid — a fact about
+  // THIS customer's usage that only a rep can judge, and (3) SDCP's own approval, which
+  // this tool can never confirm in advance. build.sdcpRebate is still auto-computed from
+  // the catalog + zip as before; this flag gates whether that figure is treated as
+  // confirmed-and-included versus merely available-if-qualified. Defaults OFF — an
+  // unconfirmed incentive must never silently ride into a sent proposal.
+  window._propToggleSdcpQualified = function(optIdx) {
+    if (_propBuilds[optIdx]) { _propBuilds[optIdx].sdcpQualified = !_propBuilds[optIdx].sdcpQualified; _propRenderBuilds(); }
+  };
+
   window._propPanelInc = function(optIdx) {
     _propPanelCounts[optIdx] = (_propPanelCounts[optIdx] || 0) + 1;
     _propUpdatePanelItem(optIdx);
@@ -18613,6 +18644,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     } else if (count === 0) {
       build.teslaRebate = 0;
       build.sdcpRebate = 0;
+      build.sdcpQualified = false;
     }
     _propUpdateTotal(optIdx);
     _propRenderBuilds();
@@ -18871,7 +18903,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         description: (primaryItem&&primaryItem.description)||build.lineItems.map(function(li){return li.name;}).join(' · '),
         price: build.price, participate: build.participate, participate_price: partPrice,
         milestones: milestones,
-        tesla_rebate: build.teslaRebate||0, sdcp_rebate: build.sdcpRebate||0,
+        tesla_rebate: build.teslaRebate||0, sdcp_rebate: (build.sdcpQualified ? build.sdcpRebate||0 : 0),
         aurora_image_url:  aImgEl  ? aImgEl.value.trim()||null  : null,
         aurora_portal_url: aPortEl ? aPortEl.value.trim()||null : null,
         line_items: build.lineItems.map(function(li){ return {name:li.name,price:li.price,isCustom:!!li.isCustom}; })
