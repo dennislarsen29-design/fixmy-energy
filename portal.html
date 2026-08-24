@@ -21368,6 +21368,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var nlDateEl=document.getElementById(leadCat==='fixmy'?'nlApptDateManual':'nlApptDate'), nlTimeEl=document.getElementById(leadCat==='fixmy'?'nlApptTimeManual':'nlApptTime'), nlEndEl=document.getElementById(leadCat==='fixmy'?'nlApptEndManual':'nlApptEnd');
     var nlApptDate=nlDateEl?nlDateEl.value:'', nlApptTime=nlTimeEl?nlTimeEl.value:'', nlApptEnd=nlEndEl?nlEndEl.value:'';
     var apptISO=(nlApptDate&&nlApptTime)?new Date(nlApptDate+'T'+nlApptTime).toISOString():(nlApptDate?new Date(nlApptDate+'T09:00').toISOString():null);
+    // ⚠️ Previously saved as the RAW "HH:MM" input value, never combined with the date
+    // into a real timestamp (e.g. arrival_end = "15:00" instead of a real ISO datetime).
+    var apptEndISO=(nlApptDate&&nlApptEnd)?new Date(nlApptDate+'T'+nlApptEnd).toISOString():null;
     var ttDiagDate=(document.getElementById('nlTTDate')||{}).value||null;
     var ttArrStart=(document.getElementById('nlTTArrivalStart')||{}).value||null;
     var ttArrEnd=(document.getElementById('nlTTArrivalEnd')||{}).value||null;
@@ -21375,9 +21378,25 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var ttArrivalWindow=(isTT&&ttArrStart&&ttArrEnd)?(_fmtTTTime(ttArrStart)+' – '+_fmtTTTime(ttArrEnd)):null;
     var ttDiagISO=(isTT&&ttDiagDate&&ttArrStart)?new Date(ttDiagDate+'T'+ttArrStart).toISOString():null;
     var nlLeadSrcEl=document.getElementById('nlLeadSource');
+    // ⚠️ "Enter date/time manually instead" used to be a silent dead end (2026-08-24 —
+    // Jim Leste report: landed in the portal, never on the GHL calendar). nlSlotStartISO/
+    // nlSlotEndISO — the only thing that gated the real ghl-book call below — were only
+    // ever set by clicking a picked slot (nlSelectSlot); the manual date/time inputs never
+    // fed them, so typing a date manually created a lead that LOOKED booked in the portal
+    // and was never on the actual calendar, with no warning of any kind. Manual entry now
+    // resolves to the same start/end ISO pair the slot picker produces, so either path
+    // books for real.
     var fixmySlotStart=(document.getElementById('nlSlotStartISO')||{}).value||'';
     var fixmySlotEnd=(document.getElementById('nlSlotEndISO')||{}).value||'';
+    if (leadCat === 'fixmy' && !(fixmySlotStart && fixmySlotEnd) && apptISO && apptEndISO) {
+      fixmySlotStart = apptISO; fixmySlotEnd = apptEndISO;
+    }
     var _fixmyRealBooking = (leadCat === 'fixmy' && fixmySlotStart && fixmySlotEnd);
+    // A real slot-picker choice is the authoritative time — reflect it back into what gets
+    // saved as diagnostic_date/arrival_end too. nlSelectSlot only ever wrote the hidden ISO
+    // fields, never the visible manual inputs, so without this the portal's own saved
+    // appointment time could silently disagree with what was actually booked in GHL.
+    if (leadCat === 'fixmy' && fixmySlotStart && fixmySlotEnd) { apptISO = fixmySlotStart; apptEndISO = fixmySlotEnd; }
     var titleNoteEl=document.getElementById('nlTitleNoteText');
     var titleNote=(titleNoteEl?titleNoteEl.value:'').trim();
     if(titleNote) fullNotes=[fullNotes,'Title mismatch: '+titleNote].filter(Boolean).join(' | ');
@@ -21387,7 +21406,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var titleConfVal=titleConfRaw==='true'?true:titleConfRaw==='false'?false:null;
     var setterLabel=repName||setter||null;
     var initialNotes = fullNotes ? JSON.stringify([{ts:new Date().toISOString(),by:setterLabel?'Setter: '+setterLabel:'Setter',text:fullNotes}]) : null;
-    var newLead={first_name:first,last_name:(document.getElementById('nlLast').value||null),email:email,phone:phone,address:addr,monthly_bill:bill||null,access_code:digits,step:1,notes:initialNotes,rep_id:repId||null,lead_category:leadCat,solar_status:initSolarStatus,diagnostic_date:isTT?(ttDiagISO||apptISO):apptISO,arrival_window:ttArrivalWindow||null,arrival_end:isTT?(ttArrEnd&&ttDiagDate?new Date(ttDiagDate+'T'+ttArrEnd).toISOString():null):(nlApptEnd||null),lead_source:nlLeadSrcEl?nlLeadSrcEl.value||null:null,title_owner:titleOwnerVal,apn:titleApnVal,title_confirmed:titleConfVal};
+    var newLead={first_name:first,last_name:(document.getElementById('nlLast').value||null),email:email,phone:phone,address:addr,monthly_bill:bill||null,access_code:digits,step:1,notes:initialNotes,rep_id:repId||null,lead_category:leadCat,solar_status:initSolarStatus,diagnostic_date:isTT?(ttDiagISO||apptISO):apptISO,arrival_window:ttArrivalWindow||null,arrival_end:isTT?(ttArrEnd&&ttDiagDate?new Date(ttDiagDate+'T'+ttArrEnd).toISOString():null):apptEndISO,lead_source:nlLeadSrcEl?nlLeadSrcEl.value||null:null,title_owner:titleOwnerVal,apn:titleApnVal,title_confirmed:titleConfVal};
     var btn=document.querySelector('#newLeadPanel .lead-btn.lime');
     if(btn){btn.textContent='Creating...';btn.disabled=true;}
     try{
@@ -21408,6 +21427,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (leadCat === 'top_tier') {
         fetch('/.netlify/functions/ghl-calendar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({firstName:first,lastName:newLead.last_name||'',email:email,phone:phone,address:addr,appointmentDate:ttDiagDate||nlApptDate,appointmentTime:ttArrStart||nlApptTime,appointmentEndTime:ttArrEnd||nlApptEnd,diagnosticDate:ttDiagISO||undefined,arrivalWindow:ttArrivalWindow||undefined,trigger:'top_tier_new_lead'})}).catch(function(e){console.warn('GHL Calendar:',e);});
       }
+      // ⚠️ A failed ghl-book call used to only console.warn — invisible to the rep, and
+      // exactly how a lead can "land on Portal leads but not on the calendar" with no
+      // sign anything went wrong. Tracked here so the confirmation panel below can show
+      // a real warning instead of a silent success message.
+      var _ghlBookOk = null, _ghlBookFailReason = '';
       if (_fixmyRealBooking) {
         try {
           // Setter-entered leads (Ronda's mail/phone leads, Dennis-set, Other) still book a
@@ -21423,12 +21447,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             body: JSON.stringify({ firstName: first, lastName: newLead.last_name||'', phone: phone, email: email, address: addr, startISO: fixmySlotStart, endISO: fixmySlotEnd, notify: !_isSetterType })
           });
           var _bookResult = await _bookResp.json();
-          if (!_bookResp.ok || !_bookResult.ok) console.warn('ghl-book failed:', _bookResult);
+          // Matches the same real-booking truth test used on Doors/Dialer commits —
+          // ok:true alone is not proof; a rejected calendar write can still return 200.
+          _ghlBookOk = !!(_bookResp.ok && _bookResult && _bookResult.ok && _bookResult.appointmentId && !_bookResult.apptError);
+          if (!_ghlBookOk) { _ghlBookFailReason = (_bookResult && (_bookResult.apptError || _bookResult.error)) || 'GHL did not confirm the appointment'; console.warn('ghl-book failed:', _bookResult); }
           var _custId = data && data.id;
           if (_custId && nlLeadSrcEl && nlLeadSrcEl.value) {
             await client.from('customers').update({ lead_source: nlLeadSrcEl.value }).eq('id', _custId);
           }
-        } catch(e) { console.warn('ghl-book call failed:', e.message); }
+        } catch(e) { _ghlBookOk = false; _ghlBookFailReason = e.message; console.warn('ghl-book call failed:', e.message); }
+      } else if (leadCat === 'fixmy' && apptISO) {
+        // A date was entered but nothing could resolve to a bookable start/end pair
+        // (e.g. no end time given) — still worth flagging rather than staying silent.
+        _ghlBookOk = false; _ghlBookFailReason = 'No end time — could not book the calendar appointment.';
       }
       var saved=document.getElementById('nlSaved'); if(saved) saved.style.display='inline';
       try { if(repId) sessionStorage.setItem('salesView_'+repId,'leads'); } catch(e){}
@@ -21441,6 +21472,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // from the response, plus a direct link to the actual GHL contact record —
       // 2026-08-17 found that hunting for the right contact by name/phone in GHL's
       // Contacts list repeatedly turned up the wrong (stale/coincidental) record.
+      // Un-missable, shown regardless of setter-type — a failed calendar write must
+      // never look identical to a successful one. This is what "landed in the portal,
+      // never on the calendar" looked like before: nothing here at all.
+      var _calBookWarningHtml = (_ghlBookOk === false) ?
+        '<div style="text-align:left;margin-top:14px;padding:12px 14px;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.35);border-radius:10px;font-size:0.78rem;color:#ef4444;">'+
+          '<div style="font-weight:800;margin-bottom:4px;">&#9888; Not on the calendar</div>'+
+          '<div style="color:#ddd;">The lead saved, but the appointment did not book to the GHL calendar (' + esc(_ghlBookFailReason) + '). Open the booking calendar below and book it manually, or edit this lead\'s date to retry.</div>'+
+        '</div>' : '';
       var _setterDiagHtml = '';
       if (typeof _isSetterType !== 'undefined' && _isSetterType && typeof _bookResult !== 'undefined' && _bookResult) {
         var _tr = _bookResult.tagResult;
@@ -21460,6 +21499,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '<div style="font-size:2rem;margin-bottom:8px;">✅</div>'+
           '<div style="font-size:1.05rem;font-weight:800;color:#8DC63F;margin-bottom:4px;">Lead Created!</div>'+
           '<div style="font-size:0.82rem;color:#aaa;margin-bottom:24px;">'+custName+'</div>'+
+          _calBookWarningHtml+
           _setterDiagHtml+
           '<div style="display:flex;flex-direction:column;gap:10px;margin-top:14px;">'+
             '<button onclick="navigator.clipboard.writeText(\''+mlLink+'\').then(function(){this.textContent=\'✓ Copied!\';},function(){prompt(\'Copy link:\',\''+mlLink+'\');}).bind(this)" style="width:100%;padding:13px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);border-radius:10px;color:#4a9eff;font-size:0.88rem;font-weight:700;cursor:pointer;">🔗 Copy Customer Portal Link</button>'+
