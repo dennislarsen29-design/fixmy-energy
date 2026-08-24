@@ -449,6 +449,12 @@ Black Box leads often arrive from skip-trace/GIS enrichment without an email. Th
 - **Feeds the 1:1s coaching pipeline more completely:** `coaching-agent.js` scans `lead_activity` for the 🎙 prefix grouped by `rep_name`. Previously any un-dispositioned call was invisible to it; auto-saving on Stop means every summarized call reaches `lead_activity`, dispositioned or not.
 - Unsupported browser or denied mic degrades to a friendly message; short transcripts (<25 chars) are skipped rather than summarized into noise.
 
+### AI Notes added to the Setter Lead Capture form (2026-08-23, per Dennis)
+Reported missing for both Dennis and Ronda — correctly, it had never been built there. The Dialer/Doors version (`_cvAiControls`) calls `bbLogActivity(leadId, ...)`, which needs a real `customer_id` — but the New Lead form runs *before* the lead exists in `customers`, so that mechanism doesn't apply as-is.
+- **`_nlAiControlsHtml()` / `nlAiToggle()` / `nlAiStop()`** (portal.html) — a standalone third implementation (not a reuse of `_cvAiControls`, which is leadId-shaped) that writes straight into the `#nlNotes` textarea already on the form, consent-gated through the same `_aiConsentGate('call', …)` § 632 flow as the Dialer and Doors versions, summarized through the same shared `_aiSummarize()` helper (so no second Anthropic-call implementation). Whatever lands in `#nlNotes` is exactly what `createNewLead()` already persists as the lead's opening note — no new save path needed.
+- **One shared form, one control — covers both Dennis and Ronda automatically.** `#nlNotes` and the New Lead form itself are not duplicated per-role (same form the "No Automations" toggle sits on), so there was no second surface to add this to separately.
+- Passes whatever's typed into `#nlFirst`/`#nlAddr` so far as lead context to the summarizer, even though the record doesn't exist in the DB yet.
+
 ## Setter Database + Onboarding Automation (2026-08-03)
 Built after Dennis hired 3 setters and needed real per-person accountability plus a repeatable onboarding path. Extends the existing Team → 1:1s view rather than adding a new tab (deliberate — 1:1s is already where he runs the meeting).
 - **Migration `20260803_setter_database.sql`** (✅ applied — verified 2026-08-08): `rep_shifts` (shift clock), `one_on_one_notes` (durable 1:1 record), plus `team_members.onboarded_at / gusto_status / gusto_sent_at / start_date`. Anon-key RLS, same trust model as `lead_activity`/`coaching_reports`. Everything degrades silently if unapplied — dialing is never blocked.

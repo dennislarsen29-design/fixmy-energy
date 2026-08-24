@@ -10666,6 +10666,79 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (st) st.textContent = d ? '✓ saved to lead' : ('✓ transcript saved. ' + _aiNoteFailText(_aiLastFail, null));
   }
 
+  // ── AI Notes on the Setter Lead Capture form (2026-08-23, per Dennis) ──────────
+  // Same live-transcribe-and-summarize tool as the Doors/Dialing cards, but there is
+  // no customer_id yet at this point — the lead doesn't exist until the form is
+  // submitted. So this writes straight into the #nlNotes textarea (rendered on every
+  // New Lead form, admin and setter alike — one shared form, one control covers both
+  // Dennis and Ronda) instead of calling bbLogActivity; whatever lands in #nlNotes is
+  // already what createNewLead() persists as the lead's opening note.
+  var _nlAiRec = null, _nlAiActive = false, _nlAiFinal = '';
+  function _nlAiControlsHtml() {
+    return '<div style="margin-bottom:8px;">'+
+      '<button type="button" id="nlAiBtn" onclick="nlAiToggle()" title="Transcribe this call live and auto-write the note for you." style="width:auto;padding:5px 12px;background:rgba(155,109,232,0.1);border:1px solid rgba(155,109,232,0.35);color:#c4a3f0;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;">&#127908; AI Notes</button>'+
+      '<div id="nlAiPanel" style="display:none;margin-top:6px;background:rgba(155,109,232,0.06);border:1px solid rgba(155,109,232,0.3);border-radius:10px;padding:8px 10px;">'+
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;"><span style="font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#c4a3f0;">&#127908; Live Transcript</span><span id="nlAiStatus" style="font-size:0.62rem;color:#888;"></span></div>'+
+        '<div id="nlAiTranscript" style="font-size:0.72rem;color:#ddd;line-height:1.4;max-height:120px;overflow-y:auto;white-space:pre-wrap;"></div>'+
+      '</div>'+
+    '</div>';
+  }
+  window.nlAiToggle = function() {
+    if (_nlAiActive) { window.nlAiStop(); return; }
+    var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    var panel = document.getElementById('nlAiPanel');
+    var box = document.getElementById('nlAiTranscript');
+    if (panel) panel.style.display = 'block';
+    if (!SR) { if (box) box.textContent = 'Voice transcription isn\'t supported here — use Safari (iOS 14.5+) or Chrome. You can still type the note below.'; return; }
+    _aiConsentGate('call', _nlAiBegin);
+  };
+  function _nlAiBegin() {
+    var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    var box = document.getElementById('nlAiTranscript');
+    _nlAiFinal = ''; _nlAiActive = true;
+    var st = document.getElementById('nlAiStatus');
+    if (st) st.textContent = '● recording — saved automatically when you stop';
+    var btn = document.getElementById('nlAiBtn');
+    if (btn) { btn.textContent = '⏹ Stop & Summarize'; btn.style.background = 'rgba(239,68,68,0.15)'; btn.style.borderColor = 'rgba(239,68,68,0.4)'; btn.style.color = '#ef4444'; }
+    _nlAiRec = new SR();
+    _nlAiRec.continuous = true; _nlAiRec.interimResults = true; _nlAiRec.lang = 'en-US';
+    _nlAiRec.onresult = function(ev){
+      var interim = '';
+      for (var i = ev.resultIndex; i < ev.results.length; i++) { var tr = ev.results[i][0].transcript; if (ev.results[i].isFinal) _nlAiFinal += tr + ' '; else interim += tr; }
+      if (box) { box.textContent = _nlAiFinal + (interim ? ' ' + interim : ''); box.scrollTop = box.scrollHeight; }
+    };
+    _nlAiRec.onend = function(){ if (_nlAiActive && _nlAiRec) { try { _nlAiRec.start(); } catch(e){} } };
+    _nlAiRec.onerror = function(ev){ if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') { _nlAiActive = false; _nlAiResetBtn(); if (box) box.textContent = 'Microphone access denied — allow the mic for fixmy.energy, then try again.'; } };
+    try { _nlAiRec.start(); } catch(e) { console.warn('nl SR start failed:', e); }
+  }
+  function _nlAiResetBtn() {
+    var btn = document.getElementById('nlAiBtn');
+    if (btn) { btn.textContent = '🎙 AI Notes'; btn.style.background = 'rgba(155,109,232,0.1)'; btn.style.borderColor = 'rgba(155,109,232,0.35)'; btn.style.color = '#c4a3f0'; }
+  }
+  window.nlAiStop = async function() {
+    var transcript = (_nlAiFinal || '').trim();
+    _nlAiActive = false;
+    if (_nlAiRec) { try { _nlAiRec.onend = null; _nlAiRec.stop(); } catch(e){} _nlAiRec = null; }
+    _nlAiResetBtn();
+    var st = document.getElementById('nlAiStatus');
+    if (!transcript || transcript.length < 25) {
+      if (st) st.textContent = transcript ? 'too short to summarize — type the note manually' : '';
+      return;
+    }
+    if (st) st.textContent = 'summarizing…';
+    // Whatever's been typed into the form so far — the lead doesn't exist in the DB
+    // yet, but the summarizer still benefits from a real name/address if available.
+    var pseudoLead = {
+      first_name: (document.getElementById('nlFirst')||{}).value || '',
+      address: (document.getElementById('nlAddr')||{}).value || ''
+    };
+    var d = await _aiSummarize(transcript, pseudoLead);
+    var noteText = (d && d.note) ? d.note : '🎙 Transcript (AI summary unavailable): ' + transcript.slice(0, 4000);
+    var noteEl = document.getElementById('nlNotes');
+    if (noteEl) { noteEl.value = (noteEl.value ? noteEl.value.trim() + '\n' : '') + _aiConsentTag() + noteText; }
+    if (st) st.textContent = d ? '✓ added to note' : ('✓ transcript saved. ' + _aiNoteFailText(_aiLastFail, null));
+  };
+
   // ── Email field (2026-07-23) — Black Box leads often arrive without an email
   // from skip-trace/GIS enrichment. Reps confirm/add it right on the call card;
   // saves straight to customers.email so it's ready for the magic-link text+email
@@ -20529,6 +20602,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '</div>'
         : '')+
         '<div class="editor-section-title">Note to Tech</div>'+
+        _nlAiControlsHtml()+
         '<div style="margin-bottom:16px;"><textarea id="nlNotes" class="ed-input" rows="3" style="resize:vertical;" placeholder="Gate code, concerns, system issues..." oninput="nlUpdateCal()"></textarea></div>'+
         '<div id="nlTTApptWrap" style="display:none;">'+
           '<div class="editor-section-title">&#11088; Appointment Date &amp; Arrival Window</div>'+
