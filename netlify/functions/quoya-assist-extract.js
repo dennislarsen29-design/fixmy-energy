@@ -106,8 +106,12 @@ exports.handler = async function (event) {
         'anthropic-version': '2023-06-01'
       },
       body: JSON.stringify({
+        // Trimmed from 400 -- the real JSON payload (10 fields + a short missing
+        // list + one guidance sentence) comfortably fits in ~250-300 tokens, and
+        // every unused token in the cap is dead decode time on the speed-critical
+        // path (2026-08-25, "it's very slow" follow-up).
         model: 'claude-haiku-4-5-20251001',
-        max_tokens: 400,
+        max_tokens: 300,
         messages: [{ role: 'user', content: prompt }]
       })
     });

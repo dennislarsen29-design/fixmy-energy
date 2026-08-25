@@ -10433,12 +10433,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // waiting for the next tick. The interval stays on as a backstop only, shortened
   // to 2.5s, for the rare case of one long unbroken run of speech with no isFinal
   // boundary in between.
+  // ⚠️ Speed fix (2026-08-25, same day again — "it's very slow"): a kick that landed
+  // WHILE a call was already in flight used to just no-op and get dropped, so during
+  // continuous back-and-forth speech the effective gap between checks could be far
+  // worse than it looked — silently waiting on the 2.5s backstop instead of firing
+  // the instant the in-flight call finished. `state.pending` coalesces every kick
+  // that arrives mid-flight into exactly ONE guaranteed follow-up run, fired the
+  // moment the current one completes — so the loop runs essentially back-to-back
+  // during active conversation instead of leaving dead air after every response.
   var _qaLoops = {};
   function _qaStartLoop(key, getTranscript, getKnown, onResult) {
     _qaStopLoop(key);
-    var state = { lastLen: 0, extracting: false, getTranscript: getTranscript, getKnown: getKnown, onResult: onResult };
+    var state = { lastLen: 0, extracting: false, pending: false, getTranscript: getTranscript, getKnown: getKnown, onResult: onResult };
     state.run = async function() {
-      if (state.extracting) return;
+      if (state.extracting) { state.pending = true; return; }
       var t = (state.getTranscript() || '').trim();
       if (t.length < 12 || t.length === state.lastLen) return;
       state.extracting = true;
@@ -10453,9 +10461,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var data = await resp.json();
         if (data && !data.error) state.onResult(data);
       } catch (e) { /* never let a failed extraction pass interrupt the call */ }
-      finally { state.extracting = false; }
+      finally {
+        state.extracting = false;
+        if (state.pending) { state.pending = false; state.run(); }
+      }
     };
-    state.timer = setInterval(state.run, 2500);
+    // 1.5s backstop only — the kick on every finalized phrase does the real work now.
+    state.timer = setInterval(state.run, 1500);
     _qaLoops[key] = state;
   }
   function _qaStopLoop(key) {
