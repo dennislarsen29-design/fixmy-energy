@@ -10421,34 +10421,54 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // actually talk (they pause between thoughts far more often than every 4s).
   // A failed/slow extraction pass is silently swallowed — it must never interrupt
   // or stall the actual call, only enrich it when it can.
+  // ── Event-driven, not clock-driven (2026-08-25 fix) ──────────────────────────
+  // The original version only fired on a flat 4s timer, which is what "not one
+  // answer was typed out" during a real test call turned out to mean — an answer
+  // could sit unread for up to 4 real seconds, plus the network+Claude round trip
+  // on top, before it had any chance of landing. Dennis's ask is specific: type it
+  // out AS the setter is asking the questions. `_qaKick(key)` runs the SAME
+  // extraction pass on demand, called the instant a spoken phrase COMPLETES
+  // (SpeechRecognition's own isFinal signal — a natural pause, not an arbitrary
+  // clock tick), so an answer is checked within a moment of being said rather than
+  // waiting for the next tick. The interval stays on as a backstop only, shortened
+  // to 2.5s, for the rare case of one long unbroken run of speech with no isFinal
+  // boundary in between.
   var _qaLoops = {};
   function _qaStartLoop(key, getTranscript, getKnown, onResult) {
     _qaStopLoop(key);
-    var state = { lastLen: 0, extracting: false };
-    state.timer = setInterval(async function() {
+    var state = { lastLen: 0, extracting: false, getTranscript: getTranscript, getKnown: getKnown, onResult: onResult };
+    state.run = async function() {
       if (state.extracting) return;
-      var t = (getTranscript() || '').trim();
-      if (t.length < 20 || t.length === state.lastLen) return;
+      var t = (state.getTranscript() || '').trim();
+      if (t.length < 12 || t.length === state.lastLen) return;
       state.extracting = true;
       state.lastLen = t.length;
       try {
         var ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
         var timer2 = setTimeout(function(){ if (ctrl) try { ctrl.abort(); } catch(e){} }, 9000);
-        var opts = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transcript: t.slice(-6000), known: getKnown() }) };
+        var opts = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transcript: t.slice(-6000), known: state.getKnown() }) };
         if (ctrl) opts.signal = ctrl.signal;
         var resp = await fetch('/.netlify/functions/quoya-assist-extract', opts);
         clearTimeout(timer2);
         var data = await resp.json();
-        if (data && !data.error) onResult(data);
+        if (data && !data.error) state.onResult(data);
       } catch (e) { /* never let a failed extraction pass interrupt the call */ }
       finally { state.extracting = false; }
-    }, 4000);
+    };
+    state.timer = setInterval(state.run, 2500);
     _qaLoops[key] = state;
   }
   function _qaStopLoop(key) {
     var s = _qaLoops[key];
     if (s && s.timer) clearInterval(s.timer);
     delete _qaLoops[key];
+  }
+  // Called the moment a spoken phrase finalizes — see the onresult handlers below.
+  // A no-op if this key isn't an active loop (recording already stopped) or a
+  // request is already in flight (state.run's own guard handles that safely).
+  function _qaKick(key) {
+    var s = _qaLoops[key];
+    if (s) s.run();
   }
   // Renders just the coaching line — used by Dialer/Doors, which have nothing to
   // auto-fill but still benefit from "you're missing X" / "you've drifted off track".
@@ -10584,14 +10604,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     _bbAiRec.interimResults = true;
     _bbAiRec.lang = 'en-US';
     _bbAiRec.onresult = function(ev) {
-      var interim = '';
+      var interim = '', gotFinal = false;
       for (var i = ev.resultIndex; i < ev.results.length; i++) {
         var tr = ev.results[i][0].transcript;
-        if (ev.results[i].isFinal) _bbAiFinal += tr + ' ';
+        if (ev.results[i].isFinal) { _bbAiFinal += tr + ' '; gotFinal = true; }
         else interim += tr;
       }
       var box = document.getElementById('bbAiTranscript');
       if (box) { box.textContent = _bbAiFinal + (interim ? ' ' + interim : ''); box.scrollTop = box.scrollHeight; }
+      if (gotFinal) _qaKick('bb'); // a phrase just completed — check it now, don't wait for the clock
     };
     // iOS/Chrome stop recognition after silence — auto-restart while active
     _bbAiRec.onend = function() { if (_bbAiActive && _bbAiRec) { try { _bbAiRec.start(); } catch(e){} } };
@@ -10707,9 +10728,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     _cvAiRec = new SR();
     _cvAiRec.continuous = true; _cvAiRec.interimResults = true; _cvAiRec.lang = 'en-US';
     _cvAiRec.onresult = function(ev){
-      var interim = '';
-      for (var i = ev.resultIndex; i < ev.results.length; i++) { var tr = ev.results[i][0].transcript; if (ev.results[i].isFinal) _cvAiFinal += tr + ' '; else interim += tr; }
+      var interim = '', gotFinal = false;
+      for (var i = ev.resultIndex; i < ev.results.length; i++) { var tr = ev.results[i][0].transcript; if (ev.results[i].isFinal) { _cvAiFinal += tr + ' '; gotFinal = true; } else interim += tr; }
       if (box) { box.textContent = _cvAiFinal + (interim ? ' ' + interim : ''); box.scrollTop = box.scrollHeight; }
+      if (gotFinal) _qaKick('cv_'+leadId); // a phrase just completed — check it now, don't wait for the clock
     };
     _cvAiRec.onend = function(){ if (_cvAiActive && _cvAiRec) { try { _cvAiRec.start(); } catch(e){} } };
     _cvAiRec.onerror = function(ev){ if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') { _cvAiActive = false; _cvAiSetBtn(leadId, false); if (box) box.textContent = 'Microphone access denied — allow the mic for fixmy.energy, then try again.'; } };
@@ -10877,9 +10899,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     _nlAiRec = new SR();
     _nlAiRec.continuous = true; _nlAiRec.interimResults = true; _nlAiRec.lang = 'en-US';
     _nlAiRec.onresult = function(ev){
-      var interim = '';
-      for (var i = ev.resultIndex; i < ev.results.length; i++) { var tr = ev.results[i][0].transcript; if (ev.results[i].isFinal) _nlAiFinal += tr + ' '; else interim += tr; }
+      var interim = '', gotFinal = false;
+      for (var i = ev.resultIndex; i < ev.results.length; i++) { var tr = ev.results[i][0].transcript; if (ev.results[i].isFinal) { _nlAiFinal += tr + ' '; gotFinal = true; } else interim += tr; }
       if (box) { box.textContent = _nlAiFinal + (interim ? ' ' + interim : ''); box.scrollTop = box.scrollHeight; }
+      if (gotFinal) _qaKick('nl'); // a phrase just completed — check it now, don't wait for the clock
     };
     _nlAiRec.onend = function(){ if (_nlAiActive && _nlAiRec) { try { _nlAiRec.start(); } catch(e){} } };
     _nlAiRec.onerror = function(ev){ if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') { _nlAiActive = false; _nlAiResetBtn(); if (box) box.textContent = 'Microphone access denied — allow the mic for fixmy.energy, then try again.'; } };
