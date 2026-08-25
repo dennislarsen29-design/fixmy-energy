@@ -19721,6 +19721,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var _h = _adt.getHours(), _m = _adt.getMinutes();
       apptTime = (_h<10?'0':'')+_h+':'+(_m<10?'0':'')+_m;
     }
+    // ⚠️ arrival_end is stored as a full ISO datetime (same as diagnostic_date), but an
+    // <input type="time"> only accepts a plain "HH:MM" — feeding it the raw ISO string
+    // (as this used to do) makes the browser silently reject it and render blank, and
+    // the NEXT save (including the 1.5s auto-save on any unrelated edit) then reads that
+    // blank field back and overwrites the real arrival_end with null. Found 2026-08-25
+    // auditing why a manually-corrected arrival_end kept reverting to null on its own.
+    var arrivalEndTime = '';
+    if (c.arrival_end) {
+      var _aet = new Date(c.arrival_end);
+      if (!isNaN(_aet.getTime())) { arrivalEndTime = (_aet.getHours()<10?'0':'')+_aet.getHours()+':'+(_aet.getMinutes()<10?'0':'')+_aet.getMinutes(); }
+    }
     var isNSEdit = c.lead_category === 'new_solar';
     var isTTEdit = c.lead_category === 'top_tier';
     var nsStatusOpts = Object.keys(NS_STATUSES).map(function(k){ var s=NS_STATUSES[k]; return [k, (s.phase==='job'?'★ ':'') + s.label]; });
@@ -19854,7 +19865,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         (isNSEdit ? '' : edSelect('Progress Step','edStep',c.step||1,[[1,'1 - Evaluation Booked'],[2,'2 - Photos Uploaded'],[3,'3 - Diagnostic Booked'],[4,'4 - Analysis Done'],[5,'5 - Proposal Sent'],[6,'6 - Sold / Deposit Collected'],[7,'7 - Not Sold / Dead'],[8,'8 - Install Booked'],[9,'9 - Monitoring Online']]))+
         edField('Solar Evaluation Date','edApptDate',apptDate,'date')+
         '<div><label class="ed-label">Arrival Start Time</label><input type="time" id="edApptTime" class="ed-input" value="'+apptTime+'"/></div>'+
-        '<div><label class="ed-label">Arrival Window End</label><input type="time" id="edArrivalEnd" class="ed-input" value="'+(c.arrival_end||'')+'"/></div>'+
+        '<div><label class="ed-label">Arrival Window End</label><input type="time" id="edArrivalEnd" class="ed-input" value="'+arrivalEndTime+'"/></div>'+
       '</div>'+
       (!isNSEdit && !isTTEdit ?
         '<div style="margin:-4px 0 16px;">'+
@@ -20449,7 +20460,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       setter_name: document.getElementById('edSetterName').value==='none'?null:document.getElementById('edSetterName').value||null,
       rep_id: document.getElementById('edRepId').value==='none'?null:document.getElementById('edRepId').value||null,
       assigned_ops: (function(){ var el=document.getElementById('edAssignedOps'); return el?(el.value==='none'?null:el.value||null):(cRec.assigned_ops||null); })(),
-      arrival_end: document.getElementById('edArrivalEnd').value||null,
+      // Combined with the same date as the appointment — writing the bare "HH:MM" the
+      // <input type="time"> gives back (as this used to do) reintroduces the exact
+      // raw-string bug already fixed in createNewLead(): arrival_end must always be a
+      // full ISO timestamp, matching diagnostic_date, or the next time this editor
+      // renders that field it goes blank and the value gets wiped on the next save.
+      arrival_end: (function(){ var endT = document.getElementById('edArrivalEnd').value; return (apptDateVal && endT) ? new Date(apptDateVal+'T'+endT).toISOString() : null; })(),
       arrival_window: (function(){
         var st=document.getElementById('edApptTime').value, en=document.getElementById('edArrivalEnd').value;
         if (!st) return null;
