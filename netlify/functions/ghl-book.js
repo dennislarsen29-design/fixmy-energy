@@ -204,17 +204,25 @@ exports.handler = async function(event) {
   // (e.g. the portal's Black Box Dialer booking an existing lead) pass
   // customerId directly, skipping the email/access_code guess entirely so an
   // ambiguous match can't create a duplicate or patch the wrong customer.
+  // ⚠️ Both fallback lookups below MUST stay ordered newest-first. A repeat
+  // email/phone (a genuine returning customer, or — as found 2026-08-26 — a
+  // reused test contact) can match several rows; an unordered `limit=1` lets
+  // Postgres hand back an arbitrary one, which silently patches a stale old
+  // lead with the new appointment instead of the one actually being booked
+  // right now. Every caller that already knows its row passes `customerId`
+  // and skips this entirely — this is only the fallback for a caller (like
+  // the public /book page) that doesn't have an id yet.
   let existingId = customerId || null;
   if (!existingId && email) {
     const chk = await fetch(
-      `${SUPA_URL}/rest/v1/customers?email=eq.${encodeURIComponent(email)}&select=id&limit=1`,
+      `${SUPA_URL}/rest/v1/customers?email=eq.${encodeURIComponent(email)}&select=id&order=created_at.desc&limit=1`,
       { headers: supaHeaders }
     ).catch(() => null);
     if (chk && chk.ok) { const rows = await chk.json(); if (rows?.length) existingId = rows[0].id; }
   }
   if (!existingId && digits) {
     const chk = await fetch(
-      `${SUPA_URL}/rest/v1/customers?access_code=eq.${digits}&select=id&limit=1`,
+      `${SUPA_URL}/rest/v1/customers?access_code=eq.${digits}&select=id&order=created_at.desc&limit=1`,
       { headers: supaHeaders }
     ).catch(() => null);
     if (chk && chk.ok) { const rows = await chk.json(); if (rows?.length) existingId = rows[0].id; }
