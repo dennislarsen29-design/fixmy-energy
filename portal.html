@@ -1696,16 +1696,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
               (c.assigned_ops&&c.assigned_ops!=='none'&&c.ops_milestone1_status!=='paid'?'<button onclick="event.stopPropagation();markOpsMilestonePaid(\''+c.id+'\',\'M1\')" style="font-size:0.72rem;padding:5px 14px;border-radius:100px;background:rgba(249,115,22,0.1);color:#f97316;border:1px solid rgba(249,115,22,0.3);cursor:pointer;font-weight:700;">&#9889; M1 Paid</button>':'')+
               (c.assigned_ops&&c.ops_milestone1_status==='paid'&&c.milestone2_amount&&c.milestone2_status!=='paid'?'<button onclick="event.stopPropagation();markOpsMilestonePaid(\''+c.id+'\',\'M2\')" style="font-size:0.72rem;padding:5px 14px;border-radius:100px;background:rgba(249,115,22,0.1);color:#f97316;border:1px solid rgba(249,115,22,0.3);cursor:pointer;font-weight:700;">&#9889; M2 Paid</button>':'')+
               (c.assigned_ops&&c.milestone2_status==='paid'&&c.milestone3_amount&&c.milestone3_status!=='paid'?'<button onclick="event.stopPropagation();markOpsMilestonePaid(\''+c.id+'\',\'M3\')" style="font-size:0.72rem;padding:5px 14px;border-radius:100px;background:rgba(249,115,22,0.1);color:#f97316;border:1px solid rgba(249,115,22,0.3);cursor:pointer;font-weight:700;">&#9889; M3 Paid</button>':'')+
+              (c.step===8?'<button onclick="event.stopPropagation();markJobInstalled(\''+c.id+'\')" style="font-size:0.72rem;padding:5px 14px;border-radius:100px;background:rgba(141,198,63,0.1);color:#8DC63F;border:1px solid rgba(141,198,63,0.3);cursor:pointer;font-weight:700;">&#9989; Mark Installed</button>':'')+
             '</div>'+
+            '<div id="jobComm_'+c.id+'">'+_jobCommLineHtml(c.id)+'</div>'+
           '</div>';
         }
       });
     }
     var nsSummarySlot = adminJobCat === 'new_solar' ? '<div id="nsCommSummary">'+_nsCommSummaryHtml()+'</div>' : '';
+    var fixmyCommSlot = adminJobCat !== 'new_solar' ? '<div id="jobsCommDash">'+_jobsCommDashHtml()+'</div>' : '';
     document.getElementById('dashBody').innerHTML = portalNav+
       '<div class="admin-header-row"><h2 style="font-size:1.1rem;font-weight:700;">Jobs</h2><span style="font-size:0.72rem;color:#555;">'+allJobs.length+' total</span></div>'+
-      catTabs+nsSummarySlot+'<div id="editorSlot"></div><div id="jobList">'+listHtml+'</div><div id="jobDetail" style="display:none;"></div>';
+      catTabs+nsSummarySlot+fixmyCommSlot+'<div id="editorSlot"></div><div id="jobList">'+listHtml+'</div><div id="jobDetail" style="display:none;"></div>';
     if (adminJobCat === 'new_solar') _loadNsCommSummary();
+    else { _loadFixmyJobCommissions(fixmyJobs.map(function(c){ return c.id; })).then(function(){ fixmyJobs.forEach(function(c){ var el=document.getElementById('jobComm_'+c.id); if (el) el.innerHTML=_jobCommLineHtml(c.id); }); if (_jobsCommOpen) { var s=document.getElementById('jobsCommDash'); if (s) s.innerHTML=_jobsCommDashHtml(); } }); }
   }
 
   // ── Axia/QCell pipeline-level Commission & Revenue report ──────────────────────
@@ -1760,6 +1764,175 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     _nsCommLoading = false;
     var slot2 = document.getElementById('nsCommSummary');
     if (slot2) slot2.innerHTML = _nsCommSummaryHtml();
+  }
+
+  // ── FixMy per-job commission math — Potential vs Earned (2026-08-25, per Dennis) ──
+  // ONE computation, reused by three places so the numbers can never quietly disagree:
+  // the admin Jobs card, the admin Jobs-tab dashboard below, and each rep's OWN Jobs
+  // card in their portal. Mirrors edLoadAccounting's exact 40%-of-net split math (same
+  // person sets & closes = full 40%; a distinct setter = 20/20) — this is the same
+  // formula, not a second implementation of it, just computed in bulk across many jobs
+  // instead of one at a time.
+  // "Potential" vs "Earned" is a disposition change, not a date: Earned = the lead's
+  // step has reached "9 - Installed" (or beyond). Not install_date — that field isn't
+  // reliably populated (the tech/sales portal's own step-changer never writes it, only
+  // the admin editor's save path does), so gating on step directly is the honest signal.
+  var _fixmyCommCache = {}; // customer_id -> computed split, see fields below
+  async function _loadFixmyJobCommissions(ids) {
+    var need = (ids||[]).filter(function(id){ return id && !_fixmyCommCache[id]; });
+    if (!need.length) return;
+    try {
+      var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var [costsRes, paysRes, commRes] = await Promise.all([
+        pc.from('job_costs').select('customer_id,amount').in('customer_id', need),
+        pc.from('payments').select('customer_id,amount,category').in('customer_id', need),
+        pc.from('commissions').select('customer_id,kind,amount,status').in('customer_id', need).in('kind', ['rep_commission','setter_commission'])
+      ]);
+      var costsByC = {}, paysByC = {}, commByC = {};
+      (costsRes.data||[]).forEach(function(x){ costsByC[x.customer_id] = (costsByC[x.customer_id]||0) + (parseFloat(x.amount)||0); });
+      (paysRes.data||[]).forEach(function(x){ if ((x.category||'revenue')==='revenue') paysByC[x.customer_id] = (paysByC[x.customer_id]||0) + (parseFloat(x.amount)||0); });
+      (commRes.data||[]).forEach(function(x){ (commByC[x.customer_id] = commByC[x.customer_id]||[]).push(x); });
+      need.forEach(function(id){
+        var c = (adminCustomers||[]).find(function(x){ return x.id===id; })
+          || (typeof allRecords !== 'undefined' ? (allRecords||[]).find(function(x){ return x.id===id; }) : null) || {};
+        var collected = paysByC[id]||0, costSum = costsByC[id]||0;
+        var net = Math.max(0, collected - costSum);
+        var setterName = (c.setter_name||'').trim();
+        var closerNm = repName(c.rep_id||'');
+        var hasSetter = !!setterName && setterName.toLowerCase()!=='none' && setterName.toLowerCase() !== (closerNm||'').toLowerCase();
+        var closerPct = hasSetter ? 0.20 : 0.40;
+        var closerEst = c.rep_id ? Math.round(net*closerPct*100)/100 : 0;
+        var setterEst = hasSetter ? Math.round(net*0.20*100)/100 : 0;
+        var comms = commByC[id]||[];
+        var closerRow = comms.find(function(x){ return x.kind==='rep_commission'; });
+        var setterRow = comms.find(function(x){ return x.kind==='setter_commission'; });
+        var closerAmt = closerRow ? (parseFloat(closerRow.amount)||0) : closerEst;
+        var setterAmt = setterRow ? (parseFloat(setterRow.amount)||0) : setterEst;
+        var companyAmt = Math.max(0, net - closerAmt - setterAmt);
+        _fixmyCommCache[id] = {
+          closerAmt: closerAmt, setterAmt: setterAmt, companyAmt: companyAmt,
+          closerLocked: !!closerRow, setterLocked: !!setterRow,
+          closerPaid: !!(closerRow && closerRow.status==='paid'), setterPaid: !!(setterRow && setterRow.status==='paid'),
+          setterName: setterName, hasSetter: hasSetter, repId: c.rep_id||'',
+          earned: (c.step||1) >= 9, net: net
+        };
+      });
+    } catch(e) { /* leave uncached — callers must handle a missing entry gracefully, never show a wrong number */ }
+  }
+  // Admin-facing line: shows every party's slice at once, since admin sees everyone's numbers.
+  function _jobCommLineHtml(cid) {
+    var d = _fixmyCommCache[cid];
+    if (!d) return '';
+    var m = function(n){ return '$'+(n||0).toLocaleString(undefined,{maximumFractionDigits:0}); };
+    var badge = d.earned
+      ? '<span style="color:#8DC63F;font-weight:700;">EARNED</span>'
+      : '<span style="color:#ffaa00;font-weight:700;">POTENTIAL</span>';
+    var parts = [];
+    if (d.repId) parts.push((d.hasSetter?'Closer ':'Rep ')+m(d.closerAmt)+(d.closerLocked?(d.closerPaid?' &#10003;paid':' sold'):' est.'));
+    if (d.hasSetter) parts.push('Setter '+m(d.setterAmt)+(d.setterLocked?(d.setterPaid?' &#10003;paid':' sold'):' est.'));
+    parts.push('Co. '+m(d.companyAmt));
+    return '<div style="margin-top:6px;font-size:0.68rem;color:#999;">'+badge+' &middot; '+parts.join(' &middot; ')+'</div>';
+  }
+  // Rep-facing line: only THIS person's own slice — a setter never sees the closer's cut
+  // or vice versa, and nobody sees the company's margin from their own portal.
+  function _jobCommLineHtmlForRep(cid, person) {
+    var d = _fixmyCommCache[cid];
+    if (!d || !person) return '';
+    var m = function(n){ return '$'+(n||0).toLocaleString(undefined,{maximumFractionDigits:0}); };
+    var mine = null, label = '';
+    if (d.repId && person.id === d.repId) { mine = d.closerAmt; label = d.hasSetter ? 'Your closer split' : 'Your commission'; }
+    else if (d.hasSetter && d.setterName && (person.name||'').trim().toLowerCase() === d.setterName.toLowerCase()) { mine = d.setterAmt; label = 'Your setter split'; }
+    if (mine == null) return '';
+    var badge = d.earned
+      ? '<span style="color:#8DC63F;font-weight:700;">EARNED</span>'
+      : '<span style="color:#ffaa00;font-weight:700;">POTENTIAL</span>';
+    return '<div style="margin-top:8px;padding:8px 12px;background:rgba(155,109,232,0.06);border:1px solid rgba(155,109,232,0.2);border-radius:8px;font-size:0.75rem;">'+badge+' &middot; '+esc(label)+': <b style="color:#fff;">'+m(mine)+'</b></div>';
+  }
+
+  // ── FixMy commission dashboard — Jobs tab (2026-08-25, per Dennis) ──────────
+  // Same shape as the Dialer/Doors scoreboard: collapsed by default, a range picker,
+  // Potential vs Earned totals. Ranges by when the job was CREATED (i.e. sold into
+  // the pipeline), then buckets by CURRENT step — "how much is sitting in each bucket,
+  // for jobs that entered the pipeline in this window."
+  var JOBS_COMM_RANGES = [['day','Day'],['week','Week'],['month','Month'],['quarter','Quarter'],['year','Year'],['life','Lifetime']];
+  var _jobsCommRange = 'month';
+  var _jobsCommOpen = false;
+  var _jobsCommLoading = false;
+  function _jobsCommRangeStart(range) {
+    var now = new Date();
+    if (range === 'day') { var d = new Date(now); d.setHours(0,0,0,0); return d; }
+    if (range === 'week') { var d2 = new Date(now); var day = d2.getDay(); var diff = day===0?6:day-1; d2.setDate(d2.getDate()-diff); d2.setHours(0,0,0,0); return d2; }
+    if (range === 'month') return new Date(now.getFullYear(), now.getMonth(), 1);
+    if (range === 'quarter') return new Date(now.getFullYear(), Math.floor(now.getMonth()/3)*3, 1);
+    if (range === 'year') return new Date(now.getFullYear(), 0, 1);
+    return null; // lifetime
+  }
+  function _jobsCommDashHtml() {
+    var fixmyJobs = (adminCustomers||[]).filter(function(c){ return !!c.sold_type && c.lead_category !== 'new_solar'; });
+    var start = _jobsCommRangeStart(_jobsCommRange);
+    var scoped = fixmyJobs.filter(function(c){ return !start || (c.created_at && new Date(c.created_at) >= start); });
+    var m = function(n){ return '$'+(n||0).toLocaleString(undefined,{maximumFractionDigits:0}); };
+    var head = '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:'+(_jobsCommOpen?'10px':'0')+';">'+
+      '<button onclick="window._jobsCommToggle()" style="width:auto;background:none;border:none;color:#9b6de8;font-size:0.8rem;font-weight:800;cursor:pointer;padding:0;display:flex;align-items:center;gap:6px;">'+(_jobsCommOpen?'&#9660;':'&#9654;')+' &#129297; Commission Income'+'</button>'+
+      '</div>';
+    if (!_jobsCommOpen) return '<div style="margin-bottom:14px;">'+head+'</div>';
+    var rangeBar = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">'+JOBS_COMM_RANGES.map(function(r){
+      var on = _jobsCommRange===r[0];
+      return '<button onclick="window._jobsCommSetRange(\''+r[0]+'\')" style="width:auto;padding:5px 13px;border-radius:100px;font-size:0.7rem;font-weight:700;cursor:pointer;border:1px solid '+(on?'rgba(155,109,232,0.5)':'rgba(255,255,255,0.1)')+';background:'+(on?'rgba(155,109,232,0.15)':'rgba(255,255,255,0.04)')+';color:'+(on?'#c4a3f0':'#888')+';">'+r[1]+'</button>';
+    }).join('')+'</div>';
+    if (_jobsCommLoading) return '<div style="margin-bottom:14px;">'+head+rangeBar+'<div style="font-size:0.72rem;color:#666;">Loading&hellip;</div></div>';
+    var pot = { closer:0, setter:0, company:0, count:0 }, earn = { closer:0, setter:0, company:0, count:0 };
+    scoped.forEach(function(c){
+      var d = _fixmyCommCache[c.id];
+      if (!d) return;
+      var bucket = d.earned ? earn : pot;
+      bucket.closer += d.closerAmt; bucket.setter += d.setterAmt; bucket.company += d.companyAmt; bucket.count++;
+    });
+    var tile = function(label, color, d) {
+      return '<div style="flex:1;min-width:180px;background:rgba(255,255,255,0.03);border:1px solid '+color+'33;border-radius:10px;padding:12px 14px;">'+
+        '<div style="font-size:0.64rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:'+color+';margin-bottom:6px;">'+label+' &middot; '+d.count+' job'+(d.count===1?'':'s')+'</div>'+
+        '<div style="font-size:0.72rem;color:#aaa;line-height:1.9;">Reps <b style="color:#ddd;">'+m(d.closer+d.setter)+'</b><br/>Company <b style="color:#ddd;">'+m(d.company)+'</b></div>'+
+      '</div>';
+    };
+    var missing = scoped.filter(function(c){ return !_fixmyCommCache[c.id]; }).length;
+    return '<div style="margin-bottom:14px;">'+head+rangeBar+
+      '<div style="font-size:0.6rem;color:#666;margin-bottom:8px;">Scoped to FixMy jobs created in this range, split by current step: Potential = sold but not yet Installed, Earned = step 9 Installed or later. "Rep" totals combine setter + closer; company is the estimated margin after both.</div>'+
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;">'+
+        tile('&#9203; Potential (not yet installed)', '#ffaa00', pot)+
+        tile('&#9989; Earned (installed)', '#8DC63F', earn)+
+      '</div>'+
+      (missing ? '<div style="font-size:0.62rem;color:#555;margin-top:6px;">'+missing+' job'+(missing===1?'':'s')+' still loading&hellip;</div>' : '')+
+    '</div>';
+  }
+  window._jobsCommToggle = function() {
+    _jobsCommOpen = !_jobsCommOpen;
+    var slot = document.getElementById('jobsCommDash');
+    if (slot) slot.innerHTML = _jobsCommDashHtml();
+    if (_jobsCommOpen) _loadJobsCommDashboard();
+  };
+  window._jobsCommSetRange = function(r) {
+    _jobsCommRange = r;
+    var slot = document.getElementById('jobsCommDash');
+    if (slot) slot.innerHTML = _jobsCommDashHtml();
+    _loadJobsCommDashboard();
+  };
+  async function _loadJobsCommDashboard() {
+    var fixmyJobs = (adminCustomers||[]).filter(function(c){ return !!c.sold_type && c.lead_category !== 'new_solar'; });
+    var start = _jobsCommRangeStart(_jobsCommRange);
+    var scoped = fixmyJobs.filter(function(c){ return !start || (c.created_at && new Date(c.created_at) >= start); });
+    var ids = scoped.map(function(c){ return c.id; });
+    _jobsCommLoading = true;
+    var slot = document.getElementById('jobsCommDash');
+    if (slot) slot.innerHTML = _jobsCommDashHtml();
+    await _loadFixmyJobCommissions(ids);
+    _jobsCommLoading = false;
+    var slot2 = document.getElementById('jobsCommDash');
+    if (slot2) slot2.innerHTML = _jobsCommDashHtml();
+    // Also fill in the per-card commission lines now that the cache has data.
+    ids.forEach(function(id){
+      var el = document.getElementById('jobComm_'+id);
+      if (el) el.innerHTML = _jobCommLineHtml(id);
+    });
   }
 
   // ── TEAM TAB ───────────────────────────────────────────────────────────────
@@ -17763,10 +17936,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       pillHtml = '<span class="step-pill" style="background:'+nsRec.color+'22;color:'+nsRec.color+';">'+nsRec.label+'</span>';
     } else {
       var step = c.step||1;
-      var stepLabels = ['Eval Booked','Photos','Diagnostic','Analysis','Proposal Sent','Sold','Dead','Install','Monitoring'];
+      var stepLabels = ['Eval Booked','Photos','Diagnostic','Analysis','Proposal Sent','Sold','Dead','Install Booked','Installed','Monitoring'];
       var stepColors = isTT
-        ? ['#9b6de8','#4a9eff','#ffaa00','#f97316','#9b6de8','#8DC63F','#ef4444','#8DC63F','#8DC63F']
-        : ['#666','#4a9eff','#ffaa00','#f97316','#9b6de8','#8DC63F','#ef4444','#8DC63F','#8DC63F'];
+        ? ['#9b6de8','#4a9eff','#ffaa00','#f97316','#9b6de8','#8DC63F','#ef4444','#8DC63F','#8DC63F','#8DC63F']
+        : ['#666','#4a9eff','#ffaa00','#f97316','#9b6de8','#8DC63F','#ef4444','#8DC63F','#8DC63F','#8DC63F'];
       pillHtml = '<span class="step-pill" style="background:'+stepColors[step-1]+'22;color:'+stepColors[step-1]+'">'+stepLabels[step-1]+'</span>';
     }
 
@@ -17783,7 +17956,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       progressHtml += '</div>';
     } else {
       var step2 = c.step||1;
-      progressHtml = '<div class="lead-progress">'+(function(){ var h=''; [1,2,3,4,5,6,7,8].forEach(function(n,i){ h+='<div class="'+(n<=step2?'prog-dot filled':'prog-dot')+'"></div>'; if(i<7) h+='<div class="prog-line'+(step2>n?' filled':'')+'"></div>'; }); return h; }())+'</div>';
+      // Was hardcoded to 8 dots for what was already a 9-step pipeline (pre-existing
+      // short-by-one bug, found while adding step 9 "Installed") — now covers all 10.
+      progressHtml = '<div class="lead-progress">'+(function(){ var h=''; [1,2,3,4,5,6,7,8,9,10].forEach(function(n,i){ h+='<div class="'+(n<=step2?'prog-dot filled':'prog-dot')+'"></div>'; if(i<9) h+='<div class="prog-line'+(step2>n?' filled':'')+'"></div>'; }); return h; }())+'</div>';
     }
 
     var auroraHtml = (isNS && AURORA_ELIGIBLE.indexOf(c.solar_status) >= 0) ? window._auroraCardHtml(c) : '';
@@ -19897,7 +20072,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       )+
       '<div class="editor-section-title">Progress & Scheduling</div>'+
       '<div class="ed-grid">'+
-        (isNSEdit ? '' : edSelect('Progress Step','edStep',c.step||1,[[1,'1 - Evaluation Booked'],[2,'2 - Photos Uploaded'],[3,'3 - Diagnostic Booked'],[4,'4 - Analysis Done'],[5,'5 - Proposal Sent'],[6,'6 - Sold / Deposit Collected'],[7,'7 - Not Sold / Dead'],[8,'8 - Install Booked'],[9,'9 - Monitoring Online']]))+
+        (isNSEdit ? '' : edSelect('Progress Step','edStep',c.step||1,[[1,'1 - Evaluation Booked'],[2,'2 - Photos Uploaded'],[3,'3 - Diagnostic Booked'],[4,'4 - Analysis Done'],[5,'5 - Proposal Sent'],[6,'6 - Sold / Deposit Collected'],[7,'7 - Not Sold / Dead'],[8,'8 - Install Booked'],[9,'9 - Installed'],[10,'10 - Monitoring Online']]))+
         edField('Solar Evaluation Date','edApptDate',apptDate,'date')+
         '<div><label class="ed-label">Arrival Start Time</label><input type="time" id="edApptTime" class="ed-input" value="'+apptTime+'"/></div>'+
         '<div><label class="ed-label">Arrival Window End</label><input type="time" id="edArrivalEnd" class="ed-input" value="'+arrivalEndTime+'"/></div>'+
@@ -20226,6 +20401,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (!confirm('Lock in as SOLD (unpaid) → Payroll?\n\n'+summary)) return;
       var { error } = await pc.from('commissions').insert(rows);
       if (error) throw error;
+      delete _fixmyCommCache[cid]; // now locked in — the Jobs card should show the real row, not the estimate
       edLoadAccounting();
     } catch(e) { alert('Could not record: ' + (e.message||e)); }
   };
@@ -20550,6 +20726,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (error) throw error;
       var idx=adminCustomers.findIndex(function(x){return x.id===id;});
       if (idx>-1) adminCustomers[idx]=Object.assign(adminCustomers[idx],updates);
+      if ('step' in updates) delete _fixmyCommCache[id]; // Potential/Earned gates on step — force a recompute
       // Update GHL appointment if diagnostic date changed and we have an existing appointment ID
       if (!isAutoSave && isFixMySave && cRec.ghl_appointment_id && diagDate && diagDate !== cRec.diagnostic_date && GHL_DIAG_CALENDAR_ID) {
         var _resDt = diagDate ? diagDate.slice(0,10) : null;
@@ -21355,6 +21532,26 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     else renderAdminView(adminView);
   }
 
+  // One-tap "the crew finished the install" — advances step to 9 (Installed) without
+  // opening the full lead editor. Mirrors markOpsMilestonePaid's shape. This is what
+  // actually makes step 9 easy enough to set reliably that the Potential/Earned
+  // commission split (which gates on it) reflects reality instead of going stale like
+  // job_status did.
+  async function markJobInstalled(id) {
+    var c = adminCustomers.find(function(x){ return x.id === id; });
+    if (!c) return;
+    var name = ((c.first_name||'')+' '+(c.last_name||'')).trim();
+    if (!confirm('Mark the install complete for ' + name + '? This moves the job to step 9 (Installed).')) return;
+    var cl = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var { error } = await cl.from('customers').update({ step: 9 }).eq('id', id);
+    if (error) { alert('Error: ' + error.message); return; }
+    var idx = adminCustomers.findIndex(function(x){ return x.id === id; });
+    if (idx > -1) adminCustomers[idx].step = 9;
+    delete _fixmyCommCache[id]; // stale — earned flag flips, force a recompute
+    if (adminView === 'jobs') renderJobsView();
+    else renderAdminView(adminView);
+  }
+
   function edResendInvoice(id) {
     var c = adminCustomers.find(function(x){ return x.id === id; });
     if (!c) return;
@@ -21859,7 +22056,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var name = ((c.first_name||'')+' '+(c.last_name||'')).trim()||c.email;
     var sys = c.system_size ? parseFloat(c.system_size)+' kW' : '--';
     var step = parseInt(c.step)||1;
-    var stepLabels = ['Evaluation<br>Booked','Photos<br>Uploaded','Diagnostic<br>Booked','Analysis<br>Done','Follow-Up','Upgrade<br>Confirmed','On<br>Hold','Install<br>Booked','Monitoring<br>Online'];
+    var stepLabels = ['Evaluation<br>Booked','Photos<br>Uploaded','Diagnostic<br>Booked','Analysis<br>Done','Follow-Up','Upgrade<br>Confirmed','On<br>Hold','Install<br>Booked','Installed','Monitoring<br>Online'];
     var stepsHtml = stepLabels.map(function(label,i){ var n=i+1,cls=n<step?'done':n===step?'active':'',dot=n<step?'&#10003;':n; return '<div class="step '+cls+'"><div class="step-dot">'+dot+'</div><div class="step-label">'+label+'</div></div>'; }).join('');
     var invHtml='';
     if(c.invoice_status&&c.invoice_status!=='none'){
@@ -23241,6 +23438,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
               h += '</div>';
               h += '</div>';
               if (propBadge) h += '<div style="margin-top:6px;">'+propBadge+'</div>';
+              if (!isTTJ) h += '<div id="repJobComm_'+j.id+'">'+_jobCommLineHtmlForRep(j.id, person)+'</div>';
               h += opsHtml+'</div>';
             }
           });
@@ -23914,6 +24112,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // places. Repaint an open booking from state rather than leaving the rep with
       // _cvBk set and a blank editorSlot — the booking is not lost, just invisible.
       if (_cvBk && document.getElementById('editorSlot')) _cvBkRender();
+      // Own-slice commission line on the rep's own Jobs cards — fills the placeholder
+      // divs in place once the shared cache has data, no full re-render needed.
+      if (salesView === 'jobs' && salesJobCat !== 'new_solar' && salesJobCat !== 'top_tier' && myFixmyJobs.length) {
+        _loadFixmyJobCommissions(myFixmyJobs.map(function(j){ return j.id; })).then(function(){
+          myFixmyJobs.forEach(function(j){ var el = document.getElementById('repJobComm_'+j.id); if (el) el.innerHTML = _jobCommLineHtmlForRep(j.id, person); });
+        });
+      }
     }
 
     window.setTrainingTab = function(v) { sessionStorage.setItem('trainingTab_'+person.id,v); salesView='training'; renderSales(); };
@@ -23924,7 +24129,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (!slot) return;
       var isNS = l.lead_category === 'new_solar';
       var nsOpts = Object.keys(NS_STATUSES).map(function(k){ var s=NS_STATUSES[k]; return '<option value="'+k+'"'+(l.solar_status===k?' selected':'')+'>'+( s.phase==='job'?'★ ':'')+s.label+'</option>'; }).join('');
-      var stepOpts = ['Eval Booked','Photos Uploaded','Diagnostic Booked','Analysis Done','Proposal Sent','Sold / Deposit','Not Sold / Dead','Install Booked','Monitoring'].map(function(lbl,i){ return '<option value="'+(i+1)+'"'+((l.step||1)===i+1?' selected':'')+'>'+lbl+'</option>'; }).join('');
+      var stepOpts = ['Eval Booked','Photos Uploaded','Diagnostic Booked','Analysis Done','Proposal Sent','Sold / Deposit','Not Sold / Dead','Install Booked','Installed','Monitoring'].map(function(lbl,i){ return '<option value="'+(i+1)+'"'+((l.step||1)===i+1?' selected':'')+'>'+lbl+'</option>'; }).join('');
       var catStyle = 'padding:8px 18px;border:none;border-radius:100px;font-size:0.8rem;font-weight:700;cursor:pointer;';
       slot.innerHTML =
         '<div class="editor-panel" id="salesEditPanel" style="margin-bottom:16px;">'+
@@ -24174,6 +24379,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
       await c2.from('customers').update({step: newStep}).eq('id', id);
       rec.step = newStep;
+      delete _fixmyCommCache[id]; // step change can flip Potential/Earned — force a recompute
       renderSales();
       // Step-5 "Proposal Sent" no longer auto-opens the proposal builder — closers use the
       // Proposal Tools cluster in the editor instead.
