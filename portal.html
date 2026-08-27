@@ -7291,8 +7291,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   ];
 
   var _evId = null, _evRec = null, _evStepIdx = 0, _evRow = null;
-  var _evBusy = false, _evAnalyzing = false, _evPollTimer = null;
-  var _evLocal = { brand: '', model: '', serial: '', platform: '', utility: '', skipped: {}, answers: {} };
+  var _evBusy = false, _evAnalyzing = false, _evPollTimer = null, _evBillAnalyzing = false;
+  var _evLocal = { brand: '', model: '', serial: '', platform: '', utility: '', skipped: {}, answers: {}, billAnalysis: null };
 
   function _evPhotos() { return (jobPhotos[_evId] || []); }
   function _evHas(label) {
@@ -7342,7 +7342,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var rec = (adminCustomers || []).find(function(x){ return String(x.id) === String(id); });
     if (!rec) return;
     _evId = id; _evRec = rec; _evStepIdx = 0;
-    _evLocal = { brand: '', model: '', serial: '', platform: '', utility: '', skipped: {}, answers: {} };
+    _evLocal = { brand: '', model: '', serial: '', platform: '', utility: '', skipped: {}, answers: {}, billAnalysis: null };
     currentJobId = id;
 
     var slot = document.getElementById('editorSlot') || (function(){
@@ -7362,6 +7362,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       _evLocal.utility  = _evRow.utility || '';
       _evLocal.skipped  = _evRow.skipped || {};
       _evLocal.answers  = _evRow.answers || {};
+      _evLocal.billAnalysis = _evRow.bill_analysis || null;
       if (_evRow.analysis) _evStepIdx = EVAL_STEPS.length - 1;
     }
     try { await loadJobPhotos(id); } catch(e) {}
@@ -7433,6 +7434,88 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
     try { await loadJobPhotos(_evId); } catch(e) {}
     inputEl.value = '';
+    _evRender();
+    // The Consumption step's whole point is the bill — Quoya reads it the moment it
+    // lands so the rep sees the numbers fill in without hunting for a button, same
+    // "no button to discover" pattern as evRunAnalysis on the Quoya's Read step.
+    if (label === 'Utility Bill') window.evRunBillAnalysis();
+  };
+
+  // Quoya Assist — bill reader (2026-08-27, per Dennis). Fires automatically on a
+  // Utility Bill upload; also callable again ("Re-read bill") if a rep replaces the
+  // file or the first read came back low-confidence. Never blocks the wizard's Next
+  // button — this is informational enrichment, not a required-slot gate.
+  window.evRunBillAnalysis = async function() {
+    if (_evBillAnalyzing || !_evId) return;
+    var bills = _evHas('Utility Bill');
+    if (!bills.length) return;
+    // ⚠️ job_photos loads via an unordered .select() (loadJobPhotos) — array position is
+    // NOT upload order. Sort explicitly by id (bigint, autoincrement) so a re-uploaded
+    // bill is actually the one analyzed, not whichever row Postgres happened to return
+    // first. Same "never trust incidental array order" rule documented repeatedly
+    // elsewhere in this file for unordered Supabase lookups.
+    var bill = bills.slice().sort(function(a, b) {
+      var ai = Number(a.id) || 0, bi = Number(b.id) || 0;
+      if (ai !== bi) return bi - ai;
+      return String(b.Uploaded_at || '').localeCompare(String(a.Uploaded_at || ''));
+    })[0];
+    if (!bill || !bill.url) return;
+    _evBillAnalyzing = true;
+    _evRender();
+    var out = null, failMsg = '';
+    try {
+      var r = await fetch('/.netlify/functions/eval-bill-analysis', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          billUrl: bill.url,
+          utility: (UTILITY_HELP[_evLocal.utility] || {}).label || _evLocal.utility,
+          lead: { address: _evRec ? (_evRec.address || '') : '' }
+        })
+      });
+      out = await r.json().catch(function(){ return null; });
+      if (!r.ok || !out || out.readable === false) {
+        failMsg = (out && out.notes) || 'Quoya could not read this bill — enter the figures manually below.';
+        out = null;
+      }
+    } catch (e) {
+      failMsg = 'Couldn\'t reach Quoya — enter the figures manually below.';
+    }
+    // A re-read (bill replaced, or the rep tapped "Re-read bill") must not clobber a
+    // field the rep already corrected by hand — merge in only what wasn't edited.
+    var prevEdited = (_evLocal.billAnalysis && _evLocal.billAnalysis.edited) || {};
+    var prev = _evLocal.billAnalysis || {};
+    if (out) {
+      var merged = {
+        annual_kwh: out.annual_kwh, avg_rate_per_kwh: out.avg_rate_per_kwh,
+        monthly_amount_paid: out.monthly_amount_paid, annual_amount_paid: out.annual_amount_paid,
+        care: !!out.care, fera: !!out.fera, medical_baseline: !!out.medical_baseline,
+        source: out.source, confidence: out.confidence, notes: out.notes || '',
+        analyzed_at: new Date().toISOString(), edited: prevEdited
+      };
+      Object.keys(prevEdited).forEach(function(f){ if (prevEdited[f] && f in prev) merged[f] = prev[f]; });
+      _evLocal.billAnalysis = merged;
+    } else {
+      _evLocal.billAnalysis = { _err: failMsg, edited: prevEdited };
+    }
+    _evSave({ bill_analysis: _evLocal.billAnalysis });
+    _evBillAnalyzing = false;
+    _evRender();
+  };
+
+  // A rep correcting/filling in a field by hand — mirrors Quoya Assist's field-lock
+  // pattern elsewhere in the file (never let a later re-run silently overwrite what a
+  // human already typed). `edited` tracks which fields to leave alone on a re-read.
+  window.evBillField = function(field, val) {
+    if (!_evLocal.billAnalysis || _evLocal.billAnalysis._err) _evLocal.billAnalysis = { edited: {} };
+    if (!_evLocal.billAnalysis.edited) _evLocal.billAnalysis.edited = {};
+    if (field === 'care' || field === 'fera' || field === 'medical_baseline') {
+      _evLocal.billAnalysis[field] = !_evLocal.billAnalysis[field];
+    } else {
+      var n = parseFloat(val);
+      _evLocal.billAnalysis[field] = isNaN(n) ? null : n;
+    }
+    _evLocal.billAnalysis.edited[field] = true;
+    _evSave({ bill_analysis: _evLocal.billAnalysis });
     _evRender();
   };
 
@@ -7608,6 +7691,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
       h += '<div id="evStatus" style="font-size:0.72rem;min-height:16px;margin-bottom:8px;color:#8DC63F;"></div>';
       step.slots.forEach(function(s){ h += _evSlotHtml(s); });
+      if (step.key === 'consumption') h += _evBillAnalysisHtml();
 
       // Footer nav
       var ready = step.optional || _evStepDone(step);
@@ -7739,6 +7823,70 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       h += '<div style="font-size:0.7rem;color:#8DC63F;margin-top:9px;line-height:1.45;">&#128161; ' + u.tip + '</div>';
       h += '</div>';
     }
+    h += '</div>';
+    return h;
+  }
+
+  // Quoya Assist — bill analysis card (2026-08-27). Renders under the bill upload slot
+  // the moment a Utility Bill lands, showing what Quoya read off it as editable fields
+  // so the rep can verify/correct rather than trust it blind — same "purple border,
+  // double-check this" convention as every other Quoya Assist auto-fill in this file.
+  function _evBillNumField(ba, field, label, prefix, suffix, step) {
+    var val = ba[field];
+    var auto = !ba._err && val != null && !(ba.edited && ba.edited[field]);
+    var display = (val == null) ? '' : val;
+    return '<div style="margin-bottom:10px;">'
+      + '<label style="display:block;font-size:0.68rem;color:#888;margin-bottom:4px;">' + label + '</label>'
+      + '<div style="display:flex;align-items:center;gap:5px;">'
+      + (prefix ? '<span style="color:#888;font-size:0.82rem;">' + prefix + '</span>' : '')
+      + '<input type="number" step="' + (step || 1) + '" value="' + esc(String(display)) + '" oninput="evBillField(\'' + field + '\',this.value)" '
+        + 'style="flex:1;min-width:0;padding:9px 11px;border-radius:8px;background:rgba(255,255,255,0.04);color:#F3EDE3;font-size:0.85rem;'
+        + (auto ? 'border:1px solid #9b6de8;box-shadow:0 0 0 1px rgba(155,109,232,0.35);' : 'border:1px solid rgba(255,255,255,0.14);')
+        + '" ' + (auto ? 'title="Filled by Quoya Assist — double-check this"' : '') + '>'
+      + (suffix ? '<span style="color:#888;font-size:0.78rem;white-space:nowrap;">' + suffix + '</span>' : '')
+      + '</div></div>';
+  }
+  function _evBillBoolPill(ba, field, label) {
+    var on = !!ba[field];
+    var auto = !ba._err && on && !(ba.edited && ba.edited[field]);
+    return '<button onclick="evBillField(\'' + field + '\')" style="width:auto;margin:0;padding:8px 13px;border-radius:100px;font-size:0.74rem;font-weight:700;cursor:pointer;'
+      + (on ? 'background:rgba(141,198,63,0.18);border:1px solid rgba(141,198,63,0.5);color:#8DC63F;' : 'background:transparent;border:1px solid rgba(255,255,255,0.14);color:#888;')
+      + (auto ? 'box-shadow:0 0 0 2px rgba(155,109,232,0.35);' : '') + '" '
+      + (auto ? 'title="Filled by Quoya Assist — double-check this"' : '') + '>'
+      + (on ? '&#10003; ' : '') + label + '</button>';
+  }
+  function _evBillAnalysisHtml() {
+    if (_evBillAnalyzing) {
+      return '<div style="background:rgba(155,109,232,0.06);border:1px solid rgba(155,109,232,0.28);border-radius:14px;padding:16px;margin:14px 0;text-align:center;">'
+        + '<div style="font-size:0.82rem;color:#c4a3f0;font-weight:700;">&#129302; Quoya is reading the bill&hellip;</div></div>';
+    }
+    var hasBill = _evHas('Utility Bill').length > 0;
+    if (!hasBill || !_evLocal.billAnalysis) return '';
+    var ba = _evLocal.billAnalysis;
+    var h = '<div style="background:rgba(155,109,232,0.06);border:1px solid rgba(155,109,232,0.28);border-radius:14px;padding:15px;margin:14px 0;">';
+    h += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">';
+    h += '<div style="font-size:0.82rem;font-weight:800;color:#c4a3f0;">&#129302; Quoya&rsquo;s Bill Analysis</div>';
+    h += '<button onclick="evRunBillAnalysis()" style="width:auto;margin:0;background:none;border:none;color:#888;font-size:0.68rem;cursor:pointer;text-decoration:underline;">&#8635; Re-read bill</button>';
+    h += '</div>';
+    if (ba._err) {
+      h += '<div style="font-size:0.74rem;color:#f59e0b;margin-bottom:10px;line-height:1.5;">' + esc(ba._err) + '</div>';
+    } else {
+      h += '<div style="font-size:0.68rem;color:#999;margin-bottom:12px;line-height:1.5;">'
+        + (ba.source === 'true_up' ? 'Read from a True-Up statement — most accurate annual figures.'
+          : ba.source === 'monthly_bill' ? 'Read from a single monthly bill — annual figures are estimated.'
+          : 'Could not tell what kind of statement this is.')
+        + (ba.confidence ? ' Confidence: ' + esc(ba.confidence) + '.' : '') + '</div>';
+      if (ba.notes) h += '<div style="font-size:0.7rem;color:#ffaa00;margin-bottom:12px;line-height:1.5;">&#128161; ' + esc(ba.notes) + '</div>';
+    }
+    h += _evBillNumField(ba, 'annual_kwh', 'Annual Consumption', '', 'kWh/yr', 1);
+    h += _evBillNumField(ba, 'avg_rate_per_kwh', 'Average Rate', '$', '/kWh', 0.01);
+    h += '<div style="margin-bottom:10px;">';
+    h += '<label style="display:block;font-size:0.68rem;color:#888;margin-bottom:6px;">Discount Programs</label>';
+    h += '<div style="display:flex;gap:6px;flex-wrap:wrap;">'
+      + _evBillBoolPill(ba, 'care', 'CARE') + _evBillBoolPill(ba, 'fera', 'FERA') + _evBillBoolPill(ba, 'medical_baseline', 'Medical Baseline')
+      + '</div></div>';
+    h += _evBillNumField(ba, 'monthly_amount_paid', 'Monthly Amount Paid', '$', '', 1);
+    h += _evBillNumField(ba, 'annual_amount_paid', 'Annual Amount Paid', '$', '', 1);
     h += '</div>';
     return h;
   }
