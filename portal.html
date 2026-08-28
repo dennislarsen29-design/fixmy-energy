@@ -6947,12 +6947,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     try {
       var sysKw       = parseFloat(rec.system_size) || 0;
       var bill        = parseFloat(rec.monthly_bill) || 0;
-      var blendedRate = 0.453;
       var yield_kw    = 1600;
       var newPanelKw  = 4.2;
       // Production-based savings from _propCalcBaseProduction (same source as builder preview)
       var activeBuild = (_propBuilds && _propBuilds[0]) || null;
-      var annualUsageKwh = bill > 0 ? Math.round(bill * 12 / blendedRate) : 0;
+      // Quoya's Bill Analysis (real annual kWh + real rate) takes priority over the flat
+      // 0.453 estimate whenever it's on file for this lead.
+      var _usage = _propUsageFromBill(bill, 0.453);
+      var blendedRate = _usage.rate;
+      var annualUsageKwh = _usage.annualUsageKwh;
       var prod = (typeof _propCalcBaseProduction === 'function')
         ? _propCalcBaseProduction(activeBuild, _propSolarData, rec.system_size, annualUsageKwh)
         : { panelKwh:0, inverterKwh:0, batteryArbitrageKwh:0, panelKw:0, panelSource:null, hasData:false };
@@ -8120,18 +8123,38 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return { billable: usage, surplus: totalKwh - usage };
   }
 
+  // Real bill data from Quoya's Bill Analysis (2026-08-27, per Dennis) — when it exists
+  // for this lead, replaces the `bill × 12 ÷ flat-rate` ESTIMATE every savings site in
+  // the builder used to compute on its own. Per Dennis: "Sometimes that number is off
+  // based on what the H/O says over the phone or during setting. We want to go off
+  // actual data." `_propBillAnalysis` is fetched once per builder session in
+  // openProposalBuilder (same caching pattern as _propSolarData) so every site below
+  // can read it synchronously. A rep-corrected field (evBillField in the Eval Wizard)
+  // counts exactly the same as a Quoya-read one here — the point of making those fields
+  // editable was precisely so a human correction becomes the trusted number, not just
+  // Quoya's first guess.
+  function _propUsageFromBill(bill, fallbackRate) {
+    var ba = _propBillAnalysis;
+    var rate = (ba && typeof ba.avg_rate_per_kwh === 'number' && ba.avg_rate_per_kwh > 0) ? ba.avg_rate_per_kwh : fallbackRate;
+    var fromBill = !!(ba && typeof ba.annual_kwh === 'number' && ba.annual_kwh > 0);
+    var kwh = fromBill ? ba.annual_kwh : (bill > 0 ? Math.round(bill * 12 / rate) : 0);
+    return { annualUsageKwh: kwh, rate: rate, fromBill: fromBill };
+  }
+
   window.propShowScenario = function(type, bill, sysKw) {
     var detail = document.getElementById('propSavingsDetail');
     if (!detail) return;
     bill = parseFloat(bill) || 0;
     sysKw = parseFloat(sysKw) || 0;
 
-    // SDG&E confirmed effective rate (verified from actual bill: $3,115 / 6,877 kWh = $0.453/kWh)
-    var blendedRate = 0.453;
-
     // Get production from current build state (first option in builder)
     var activeBuild = (_propBuilds && _propBuilds[0]) || null;
-    var annualUsageKwh = bill > 0 ? Math.round(bill * 12 / blendedRate) : 0;
+    // SDG&E confirmed effective rate (verified from actual bill: $3,115 / 6,877 kWh =
+    // $0.453/kWh) as the FALLBACK ONLY — Quoya's Bill Analysis (real annual kWh + real
+    // rate off this lead's actual bill) takes priority when it's on file.
+    var _usage = _propUsageFromBill(bill, 0.453);
+    var blendedRate = _usage.rate;
+    var annualUsageKwh = _usage.annualUsageKwh;
     var prod = _propCalcBaseProduction(activeBuild, _propSolarData, sysKw, annualUsageKwh);
 
     if (!prod.hasData) {
@@ -8183,7 +8206,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var fmt = function(n){ return '$'+Math.round(n).toLocaleString(); };
 
     // Methodology breakdown lines
+    var _rateStr = '$' + blendedRate.toFixed(3) + '/kWh';
     var bLines = [];
+    // ⚠️ These two dollar figures were previously hardcoded "$0.453" text regardless of
+    // what rate the math above actually used — once Quoya's real bill rate can replace
+    // the estimate, a hardcoded string would misdescribe the real calculation. Both now
+    // read the actual blendedRate in play.
+    bLines.push(_usage.fromBill
+      ? 'Usage: '+annualUsageKwh.toLocaleString()+' kWh/yr &amp; '+_rateStr+' &mdash; read from the uploaded utility bill by Quoya\'s Bill Analysis'
+      : 'Usage: '+annualUsageKwh.toLocaleString()+' kWh/yr (estimated: bill &times; 12 &divide; '+_rateStr+' &mdash; no bill analysis on file yet)');
     if (prod.panelKw > 0) {
       bLines.push(prod.panelCount+' panels ('+prod.panelKw+' kW) &rarr; '+panelKwh.toLocaleString()+' kWh/yr ['+prod.panelSource+']');
     }
@@ -8191,12 +8222,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       bLines.push(prod.sysKw+' kW system at '+prod.outputPct+'% measured output &rarr; '+inverterKwh.toLocaleString()+' kWh/yr recovered');
     }
     if (totalNewProdKwh > 0) {
-      bLines.push('Production value: '+split.billable.toLocaleString()+' kWh &times; $0.453'+(split.surplus>0 ? ' + '+split.surplus.toLocaleString()+' kWh surplus &times; $0.04 NEM true-up' : '')+' = '+fmt(annualFromProduction)+'/yr');
+      bLines.push('Production value: '+split.billable.toLocaleString()+' kWh &times; '+_rateStr+(split.surplus>0 ? ' + '+split.surplus.toLocaleString()+' kWh surplus &times; $0.04 NEM true-up' : '')+' = '+fmt(annualFromProduction)+'/yr');
     }
     if (prod.hasBattery) {
       bLines.push('Battery TOU arbitrage: '+prod.storageKwh+' kWh storage ('+prod.batteryUnits+' unit'+(prod.batteryUnits>1?'s':'')+') &rarr; '+prod.batteryCycledDaily+' kWh/day shifted &times; $0.31/kWh &times; 365 = '+fmt(annualFromBattery)+'/yr');
     }
-    bLines.push('Rate: $0.453/kWh SDG&E verified blended (Tier 1: $0.41, Tier 2: $0.52)');
+    bLines.push('Rate: '+_rateStr+(_usage.fromBill ? ' &mdash; Quoya\'s Bill Analysis (actual bill read)' : ' &mdash; SDG&E verified blended estimate (Tier 1: $0.41, Tier 2: $0.52)'));
     bLines.push('Escalation '+cfg.rLabel+': '+cfg.rSrc);
     bLines.push('20-year total = Year1 &times; [(1+'+cfg.r+')&sup2;&sup0;&minus;1] / '+cfg.r+' (geometric series)');
 
@@ -18203,6 +18234,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   var _propOpenAdvanced = {}; // tracks which option Advanced sections are expanded
   var _propExisting = null;   // saved proposal for optional restore
   var _propSolarData = null;  // cached Google Solar API result {lat,lng,panels,...} | {loading:true} | {error:str}
+  var _propBillAnalysis = null; // cached Quoya's Bill Analysis {annual_kwh,avg_rate_per_kwh,...} for the open lead, or null
   var _propServiceType = '';
   var _commMins = { inverter_swap: 400, battery_retrofit: 2000, diagnostic: 90, new_solar: 0 };
   function _calcPropComm(price, redline) {
@@ -18444,6 +18476,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var c = adminCustomers.find(function(x){ return x.id===id; });
     if (!c) return;
 
+    // ⚠️ Always reset first — opening the builder for a different customer must never
+    // carry over the previous lead's bill_analysis into this one's savings math.
+    _propBillAnalysis = null;
+    try {
+      var _beClient = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var _beRes = await _beClient.from('lead_evaluations').select('bill_analysis').eq('customer_id', id).limit(1);
+      if (!_beRes.error && _beRes.data && _beRes.data[0] && _beRes.data[0].bill_analysis) {
+        _propBillAnalysis = _beRes.data[0].bill_analysis;
+      }
+    } catch (e) { /* no evaluation on file, or table not applied — falls back to the estimate */ }
+
     var catalog = await _loadCatalog();
     var existing = safeJson(c.proposal, null);
     var serviceType = 'battery_retrofit'; // default; sendProposal() re-derives from selected items
@@ -18666,7 +18709,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // Compute savings scenarios for each option — production-based (kWh × rate), not bill-offset
     var custRec = adminCustomers.find(function(x){ return x.id === id; });
     var bill = parseFloat(custRec && custRec.monthly_bill) || 0;
-    var blendedRate = 0.453;
+    // Quoya's Bill Analysis (real annual kWh + real rate) takes priority over the flat
+    // 0.453 estimate whenever it's on file for this lead.
+    var _usage = _propUsageFromBill(bill, 0.453);
+    var blendedRate = _usage.rate;
     var _sendScenCfgs = [
       { key: 'conservative', confidence: 0.85, r: 0.05 },
       { key: 'moderate',     confidence: 1.00, r: 0.07 },
@@ -18674,7 +18720,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     ];
     options.forEach(function(opt, oIdx) {
       var buildForOpt = _propBuilds[oIdx] || _propBuilds[0];
-      var annualUsageKwh = bill > 0 ? Math.round(bill * 12 / blendedRate) : 0;
+      var annualUsageKwh = _usage.annualUsageKwh;
       var prod = _propCalcBaseProduction(buildForOpt, _propSolarData, custRec ? custRec.system_size : null, annualUsageKwh);
       if (!prod.hasData || !bill) return;
       // Non-export systems can't sell back excess — reduce panel+inverter production by 25%
@@ -19606,12 +19652,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         aurora_portal_url: aPortEl ? aPortEl.value.trim()||null : null,
         line_items: build.lineItems.map(function(li){ return {name:li.name,price:li.price,isCustom:!!li.isCustom}; })
       };
-      // Compute savings — production-based
+      // Compute savings — production-based. Quoya's Bill Analysis (real annual kWh +
+      // real rate) takes priority over the flat 0.453 estimate whenever it's on file.
       var _pvBill = parseFloat(c.monthly_bill)||0;
-      var _pvRate = 0.453;
-      var _pvProd = _propCalcBaseProduction(build, _propSolarData, c.system_size);
+      var _pvUsage = _propUsageFromBill(_pvBill, 0.453);
+      var _pvRate = _pvUsage.rate;
+      // ⚠️ Previously called with no 4th arg at all, so battery-arbitrage never applied
+      // the usage cap (_propCalcBaseProduction's 60%-of-daily-usage clamp) that every
+      // other savings site already respects — Preview could show a higher battery figure
+      // than what sendProposal actually persists. Passing the real usage here fixes that
+      // inconsistency as well, not just the bill-analysis wiring.
+      var _pvProd = _propCalcBaseProduction(build, _propSolarData, c.system_size, _pvUsage.annualUsageKwh);
       if (_pvBill > 0 && _pvProd.hasData) {
-        var _pvUsageKwh = Math.round(_pvBill * 12 / _pvRate);
+        var _pvUsageKwh = _pvUsage.annualUsageKwh;
         var _pvScen = {};
         [{key:'conservative',confidence:0.85,r:0.05},{key:'moderate',confidence:1.00,r:0.07},{key:'significant',confidence:1.15,r:0.10}].forEach(function(s){
           var pKwh = Math.round(_pvProd.panelKwh * s.confidence);
