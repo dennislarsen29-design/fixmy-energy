@@ -20274,6 +20274,141 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     } catch(e) { alert('Save failed: '+e.message); }
   }
 
+  // ── Axia/QCell Commission Setup popup (2026-08-29, per Dennis) ──────────────────
+  // Fires the instant a lead's disposition moves to Welcome Call Closed (job phase
+  // start — NS_JOB_KEYS[0]), mirroring the FixMy Diagnostic Fee popup above: intercept
+  // the save, collect the numbers that drive commission, THEN write. Base PPW / Redline
+  // / Domestic Content Bonus feed _nsCalcCommission exactly as the accounting panel's
+  // manual fields already do (2026-08-29 AUTHORITATIVE formula) — this popup is a
+  // second way to fill the SAME columns, not a second formula. TPO ("Third-Party
+  // Ownership" — a lease/PPA financing type, confirmed with Dennis 2026-08-29) is the
+  // gate for whether a Redline/Domestic-Content-Bonus dealer fee applies at all: a
+  // cash/loan deal has no redline, so those two fields only appear once TPO is chosen,
+  // and are forced to 0 otherwise so the math can never carry a stale redline forward
+  // from an earlier draft. One shared implementation for BOTH the admin editor
+  // (saveLeadEditor) and the tech/sales editor (savesSalesEdit) — unlike the FixMy
+  // modal's admin/sales duplication, there's no portal-specific difference in this
+  // math, so a second copy would just be a second place to drift out of sync with
+  // _nsCalcCommission. Declared here (top-level script scope, not nested in any
+  // closure) so it's a plain global — reachable from the sales-portal closure too,
+  // the same way _nsCalcCommission and _axiaCommCache already are.
+  window._axiaCommPending = null; // { id, updates, rec, finish }
+  window._axiaCommDraft = null;
+  function openAxiaCommModal(id, pendingUpdates, rec, finish) {
+    var c = rec || {};
+    var isTpo = c.ns_is_tpo === true || (parseFloat(c.ns_redline_ppw) > 0);
+    window._axiaCommPending = { id: id, updates: pendingUpdates||{}, rec: c, finish: finish };
+    window._axiaCommDraft = { ns_is_tpo: isTpo };
+    var sysVal = c.system_size!=null ? c.system_size : '';
+    var baseVal = c.ns_base_ppw!=null ? c.ns_base_ppw : '';
+    var redlineVal = c.ns_redline_ppw!=null ? c.ns_redline_ppw : '';
+    var dcVal = c.ns_dc_bonus_ppw!=null ? c.ns_dc_bonus_ppw : '';
+    var modal = document.createElement('div');
+    modal.id = 'axiaCommModal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px;overflow:auto;';
+    modal.innerHTML =
+      '<div style="background:#1a1c17;border:1px solid rgba(74,158,255,0.25);border-radius:16px;padding:28px;max-width:480px;width:100%;">'+
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">'+
+          '<div style="font-size:0.62rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#4a9eff;">Axia/QCell Commission Setup</div>'+
+          '<button onclick="cancelAxiaCommModal()" style="background:none;border:none;color:#666;cursor:pointer;font-size:1.1rem;">&#10005;</button>'+
+        '</div>'+
+        '<div style="font-weight:700;font-size:1rem;margin-bottom:4px;">'+esc((c.first_name||'')+' '+(c.last_name||''))+'</div>'+
+        '<div style="font-size:0.75rem;color:#666;margin-bottom:18px;">Moving to <span style="color:#4a9eff;">Welcome Call Closed</span> — enter the deal numbers to calculate commissions.</div>'+
+        '<div style="margin-bottom:14px;">'+
+          '<label style="font-size:0.68rem;color:#888;display:block;margin-bottom:6px;">System Size (kW)</label>'+
+          '<input type="number" step="0.01" id="axiaSysSize" value="'+sysVal+'" oninput="_axiaCommModalRecalc()" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:9px 12px;font-size:0.9rem;box-sizing:border-box;"/>'+
+        '</div>'+
+        '<div style="margin-bottom:16px;">'+
+          '<label style="font-size:0.68rem;color:#888;display:block;margin-bottom:6px;">Base PPW ($/W)</label>'+
+          '<input type="number" step="0.01" id="axiaBasePpw" value="'+baseVal+'" oninput="_axiaCommModalRecalc()" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:9px 12px;font-size:0.9rem;box-sizing:border-box;"/>'+
+        '</div>'+
+        '<div style="margin-bottom:8px;">'+
+          '<label style="font-size:0.68rem;color:#888;display:block;margin-bottom:6px;">Financing Type (TPO)</label>'+
+          '<div style="display:flex;gap:8px;">'+
+            '<button type="button" id="axiaTpoOff" onclick="_axiaCommModalSetTpo(false)" style="flex:1;padding:10px 8px;border-radius:10px;font-size:0.78rem;font-weight:700;cursor:pointer;border:1px solid rgba(255,255,255,0.12);background:'+(isTpo?'rgba(255,255,255,0.04)':'rgba(141,198,63,0.15)')+';color:'+(isTpo?'#aaa':'#8DC63F')+';">Cash / Loan<div style="font-weight:400;font-size:0.62rem;opacity:0.8;margin-top:2px;">No redline</div></button>'+
+            '<button type="button" id="axiaTpoOn" onclick="_axiaCommModalSetTpo(true)" style="flex:1;padding:10px 8px;border-radius:10px;font-size:0.78rem;font-weight:700;cursor:pointer;border:1px solid rgba(255,255,255,0.12);background:'+(isTpo?'rgba(74,158,255,0.18)':'rgba(255,255,255,0.04)')+';color:'+(isTpo?'#4a9eff':'#aaa')+';">TPO — Lease/PPA<div style="font-weight:400;font-size:0.62rem;opacity:0.8;margin-top:2px;">Redline applies</div></button>'+
+          '</div>'+
+        '</div>'+
+        '<div id="axiaRedlineFields" style="display:'+(isTpo?'block':'none')+';margin-bottom:6px;">'+
+          '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px;">'+
+            '<div><label style="font-size:0.65rem;color:#888;display:block;margin-bottom:5px;">Redline ($/W)</label><input type="number" step="0.01" id="axiaRedline" value="'+redlineVal+'" oninput="_axiaCommModalRecalc()" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:8px 10px;font-size:0.85rem;box-sizing:border-box;"/></div>'+
+            '<div><label style="font-size:0.65rem;color:#888;display:block;margin-bottom:5px;">DC Bonus ($/W)</label><input type="number" step="0.01" id="axiaDcBonus" value="'+dcVal+'" oninput="_axiaCommModalRecalc()" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:8px 10px;font-size:0.85rem;box-sizing:border-box;"/></div>'+
+          '</div>'+
+        '</div>'+
+        '<div id="axiaCommPreview" style="background:rgba(74,158,255,0.06);border:1px solid rgba(74,158,255,0.2);border-radius:8px;padding:12px 16px;margin-bottom:18px;"></div>'+
+        '<div style="display:flex;gap:10px;justify-content:flex-end;">'+
+          '<button onclick="cancelAxiaCommModal()" style="padding:10px 20px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:100px;color:#aaa;cursor:pointer;font-size:0.85rem;">Cancel</button>'+
+          '<button onclick="confirmAxiaCommModal()" style="padding:10px 24px;background:#4a9eff;color:#0a0a0a;border:none;border-radius:100px;font-weight:700;cursor:pointer;font-size:0.85rem;">&#9889; Confirm &amp; Save</button>'+
+        '</div>'+
+      '</div>';
+    document.body.appendChild(modal);
+    window._axiaCommModalRecalc();
+  }
+  window._axiaCommModalSetTpo = function(isTpo) {
+    window._axiaCommDraft.ns_is_tpo = isTpo;
+    var rl = document.getElementById('axiaRedlineFields'); if (rl) rl.style.display = isTpo ? 'block' : 'none';
+    var off = document.getElementById('axiaTpoOff'), on = document.getElementById('axiaTpoOn');
+    if (off) { off.style.background = isTpo?'rgba(255,255,255,0.04)':'rgba(141,198,63,0.15)'; off.style.color = isTpo?'#aaa':'#8DC63F'; }
+    if (on)  { on.style.background  = isTpo?'rgba(74,158,255,0.18)':'rgba(255,255,255,0.04)'; on.style.color  = isTpo?'#4a9eff':'#aaa'; }
+    window._axiaCommModalRecalc();
+  };
+  window._axiaCommModalRecalc = function() {
+    var pend = window._axiaCommPending; if (!pend) return;
+    var sys = parseFloat((document.getElementById('axiaSysSize')||{}).value) || 0;
+    var base = parseFloat((document.getElementById('axiaBasePpw')||{}).value) || 0;
+    var isTpo = !!(window._axiaCommDraft||{}).ns_is_tpo;
+    var redline = isTpo ? (parseFloat((document.getElementById('axiaRedline')||{}).value) || 0) : 0;
+    var dcBonus = isTpo ? (parseFloat((document.getElementById('axiaDcBonus')||{}).value) || 0) : 0;
+    var draftRec = Object.assign({}, pend.rec, { system_size: sys, ns_base_ppw: base, ns_redline_ppw: redline, ns_dc_bonus_ppw: dcBonus });
+    var calc = _nsCalcCommission(draftRec);
+    var box = document.getElementById('axiaCommPreview'); if (!box) return;
+    if (!calc.hasInputs) {
+      box.innerHTML = '<div style="font-size:0.78rem;color:#888;">Enter System Size and Base PPW to see the commission split.</div>';
+      return;
+    }
+    var srcLbl = calc.isBlackBox ? 'Black Box · 40% pool' : 'Self-Sourced · 70% pool';
+    var splitLine = calc.hasSetter
+      ? 'Setter ('+esc(calc.setterName)+'): $'+calc.setterAmt.toFixed(2)+' · Closer ('+esc(calc.closerNm||'—')+'): $'+calc.closerAmt.toFixed(2)
+      : 'Closer ('+esc(calc.closerNm||'—')+'): $'+calc.closerAmt.toFixed(2)+' (full pool — same person set &amp; closed)';
+    box.innerHTML =
+      '<div style="display:flex;justify-content:space-between;font-size:0.72rem;color:#888;margin-bottom:4px;"><span>Net PPW</span><span style="color:#ccc;">$'+calc.netPpw.toFixed(2)+'/W</span></div>'+
+      '<div style="display:flex;justify-content:space-between;font-size:0.8rem;margin-bottom:4px;"><span style="color:#aaa;">Gross Commission</span><span style="font-weight:700;color:#fff;">$'+calc.revenue.toFixed(2)+'</span></div>'+
+      '<div style="display:flex;justify-content:space-between;font-size:0.8rem;margin-bottom:8px;"><span style="color:#aaa;">Solar Review Net Commissions</span><span style="font-weight:700;color:#8DC63F;">$'+calc.companyAmt.toFixed(2)+'</span></div>'+
+      '<div style="border-top:1px solid rgba(255,255,255,0.08);padding-top:8px;font-size:0.72rem;color:#4a9eff;">'+srcLbl+'</div>'+
+      '<div style="font-size:0.72rem;color:#ccc;margin-top:2px;">'+splitLine+'</div>';
+  };
+  window.cancelAxiaCommModal = function() {
+    var m = document.getElementById('axiaCommModal'); if (m) m.remove();
+    window._axiaCommPending = null; window._axiaCommDraft = null;
+  };
+  window.confirmAxiaCommModal = async function() {
+    var pend = window._axiaCommPending; if (!pend) return;
+    var sys = parseFloat((document.getElementById('axiaSysSize')||{}).value) || null;
+    var base = parseFloat((document.getElementById('axiaBasePpw')||{}).value) || null;
+    var isTpo = !!(window._axiaCommDraft||{}).ns_is_tpo;
+    var redline = isTpo ? (parseFloat((document.getElementById('axiaRedline')||{}).value) || 0) : 0;
+    var dcBonus = isTpo ? (parseFloat((document.getElementById('axiaDcBonus')||{}).value) || 0) : 0;
+    var finalUpdates = Object.assign({}, pend.updates, {
+      system_size: sys, ns_base_ppw: base, ns_is_tpo: isTpo,
+      ns_redline_ppw: redline, ns_dc_bonus_ppw: dcBonus
+    });
+    try {
+      var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var { error } = await client.from('customers').update(finalUpdates).eq('id', pend.id);
+      if (error) throw error;
+      // pend.rec is the actual object living inside whichever in-memory array (admin's
+      // adminCustomers or the rep portal's allRecords) the caller looked it up from —
+      // find()-returned references, so mutating it in place keeps both portals correct
+      // without this shared modal needing to know which array it came from.
+      Object.assign(pend.rec, finalUpdates);
+      delete _axiaCommCache[pend.id];
+      var m = document.getElementById('axiaCommModal'); if (m) m.remove();
+      var finish = pend.finish;
+      window._axiaCommPending = null; window._axiaCommDraft = null;
+      if (typeof finish === 'function') finish();
+    } catch(e) { alert('Save failed: '+e.message); }
+  };
+
   var _editorSaveTimer = null;
 
   function openLeadEditor(id) {
@@ -21034,7 +21169,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       email: document.getElementById('edEmail').value||null,
       phone: document.getElementById('edPhone').value||null,
       address: document.getElementById('edAddr').value||null,
-      system_size: (document.getElementById('edSys')||{}).value||null,
+      // #edSys doesn't render for Axia/QCell leads (isNSEdit hides it — system_size is
+      // set via the Welcome Call Closed popup / qualification form instead), so a bare
+      // getElementById read is null on every NS record — the same trap edNem below
+      // already guards against. Without this guard, ANY unrelated admin save on an NS
+      // lead (a note, an auto-save) silently wipes back to null whatever the popup or
+      // Quoya's qualification form just wrote, breaking the Axia commission math it feeds.
+      system_size: document.getElementById('edSys') ? (document.getElementById('edSys').value||null) : (cRec.system_size||null),
       utility: document.getElementById('edUtil').value||null,
       monthly_bill: document.getElementById('edBill').value||null,
       step: stepVal,
@@ -21090,6 +21231,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // Intercept step-3 transition: always show diagnostic fee modal when moving to Diagnostic Booked
     if (!isNSSave && !isAutoSave && stepVal === 3 && (cRec.step||1) < 3) {
       openDiagFeeModal(id, updates);
+      return;
+    }
+    // Intercept the Welcome Call Closed transition (job phase start, NS_JOB_KEYS[0]) —
+    // show the Axia/QCell Commission Setup popup so System Size/Base PPW/TPO are
+    // captured the moment the deal is real, instead of sitting blank in the accounting
+    // panel until someone remembers to fill them in.
+    if (isNSSave && !isAutoSave && solarStatusVal === 'ns_welcome_closed' && (cRec.solar_status||'') !== 'ns_welcome_closed') {
+      openAxiaCommModal(id, updates, cRec, function(){ closeLeadEditor(); renderAdminView(adminView); });
       return;
     }
     // Step-5 "Proposal Sent" no longer auto-opens the proposal builder — the Proposal
@@ -24706,6 +24855,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           monthly_bill: billRaw ? parseFloat(billRaw) : null,
           lead_source: (document.getElementById('seLeadSource')||{}).value || null,
         };
+        // Same Welcome Call Closed intercept as the admin editor — see openAxiaCommModal
+        // above (top-level scope, so it's reachable from this closure too).
+        if (cat === 'new_solar' && solarSt === 'ns_welcome_closed' && (existingRec.solar_status||'') !== 'ns_welcome_closed') {
+          openAxiaCommModal(id, updates, existingRec, function(){
+            document.getElementById('editorSlot').innerHTML = '';
+            if (typeof window.salesRefresh === 'function') window.salesRefresh(); else renderSales();
+          });
+          return;
+        }
         var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
         var res = await c2.from('customers').update(updates).eq('id', id);
         if (res.error) { alert('Save failed: ' + res.error.message); return; }
