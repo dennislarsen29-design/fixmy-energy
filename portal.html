@@ -1754,17 +1754,32 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // Ronda (rep1) only takes inbound calls — no outbound dialing/prospecting like a real
   // Setter/Dialer — so per Dennis (2026-08-30) her cut of whichever pool she's in is a
   // flat 5% instead of the standard rate, whichever slot she's in (closer or setter).
-  // Ronda-specific override, not a general per-rep rate field. Everyone else's percentage,
-  // and the company's remainder-based margin, are completely unaffected — company still
-  // gets whatever Net/Gross isn't paid out, same as always. _isRonda is the ONE place this
-  // identity check lives, shared by both FixMy (_fixmyCloserPct/_fixmySetterPct, below) and
-  // Axia/QCell (_nsCalcCommission) — each pipeline keeps its own normal-rate fallback since
-  // those genuinely differ (40/20 vs Black-Box/Self-Sourced pool%), but "is this Ronda" is
-  // one check so the two formulas can't drift on who the override applies to.
+  // Ronda-specific override, not a general per-rep rate field.
+  //
+  // ⚠️ First version of this (same day) gave the OTHER party half the pool (poolPct/2)
+  // whenever Ronda was involved, letting the company silently pocket the rest of her 20/35
+  // percentage points as extra margin. Wrong — Dennis's correction on Victoria Seacombe's
+  // job (70% Self-Sourced pool): 5% Ronda / 65% Dennis / 30% Solar Review, NOT 5%/35%/60%.
+  // The standing rule ("the pool is FIXED — company margin is identical no matter who
+  // closes") applies to Ronda's case too: when she shares the pool with a real second
+  // person, that person absorbs whatever she doesn't take (poolPct − 5%), so the pool paid
+  // out to reps — and therefore the company's margin — never changes just because Ronda's
+  // on the deal. Only when she SOLOS a job (no distinct setter) does the company keep the
+  // difference, since there's no second rep to redirect it to (same as the David Witthoft
+  // case already shipped, which this does NOT change: 5% to Ronda, company keeps the other
+  // 95%, exactly as before — that one only has one party in the pool to begin with).
+  //
+  // `_repSplitPcts` is the ONE place this whole decision — Ronda-or-not, solo-or-split —
+  // lives, shared by both FixMy (poolPct always 0.40) and Axia/QCell (poolPct 0.40 or 0.70
+  // depending on Black-Box vs Self-Sourced) so the two formulas can't drift on it again.
   var RONDA_COMM_PCT = 0.05;
   function _isRonda(nameOrId) { var s = (nameOrId||'').trim().toLowerCase(); return s === 'rep1' || s === 'ronda'; }
-  function _fixmyCloserPct(repId, hasSetter) { return _isRonda(repId) ? RONDA_COMM_PCT : (hasSetter ? 0.20 : 0.40); }
-  function _fixmySetterPct(setterName) { return _isRonda(setterName) ? RONDA_COMM_PCT : 0.20; }
+  function _repSplitPcts(repId, setterName, hasSetter, poolPct) {
+    if (!hasSetter) return { closerPct: _isRonda(repId) ? RONDA_COMM_PCT : poolPct, setterPct: 0 };
+    if (_isRonda(repId))     return { closerPct: RONDA_COMM_PCT, setterPct: poolPct - RONDA_COMM_PCT };
+    if (_isRonda(setterName)) return { closerPct: poolPct - RONDA_COMM_PCT, setterPct: RONDA_COMM_PCT };
+    return { closerPct: poolPct/2, setterPct: poolPct/2 };
+  }
 
   var _fixmyCommCache = {}; // customer_id -> computed split, see fields below
   async function _loadFixmyJobCommissions(ids) {
@@ -1795,9 +1810,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var setterName = (c.setter_name||'').trim();
         var closerNm = repName(c.rep_id||'');
         var hasSetter = !!setterName && setterName.toLowerCase()!=='none' && setterName.toLowerCase() !== (closerNm||'').toLowerCase();
-        var closerPct = _fixmyCloserPct(c.rep_id, hasSetter);
+        var _splitPcts = _repSplitPcts(c.rep_id, setterName, hasSetter, 0.40);
+        var closerPct = _splitPcts.closerPct;
         var closerEst = c.rep_id ? Math.round(net*closerPct*100)/100 : 0;
-        var setterEst = hasSetter ? Math.round(net*_fixmySetterPct(setterName)*100)/100 : 0;
+        var setterEst = hasSetter ? Math.round(net*_splitPcts.setterPct*100)/100 : 0;
         var comms = commByC[id]||[];
         var closerRow = comms.find(function(x){ return x.kind==='rep_commission'; });
         var setterRow = comms.find(function(x){ return x.kind==='setter_commission'; });
@@ -1894,11 +1910,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var setterName = (c.setter_name || '').trim();
     var closerNm = repName(c.rep_id || '');
     var hasSetter = !!setterName && setterName.toLowerCase() !== 'none' && setterName.toLowerCase() !== (closerNm||'').toLowerCase();
-    // Ronda's flat 5% override (2026-08-30, per Dennis) applies here too, same _isRonda
-    // check the FixMy formula uses — only her own slot's percentage changes, the other
-    // party's split and the company's remainder-based margin are unaffected.
-    var closerPct = _isRonda(c.rep_id) ? RONDA_COMM_PCT : (hasSetter ? poolPct/2 : poolPct);
-    var setterPct = hasSetter ? (_isRonda(setterName) ? RONDA_COMM_PCT : poolPct/2) : 0;
+    // Ronda's flat 5% override (2026-08-30, per Dennis) applies here too, via the same
+    // _repSplitPcts the FixMy formula uses — see its comment for why the OTHER party
+    // absorbs the pool-minus-5% rather than the company keeping the difference.
+    var _splitPcts = _repSplitPcts(c.rep_id, setterName, hasSetter, poolPct);
+    var closerPct = _splitPcts.closerPct;
+    var setterPct = _splitPcts.setterPct;
     var closerAmt = c.rep_id ? Math.round(gross*closerPct*100)/100 : 0;
     var setterAmt = hasSetter ? Math.round(gross*setterPct*100)/100 : 0;
     var companyAmt = Math.max(0, gross - closerAmt - setterAmt);
@@ -20812,8 +20829,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var closerNm = repName(rep);
         var noCloser = !rep;
         var hasSetter = !!setterName && setterName.toLowerCase() !== 'none' && setterName.toLowerCase() !== (closerNm||'').toLowerCase();
-        var closerPct = _fixmyCloserPct(rep, hasSetter);
-        var setterPct = hasSetter ? _fixmySetterPct(setterName) : 0;
+        var _splitPcts = _repSplitPcts(rep, setterName, hasSetter, 0.40);
+        var closerPct = _splitPcts.closerPct;
+        var setterPct = _splitPcts.setterPct;
         var closerAmt = noCloser ? 0 : Math.round(netPos * closerPct * 100)/100;
         var setterAmt = hasSetter ? Math.round(netPos * setterPct * 100)/100 : 0;
         var commRow = comms.find(function(x){ return x.kind === 'rep_commission'; });
@@ -20979,8 +20997,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         netPos = Math.max(0, collected - costSum);
       }
       var commRes = await pc.from('commissions').select('kind').eq('customer_id', cid);
-      var closerAmt = !rep ? 0 : Math.round(netPos * _fixmyCloserPct(rep, hasSetter) * 100)/100;
-      var setterAmt = hasSetter ? Math.round(netPos * _fixmySetterPct(setterName) * 100)/100 : 0;
+      var _splitPcts = _repSplitPcts(rep, setterName, hasSetter, 0.40);
+      var closerAmt = !rep ? 0 : Math.round(netPos * _splitPcts.closerPct * 100)/100;
+      var setterAmt = hasSetter ? Math.round(netPos * _splitPcts.setterPct * 100)/100 : 0;
       var have = {}; (commRes.data||[]).forEach(function(x){ have[x.kind] = true; });
       var rows = [];
       if (!have.rep_commission && closerAmt > 0) rows.push({ customer_id:cid, line:'fixmy', kind:'rep_commission', payee:rep, payee_name:closerNm, amount:closerAmt, status:'sold' });
