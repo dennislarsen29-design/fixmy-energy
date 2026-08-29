@@ -1635,12 +1635,35 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
   };
 
+  // ── "Is this a job?" (2026-08-29, per Dennis) ───────────────────────────────────
+  // Was `!!c.sold_type` alone — too narrow. A lead that generated real revenue (a paid
+  // diagnostic fee, say) but never had sold_type explicitly set was invisible in Jobs
+  // forever (found via Steve Silverthorn: paid $299.99, agreement signed, but sold_type
+  // stayed null because his lead_category had also been miscategorized as new_solar).
+  // "All sold jobs (jobs that have generated revenue)" is the real test — sold_type is
+  // still the fast path, and a customer_id with a real payments.category='revenue' row
+  // is the fallback that catches anything sold_type missed.
+  var _jobsRevenueIds = null;
+  async function _ensureJobsRevenueIds() {
+    if (_jobsRevenueIds) return _jobsRevenueIds;
+    try {
+      var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var r = await pc.from('payments').select('customer_id').eq('category', 'revenue');
+      _jobsRevenueIds = new Set((r.data||[]).map(function(x){ return x.customer_id; }));
+    } catch(e) { _jobsRevenueIds = new Set(); }
+    return _jobsRevenueIds;
+  }
+  function _isRealJob(c) {
+    return !!c.sold_type || !!(_jobsRevenueIds && _jobsRevenueIds.has(c.id));
+  }
+
   // ── JOBS TAB ───────────────────────────────────────────────────────────────
   function renderJobsView() {
     if (_adminOnlyGuard()) return;
     adminView = 'jobs';
     var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab active" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button><button class="portal-tab" onclick="renderTeamView()">&#128101; Team &amp; Hiring</button><button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button><button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button><a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a></div>';
-    var allJobs = adminCustomers.filter(function(c){ return !!c.sold_type; });
+    if (!_jobsRevenueIds) { _ensureJobsRevenueIds().then(function(){ if (adminView==='jobs') renderJobsView(); }); }
+    var allJobs = adminCustomers.filter(_isRealJob);
     var fixmyJobs = allJobs.filter(function(c){ return c.lead_category !== 'new_solar'; });
     var nsJobs    = allJobs.filter(function(c){ return c.lead_category === 'new_solar'; });
     var jobs = adminJobCat === 'new_solar' ? nsJobs : fixmyJobs;
@@ -1669,19 +1692,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             '<div class="job-addr">'+(c.address||'No address')+'</div>'+
             (c.monthly_bill?'<div class="job-meta">$'+c.monthly_bill+'/mo'+(c.utility?' &middot; '+c.utility:'')+'</div>':'')+
             nsAurora+
+            '<div id="jobComm_'+c.id+'">'+_axiaCommLineHtml(c.id)+'</div>'+
           '</div>';
         } else {
-          var status = c.job_status||'pending';
-          var statusLabel = {pending:'Pending Assessment',in_progress:'In Progress',ready:'Ready for Review',approved:'Approved'}[status]||status;
-          var statusColor = {pending:'#ffaa00',in_progress:'#4a9eff',ready:'#f97316',approved:'#8DC63F'}[status]||'#888';
+          // ⚠️ job_status (Pending Assessment/In Progress/Ready/Approved) was known-broken
+          // — nothing ever advanced it off "Pending Assessment" — and dropped entirely per
+          // Dennis 2026-08-29 rather than fixed: the pipeline-step badge plus Net
+          // Commissions already show real progress; a second, redundant, broken status
+          // field just added noise.
           var sLabel = saleTypeLabel[c.sold_type]||c.sold_type||'';
           var sColor = saleTypeColor[c.sold_type]||'#888';
           var jobMagic = 'https://fixmy.energy/portal?email='+encodeURIComponent(c.email||'')+'&code='+encodeURIComponent(c.access_code||(c.phone||'').replace(/\D/g,''));
           listHtml += '<div class="job-card" data-id="'+c.id+'" onclick="openJob(this.dataset.id)">'+
             '<div class="job-card-top"><div class="job-name">'+(c.first_name||'')+' '+(c.last_name||'')+'</div>'+
-            '<div style="display:flex;gap:6px;align-items:center;">'+
-            '<span style="font-size:0.65rem;font-weight:700;padding:2px 7px;border-radius:20px;background:'+sColor+'22;color:'+sColor+';border:1px solid '+sColor+'44;">'+sLabel+'</span>'+
-            '<div class="job-status-pill" style="background:'+statusColor+'22;color:'+statusColor+';border:1px solid '+statusColor+'44;">'+statusLabel+'</div></div></div>'+
+            '<span style="font-size:0.65rem;font-weight:700;padding:2px 7px;border-radius:20px;background:'+sColor+'22;color:'+sColor+';border:1px solid '+sColor+'44;">'+sLabel+'</span></div>'+
             '<div class="job-addr">'+(c.address||'No address')+'</div>'+
             '<div class="job-meta">'+(c.system_size?c.system_size+' kW system':'')+(c.utility?' &middot; '+c.utility:'')+'</div>'+
             (c.deposit_status&&c.deposit_status!=='none'?
@@ -1703,67 +1727,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         }
       });
     }
-    var nsSummarySlot = adminJobCat === 'new_solar' ? '<div id="nsCommSummary">'+_nsCommSummaryHtml()+'</div>' : '';
-    var fixmyCommSlot = adminJobCat !== 'new_solar' ? '<div id="jobsCommDash">'+_jobsCommDashHtml()+'</div>' : '';
+    var commDashSlot = '<div id="jobsCommDash">'+_jobsCommDashHtml(adminJobCat)+'</div>';
     document.getElementById('dashBody').innerHTML = portalNav+
       '<div class="admin-header-row"><h2 style="font-size:1.1rem;font-weight:700;">Jobs</h2><span style="font-size:0.72rem;color:#555;">'+allJobs.length+' total</span></div>'+
-      catTabs+nsSummarySlot+fixmyCommSlot+'<div id="editorSlot"></div><div id="jobList">'+listHtml+'</div><div id="jobDetail" style="display:none;"></div>';
-    if (adminJobCat === 'new_solar') _loadNsCommSummary();
-    else { _loadFixmyJobCommissions(fixmyJobs.map(function(c){ return c.id; })).then(function(){ fixmyJobs.forEach(function(c){ var el=document.getElementById('jobComm_'+c.id); if (el) el.innerHTML=_jobCommLineHtml(c.id); }); if (_jobsCommOpen) { var s=document.getElementById('jobsCommDash'); if (s) s.innerHTML=_jobsCommDashHtml(); } }); }
-  }
-
-  // ── Axia/QCell pipeline-level Commission & Revenue report ──────────────────────
-  // Aggregates the manual per-lead estimates entered via edAddCommission (kind
-  // setter_commission / rep_commission / override, line='new_solar') into one strip
-  // at the top of the Jobs tab — the "report any Commission Estimates for Setters and
-  // Techs and company estimates on Revenue coming in" ask. Estimates only: these are
-  // whatever a rep typed per deal until the real commission formula (Dennis is
-  // teaching it) replaces the manual entry with a computed value — labeled as such so
-  // nobody mistakes a placeholder number for a finalized one.
-  var _nsCommCache = null; // {setterTotal, techTotal, revenueTotal, setterPaid, techPaid, revenuePaid, dealCount}
-  var _nsCommLoading = false;
-  function _nsCommSummaryHtml() {
-    if (_nsCommLoading) return '<div style="font-size:0.7rem;color:#666;padding:10px 0;">Loading commission &amp; revenue estimates&hellip;</div>';
-    if (!_nsCommCache) return '';
-    var d = _nsCommCache;
-    var _m = function(n){ return '$'+(n||0).toLocaleString(undefined,{maximumFractionDigits:0}); };
-    var tile = function(label, total, paid, color){
-      return '<div style="flex:1;min-width:140px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 12px;">'+
-        '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:'+color+';margin-bottom:4px;">'+label+'</div>'+
-        '<div style="font-size:1.05rem;font-weight:800;color:#fff;">'+_m(total)+'</div>'+
-        '<div style="font-size:0.62rem;color:#666;margin-top:2px;">'+_m(paid)+' paid/received</div>'+
-      '</div>';
-    };
-    return '<div style="margin-bottom:14px;">'+
-      '<div style="font-size:0.62rem;color:#f59e0b;margin-bottom:8px;">&#9888; Estimates from manual per-deal entries &mdash; not yet the final commission formula.</div>'+
-      '<div style="display:flex;gap:8px;flex-wrap:wrap;">'+
-        tile('Setter Commission', d.setterTotal, d.setterPaid, '#4a9eff')+
-        tile('Tech Commission', d.techTotal, d.techPaid, '#9b6de8')+
-        tile('Company Revenue', d.revenueTotal, d.revenuePaid, '#8DC63F')+
-      '</div>'+
-    '</div>';
-  }
-  async function _loadNsCommSummary() {
-    _nsCommLoading = true;
-    var slot = document.getElementById('nsCommSummary');
-    if (slot) slot.innerHTML = _nsCommSummaryHtml();
-    try {
-      var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
-      var resp = await pc.from('commissions').select('kind,amount,status').eq('line', 'new_solar');
-      var rows = resp.data || [];
-      var d = { setterTotal:0, techTotal:0, revenueTotal:0, setterPaid:0, techPaid:0, revenuePaid:0 };
-      rows.forEach(function(r){
-        var amt = parseFloat(r.amount)||0;
-        var isPaid = r.status === 'paid';
-        if (r.kind === 'setter_commission') { d.setterTotal += amt; if (isPaid) d.setterPaid += amt; }
-        else if (r.kind === 'rep_commission') { d.techTotal += amt; if (isPaid) d.techPaid += amt; }
-        else if (r.kind === 'override') { d.revenueTotal += amt; if (isPaid) d.revenuePaid += amt; }
-      });
-      _nsCommCache = d;
-    } catch(e) { _nsCommCache = null; }
-    _nsCommLoading = false;
-    var slot2 = document.getElementById('nsCommSummary');
-    if (slot2) slot2.innerHTML = _nsCommSummaryHtml();
+      catTabs+commDashSlot+'<div id="editorSlot"></div><div id="jobList">'+listHtml+'</div><div id="jobDetail" style="display:none;"></div>';
+    var catIds = jobs.map(function(c){ return c.id; });
+    var loadFn = adminJobCat === 'new_solar' ? _loadAxiaJobCommissions : _loadFixmyJobCommissions;
+    var lineFn = adminJobCat === 'new_solar' ? _axiaCommLineHtml : _jobCommLineHtml;
+    loadFn(catIds).then(function(){
+      jobs.forEach(function(c){ var el=document.getElementById('jobComm_'+c.id); if (el) el.innerHTML=lineFn(c.id); });
+      if (_jobsCommOpen[adminJobCat]) { var s=document.getElementById('jobsCommDash'); if (s) s.innerHTML=_jobsCommDashHtml(adminJobCat); }
+    });
   }
 
   // ── FixMy per-job commission math — Potential vs Earned (2026-08-25, per Dennis) ──
@@ -1814,124 +1788,299 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           closerLocked: !!closerRow, setterLocked: !!setterRow,
           closerPaid: !!(closerRow && closerRow.status==='paid'), setterPaid: !!(setterRow && setterRow.status==='paid'),
           setterName: setterName, hasSetter: hasSetter, repId: c.rep_id||'',
-          earned: (c.step||1) >= 9, net: net
+          earned: (c.step||1) >= 9, net: net,
+          revenue: collected, costs: costSum
         };
       });
     } catch(e) { /* leave uncached — callers must handle a missing entry gracefully, never show a wrong number */ }
   }
-  // Admin-facing line: shows every party's slice at once, since admin sees everyone's numbers.
-  function _jobCommLineHtml(cid) {
-    var d = _fixmyCommCache[cid];
+  // ── Shared commission-line core (2026-08-29, per Dennis — "clean this up to be
+  // synonymous") — ONE renderer for both pipelines now that Axia/QCell has a real
+  // computed formula instead of manual estimates, so the two can never visually drift
+  // apart again. Takes a normalized cache entry (closerAmt/setterAmt/companyAmt/
+  // *Locked/*Paid/hasSetter/setterName/repId/revenue/costs) — both _fixmyCommCache and
+  // _axiaCommCache entries share this shape.
+  function _revCostLineHtml(d) {
+    var m = function(n){ return '$'+(n||0).toLocaleString(undefined,{maximumFractionDigits:0}); };
+    var net = Math.max(0, (d.revenue||0) - (d.costs||0));
+    return '<div style="font-size:0.68rem;color:#777;">Revenue '+m(d.revenue)+' &minus; Costs '+m(d.costs)+' = Net '+m(net)+'</div>';
+  }
+  // Admin-facing line: every party's slice + Revenue/Costs, since admin sees everyone's numbers.
+  function _commLineHtml(d, statusBadgeHtml) {
     if (!d) return '';
     var m = function(n){ return '$'+(n||0).toLocaleString(undefined,{maximumFractionDigits:0}); };
-    var badge = d.earned
-      ? '<span style="color:#8DC63F;font-weight:700;">EARNED</span>'
-      : '<span style="color:#ffaa00;font-weight:700;">POTENTIAL</span>';
     var parts = [];
     if (d.repId) parts.push((d.hasSetter?'Closer ':'Rep ')+m(d.closerAmt)+(d.closerLocked?(d.closerPaid?' &#10003;paid':' sold'):' est.'));
     if (d.hasSetter) parts.push('Setter '+m(d.setterAmt)+(d.setterLocked?(d.setterPaid?' &#10003;paid':' sold'):' est.'));
     parts.push('Co. '+m(d.companyAmt));
-    return '<div style="margin-top:6px;font-size:0.68rem;color:#999;">'+badge+' &middot; '+parts.join(' &middot; ')+'</div>';
+    return _revCostLineHtml(d)+'<div style="margin-top:2px;font-size:0.68rem;color:#999;">'+statusBadgeHtml+' &middot; '+parts.join(' &middot; ')+'</div>';
   }
   // Rep-facing line: only THIS person's own slice — a setter never sees the closer's cut
-  // or vice versa, and nobody sees the company's margin from their own portal.
-  function _jobCommLineHtmlForRep(cid, person) {
-    var d = _fixmyCommCache[cid];
+  // or vice versa, and nobody sees Revenue/Costs/the company's margin from their own portal.
+  function _commLineHtmlForRep(d, person, statusBadgeHtml) {
     if (!d || !person) return '';
     var m = function(n){ return '$'+(n||0).toLocaleString(undefined,{maximumFractionDigits:0}); };
     var mine = null, label = '';
     if (d.repId && person.id === d.repId) { mine = d.closerAmt; label = d.hasSetter ? 'Your closer split' : 'Your commission'; }
     else if (d.hasSetter && d.setterName && (person.name||'').trim().toLowerCase() === d.setterName.toLowerCase()) { mine = d.setterAmt; label = 'Your setter split'; }
     if (mine == null) return '';
-    var badge = d.earned
-      ? '<span style="color:#8DC63F;font-weight:700;">EARNED</span>'
-      : '<span style="color:#ffaa00;font-weight:700;">POTENTIAL</span>';
-    return '<div style="margin-top:8px;padding:8px 12px;background:rgba(155,109,232,0.06);border:1px solid rgba(155,109,232,0.2);border-radius:8px;font-size:0.75rem;">'+badge+' &middot; '+esc(label)+': <b style="color:#fff;">'+m(mine)+'</b></div>';
+    return '<div style="margin-top:8px;padding:8px 12px;background:rgba(155,109,232,0.06);border:1px solid rgba(155,109,232,0.2);border-radius:8px;font-size:0.75rem;">'+statusBadgeHtml+' &middot; '+esc(label)+': <b style="color:#fff;">'+m(mine)+'</b></div>';
+  }
+  function _fixmyBadge(d) { return d.earned ? '<span style="color:#8DC63F;font-weight:700;">EARNED</span>' : '<span style="color:#ffaa00;font-weight:700;">POTENTIAL</span>'; }
+  function _jobCommLineHtml(cid) {
+    var d = _fixmyCommCache[cid];
+    if (!d) return '';
+    return _commLineHtml(d, _fixmyBadge(d));
+  }
+  function _jobCommLineHtmlForRep(cid, person) {
+    var d = _fixmyCommCache[cid];
+    if (!d) return '';
+    return _commLineHtmlForRep(d, person, _fixmyBadge(d));
   }
 
-  // ── FixMy commission dashboard — Jobs tab (2026-08-25, per Dennis) ──────────
-  // Same shape as the Dialer/Doors scoreboard: collapsed by default, a range picker,
-  // Potential vs Earned totals. Ranges by when the job was CREATED (i.e. sold into
-  // the pipeline), then buckets by CURRENT step — "how much is sitting in each bucket,
-  // for jobs that entered the pipeline in this window."
-  var JOBS_COMM_RANGES = [['day','Day'],['week','Week'],['month','Month'],['quarter','Quarter'],['year','Year'],['life','Lifetime']];
+  // ── Axia/QCell commission — Base PPW / Redline formula (2026-08-29, per Dennis,
+  // AUTHORITATIVE) — replaces the old manual prompt()-entered estimate.
+  //   Base PPW − (Redline − Domestic Content Bonus) = Net PPW
+  //   Net PPW × System Size (Watts) = Gross Commission            [= "Revenue" on the card]
+  //   Gross Commission × pool% = combined Setter/Tech pay          [= "Costs"/COGS on the card]
+  //   Gross Commission − that pay = Solar Review Net Commissions   [= "Net Commissions"]
+  // Pool is 40% (identical math to FixMy: same person sets & closes keeps the full 40%,
+  // a distinct setter splits 20/20) on a Black-Box-sourced lead — Black Box, and the
+  // planned future "Lead Locker" source, both count. Pool jumps to 70% (35/35 split when
+  // a distinct setter is involved) on a Self-Sourced lead — the rep found/onboarded the
+  // account themselves, not off Black Box. ⚠️ Every Axia/QCell lead in the database today
+  // has lead_source null or 'referral' — none carry a literal Black Box marker — so the
+  // real test has to be "not from Black Box" (black_box=true or lead_source='orphaned_list'),
+  // not a narrow positive match on lead_source==='self_generated', or almost the entire
+  // existing book would wrongly compute at the 40% rate instead of 70%.
+  function _nsIsBlackBoxSourced(c) {
+    return !!(c && (c.black_box === true || c.lead_source === 'orphaned_list'));
+  }
+  function _nsCalcCommission(c) {
+    c = c || {};
+    var basePpw = parseFloat(c.ns_base_ppw) || 0;
+    var redline = parseFloat(c.ns_redline_ppw) || 0;
+    var dcBonus = parseFloat(c.ns_dc_bonus_ppw) || 0;
+    var netRedline = redline - dcBonus;
+    var netPpw = basePpw - netRedline;
+    var watts = Math.round((parseFloat(c.system_size) || 0) * 1000);
+    var gross = Math.max(0, Math.round(netPpw * watts * 100) / 100);
+    var isBlackBox = _nsIsBlackBoxSourced(c);
+    var poolPct = isBlackBox ? 0.40 : 0.70;
+    var setterName = (c.setter_name || '').trim();
+    var closerNm = repName(c.rep_id || '');
+    var hasSetter = !!setterName && setterName.toLowerCase() !== 'none' && setterName.toLowerCase() !== (closerNm||'').toLowerCase();
+    var closerPct = hasSetter ? poolPct/2 : poolPct;
+    var setterPct = hasSetter ? poolPct/2 : 0;
+    var closerAmt = c.rep_id ? Math.round(gross*closerPct*100)/100 : 0;
+    var setterAmt = hasSetter ? Math.round(gross*setterPct*100)/100 : 0;
+    var companyAmt = Math.max(0, gross - closerAmt - setterAmt);
+    return {
+      basePpw:basePpw, redline:redline, dcBonus:dcBonus, netRedline:netRedline, netPpw:netPpw, watts:watts,
+      isBlackBox:isBlackBox, poolPct:poolPct, closerPct:closerPct, setterPct:setterPct,
+      setterName:setterName, hasSetter:hasSetter, closerNm:closerNm, repId:c.rep_id||'',
+      closerAmt:closerAmt, setterAmt:setterAmt, companyAmt:companyAmt,
+      revenue: gross, costs: Math.round((closerAmt+setterAmt)*100)/100,
+      hasInputs: basePpw>0 && watts>0
+    };
+  }
+  // Same async-cache pattern as _loadFixmyJobCommissions, but every formula input already
+  // lives on the customers row — the only round trip needed is checking which payouts (if
+  // any) are already locked into `commissions` so an estimate can't overwrite a real number.
+  var _axiaCommCache = {};
+  async function _loadAxiaJobCommissions(ids) {
+    var need = (ids||[]).filter(function(id){ return id && !_axiaCommCache[id]; });
+    if (!need.length) return;
+    try {
+      var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var commRes = await pc.from('commissions').select('customer_id,kind,amount,status').in('customer_id', need).eq('line','new_solar');
+      var commByC = {};
+      (commRes.data||[]).forEach(function(x){ (commByC[x.customer_id]=commByC[x.customer_id]||[]).push(x); });
+      need.forEach(function(id){
+        var c = (adminCustomers||[]).find(function(x){ return x.id===id; })
+          || (typeof allRecords !== 'undefined' ? (allRecords||[]).find(function(x){ return x.id===id; }) : null) || {};
+        var calc = _nsCalcCommission(c);
+        var comms = commByC[id]||[];
+        var closerRow = comms.find(function(x){ return x.kind==='rep_commission'; });
+        var setterRow = comms.find(function(x){ return x.kind==='setter_commission'; });
+        var companyRow = comms.find(function(x){ return x.kind==='override'; });
+        var closerAmt = closerRow ? (parseFloat(closerRow.amount)||0) : calc.closerAmt;
+        var setterAmt = setterRow ? (parseFloat(setterRow.amount)||0) : calc.setterAmt;
+        var companyAmt = companyRow ? (parseFloat(companyRow.amount)||0) : calc.companyAmt;
+        _axiaCommCache[id] = Object.assign({}, calc, {
+          closerAmt: closerAmt, setterAmt: setterAmt, companyAmt: companyAmt,
+          costs: Math.round((closerAmt+setterAmt)*100)/100,
+          closerLocked: !!closerRow, setterLocked: !!setterRow, companyLocked: !!companyRow,
+          closerPaid: !!(closerRow && closerRow.status==='paid'), setterPaid: !!(setterRow && setterRow.status==='paid'),
+          companyPaid: !!(companyRow && companyRow.status==='paid')
+        });
+      });
+    } catch(e) { /* leave uncached — callers must handle a missing entry gracefully */ }
+  }
+  function _axiaBadge(d) {
+    var allLocked = d.closerLocked && (!d.hasSetter || d.setterLocked);
+    var status = allLocked ? '<span style="color:#8DC63F;font-weight:700;">LOCKED</span>' : '<span style="color:#ffaa00;font-weight:700;">ESTIMATE</span>';
+    var src = '<span style="color:'+(d.isBlackBox?'#f97316':'#4a9eff')+';font-weight:700;">'+(d.isBlackBox?'BLACK BOX &middot; '+Math.round(d.poolPct*100)+'%':'SELF-SOURCED &middot; '+Math.round(d.poolPct*100)+'%')+'</span>';
+    return status+' &middot; '+src;
+  }
+  function _axiaCommLineHtml(cid) {
+    var d = _axiaCommCache[cid];
+    if (!d) return '';
+    return _commLineHtml(d, _axiaBadge(d));
+  }
+  function _axiaCommLineHtmlForRep(cid, person) {
+    var d = _axiaCommCache[cid];
+    if (!d) return '';
+    return _commLineHtmlForRep(d, person, _axiaBadge(d));
+  }
+  // Lock in the Axia/QCell split as SOLD → Payroll — mirrors edRecordFixmySplit exactly,
+  // recomputing at click time and inserting whichever payout rows aren't recorded yet
+  // (closer, setter if a distinct one is on file, and the company's override/net line).
+  window.edRecordAxiaSplit = async function(cid) {
+    var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var rec = (adminCustomers||[]).find(function(x){ return x.id === cid; }) || {};
+    var calc = _nsCalcCommission(rec);
+    if (!calc.hasInputs) { alert('Enter Base PPW and set System Size (kW) on the lead first — Gross Commission is $0 without them.'); return; }
+    try {
+      var commRes = await pc.from('commissions').select('kind').eq('customer_id', cid).eq('line','new_solar');
+      var have = {}; (commRes.data||[]).forEach(function(x){ have[x.kind] = true; });
+      var rows = [];
+      if (!have.rep_commission && calc.repId && calc.closerAmt > 0) rows.push({ customer_id:cid, line:'new_solar', kind:'rep_commission', payee:calc.repId, payee_name:calc.closerNm, amount:calc.closerAmt, status:'sold' });
+      if (calc.hasSetter && !have.setter_commission && calc.setterAmt > 0) {
+        var sid = _repIdByName(calc.setterName);
+        rows.push({ customer_id:cid, line:'new_solar', kind:'setter_commission', payee: sid || calc.setterName, payee_name: calc.setterName, amount: calc.setterAmt, status:'sold' });
+      }
+      if (!have.override && calc.companyAmt > 0) rows.push({ customer_id:cid, line:'new_solar', kind:'override', payee:'solar_review_corp', payee_name:'Solar Review Corp', amount: calc.companyAmt, status:'sold' });
+      if (!rows.length) { alert('Nothing to record — already locked in, or no commissionable amount yet.'); return; }
+      var m = function(n){ return '$'+n.toLocaleString(undefined,{maximumFractionDigits:2}); };
+      var summary = rows.map(function(r){ return (r.kind==='override'?'Solar Review Net':(r.kind==='setter_commission'?'Setter · '+r.payee_name:'Tech · '+r.payee_name))+': '+m(r.amount); }).join('\n');
+      if (!confirm('Lock in Axia/QCell commission split?\n\n'+(calc.isBlackBox?'Black Box lead — '+Math.round(calc.poolPct*100)+'% pool':'Self-Sourced — '+Math.round(calc.poolPct*100)+'% pool')+'\n\n'+summary)) return;
+      var { error } = await pc.from('commissions').insert(rows);
+      if (error) throw error;
+      delete _axiaCommCache[cid];
+      if (typeof edLoadAccounting === 'function') edLoadAccounting();
+    } catch(e) { alert('Could not record: ' + (e.message||e)); }
+  };
+  // Saves one Base PPW / Redline / Domestic Content Bonus field, edited straight from the
+  // accounting panel — same "manual per-job field" pattern as FixMy's editable Dealer Cost.
+  window.edSaveNsField = async function(cid, field, val) {
+    var n = parseFloat(val);
+    var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var patch = {}; patch[field] = isNaN(n) ? null : n;
+    var { error } = await pc.from('customers').update(patch).eq('id', cid);
+    if (error) { alert('Could not save: '+error.message); return; }
+    var rec = (adminCustomers||[]).find(function(x){ return x.id===cid; });
+    if (rec) rec[field] = patch[field];
+    delete _axiaCommCache[cid];
+    if (typeof edLoadAccounting === 'function') edLoadAccounting();
+  };
+
+  // ── Unified Jobs-tab commission dashboard (2026-08-29, per Dennis — "clean this up
+  // to be synonymous") — ONE dashboard shape driven by `cat` ('fixmy' | 'new_solar'), so
+  // both pipelines report Revenue / Costs (COGS) / Net Commissions the same way, over the
+  // same Total / Year / Quarter / Month / Week ranges, plus what's still pending by
+  // Setter, Tech, and — FixMy only — Ops (Solar Review pays Ops partners directly via the
+  // Sub Sheet / milestone payouts; Axia/QCell has no Ops role since Axia IS the installer,
+  // never a sub-contracted partner Solar Review pays).
+  var JOBS_COMM_RANGES = [['week','Week'],['month','Month'],['quarter','Quarter'],['year','Year'],['life','Total']];
   var _jobsCommRange = 'month';
-  var _jobsCommOpen = false;
-  var _jobsCommLoading = false;
+  var _jobsCommOpen = { fixmy:false, new_solar:false };
+  var _jobsCommLoading = { fixmy:false, new_solar:false };
   function _jobsCommRangeStart(range) {
     var now = new Date();
-    if (range === 'day') { var d = new Date(now); d.setHours(0,0,0,0); return d; }
     if (range === 'week') { var d2 = new Date(now); var day = d2.getDay(); var diff = day===0?6:day-1; d2.setDate(d2.getDate()-diff); d2.setHours(0,0,0,0); return d2; }
     if (range === 'month') return new Date(now.getFullYear(), now.getMonth(), 1);
     if (range === 'quarter') return new Date(now.getFullYear(), Math.floor(now.getMonth()/3)*3, 1);
     if (range === 'year') return new Date(now.getFullYear(), 0, 1);
-    return null; // lifetime
+    return null; // total
   }
-  function _jobsCommDashHtml() {
-    var fixmyJobs = (adminCustomers||[]).filter(function(c){ return !!c.sold_type && c.lead_category !== 'new_solar'; });
+  function _jobsScopedForCat(cat) {
+    var jobs = (adminCustomers||[]).filter(function(c){ return _isRealJob(c) && (cat==='new_solar' ? c.lead_category==='new_solar' : c.lead_category!=='new_solar'); });
     var start = _jobsCommRangeStart(_jobsCommRange);
-    var scoped = fixmyJobs.filter(function(c){ return !start || (c.created_at && new Date(c.created_at) >= start); });
-    var m = function(n){ return '$'+(n||0).toLocaleString(undefined,{maximumFractionDigits:0}); };
-    var head = '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:'+(_jobsCommOpen?'10px':'0')+';">'+
-      '<button onclick="window._jobsCommToggle()" style="width:auto;background:none;border:none;color:#9b6de8;font-size:0.8rem;font-weight:800;cursor:pointer;padding:0;display:flex;align-items:center;gap:6px;">'+(_jobsCommOpen?'&#9660;':'&#9654;')+' &#129297; Commission Income'+'</button>'+
+    return jobs.filter(function(c){ return !start || (c.created_at && new Date(c.created_at) >= start); });
+  }
+  function _jobsCommDashHtml(cat) {
+    var open = _jobsCommOpen[cat];
+    var color = cat==='new_solar' ? '#4a9eff' : '#9b6de8';
+    var head = '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:'+(open?'10px':'0')+';">'+
+      '<button onclick="window._jobsCommToggle(\''+cat+'\')" style="width:auto;background:none;border:none;color:'+color+';font-size:0.8rem;font-weight:800;cursor:pointer;padding:0;display:flex;align-items:center;gap:6px;">'+(open?'&#9660;':'&#9654;')+' &#129297; Revenue &amp; Commissions'+'</button>'+
       '</div>';
-    if (!_jobsCommOpen) return '<div style="margin-bottom:14px;">'+head+'</div>';
+    if (!open) return '<div style="margin-bottom:14px;">'+head+'</div>';
     var rangeBar = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">'+JOBS_COMM_RANGES.map(function(r){
       var on = _jobsCommRange===r[0];
-      return '<button onclick="window._jobsCommSetRange(\''+r[0]+'\')" style="width:auto;padding:5px 13px;border-radius:100px;font-size:0.7rem;font-weight:700;cursor:pointer;border:1px solid '+(on?'rgba(155,109,232,0.5)':'rgba(255,255,255,0.1)')+';background:'+(on?'rgba(155,109,232,0.15)':'rgba(255,255,255,0.04)')+';color:'+(on?'#c4a3f0':'#888')+';">'+r[1]+'</button>';
+      return '<button onclick="window._jobsCommSetRange(\''+cat+'\',\''+r[0]+'\')" style="width:auto;padding:5px 13px;border-radius:100px;font-size:0.7rem;font-weight:700;cursor:pointer;border:1px solid '+(on?color+'80':'rgba(255,255,255,0.1)')+';background:'+(on?color+'22':'rgba(255,255,255,0.04)')+';color:'+(on?color:'#888')+';">'+r[1]+'</button>';
     }).join('')+'</div>';
-    if (_jobsCommLoading) return '<div style="margin-bottom:14px;">'+head+rangeBar+'<div style="font-size:0.72rem;color:#666;">Loading&hellip;</div></div>';
-    var pot = { closer:0, setter:0, company:0, count:0 }, earn = { closer:0, setter:0, company:0, count:0 };
+    if (_jobsCommLoading[cat]) return '<div style="margin-bottom:14px;">'+head+rangeBar+'<div style="font-size:0.72rem;color:#666;">Loading&hellip;</div></div>';
+    var scoped = _jobsScopedForCat(cat);
+    var cache = cat==='new_solar' ? _axiaCommCache : _fixmyCommCache;
+    var rev=0, cost=0, net=0, count=0, missing=0, pendSetter=0, pendTech=0, pendOps=0;
     scoped.forEach(function(c){
-      var d = _fixmyCommCache[c.id];
-      if (!d) return;
-      var bucket = d.earned ? earn : pot;
-      bucket.closer += d.closerAmt; bucket.setter += d.setterAmt; bucket.company += d.companyAmt; bucket.count++;
+      var d = cache[c.id];
+      if (!d) { missing++; return; }
+      count++;
+      rev += (d.revenue||0); cost += (d.costs||0);
+      net += Math.max(0, (d.revenue||0) - (d.costs||0));
+      if (d.repId && !d.closerPaid) pendTech += d.closerAmt;
+      if (d.hasSetter && !d.setterPaid) pendSetter += d.setterAmt;
+      if (cat!=='new_solar') {
+        if (c.ops_milestone1_amount && c.ops_milestone1_status!=='paid') pendOps += parseFloat(c.ops_milestone1_amount)||0;
+        if (c.milestone2_amount && c.milestone2_status!=='paid') pendOps += parseFloat(c.milestone2_amount)||0;
+        if (c.milestone3_amount && c.milestone3_status!=='paid') pendOps += parseFloat(c.milestone3_amount)||0;
+      }
     });
-    var tile = function(label, color, d) {
-      return '<div style="flex:1;min-width:180px;background:rgba(255,255,255,0.03);border:1px solid '+color+'33;border-radius:10px;padding:12px 14px;">'+
-        '<div style="font-size:0.64rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:'+color+';margin-bottom:6px;">'+label+' &middot; '+d.count+' job'+(d.count===1?'':'s')+'</div>'+
-        '<div style="font-size:0.72rem;color:#aaa;line-height:1.9;">Reps <b style="color:#ddd;">'+m(d.closer+d.setter)+'</b><br/>Company <b style="color:#ddd;">'+m(d.company)+'</b></div>'+
+    var m = function(n){ return '$'+(n||0).toLocaleString(undefined,{maximumFractionDigits:0}); };
+    var tile = function(label, val, color2) {
+      return '<div style="flex:1;min-width:150px;background:rgba(255,255,255,0.03);border:1px solid '+color2+'33;border-radius:10px;padding:12px 14px;">'+
+        '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:'+color2+';margin-bottom:4px;">'+label+'</div>'+
+        '<div style="font-size:1.1rem;font-weight:800;color:#fff;">'+m(val)+'</div>'+
       '</div>';
     };
-    var missing = scoped.filter(function(c){ return !_fixmyCommCache[c.id]; }).length;
+    var pendRows = [['Setter', pendSetter, '#4a9eff'], ['Tech', pendTech, '#9b6de8']];
+    if (cat!=='new_solar') pendRows.push(['Ops', pendOps, '#f97316']);
+    var pendHtml = '<div style="margin-top:10px;">'+
+      '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;margin-bottom:6px;">Pending Payouts &mdash; not yet paid</div>'+
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;">'+pendRows.map(function(r){
+        return '<div style="flex:1;min-width:110px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:8px 10px;">'+
+          '<div style="font-size:0.6rem;color:'+r[2]+';font-weight:700;">'+r[0]+'</div>'+
+          '<div style="font-size:0.85rem;font-weight:700;color:#ddd;">'+m(r[1])+'</div></div>';
+      }).join('')+'</div></div>';
     return '<div style="margin-bottom:14px;">'+head+rangeBar+
-      '<div style="font-size:0.6rem;color:#666;margin-bottom:8px;">Scoped to FixMy jobs created in this range, split by current step: Potential = sold but not yet Installed, Earned = step 9 Installed or later. "Rep" totals combine setter + closer; company is the estimated margin after both.</div>'+
+      '<div style="font-size:0.6rem;color:#666;margin-bottom:8px;">Scoped to '+(cat==='new_solar'?'Axia/QCell':'FixMy')+' jobs created in this range &middot; '+count+' job'+(count===1?'':'s')+(cat==='new_solar'?' &middot; Revenue = Gross Commission owed by Axia/QCell, Costs = Setter/Tech pay owed out.':' &middot; Revenue = collected payments, Costs = Sub Sheet job costs.')+'</div>'+
       '<div style="display:flex;gap:10px;flex-wrap:wrap;">'+
-        tile('&#9203; Potential (not yet installed)', '#ffaa00', pot)+
-        tile('&#9989; Earned (installed)', '#8DC63F', earn)+
+        tile('Revenue', rev, '#4a9eff')+
+        tile('Costs (COGS)', cost, '#f97316')+
+        tile('Net Commissions', net, '#8DC63F')+
       '</div>'+
+      pendHtml+
       (missing ? '<div style="font-size:0.62rem;color:#555;margin-top:6px;">'+missing+' job'+(missing===1?'':'s')+' still loading&hellip;</div>' : '')+
     '</div>';
   }
-  window._jobsCommToggle = function() {
-    _jobsCommOpen = !_jobsCommOpen;
+  window._jobsCommToggle = function(cat) {
+    _jobsCommOpen[cat] = !_jobsCommOpen[cat];
     var slot = document.getElementById('jobsCommDash');
-    if (slot) slot.innerHTML = _jobsCommDashHtml();
-    if (_jobsCommOpen) _loadJobsCommDashboard();
+    if (slot) slot.innerHTML = _jobsCommDashHtml(cat);
+    if (_jobsCommOpen[cat]) _loadJobsCommDashboard(cat);
   };
-  window._jobsCommSetRange = function(r) {
+  window._jobsCommSetRange = function(cat, r) {
     _jobsCommRange = r;
     var slot = document.getElementById('jobsCommDash');
-    if (slot) slot.innerHTML = _jobsCommDashHtml();
-    _loadJobsCommDashboard();
+    if (slot) slot.innerHTML = _jobsCommDashHtml(cat);
+    _loadJobsCommDashboard(cat);
   };
-  async function _loadJobsCommDashboard() {
-    var fixmyJobs = (adminCustomers||[]).filter(function(c){ return !!c.sold_type && c.lead_category !== 'new_solar'; });
-    var start = _jobsCommRangeStart(_jobsCommRange);
-    var scoped = fixmyJobs.filter(function(c){ return !start || (c.created_at && new Date(c.created_at) >= start); });
+  async function _loadJobsCommDashboard(cat) {
+    var scoped = _jobsScopedForCat(cat);
     var ids = scoped.map(function(c){ return c.id; });
-    _jobsCommLoading = true;
+    _jobsCommLoading[cat] = true;
     var slot = document.getElementById('jobsCommDash');
-    if (slot) slot.innerHTML = _jobsCommDashHtml();
-    await _loadFixmyJobCommissions(ids);
-    _jobsCommLoading = false;
+    if (slot) slot.innerHTML = _jobsCommDashHtml(cat);
+    if (cat==='new_solar') await _loadAxiaJobCommissions(ids); else await _loadFixmyJobCommissions(ids);
+    _jobsCommLoading[cat] = false;
     var slot2 = document.getElementById('jobsCommDash');
-    if (slot2) slot2.innerHTML = _jobsCommDashHtml();
+    if (slot2) slot2.innerHTML = _jobsCommDashHtml(cat);
     // Also fill in the per-card commission lines now that the cache has data.
     ids.forEach(function(id){
       var el = document.getElementById('jobComm_'+id);
-      if (el) el.innerHTML = _jobCommLineHtml(id);
+      if (el) el.innerHTML = cat==='new_solar' ? _axiaCommLineHtml(id) : _jobCommLineHtml(id);
     });
   }
 
@@ -20497,33 +20646,50 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         }
         h += '</div>';
       } else if (cat === 'new_solar') {
-        // ── Axia/QCell: Setter / Tech commission estimates + Company Revenue estimate ──
-        // No scope-of-work costs here (unlike FixMy) — Solar Review doesn't charge the
-        // customer on this line, so there's no job_costs/redline basis to net against.
-        // These are manual estimates until the real commission formula (Dennis is
-        // teaching it) replaces the prompt() entry with a computed value. Setter and
-        // Tech are tracked separately, matching how the FixMy 20/20 split already
-        // distinguishes "who set it" (setter_name) from "who's assigned" (rep).
-        var setterNm = ((adminCustomers||[]).find(function(x){ return x.id===cid; })||{}).setter_name || '';
-        h += '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 12px;">';
-        h += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;">';
-        h += '<span style="font-size:0.66rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#9b6de8;">&#129297; Commission &amp; Revenue Estimates</span>';
-        h += '<button onclick="edAddCommission(\''+cid+'\',\''+cat+'\',\''+rep+'\',\'setter_commission\')" style="margin-left:auto;padding:4px 10px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);border-radius:100px;color:#4a9eff;font-size:0.66rem;font-weight:700;cursor:pointer;">+ Setter Commission</button>';
-        h += '<button onclick="edAddCommission(\''+cid+'\',\''+cat+'\',\''+rep+'\',\'rep_commission\')" style="padding:4px 10px;background:rgba(155,109,232,0.1);border:1px solid rgba(155,109,232,0.3);border-radius:100px;color:#9b6de8;font-size:0.66rem;font-weight:700;cursor:pointer;">+ Tech Commission</button>';
-        h += '<button onclick="edAddCommission(\''+cid+'\',\''+cat+'\',\''+rep+'\',\'override\')" style="padding:4px 10px;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.3);border-radius:100px;color:#8DC63F;font-size:0.66rem;font-weight:700;cursor:pointer;">+ Company Revenue</button>';
+        // ── Axia/QCell: Base PPW / Redline commission formula (2026-08-29, per Dennis,
+        // AUTHORITATIVE) — replaces the old manual prompt()-entered estimate.
+        var nsRec = (adminCustomers||[]).find(function(x){ return x.id===cid; }) || {};
+        var calc = _nsCalcCommission(nsRec);
+        var m2 = function(n){ return '$'+(parseFloat(n)||0).toLocaleString(undefined,{maximumFractionDigits:2}); };
+        h += '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 12px;margin-bottom:8px;">';
+        h += '<div style="font-size:0.66rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#4a9eff;margin-bottom:8px;">&#9889; PPW Commission Inputs</div>';
+        h += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px;">';
+        h += '<div><label style="font-size:0.6rem;color:#888;display:block;margin-bottom:2px;">Base PPW ($/W)</label><input type="number" step="0.01" value="'+(nsRec.ns_base_ppw!=null?nsRec.ns_base_ppw:'')+'" onchange="edSaveNsField(\''+cid+'\',\'ns_base_ppw\',this.value)" style="width:100%;background:#0e0e0e;border:1px solid rgba(255,255,255,0.12);border-radius:6px;color:#ccc;padding:5px 7px;font-size:0.78rem;box-sizing:border-box;"/></div>';
+        h += '<div><label style="font-size:0.6rem;color:#888;display:block;margin-bottom:2px;">EnFin Redline ($/W)</label><input type="number" step="0.01" value="'+(nsRec.ns_redline_ppw!=null?nsRec.ns_redline_ppw:'')+'" onchange="edSaveNsField(\''+cid+'\',\'ns_redline_ppw\',this.value)" style="width:100%;background:#0e0e0e;border:1px solid rgba(255,255,255,0.12);border-radius:6px;color:#ccc;padding:5px 7px;font-size:0.78rem;box-sizing:border-box;"/></div>';
+        h += '<div><label style="font-size:0.6rem;color:#888;display:block;margin-bottom:2px;">Domestic Content Bonus ($/W)</label><input type="number" step="0.01" value="'+(nsRec.ns_dc_bonus_ppw!=null?nsRec.ns_dc_bonus_ppw:'')+'" onchange="edSaveNsField(\''+cid+'\',\'ns_dc_bonus_ppw\',this.value)" style="width:100%;background:#0e0e0e;border:1px solid rgba(255,255,255,0.12);border-radius:6px;color:#ccc;padding:5px 7px;font-size:0.78rem;box-sizing:border-box;"/></div>';
         h += '</div>';
-        if (setterNm) h += '<div style="font-size:0.68rem;color:#4a9eff;margin-bottom:6px;">Setter on file: <b>'+esc(setterNm)+'</b></div>';
-        if (!comms.length) h += '<div style="font-size:0.7rem;color:#666;">No estimates yet. Setter/Tech commissions are owed to the rep; Company Revenue is the estimated income to Solar Review Corp from this deal.</div>';
-        comms.forEach(function(x){
-          var kindLbl = x.kind==='override'?'Company Revenue':(x.kind==='setter_commission'?'Setter Commission':'Tech Commission');
-          h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.72rem;color:#aaa;padding:4px 0;border-top:1px solid rgba(255,255,255,0.05);flex-wrap:wrap;">';
-          h += '<span style="color:#ddd;">'+kindLbl+'</span>';
-          h += '<span style="color:#888;">'+esc(x.payee==='solar_review_corp'?'Solar Review Corp':(x.payee_name||repName(x.payee)))+'</span>';
-          h += '<span style="color:#ddd;font-weight:700;">$'+(parseFloat(x.amount)||0).toLocaleString(undefined,{maximumFractionDigits:2})+'</span>';
-          h += '<button onclick="edToggleCommission(\''+x.id+'\',\''+x.status+'\')" style="margin-left:auto;padding:2px 9px;border-radius:100px;border:1px solid '+(x.status==='paid'?'rgba(141,198,63,0.4);background:rgba(141,198,63,0.1);color:#8DC63F':'rgba(255,170,0,0.4);background:rgba(255,170,0,0.08);color:#ffaa00')+';font-size:0.62rem;font-weight:700;cursor:pointer;text-transform:uppercase;">'+(x.status==='paid'?(x.kind==='override'?'received':'paid'):'sold')+'</button>';
-          h += '<button onclick="edDelCommission(\''+x.id+'\')" style="background:none;border:none;color:#555;cursor:pointer;font-size:0.8rem;">&times;</button>';
-          h += '</div>';
-        });
+        if (!nsRec.system_size) h += '<div style="font-size:0.62rem;color:#ef4444;margin-bottom:6px;">&#9888; No System Size (kW) on file — Gross Commission needs it. Set it on the lead.</div>';
+        h += '<div style="font-size:0.72rem;color:#aaa;line-height:1.8;">Net PPW <b style="color:#8DC63F;">'+m2(calc.netPpw)+'</b> &times; '+calc.watts.toLocaleString()+' W = Gross Commission <b style="color:#4a9eff;">'+m2(calc.revenue)+'</b></div>';
+        h += '<div style="font-size:0.68rem;margin-top:4px;">'+(calc.isBlackBox?'<span style="color:#f97316;">&#128230; Black Box lead &mdash; '+Math.round(calc.poolPct*100)+'% pool</span>':'<span style="color:#8DC63F;">&#127919; Self-Sourced &mdash; '+Math.round(calc.poolPct*100)+'% pool</span>')+(calc.hasSetter?' &middot; split '+Math.round(calc.closerPct*100)+'/'+Math.round(calc.setterPct*100):'')+'</div>';
+        h += '</div>';
+
+        var setterNm = calc.setterName;
+        h += '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 12px;">';
+        h += '<div style="font-size:0.66rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#9b6de8;margin-bottom:6px;">&#129297; Commission Split</div>';
+        if (setterNm) h += '<div style="font-size:0.68rem;color:#4a9eff;margin-bottom:4px;">Setter on file: <b>'+esc(setterNm)+'</b></div>';
+        var closerRowNs = comms.find(function(x){ return x.kind==='rep_commission'; });
+        var setterRowNs = comms.find(function(x){ return x.kind==='setter_commission'; });
+        var companyRowNs = comms.find(function(x){ return x.kind==='override'; });
+        var _pill2 = function(status){ return '<span style="margin-left:6px;padding:2px 9px;border-radius:100px;font-size:0.62rem;font-weight:700;text-transform:uppercase;'+(status==='paid'?'background:rgba(141,198,63,0.1);color:#8DC63F;border:1px solid rgba(141,198,63,0.4);':'background:rgba(255,170,0,0.08);color:#ffaa00;border:1px solid rgba(255,170,0,0.4);')+'">'+(status==='paid'?'PAID':'SOLD — unpaid')+'</span>'; };
+        if (!calc.repId) {
+          h += '<div style="font-size:0.72rem;color:#777;">Tech: no rep assigned yet — set Assigned Rep to record their split.</div>';
+        } else if (closerRowNs) {
+          h += '<div style="font-size:0.74rem;color:#ddd;">'+esc(calc.closerNm)+' (Tech '+Math.round(calc.closerPct*100)+'%): <b>'+m2(closerRowNs.amount)+'</b>'+_pill2(closerRowNs.status)+'</div>';
+        } else if (calc.closerAmt > 0) {
+          h += '<div style="font-size:0.74rem;color:#ddd;">'+esc(calc.closerNm)+' (Tech '+Math.round(calc.closerPct*100)+'%): <b style="color:#9b6de8;">'+m2(calc.closerAmt)+'</b> <span style="color:#666;font-size:0.68rem;">(accruing)</span></div>';
+        }
+        if (calc.hasSetter) {
+          if (setterRowNs) h += '<div style="font-size:0.74rem;color:#ddd;margin-top:2px;">'+esc(setterNm)+' (Setter '+Math.round(calc.setterPct*100)+'%): <b>'+m2(setterRowNs.amount)+'</b>'+_pill2(setterRowNs.status)+'</div>';
+          else if (calc.setterAmt > 0) h += '<div style="font-size:0.74rem;color:#ddd;margin-top:2px;">'+esc(setterNm)+' (Setter '+Math.round(calc.setterPct*100)+'%): <b style="color:#4a9eff;">'+m2(calc.setterAmt)+'</b> <span style="color:#666;font-size:0.68rem;">(accruing)</span></div>';
+        }
+        if (companyRowNs) h += '<div style="font-size:0.74rem;color:#ddd;margin-top:2px;">Solar Review Net: <b>'+m2(companyRowNs.amount)+'</b>'+_pill2(companyRowNs.status)+'</div>';
+        else if (calc.companyAmt > 0) h += '<div style="font-size:0.74rem;color:#ddd;margin-top:2px;">Solar Review Net: <b style="color:#8DC63F;">'+m2(calc.companyAmt)+'</b> <span style="color:#666;font-size:0.68rem;">(accruing)</span></div>';
+        var _needCloserNs = !closerRowNs && calc.repId && calc.closerAmt>0;
+        var _needSetterNs = calc.hasSetter && !setterRowNs && calc.setterAmt>0;
+        var _needCoNs = !companyRowNs && calc.companyAmt>0;
+        if (_needCloserNs || _needSetterNs || _needCoNs) {
+          h += '<button onclick="edRecordAxiaSplit(\''+cid+'\')" style="margin-top:7px;padding:6px 13px;background:rgba(155,109,232,0.1);border:1px solid rgba(155,109,232,0.35);border-radius:100px;color:#9b6de8;font-size:0.7rem;font-weight:700;cursor:pointer;">Lock in as Sold &#8594; Payroll</button>';
+        }
         h += '</div>';
       } else {
         // ── Top Tier: manual commissions + overrides + travel (income to SRC) ──
@@ -20937,6 +21103,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var idx=adminCustomers.findIndex(function(x){return x.id===id;});
       if (idx>-1) adminCustomers[idx]=Object.assign(adminCustomers[idx],updates);
       if ('step' in updates) delete _fixmyCommCache[id]; // Potential/Earned gates on step — force a recompute
+      // Axia's formula reads system_size/setter_name/rep_id/black_box/lead_source, any of
+      // which this editor can change — simplest correct rule is "any save invalidates it".
+      delete _axiaCommCache[id];
       // Update GHL appointment if diagnostic date changed and we have an existing appointment ID
       if (!isAutoSave && isFixMySave && cRec.ghl_appointment_id && diagDate && diagDate !== cRec.diagnostic_date && GHL_DIAG_CALENDAR_ID) {
         var _resDt = diagDate ? diagDate.slice(0,10) : null;
@@ -23627,7 +23796,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
                 (j.monthly_bill?'<div style="font-size:0.7rem;color:#8DC63F;margin-top:2px;">$'+j.monthly_bill+'/mo</div>':'')+
               '</div>';
               h += '<div style="background:'+nsJRec.color+'22;border-radius:6px;padding:4px 10px;font-size:0.72rem;font-weight:700;color:'+nsJRec.color+';border:1px solid '+nsJRec.color+'44;">'+nsJRec.label+'</div>';
-              h += '</div></div>';
+              h += '</div>';
+              h += '<div id="repJobComm_'+j.id+'">'+_axiaCommLineHtmlForRep(j.id, person)+'</div>';
+              h += '</div>';
             } else {
               var inv = j.invoice_status||'';
               var iClr = inv==='paid'?'#8DC63F':inv==='overdue'?'#ef4444':'#ffaa00';
@@ -24332,10 +24503,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // _cvBk set and a blank editorSlot — the booking is not lost, just invisible.
       if (_cvBk && document.getElementById('editorSlot')) _cvBkRender();
       // Own-slice commission line on the rep's own Jobs cards — fills the placeholder
-      // divs in place once the shared cache has data, no full re-render needed.
+      // divs in place once the shared cache has data, no full re-render needed. Axia/QCell
+      // now gets the same treatment as FixMy (2026-08-29) — the rep-side card previously
+      // showed no commission info at all for that pipeline.
       if (salesView === 'jobs' && salesJobCat !== 'new_solar' && salesJobCat !== 'top_tier' && myFixmyJobs.length) {
         _loadFixmyJobCommissions(myFixmyJobs.map(function(j){ return j.id; })).then(function(){
           myFixmyJobs.forEach(function(j){ var el = document.getElementById('repJobComm_'+j.id); if (el) el.innerHTML = _jobCommLineHtmlForRep(j.id, person); });
+        });
+      }
+      if (salesView === 'jobs' && salesJobCat === 'new_solar' && myNSJobs.length) {
+        _loadAxiaJobCommissions(myNSJobs.map(function(j){ return j.id; })).then(function(){
+          myNSJobs.forEach(function(j){ var el = document.getElementById('repJobComm_'+j.id); if (el) el.innerHTML = _axiaCommLineHtmlForRep(j.id, person); });
         });
       }
     }
