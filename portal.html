@@ -26596,6 +26596,21 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       .order('created_at', {ascending:false});
     var jobs = resp.data || [];
 
+    // 2026-08-30, per Dennis: "synchronization needs to happen on Ops Portals view as
+    // well" — Ops sees the SAME Sub Sheet cost line items admin sees for THEIR OWN jobs
+    // (never another partner's — that's still the standard Sub Sheet's job, kept hidden
+    // above), pending/paid exactly as admin marks it after paying through Cosmic's own
+    // account portal. This is what Ops Milestone 1 used to (incompletely) represent.
+    var opsJobCosts = [];
+    var opsJobIds = jobs.map(function(j){ return j.id; });
+    if (opsJobIds.length) {
+      try {
+        var jcResp = await client.from('job_costs').select('customer_id,label,amount,status').in('customer_id', opsJobIds);
+        opsJobCosts = jcResp.data || [];
+      } catch(e) { opsJobCosts = []; }
+    }
+    function opsCostsFor(jobId) { return opsJobCosts.filter(function(c){ return c.customer_id === jobId; }); }
+
     // This partner's OWN rate sheet (only their row — never another partner's).
     var opsRates = {};
     try {
@@ -26660,6 +26675,21 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var opsSolarCache = {};
     var opsView = sessionStorage.getItem('opsView_' + ops.id) || 'jobs';
     if (opsView === 'subsheet') opsView = 'jobs';   // Sub Sheet removed for Ops — normalize stale state
+
+    // Diagnostic Fee is the CUSTOMER's payment to Solar Review (invoice_status/
+    // invoice_amount) — a different thing from what Solar Review owes this partner
+    // (job_costs, shown separately below). 2026-08-30, per Dennis: this needs to sync
+    // to the Ops portal so a partner can see it's been paid, same as admin does.
+    function _opsFeeBadgeHtml(j) {
+      var st = j.invoice_status;
+      if (!st || st === 'none') return '';
+      var lbl = {paid:'✓ Diagnostic Fee Paid', pending:'⏳ Fee Processing', sent:'📧 Fee Sent', overdue:'⚠ Fee Overdue', draft:'Fee Draft'}[st] || ('Fee: ' + st);
+      var clr = st === 'paid' ? '#3d6b12' : st === 'overdue' ? '#c0392b' : '#b06a00';
+      var bg  = st === 'paid' ? 'rgba(141,198,63,0.1)' : st === 'overdue' ? 'rgba(192,57,43,0.08)' : 'rgba(255,170,0,0.08)';
+      var bdr = st === 'paid' ? 'rgba(141,198,63,0.3)' : st === 'overdue' ? 'rgba(192,57,43,0.25)' : 'rgba(255,170,0,0.25)';
+      var amt = j.invoice_amount ? ' — $' + parseFloat(j.invoice_amount).toLocaleString(undefined,{maximumFractionDigits:2}) : '';
+      return '<span style="font-size:0.66rem;font-weight:700;padding:3px 10px;border-radius:20px;background:' + bg + ';color:' + clr + ';border:1px solid ' + bdr + ';white-space:nowrap;">' + lbl + amt + '</span>';
+    }
 
     function renderOps() {
       var h = '<div class="tech-portal-wrap"><div class="tech-header">' +
@@ -26748,7 +26778,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (opsView === 'revenue') {
         var totalEarned = 0, totalPending = 0;
         jobs.forEach(function(j) {
-          ['ops_milestone1_amount:ops_milestone1_status','milestone2_amount:milestone2_status','milestone3_amount:milestone3_status'].forEach(function(pair) {
+          // Ops Milestone 1 retired 2026-08-30 — Diagnostic/RMA/Service Fee COGS now comes
+          // straight from this partner's own Sub Sheet job_costs entries (the same ones
+          // admin sees and pays through Cosmic's account portal). M2/M3 (bigger
+          // retrofit/install milestone billing) are unchanged.
+          opsCostsFor(j.id).forEach(function(c){
+            var amt = parseFloat(c.amount)||0;
+            if (c.status === 'paid') totalEarned += amt; else totalPending += amt;
+          });
+          ['milestone2_amount:milestone2_status','milestone3_amount:milestone3_status'].forEach(function(pair) {
             var parts = pair.split(':'), amt = parseFloat(j[parts[0]])||0, st = j[parts[1]];
             if (st === 'paid') totalEarned += amt; else if (amt > 0) totalPending += amt;
           });
@@ -26785,7 +26823,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
               '<span style="font-size:0.7rem;font-weight:700;color:'+clr+';">' + badge + '</span></div>';
           }
 
-          var rows = mRow(j.ops_milestone1_status, j.ops_milestone1_amount, 'Payment 1');
+          var rows = '';
+          opsCostsFor(j.id).forEach(function(c){ rows += mRow(c.status, c.amount, c.label || 'Cost'); });
           if (j.milestone2_status && j.milestone2_status !== 'none') rows += mRow(j.milestone2_status, j.milestone2_amount, 'Payment 2');
           if (j.milestone3_status && j.milestone3_status !== 'none') rows += mRow(j.milestone3_status, j.milestone3_amount, 'Payment 3');
 
@@ -26795,7 +26834,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
                 '<div style="font-size:0.9rem;font-weight:700;color:#1A1A1A;">' + (j.first_name||'') + ' ' + (j.last_name||'') + '</div>' +
                 '<div style="font-size:0.72rem;color:#777;margin-top:2px;">📍 ' + (j.address||'No address') + '</div>' +
               '</div>' +
-              '<span style="font-size:0.68rem;font-weight:700;padding:3px 9px;border-radius:20px;background:rgba(141,198,63,0.1);color:#3d6b12;border:1px solid rgba(141,198,63,0.25);white-space:nowrap;">' + jobType + '</span>' +
+              '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">' +
+                '<span style="font-size:0.68rem;font-weight:700;padding:3px 9px;border-radius:20px;background:rgba(141,198,63,0.1);color:#3d6b12;border:1px solid rgba(141,198,63,0.25);white-space:nowrap;">' + jobType + '</span>' +
+                _opsFeeBadgeHtml(j) +
+              '</div>' +
             '</div>' +
             '<div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(0,0,0,0.06);display:flex;gap:16px;flex-wrap:wrap;">' +
               (diagDateStr ? '<div style="font-size:0.7rem;color:#555;">🔍 Diag: <strong>' + diagDateStr + '</strong></div>' : '') +
@@ -26885,6 +26927,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             '<div class="tech-job-addr">&#128205; ' + (job.address||'No address') + '</div>' +
             (job.phone ? '<div style="font-size:0.72rem;color:#555;margin-top:3px;">&#128222; ' + (job.phone||'') + '</div>' : '') +
             (job.email ? '<div style="font-size:0.72rem;color:#555;margin-top:2px;">&#9993; ' + (job.email||'') + '</div>' : '') +
+            (_opsFeeBadgeHtml(job) ? '<div style="margin-top:6px;">' + _opsFeeBadgeHtml(job) + '</div>' : '') +
             '</div>' +
             '<div class="tech-job-date">' + dateHtml + '</div></div>' +
           '<div class="tech-actions">' +
@@ -26926,19 +26969,30 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             '<div style="'+ic+'"><div class="info-label">Job Type</div><div class="info-val" style="color:#1A1A1A;">' + (job.install_type||'Diagnostic') + '</div></div>' +
             '<div style="'+ic+'"><div class="info-label">NEM Status</div><div class="info-val" style="color:#1A1A1A;">' + (job.nem_status||'Unknown') + '</div></div>' +
           '</div>' +
+          // Payment Status — 2026-08-30, per Dennis: synced to what admin actually sees now.
+          // Two different things: whether the CUSTOMER's Diagnostic Fee is paid (the same
+          // invoice_status admin's Jobs card shows), and what Solar Review owes THIS
+          // partner (this job's own Sub Sheet job_costs lines, pending/paid exactly as
+          // admin marks them after paying through Cosmic's account portal). Replaces the
+          // old Ops Milestone 1 block, which only ever covered the second half of this.
           (function(){
-            var m1 = job.ops_milestone1_status;
-            if (!m1 || m1 === 'none') return '';
-            var mClr = m1==='paid'?'#3d6b12':'#c0392b';
-            var mBg  = m1==='paid'?'rgba(141,198,63,0.12)':'rgba(192,57,43,0.07)';
-            var mBdr = m1==='paid'?'rgba(141,198,63,0.3)':'rgba(192,57,43,0.25)';
-            var mLbl = m1==='paid'?'&#10003; Milestone 1 Paid':'&#9711; Awaiting Payment';
-            var mAmt = job.ops_milestone1_amount ? ' &mdash; $' + parseFloat(job.ops_milestone1_amount).toLocaleString() : '';
+            var feeBadge = _opsFeeBadgeHtml(job);
+            var myCosts = opsCostsFor(job.id);
+            if (!feeBadge && !myCosts.length) return '';
+            var rows = myCosts.map(function(c){
+              var isPd = c.status === 'paid';
+              var clr = isPd ? '#3d6b12' : '#b06a00';
+              var bg  = isPd ? 'rgba(141,198,63,0.12)' : 'rgba(255,170,0,0.08)';
+              var bdr = isPd ? 'rgba(141,198,63,0.3)' : 'rgba(255,170,0,0.25)';
+              var amt = parseFloat(c.amount)||0;
+              return '<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 10px;border-radius:7px;background:'+bg+';border:1px solid '+bdr+';margin-top:6px;">' +
+                '<span style="font-size:0.78rem;color:#444;">' + (c.label||'Cost') + (amt?' &mdash; $'+amt.toLocaleString(undefined,{maximumFractionDigits:2}):'') + '</span>' +
+                '<span style="font-size:0.78rem;font-weight:700;color:'+clr+';">' + (isPd?'&#10003; Paid':'&#9711; Awaiting Payment') + '</span></div>';
+            }).join('');
             return '<div style="background:rgba(255,255,255,0.7);border:1px solid rgba(0,0,0,0.1);border-radius:10px;padding:12px 14px;margin-bottom:12px;">' +
               '<div style="font-size:0.65rem;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px;">&#128178; Payment Status</div>' +
-              '<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 10px;border-radius:7px;background:'+mBg+';border:1px solid '+mBdr+';">' +
-              '<span style="font-size:0.78rem;color:#444;">Solar Review &#8594; ' + ops.name + '</span>' +
-              '<span style="font-size:0.78rem;font-weight:700;color:'+mClr+';">'+mLbl+mAmt+'</span></div>' +
+              (feeBadge ? '<div style="margin-bottom:'+(rows?'6px':'0')+';">' + feeBadge + '</div>' : '') +
+              rows +
               '</div>';
           }());
 
