@@ -1751,6 +1751,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // step has reached "9 - Installed" (or beyond). Not install_date — that field isn't
   // reliably populated (the tech/sales portal's own step-changer never writes it, only
   // the admin editor's save path does), so gating on step directly is the honest signal.
+  // Ronda (rep1) only takes inbound calls — no outbound dialing/prospecting like a real
+  // Setter/Dialer — so per Dennis (2026-08-30) her cut of the FixMy 40%-of-net pool is a
+  // flat 5% instead of the standard 40%/20%, whichever slot she's in (closer or setter).
+  // Ronda-specific override, not a general per-rep rate field. Everyone else's percentage,
+  // and the company's remainder-based margin, are completely unaffected — company still
+  // gets whatever Net isn't paid out, same as always.
+  var RONDA_COMM_PCT = 0.05;
+  function _fixmyCloserPct(repId, hasSetter) { return repId === 'rep1' ? RONDA_COMM_PCT : (hasSetter ? 0.20 : 0.40); }
+  function _fixmySetterPct(setterName) { return (setterName||'').trim().toLowerCase() === 'ronda' ? RONDA_COMM_PCT : 0.20; }
+
   var _fixmyCommCache = {}; // customer_id -> computed split, see fields below
   async function _loadFixmyJobCommissions(ids) {
     var need = (ids||[]).filter(function(id){ return id && !_fixmyCommCache[id]; });
@@ -1780,9 +1790,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var setterName = (c.setter_name||'').trim();
         var closerNm = repName(c.rep_id||'');
         var hasSetter = !!setterName && setterName.toLowerCase()!=='none' && setterName.toLowerCase() !== (closerNm||'').toLowerCase();
-        var closerPct = hasSetter ? 0.20 : 0.40;
+        var closerPct = _fixmyCloserPct(c.rep_id, hasSetter);
         var closerEst = c.rep_id ? Math.round(net*closerPct*100)/100 : 0;
-        var setterEst = hasSetter ? Math.round(net*0.20*100)/100 : 0;
+        var setterEst = hasSetter ? Math.round(net*_fixmySetterPct(setterName)*100)/100 : 0;
         var comms = commByC[id]||[];
         var closerRow = comms.find(function(x){ return x.kind==='rep_commission'; });
         var setterRow = comms.find(function(x){ return x.kind==='setter_commission'; });
@@ -20791,31 +20801,36 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var closerNm = repName(rep);
         var noCloser = !rep;
         var hasSetter = !!setterName && setterName.toLowerCase() !== 'none' && setterName.toLowerCase() !== (closerNm||'').toLowerCase();
-        var closerPct = hasSetter ? 0.20 : 0.40;
+        var closerPct = _fixmyCloserPct(rep, hasSetter);
+        var setterPct = hasSetter ? _fixmySetterPct(setterName) : 0;
         var closerAmt = noCloser ? 0 : Math.round(netPos * closerPct * 100)/100;
-        var setterAmt = hasSetter ? Math.round(netPos * 0.20 * 100)/100 : 0;
+        var setterAmt = hasSetter ? Math.round(netPos * setterPct * 100)/100 : 0;
         var commRow = comms.find(function(x){ return x.kind === 'rep_commission'; });
         var setterRow = comms.find(function(x){ return x.kind === 'setter_commission'; });
         var _m = function(n){ return '$'+(parseFloat(n)||0).toLocaleString(undefined,{maximumFractionDigits:2}); };
+        var _pct = function(p){ return Math.round(p*100)+'%'; };
         var _pill = function(status){ return '<span style="margin-left:6px;padding:2px 9px;border-radius:100px;font-size:0.62rem;font-weight:700;text-transform:uppercase;'+(status==='paid'?'background:rgba(141,198,63,0.1);color:#8DC63F;border:1px solid rgba(141,198,63,0.4);':'background:rgba(255,170,0,0.08);color:#ffaa00;border:1px solid rgba(255,170,0,0.4);')+'">'+(status==='paid'?'PAID':'SOLD — unpaid')+'</span>'; };
+        // Pool label/total still read "40% of Net" as the standard rate — Ronda's
+        // override (2026-08-30, per Dennis, inbound-only) only ever shows on HER own
+        // closer/setter line below, never rewrites the headline pool percentage.
         h += '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 12px;">';
         h += '<div style="font-size:0.66rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#9b6de8;margin-bottom:6px;">&#129297; Rep Pay — 40% of Net'+(hasSetter?' · split 20/20':'')+'</div>';
         h += '<div style="font-size:0.74rem;color:#aaa;line-height:1.8;">'+(isBrPanel?'Revenue':'Collected')+' <b style="color:#ddd;">'+_m(collected)+'</b> &minus; '+(isBrPanel?'Redline':'Costs')+' <b style="color:#ddd;">'+_m(costSum)+'</b> = '+(isBrPanel?'Gross Comm':'Net')+' <b style="color:#8DC63F;">'+_m(net)+'</b> &middot; Pool (40%) <b style="color:#9b6de8;">'+_m(netPos*0.40)+'</b></div>';
         if (hasSetter) h += '<div style="font-size:0.7rem;color:#4a9eff;margin-top:2px;">Setter <b>'+esc(setterName)+'</b> &middot; Closer <b>'+esc(closerNm)+'</b></div>';
         // Closer line
         if (noCloser) {
-          h += '<div style="font-size:0.72rem;color:#777;margin-top:4px;">Closer: no rep assigned yet — set the Assigned Rep to record the closer’s '+(hasSetter?'20%':'40%')+'.</div>';
+          h += '<div style="font-size:0.72rem;color:#777;margin-top:4px;">Closer: no rep assigned yet — set the Assigned Rep to record the closer’s '+_pct(hasSetter?0.20:0.40)+'.</div>';
         } else if (commRow) {
-          h += '<div style="font-size:0.74rem;color:#ddd;margin-top:4px;">'+esc(closerNm)+' (closer '+(hasSetter?'20%':'40%')+'): <b>'+_m(commRow.amount)+'</b>'+_pill(commRow.status)+'</div>';
+          h += '<div style="font-size:0.74rem;color:#ddd;margin-top:4px;">'+esc(closerNm)+' (closer '+_pct(closerPct)+'): <b>'+_m(commRow.amount)+'</b>'+_pill(commRow.status)+'</div>';
         } else if (closerAmt > 0) {
-          h += '<div style="font-size:0.74rem;color:#ddd;margin-top:4px;">'+esc(closerNm)+' (closer '+(hasSetter?'20%':'40%')+'): <b style="color:#9b6de8;">'+_m(closerAmt)+'</b> <span style="color:#666;font-size:0.68rem;">(accruing)</span></div>';
+          h += '<div style="font-size:0.74rem;color:#ddd;margin-top:4px;">'+esc(closerNm)+' (closer '+_pct(closerPct)+'): <b style="color:#9b6de8;">'+_m(closerAmt)+'</b> <span style="color:#666;font-size:0.68rem;">(accruing)</span></div>';
         }
         // Setter line
         if (hasSetter) {
           if (setterRow) {
-            h += '<div style="font-size:0.74rem;color:#ddd;margin-top:2px;">'+esc(setterName)+' (setter 20%): <b>'+_m(setterRow.amount)+'</b>'+_pill(setterRow.status)+'</div>';
+            h += '<div style="font-size:0.74rem;color:#ddd;margin-top:2px;">'+esc(setterName)+' (setter '+_pct(setterPct)+'): <b>'+_m(setterRow.amount)+'</b>'+_pill(setterRow.status)+'</div>';
           } else if (setterAmt > 0) {
-            h += '<div style="font-size:0.74rem;color:#ddd;margin-top:2px;">'+esc(setterName)+' (setter 20%): <b style="color:#4a9eff;">'+_m(setterAmt)+'</b> <span style="color:#666;font-size:0.68rem;">(accruing)</span></div>';
+            h += '<div style="font-size:0.74rem;color:#ddd;margin-top:2px;">'+esc(setterName)+' (setter '+_pct(setterPct)+'): <b style="color:#4a9eff;">'+_m(setterAmt)+'</b> <span style="color:#666;font-size:0.68rem;">(accruing)</span></div>';
           }
         }
         // Lock-in — records whichever payouts aren't recorded yet
@@ -20953,8 +20968,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         netPos = Math.max(0, collected - costSum);
       }
       var commRes = await pc.from('commissions').select('kind').eq('customer_id', cid);
-      var closerAmt = !rep ? 0 : Math.round(netPos * (hasSetter?0.20:0.40) * 100)/100;
-      var setterAmt = hasSetter ? Math.round(netPos * 0.20 * 100)/100 : 0;
+      var closerAmt = !rep ? 0 : Math.round(netPos * _fixmyCloserPct(rep, hasSetter) * 100)/100;
+      var setterAmt = hasSetter ? Math.round(netPos * _fixmySetterPct(setterName) * 100)/100 : 0;
       var have = {}; (commRes.data||[]).forEach(function(x){ have[x.kind] = true; });
       var rows = [];
       if (!have.rep_commission && closerAmt > 0) rows.push({ customer_id:cid, line:'fixmy', kind:'rep_commission', payee:rep, payee_name:closerNm, amount:closerAmt, status:'sold' });
