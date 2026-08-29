@@ -20592,7 +20592,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '</div>'+
         '<div id="edPaymentsPanel" data-cid="'+c.id+'" style="margin:4px 0 10px;"><div style="font-size:0.7rem;color:#555;">Loading payments&hellip;</div></div>'
       : '')+
-      '<div id="edAcctPanel" data-cid="'+c.id+'" data-cat="'+(c.lead_category||'fixmy')+'" data-rep="'+(c.rep_id||'')+'" style="margin:4px 0 10px;"></div>'+
+      '<div id="edAcctPanel" data-cid="'+c.id+'" data-cat="'+(c.lead_category||'fixmy')+'" data-rep="'+(c.rep_id||'')+'" data-ops="'+(c.assigned_ops||'')+'" style="margin:4px 0 10px;"></div>'+
       (!isNSEdit && !isTTEdit ?
         '<div class="editor-section-title">Deposit &amp; Milestones</div>'+
         '<div class="ed-grid">'+
@@ -20698,7 +20698,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   async function edLoadAccounting() {
     var panel = document.getElementById('edAcctPanel');
     if (!panel) return;
-    var cid = panel.dataset.cid, cat = panel.dataset.cat || 'fixmy', rep = panel.dataset.rep || '';
+    var cid = panel.dataset.cid, cat = panel.dataset.cat || 'fixmy', rep = panel.dataset.rep || '', opsPartner = panel.dataset.ops || '';
     try {
       var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
       var isFixmy = cat !== 'new_solar' && cat !== 'top_tier';
@@ -20722,9 +20722,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '<button onclick="edAddCost(\''+cid+'\')" style="margin-left:auto;padding:4px 10px;background:rgba(249,115,22,0.1);border:1px solid rgba(249,115,22,0.3);border-radius:100px;color:#f97316;font-size:0.68rem;font-weight:700;cursor:pointer;">+ Add Cost</button>';
         h += '</div>';
         costs.forEach(function(x){
-          h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.72rem;color:#aaa;padding:4px 0;border-top:1px solid rgba(255,255,255,0.05);">';
+          h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.72rem;color:#aaa;padding:4px 0;border-top:1px solid rgba(255,255,255,0.05);flex-wrap:wrap;">';
           h += '<span style="color:#ddd;flex:1;">'+esc(x.label)+'</span>';
           h += '<span style="color:#ddd;font-weight:700;">$'+(parseFloat(x.amount)||0).toLocaleString(undefined,{maximumFractionDigits:2})+'</span>';
+          // Diagnostics/RMA/Service Fee COGS is paid to Cosmic through their own account
+          // portal, not tracked as a paid/pending status inside this portal (per Dennis,
+          // 2026-08-30) — this just opens the payment link; the pending→paid toggle next to
+          // it is how admin marks it done here once it's been paid on Cosmic's side.
+          if (opsPartner === 'ops3' && x.status !== 'paid') h += '<a href="https://www.cosmicsolar.com/account" target="_blank" rel="noopener" style="padding:2px 9px;border-radius:100px;border:1px solid rgba(74,158,255,0.4);background:rgba(74,158,255,0.08);color:#4a9eff;font-size:0.62rem;font-weight:700;text-decoration:none;">&#128179; Pay via Cosmic</a>';
           h += '<button onclick="edToggleCost(\''+x.id+'\',\''+x.status+'\')" style="padding:2px 9px;border-radius:100px;border:1px solid '+(x.status==='paid'?'rgba(141,198,63,0.4);background:rgba(141,198,63,0.1);color:#8DC63F':'rgba(255,170,0,0.4);background:rgba(255,170,0,0.08);color:#ffaa00')+';font-size:0.62rem;font-weight:700;cursor:pointer;text-transform:uppercase;">'+x.status+'</button>';
           h += '<button onclick="edDelCost(\''+x.id+'\')" style="background:none;border:none;color:#555;cursor:pointer;font-size:0.8rem;">&times;</button>';
           h += '</div>';
@@ -21386,27 +21391,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           body: JSON.stringify({ trigger: 'diag_scheduled', firstName: rec.first_name||'', lastName: rec.last_name||'', email: rec.email||'', phone: rec.phone||'', address: rec.address||'', appointmentDate: formattedDate, arrivalWindow: arrivalWindow, diagnosticDate: diagISO, opsPartner: opsVal||'', notes: notesVal||'' })
         }).catch(function(e){ console.warn('Diag schedule webhook:', e); });
       }
-      // Book appointment in GHL Diagnostic Calendar (enables Appointment Status trigger + smart reminders)
-      if (GHL_DIAG_CALENDAR_ID) {
-        try {
-          var ghlCalResp = await fetch('/.netlify/functions/ghl-calendar', {
-            method: 'POST', headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({
-              calendarId: GHL_DIAG_CALENDAR_ID,
-              firstName: rec.first_name||'', lastName: rec.last_name||'',
-              email: rec.email||'', phone: rec.phone||'', address: rec.address||'',
-              appointmentDate: dateVal, appointmentTime: startTimeVal,
-              appointmentEndTime: endTimeVal
-            })
-          });
-          var ghlCalData = await ghlCalResp.json();
-          if (ghlCalData && ghlCalData.appointmentId) {
-            await client.from('customers').update({ ghl_appointment_id: ghlCalData.appointmentId }).eq('id', id);
-            var _apptIdx = adminCustomers.findIndex(function(x){ return x.id === id; });
-            if (_apptIdx > -1) adminCustomers[_apptIdx].ghl_appointment_id = ghlCalData.appointmentId;
-          }
-        } catch(e) { console.warn('GHL diag calendar booking:', e); }
-      }
+      // ⚠️ 2026-08-30, per Dennis: the Diagnostic visit is coordinated manually over a text
+      // thread with Cosmic/the ops partner — there is no real calendar in use for it (the
+      // GHL Diagnostic Calendar this used to book onto doesn't reflect how scheduling
+      // actually happens here, and attempting it added a dependency this step doesn't need).
+      // This is now a plain manual date/time entry that updates the record and notifies the
+      // customer — nothing here should be able to block getting a diagnostic on the books.
       // Admin notification: always fire with GHL_TT_WEBHOOK as fallback (notify Dennis via GHL)
       var adminWebhook = window.GHL_ADMIN_WEBHOOK || GHL_TT_WEBHOOK || null;
       if (adminWebhook) {
