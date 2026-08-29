@@ -1769,7 +1769,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       need.forEach(function(id){
         var c = (adminCustomers||[]).find(function(x){ return x.id===id; })
           || (typeof allRecords !== 'undefined' ? (allRecords||[]).find(function(x){ return x.id===id; }) : null) || {};
-        var collected = paysByC[id]||0, costSum = costsByC[id]||0;
+        // Battery Retrofit deals route straight through Cosmic (2026-08-30, per Dennis) —
+        // Solar Review neither collects the payment nor carries the COGS, so there's no
+        // real payments/job_costs to sum. br_revenue/br_redline are flat manual fields
+        // instead; everything else (the 40%-of-net split, locking, rendering) is identical.
+        var collected, costSum;
+        if (c.sold_type === 'battery_retrofit') { collected = parseFloat(c.br_revenue)||0; costSum = parseFloat(c.br_redline)||0; }
+        else { collected = paysByC[id]||0; costSum = costsByC[id]||0; }
         var net = Math.max(0, collected - costSum);
         var setterName = (c.setter_name||'').trim();
         var closerNm = repName(c.rep_id||'');
@@ -1972,6 +1978,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var rec = (adminCustomers||[]).find(function(x){ return x.id===cid; });
     if (rec) rec[field] = patch[field];
     delete _axiaCommCache[cid];
+    if (typeof edLoadAccounting === 'function') edLoadAccounting();
+  };
+  // Same single-field-save pattern as edSaveNsField, for a Battery Retrofit's br_revenue/
+  // br_redline fields (2026-08-30, per Dennis — Cosmic collects these deals directly, so
+  // there's no real payments/job_costs to derive commission from; see edLoadAccounting).
+  window.edSaveBrField = async function(cid, field, val) {
+    var n = parseFloat(val);
+    var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var patch = {}; patch[field] = isNaN(n) ? null : n;
+    var { error } = await pc.from('customers').update(patch).eq('id', cid);
+    if (error) { alert('Could not save: '+error.message); return; }
+    var rec = (adminCustomers||[]).find(function(x){ return x.id===cid; });
+    if (rec) rec[field] = patch[field];
+    delete _fixmyCommCache[cid];
     if (typeof edLoadAccounting === 'function') edLoadAccounting();
   };
 
@@ -20713,38 +20733,60 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var h = '';
 
       if (isFixmy) {
-        // ── Sub Sheet: per-job cost line items ──
-        var costSum = costs.reduce(function(t,x){ return t + (parseFloat(x.amount)||0); }, 0);
-        h += '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 12px;margin-bottom:8px;">';
-        h += '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">';
-        h += '<span style="font-size:0.66rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#f97316;">&#128203; Sub Sheet — Job Costs</span>';
-        h += '<span style="font-size:0.75rem;color:#ddd;font-weight:700;">$'+costSum.toLocaleString(undefined,{maximumFractionDigits:2})+' total</span>';
-        h += '<button onclick="edAddCost(\''+cid+'\')" style="margin-left:auto;padding:4px 10px;background:rgba(249,115,22,0.1);border:1px solid rgba(249,115,22,0.3);border-radius:100px;color:#f97316;font-size:0.68rem;font-weight:700;cursor:pointer;">+ Add Cost</button>';
-        h += '</div>';
-        costs.forEach(function(x){
-          h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.72rem;color:#aaa;padding:4px 0;border-top:1px solid rgba(255,255,255,0.05);flex-wrap:wrap;">';
-          h += '<span style="color:#ddd;flex:1;">'+esc(x.label)+'</span>';
-          h += '<span style="color:#ddd;font-weight:700;">$'+(parseFloat(x.amount)||0).toLocaleString(undefined,{maximumFractionDigits:2})+'</span>';
-          // Diagnostics/RMA/Service Fee COGS is paid to Cosmic through their own account
-          // portal, not tracked as a paid/pending status inside this portal (per Dennis,
-          // 2026-08-30) — this just opens the payment link; the pending→paid toggle next to
-          // it is how admin marks it done here once it's been paid on Cosmic's side.
-          if (opsPartner === 'ops3' && x.status !== 'paid') h += '<a href="https://www.cosmicsolar.com/account" target="_blank" rel="noopener" style="padding:2px 9px;border-radius:100px;border:1px solid rgba(74,158,255,0.4);background:rgba(74,158,255,0.08);color:#4a9eff;font-size:0.62rem;font-weight:700;text-decoration:none;">&#128179; Pay via Cosmic</a>';
-          h += '<button onclick="edToggleCost(\''+x.id+'\',\''+x.status+'\')" style="padding:2px 9px;border-radius:100px;border:1px solid '+(x.status==='paid'?'rgba(141,198,63,0.4);background:rgba(141,198,63,0.1);color:#8DC63F':'rgba(255,170,0,0.4);background:rgba(255,170,0,0.08);color:#ffaa00')+';font-size:0.62rem;font-weight:700;cursor:pointer;text-transform:uppercase;">'+x.status+'</button>';
-          h += '<button onclick="edDelCost(\''+x.id+'\')" style="background:none;border:none;color:#555;cursor:pointer;font-size:0.8rem;">&times;</button>';
+        var custRec = (adminCustomers||[]).find(function(x){ return x.id === cid; }) || {};
+        // Battery Retrofit deals route straight through Cosmic (2026-08-30, per Dennis) —
+        // Cosmic bills the customer directly and Solar Review carries no COGS, so there's
+        // no real payments/job_costs to sum. A flat manual Revenue/Redline entry replaces
+        // the Sub Sheet job_costs panel for these jobs; everything below (the 40%-of-net
+        // split, locking, rendering) is unchanged — it just reads collected/costSum from a
+        // different source depending on which branch set them.
+        var isBrPanel = custRec.sold_type === 'battery_retrofit';
+        var collected, costSum;
+        if (isBrPanel) {
+          collected = parseFloat(custRec.br_revenue) || 0;
+          costSum = parseFloat(custRec.br_redline) || 0;
+          h += '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 12px;margin-bottom:8px;">';
+          h += '<div style="font-size:0.66rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#f97316;margin-bottom:6px;">&#128179; Battery Retrofit — Cosmic Collects Directly</div>';
+          h += '<div style="font-size:0.7rem;color:#888;margin-bottom:10px;line-height:1.5;">Solar Review doesn\'t collect this customer\'s payment or carry any COGS on this deal — Cosmic bills and installs directly. Enter the sold amount and redline so commission still computes.</div>';
+          h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">';
+          h += '<div><label style="font-size:0.6rem;color:#888;display:block;margin-bottom:2px;">Revenue — Sold Amount ($, before Participate)</label><input type="number" step="0.01" value="'+(custRec.br_revenue!=null?custRec.br_revenue:'')+'" onchange="edSaveBrField(\''+cid+'\',\'br_revenue\',this.value)" style="width:100%;background:#0e0e0e;border:1px solid rgba(255,255,255,0.12);border-radius:6px;color:#ccc;padding:5px 7px;font-size:0.78rem;box-sizing:border-box;"/></div>';
+          h += '<div><label style="font-size:0.6rem;color:#888;display:block;margin-bottom:2px;">Redline ($)</label><input type="number" step="0.01" value="'+(custRec.br_redline!=null?custRec.br_redline:'')+'" onchange="edSaveBrField(\''+cid+'\',\'br_redline\',this.value)" style="width:100%;background:#0e0e0e;border:1px solid rgba(255,255,255,0.12);border-radius:6px;color:#ccc;padding:5px 7px;font-size:0.78rem;box-sizing:border-box;"/></div>';
           h += '</div>';
-        });
-        h += '</div>';
+          h += '</div>';
+        } else {
+          // ── Sub Sheet: per-job cost line items ──
+          costSum = costs.reduce(function(t,x){ return t + (parseFloat(x.amount)||0); }, 0);
+          h += '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 12px;margin-bottom:8px;">';
+          h += '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">';
+          h += '<span style="font-size:0.66rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#f97316;">&#128203; Sub Sheet — Job Costs</span>';
+          h += '<span style="font-size:0.75rem;color:#ddd;font-weight:700;">$'+costSum.toLocaleString(undefined,{maximumFractionDigits:2})+' total</span>';
+          h += '<button onclick="edAddCost(\''+cid+'\')" style="margin-left:auto;padding:4px 10px;background:rgba(249,115,22,0.1);border:1px solid rgba(249,115,22,0.3);border-radius:100px;color:#f97316;font-size:0.68rem;font-weight:700;cursor:pointer;">+ Add Cost</button>';
+          h += '</div>';
+          costs.forEach(function(x){
+            h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.72rem;color:#aaa;padding:4px 0;border-top:1px solid rgba(255,255,255,0.05);flex-wrap:wrap;">';
+            h += '<span style="color:#ddd;flex:1;">'+esc(x.label)+'</span>';
+            h += '<span style="color:#ddd;font-weight:700;">$'+(parseFloat(x.amount)||0).toLocaleString(undefined,{maximumFractionDigits:2})+'</span>';
+            // Diagnostics/RMA/Service Fee COGS is paid to Cosmic through their own account
+            // portal, not tracked as a paid/pending status inside this portal (per Dennis,
+            // 2026-08-30) — this just opens the payment link; the pending→paid toggle next to
+            // it is how admin marks it done here once it's been paid on Cosmic's side.
+            if (opsPartner === 'ops3' && x.status !== 'paid') h += '<a href="https://www.cosmicsolar.com/account" target="_blank" rel="noopener" style="padding:2px 9px;border-radius:100px;border:1px solid rgba(74,158,255,0.4);background:rgba(74,158,255,0.08);color:#4a9eff;font-size:0.62rem;font-weight:700;text-decoration:none;">&#128179; Pay via Cosmic</a>';
+            h += '<button onclick="edToggleCost(\''+x.id+'\',\''+x.status+'\')" style="padding:2px 9px;border-radius:100px;border:1px solid '+(x.status==='paid'?'rgba(141,198,63,0.4);background:rgba(141,198,63,0.1);color:#8DC63F':'rgba(255,170,0,0.4);background:rgba(255,170,0,0.08);color:#ffaa00')+';font-size:0.62rem;font-weight:700;cursor:pointer;text-transform:uppercase;">'+x.status+'</button>';
+            h += '<button onclick="edDelCost(\''+x.id+'\')" style="background:none;border:none;color:#555;cursor:pointer;font-size:0.8rem;">&times;</button>';
+            h += '</div>';
+          });
+          h += '</div>';
+          collected = pays.reduce(function(t,x){ return t + ((x.category||'revenue')==='revenue' ? (parseFloat(x.amount)||0) : 0); }, 0);
+        }
 
         // ── FixMy commission: a FIXED 40%-of-Net rep-pay pool (company/equity margin is the
         //    same no matter who closes). Same person sets & closes → they get the full 40%.
         //    A distinct SETTER (dialer) → 20% setter / 20% closer (still 40% total). Rep pay
         //    is directed to whoever set/closed — no owner carve-out (that would change the
-        //    margin). Revenue-category payments only.
-        var collected = pays.reduce(function(t,x){ return t + ((x.category||'revenue')==='revenue' ? (parseFloat(x.amount)||0) : 0); }, 0);
+        //    margin). Revenue-category payments only (or br_revenue/br_redline above, for a
+        //    Battery Retrofit routed through Cosmic).
         var net = collected - costSum;
         var netPos = Math.max(0, net);
-        var custRec = (adminCustomers||[]).find(function(x){ return x.id === cid; }) || {};
         var setterName = (custRec.setter_name || '').trim();
         var closerNm = repName(rep);
         var noCloser = !rep;
@@ -20758,7 +20800,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var _pill = function(status){ return '<span style="margin-left:6px;padding:2px 9px;border-radius:100px;font-size:0.62rem;font-weight:700;text-transform:uppercase;'+(status==='paid'?'background:rgba(141,198,63,0.1);color:#8DC63F;border:1px solid rgba(141,198,63,0.4);':'background:rgba(255,170,0,0.08);color:#ffaa00;border:1px solid rgba(255,170,0,0.4);')+'">'+(status==='paid'?'PAID':'SOLD — unpaid')+'</span>'; };
         h += '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 12px;">';
         h += '<div style="font-size:0.66rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#9b6de8;margin-bottom:6px;">&#129297; Rep Pay — 40% of Net'+(hasSetter?' · split 20/20':'')+'</div>';
-        h += '<div style="font-size:0.74rem;color:#aaa;line-height:1.8;">Collected <b style="color:#ddd;">'+_m(collected)+'</b> &minus; Costs <b style="color:#ddd;">'+_m(costSum)+'</b> = Net <b style="color:#8DC63F;">'+_m(net)+'</b> &middot; Pool (40%) <b style="color:#9b6de8;">'+_m(netPos*0.40)+'</b></div>';
+        h += '<div style="font-size:0.74rem;color:#aaa;line-height:1.8;">'+(isBrPanel?'Revenue':'Collected')+' <b style="color:#ddd;">'+_m(collected)+'</b> &minus; '+(isBrPanel?'Redline':'Costs')+' <b style="color:#ddd;">'+_m(costSum)+'</b> = '+(isBrPanel?'Gross Comm':'Net')+' <b style="color:#8DC63F;">'+_m(net)+'</b> &middot; Pool (40%) <b style="color:#9b6de8;">'+_m(netPos*0.40)+'</b></div>';
         if (hasSetter) h += '<div style="font-size:0.7rem;color:#4a9eff;margin-top:2px;">Setter <b>'+esc(setterName)+'</b> &middot; Closer <b>'+esc(closerNm)+'</b></div>';
         // Closer line
         if (noCloser) {
@@ -20894,15 +20936,23 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var setterName = (rec.setter_name || '').trim();
     var closerNm = repName(rep);
     var hasSetter = !!setterName && setterName.toLowerCase() !== 'none' && setterName.toLowerCase() !== (closerNm||'').toLowerCase();
+    // Battery Retrofit deals route straight through Cosmic (2026-08-30, per Dennis) — no
+    // real payments/job_costs to sum, use the flat manual br_revenue/br_redline fields.
+    var isBr = rec.sold_type === 'battery_retrofit';
     try {
-      var [costsRes, paysRes, commRes] = await Promise.all([
-        pc.from('job_costs').select('amount').eq('customer_id', cid),
-        pc.from('payments').select('amount,category').eq('customer_id', cid),
-        pc.from('commissions').select('kind').eq('customer_id', cid)
-      ]);
-      var costSum = (costsRes.data||[]).reduce(function(t,x){ return t+(parseFloat(x.amount)||0); }, 0);
-      var collected = (paysRes.data||[]).reduce(function(t,x){ return t + (((x.category||'revenue')==='revenue') ? (parseFloat(x.amount)||0) : 0); }, 0);
-      var netPos = Math.max(0, collected - costSum);
+      var netPos;
+      if (isBr) {
+        netPos = Math.max(0, (parseFloat(rec.br_revenue)||0) - (parseFloat(rec.br_redline)||0));
+      } else {
+        var [costsRes, paysRes] = await Promise.all([
+          pc.from('job_costs').select('amount').eq('customer_id', cid),
+          pc.from('payments').select('amount,category').eq('customer_id', cid)
+        ]);
+        var costSum = (costsRes.data||[]).reduce(function(t,x){ return t+(parseFloat(x.amount)||0); }, 0);
+        var collected = (paysRes.data||[]).reduce(function(t,x){ return t + (((x.category||'revenue')==='revenue') ? (parseFloat(x.amount)||0) : 0); }, 0);
+        netPos = Math.max(0, collected - costSum);
+      }
+      var commRes = await pc.from('commissions').select('kind').eq('customer_id', cid);
       var closerAmt = !rep ? 0 : Math.round(netPos * (hasSetter?0.20:0.40) * 100)/100;
       var setterAmt = hasSetter ? Math.round(netPos * 0.20 * 100)/100 : 0;
       var have = {}; (commRes.data||[]).forEach(function(x){ have[x.kind] = true; });
