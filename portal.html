@@ -1752,14 +1752,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // reliably populated (the tech/sales portal's own step-changer never writes it, only
   // the admin editor's save path does), so gating on step directly is the honest signal.
   // Ronda (rep1) only takes inbound calls — no outbound dialing/prospecting like a real
-  // Setter/Dialer — so per Dennis (2026-08-30) her cut of the FixMy 40%-of-net pool is a
-  // flat 5% instead of the standard 40%/20%, whichever slot she's in (closer or setter).
+  // Setter/Dialer — so per Dennis (2026-08-30) her cut of whichever pool she's in is a
+  // flat 5% instead of the standard rate, whichever slot she's in (closer or setter).
   // Ronda-specific override, not a general per-rep rate field. Everyone else's percentage,
   // and the company's remainder-based margin, are completely unaffected — company still
-  // gets whatever Net isn't paid out, same as always.
+  // gets whatever Net/Gross isn't paid out, same as always. _isRonda is the ONE place this
+  // identity check lives, shared by both FixMy (_fixmyCloserPct/_fixmySetterPct, below) and
+  // Axia/QCell (_nsCalcCommission) — each pipeline keeps its own normal-rate fallback since
+  // those genuinely differ (40/20 vs Black-Box/Self-Sourced pool%), but "is this Ronda" is
+  // one check so the two formulas can't drift on who the override applies to.
   var RONDA_COMM_PCT = 0.05;
-  function _fixmyCloserPct(repId, hasSetter) { return repId === 'rep1' ? RONDA_COMM_PCT : (hasSetter ? 0.20 : 0.40); }
-  function _fixmySetterPct(setterName) { return (setterName||'').trim().toLowerCase() === 'ronda' ? RONDA_COMM_PCT : 0.20; }
+  function _isRonda(nameOrId) { var s = (nameOrId||'').trim().toLowerCase(); return s === 'rep1' || s === 'ronda'; }
+  function _fixmyCloserPct(repId, hasSetter) { return _isRonda(repId) ? RONDA_COMM_PCT : (hasSetter ? 0.20 : 0.40); }
+  function _fixmySetterPct(setterName) { return _isRonda(setterName) ? RONDA_COMM_PCT : 0.20; }
 
   var _fixmyCommCache = {}; // customer_id -> computed split, see fields below
   async function _loadFixmyJobCommissions(ids) {
@@ -1889,8 +1894,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var setterName = (c.setter_name || '').trim();
     var closerNm = repName(c.rep_id || '');
     var hasSetter = !!setterName && setterName.toLowerCase() !== 'none' && setterName.toLowerCase() !== (closerNm||'').toLowerCase();
-    var closerPct = hasSetter ? poolPct/2 : poolPct;
-    var setterPct = hasSetter ? poolPct/2 : 0;
+    // Ronda's flat 5% override (2026-08-30, per Dennis) applies here too, same _isRonda
+    // check the FixMy formula uses — only her own slot's percentage changes, the other
+    // party's split and the company's remainder-based margin are unaffected.
+    var closerPct = _isRonda(c.rep_id) ? RONDA_COMM_PCT : (hasSetter ? poolPct/2 : poolPct);
+    var setterPct = hasSetter ? (_isRonda(setterName) ? RONDA_COMM_PCT : poolPct/2) : 0;
     var closerAmt = c.rep_id ? Math.round(gross*closerPct*100)/100 : 0;
     var setterAmt = hasSetter ? Math.round(gross*setterPct*100)/100 : 0;
     var companyAmt = Math.max(0, gross - closerAmt - setterAmt);
