@@ -18488,6 +18488,32 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     openProposalBuilder(id, _pType);
   };
 
+  // Reads a bill amount straight off an already-uploaded Storage URL — no browser fetch,
+  // no re-upload. Anthropic fetches the URL itself server-side (same url-source pattern
+  // already proven in generate-proposal-insight.js's photo blocks), so this sidesteps any
+  // Storage-bucket CORS question entirely. Returns the extracted amount, or null.
+  window._propReadBillAmountFromUrl = async function(url) {
+    var isPdf = /\.pdf(\?|$)/i.test(url);
+    var contentBlock = isPdf
+      ? { type: 'document', source: { type: 'url', url: url } }
+      : { type: 'image', source: { type: 'url', url: url } };
+    try {
+      var resp = await fetch('/.netlify/functions/claude-vision', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 80,
+          messages: [{ role: 'user', content: [
+            contentBlock,
+            { type: 'text', text: 'Extract the total monthly bill amount from this utility bill. Return ONLY this JSON: {"monthly_bill": <number or null>}. monthly_bill = TOTAL AMOUNT DUE for the current billing period.' }
+          ]}]
+        })
+      });
+      var data = await resp.json();
+      var text = (data.content && data.content[0] && data.content[0].text) ? data.content[0].text.trim() : '';
+      var match = text.match(/"monthly_bill"\s*:\s*([\d.]+)/);
+      return match ? parseFloat(match[1]) : null;
+    } catch (e) { return null; }
+  };
+
   window._propExtractBill = async function(id, file) {
     var btn = document.getElementById('propBillUploadBtn');
     var statusEl = document.getElementById('propBillStatus');
@@ -18706,6 +18732,41 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }
     } catch (e) { /* no evaluation on file, or table not applied — falls back to the estimate */ }
 
+    // Auto-read an already-uploaded Utility Bill before ever asking the rep to upload one
+    // fresh — a customer (or rep) who already put a bill through the portal's photo upload
+    // shouldn't have to re-upload it just to open this tool. Real bug: this never ran before,
+    // so a lead with a real bill on file (job_photos, label 'Utility Bill') still showed "No
+    // utility bill on file" here because only customers.monthly_bill was ever checked.
+    var _propBillFileExistsButUnread = false;
+    if (!(parseFloat(c.monthly_bill) > 0)) {
+      try {
+        var _bpClient = supabase.createClient(SUPA_URL, SUPA_KEY);
+        var _bpJob  = await _bpClient.from('job_photos').select('id,url,label,expected_label').eq('job_id', id);
+        var _bpCust = await _bpClient.from('job_photos').select('id,url,label,expected_label').eq('customer_id', id);
+        var _bpSeen = {};
+        var _bpBills = [];
+        [].concat(_bpJob.data||[], _bpCust.data||[]).forEach(function(p){
+          if (_bpSeen[p.id]) return; _bpSeen[p.id] = true;
+          if (p.label === 'Utility Bill' || p.expected_label === 'Utility Bill') _bpBills.push(p);
+        });
+        // ⚠️ Not upload order — sort newest-first by id (bigint, autoincrement) so a
+        // replaced bill is the one read, same "never trust array order" rule documented
+        // elsewhere for job_photos lookups.
+        _bpBills.sort(function(a,b){ return b.id - a.id; });
+        if (_bpBills[0]) {
+          var _bpExtracted = await _propReadBillAmountFromUrl(_bpBills[0].url);
+          if (_bpExtracted && _bpExtracted > 0) {
+            await _bpClient.from('customers').update({ monthly_bill: _bpExtracted }).eq('id', id);
+            c.monthly_bill = _bpExtracted;
+            var _bpRec = adminCustomers.find(function(x){ return x.id === id; });
+            if (_bpRec) _bpRec.monthly_bill = _bpExtracted;
+          } else {
+            _propBillFileExistsButUnread = true;
+          }
+        }
+      } catch (e) { /* job_photos lookup/read failed — falls back to the upload prompt below */ }
+    }
+
     var catalog = await _loadCatalog();
     var existing = safeJson(c.proposal, null);
     var serviceType = 'battery_retrofit'; // default; sendProposal() re-derives from selected items
@@ -18718,9 +18779,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // AI Insight + Savings Scenarios (all service types)
     var existingInsight = (existing && existing.insight) || '';
     var bill = parseFloat(c.monthly_bill) || 0;
-    var _billPromptMsg = (typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE !== 'admin')
-      ? '&#9888; Ask the customer for their average monthly SDG&amp;E bill to unlock AI insight and savings estimates.'
-      : '&#9888; No utility bill on file &mdash; enter it here to enable savings estimates.';
+    var _billPromptMsg = _propBillFileExistsButUnread
+      ? '&#9888; A utility bill is on file, but Quoya could not read the amount automatically &mdash; enter it manually or upload a clearer copy.'
+      : (typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE !== 'admin')
+        ? '&#9888; Ask the customer for their average monthly SDG&amp;E bill to unlock AI insight and savings estimates.'
+        : '&#9888; No utility bill on file &mdash; enter it here to enable savings estimates.';
     var noBillBanner = bill === 0
       ? '<div id="propNoBillBanner" style="background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.35);border-radius:10px;padding:12px 14px;margin-bottom:12px;">'+
           '<div style="font-size:0.75rem;color:#ffaa00;margin-bottom:10px;">'+_billPromptMsg+'</div>'+

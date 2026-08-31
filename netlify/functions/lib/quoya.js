@@ -125,6 +125,15 @@ async function categorizeOne(photo, anthropicKey) {
   const buf = Buffer.from(await imgResp.arrayBuffer());
   const base64 = buf.toString('base64');
 
+  // ⚠️ A Utility Bill upload can be a PDF (the eval wizard tells reps "PDF is best"),
+  // and Anthropic rejects an `image` block whose media_type isn't a real image format —
+  // sending one for a PDF silently fails every single attempt (3 tries, quoya_status
+  // lands on 'skipped' forever, indistinguishable from a genuinely bad photo). Same
+  // PDF-content-type branch eval-bill-analysis.js already uses correctly.
+  const contentBlock = mediaType === 'application/pdf'
+    ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } }
+    : { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } };
+
   const aiResp = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -138,7 +147,7 @@ async function categorizeOne(photo, anthropicKey) {
       messages: [{
         role: 'user',
         content: [
-          { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
+          contentBlock,
           { type: 'text', text: buildPrompt(photo.expected_label) }
         ]
       }]
