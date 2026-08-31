@@ -1725,6 +1725,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
               (c.assigned_ops&&c.assigned_ops!=='none'&&c.milestone2_amount&&c.milestone2_status!=='paid'?'<button onclick="event.stopPropagation();markOpsMilestonePaid(\''+c.id+'\',\'M2\')" style="font-size:0.72rem;padding:5px 14px;border-radius:100px;background:rgba(249,115,22,0.1);color:#f97316;border:1px solid rgba(249,115,22,0.3);cursor:pointer;font-weight:700;">&#9889; M2 Paid</button>':'')+
               (c.assigned_ops&&c.milestone2_status==='paid'&&c.milestone3_amount&&c.milestone3_status!=='paid'?'<button onclick="event.stopPropagation();markOpsMilestonePaid(\''+c.id+'\',\'M3\')" style="font-size:0.72rem;padding:5px 14px;border-radius:100px;background:rgba(249,115,22,0.1);color:#f97316;border:1px solid rgba(249,115,22,0.3);cursor:pointer;font-weight:700;">&#9889; M3 Paid</button>':'')+
               (c.step===8?'<button onclick="event.stopPropagation();markJobInstalled(\''+c.id+'\')" style="font-size:0.72rem;padding:5px 14px;border-radius:100px;background:rgba(141,198,63,0.1);color:#8DC63F;border:1px solid rgba(141,198,63,0.3);cursor:pointer;font-weight:700;">&#9989; Mark Installed</button>':'')+
+              '<button onclick="event.stopPropagation();revertJobToLead(\''+c.id+'\')" style="font-size:0.72rem;padding:5px 14px;border-radius:100px;background:rgba(255,255,255,0.05);color:#888;border:1px solid rgba(255,255,255,0.12);cursor:pointer;font-weight:700;">&#8617; Move back to Lead</button>'+
             '</div>'+
             '<div id="jobComm_'+c.id+'">'+_jobCommLineHtml(c.id)+'</div>'+
           '</div>';
@@ -22237,6 +22238,39 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var idx = adminCustomers.findIndex(function(x){ return x.id === id; });
     if (idx > -1) adminCustomers[idx].step = 9;
     delete _fixmyCommCache[id]; // stale — earned flag flips, force a recompute
+    if (adminView === 'jobs') renderJobsView();
+    else renderAdminView(adminView);
+  }
+
+  // Undo a FixMy job accidentally marked Sold (2026-08-31, per Dennis — Yasmen Bellemsieh
+  // report: moving the Progress Step dropdown to step 6 or ≥8 auto-derives sold_type
+  // (saveLeadEditor's stepImpliesSold) with NO invoice ever having been paid, and there
+  // was previously no way back — sold_type only ever gets SET, never cleared, once a step
+  // change (or invoice paid) has stamped it. Guarded server-side, not just by a confirm:
+  // refuses to revert a job that has real money attached (a payment, a sub-sheet cost, or
+  // a locked commission), since that would hide genuine revenue from Jobs with no easy way
+  // back — same "check before you undo" caution as every other real-money action in this file.
+  async function revertJobToLead(id) {
+    var c = adminCustomers.find(function(x){ return x.id === id; });
+    if (!c) return;
+    var name = ((c.first_name||'')+' '+(c.last_name||'')).trim();
+    if (!confirm('Move ' + name + ' back to a Lead? Only do this if it was marked Sold by mistake — this clears its sold status and removes it from Jobs.')) return;
+    var cl = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var [paysRes, costsRes, commRes] = await Promise.all([
+      cl.from('payments').select('id', { count: 'exact', head: true }).eq('customer_id', id).eq('category', 'revenue'),
+      cl.from('job_costs').select('id', { count: 'exact', head: true }).eq('customer_id', id),
+      cl.from('commissions').select('id', { count: 'exact', head: true }).eq('customer_id', id)
+    ]);
+    var hasBr = c.sold_type === 'battery_retrofit' && ((parseFloat(c.br_revenue)||0) > 0 || (parseFloat(c.br_redline)||0) > 0);
+    if ((paysRes.count||0) > 0 || (costsRes.count||0) > 0 || (commRes.count||0) > 0 || hasBr) {
+      alert('This job already has real money attached (a payment, a sub sheet cost, or a commission) — it can\'t be auto-reverted. Let Claude know if this genuinely needs to be undone.');
+      return;
+    }
+    var { error } = await cl.from('customers').update({ sold_type: null }).eq('id', id);
+    if (error) { alert('Error: ' + error.message); return; }
+    var idx = adminCustomers.findIndex(function(x){ return x.id === id; });
+    if (idx > -1) adminCustomers[idx].sold_type = null;
+    delete _fixmyCommCache[id];
     if (adminView === 'jobs') renderJobsView();
     else renderAdminView(adminView);
   }
