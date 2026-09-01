@@ -27,6 +27,62 @@ function looksLikeCountField(key) { return /(cust|affect).*count|count.*(cust|af
 function looksLikeStartField(key) { return /start|begin|outage.*date|date.*outage/i.test(key); }
 function valueMatchesSDGE(v) { return typeof v === 'string' && /sdg\s*&?\s*e|san\s*diego\s*gas/i.test(v); }
 
+// ⚠️ 2026-09-01, per Dennis: "I don't ever see that there is an outage." The sync WAS running
+// (every 20 min, real SDG&E incidents found) but the "Power Outage Incidents" layer's own schema
+// carries only a County field, no zip or city — confirmed live from a real run's log. `zips`
+// (the only thing the portal's badge logic ever reads) stayed permanently empty regardless of
+// how many real outages existed, which is indistinguishable from "no outages" — same "never let
+// an untaken code path render identically to a real negative" rule as everywhere else in this
+// file. Fixed by reusing geometry the ArcGIS response DOES carry: point-in-polygon each incident's
+// lat/lng against the ZCTA zip boundaries this project already fetches and caches for the Black
+// Box Coverage map (zip-boundaries.js → pipeline_state.zip_boundaries_geojson) — no dependency on
+// the outage feed's schema ever having a zip field at all. Dependency-free ray-casting (no turf.js
+// in this project's Netlify functions), fine at this scale: a handful of incidents against a few
+// hundred cached zip polygons completes in milliseconds.
+function pointInRing(pt, ring) {
+  var x = pt[0], y = pt[1], inside = false;
+  for (var i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    var xi = ring[i][0], yi = ring[i][1], xj = ring[j][0], yj = ring[j][1];
+    var intersect = ((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+function pointInPolygonGeom(pt, geom) {
+  if (!geom) return false;
+  if (geom.type === 'Polygon') {
+    var rings = geom.coordinates || [];
+    if (!rings.length || !pointInRing(pt, rings[0])) return false; // outside the outer ring
+    for (var h = 1; h < rings.length; h++) { if (pointInRing(pt, rings[h])) return false; } // inside a hole
+    return true;
+  }
+  if (geom.type === 'MultiPolygon') {
+    return (geom.coordinates || []).some(function (poly) { return pointInPolygonGeom(pt, { type: 'Polygon', coordinates: poly }); });
+  }
+  return false;
+}
+function resolveZipForPoint(lng, lat, zipFeatures) {
+  var pt = [lng, lat];
+  for (var i = 0; i < zipFeatures.length; i++) {
+    var f = zipFeatures[i];
+    if (f && f.properties && f.properties.zip && pointInPolygonGeom(pt, f.geometry)) return f.properties.zip;
+  }
+  return null;
+}
+async function fetchCachedZipBoundaries(supaHeaders, stamp) {
+  try {
+    const r = await fetch(SUPA_REST + '/pipeline_state?key=eq.zip_boundaries_geojson&select=value', { headers: supaHeaders });
+    if (!r.ok) { stamp('zip boundary fetch failed: HTTP ' + r.status); return []; }
+    const rows = await r.json();
+    if (!Array.isArray(rows) || !rows.length) { stamp('no cached zip boundaries row — run "Refresh Boundaries" on the Coverage map first'); return []; }
+    const v = rows[0].value;
+    const geojson = typeof v === 'string' ? JSON.parse(v) : v;
+    const features = (geojson && geojson.features) || [];
+    stamp('Loaded ' + features.length + ' cached zip boundary polygons (fetched ' + (geojson && geojson.fetched_at || 'unknown') + ')');
+    return features;
+  } catch (e) { stamp('zip boundary fetch/parse failed: ' + e.message); return []; }
+}
+
 exports.handler = async function (event) {
   const cors = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' };
   const supaKey = process.env.SUPA_SERVICE_KEY;
@@ -51,8 +107,9 @@ exports.handler = async function (event) {
     stamp('Using layer id=' + incidentLayer.id + ' name="' + incidentLayer.name + '"');
 
     // Step 2: pull all current records for that layer (current-snapshot data, no date filter needed —
-    // upstream only carries live outages, no history).
-    const queryUrl = FEATURESERVER + '/' + incidentLayer.id + '/query?where=1%3D1&outFields=*&f=json&resultRecordCount=2000';
+    // upstream only carries live outages, no history). outSR=4326 so any point geometry comes back
+    // as plain WGS84 lng/lat — needed for the point-in-polygon zip fallback below.
+    const queryUrl = FEATURESERVER + '/' + incidentLayer.id + '/query?where=1%3D1&outFields=*&outSR=4326&returnGeometry=true&f=json&resultRecordCount=2000';
     const dataResp = await fetch(queryUrl);
     if (!dataResp.ok) throw new Error('Incident query failed: HTTP ' + dataResp.status);
     const data = await dataResp.json();
@@ -88,25 +145,34 @@ exports.handler = async function (event) {
     }
     stamp('SDG&E incident records: ' + sdgeFeatures.length);
 
-    // Step 5: extract zips directly if the schema has them; otherwise fall back to city names
-    // (zip-level lead matching needs zips — city-only is recorded for visibility but won't drive
-    // the Focus-ZIP suggestions until a geocoding fallback is added, if this schema lacks zips).
+    // Step 5: extract zips directly if the schema has them; otherwise point-in-polygon each
+    // incident's geometry against the cached ZCTA boundaries (the real schema for this feed
+    // has no zip/city field at all — see the note above pointInRing — so this is the normal
+    // path, not a rare fallback).
     const zipCounts = {};
     const cities = new Set();
-    sdgeFeatures.forEach(f => {
+    let geoResolved = 0, geoAttempted = 0;
+    let zipBoundaryFeatures = null; // lazy-loaded only if actually needed
+    for (const f of sdgeFeatures) {
       const a = f.attributes || {};
+      let z = null;
       if (zipKey && a[zipKey]) {
-        const z = String(a[zipKey]).replace(/\D/g, '').slice(0, 5);
-        if (z.length === 5) {
-          zipCounts[z] = (zipCounts[z] || 0) + (countKey ? (parseInt(a[countKey], 10) || 1) : 1);
-        }
+        const raw = String(a[zipKey]).replace(/\D/g, '').slice(0, 5);
+        if (raw.length === 5) z = raw;
       }
+      if (!z && f.geometry && typeof f.geometry.x === 'number' && typeof f.geometry.y === 'number') {
+        if (zipBoundaryFeatures === null) zipBoundaryFeatures = await fetchCachedZipBoundaries(supaHeaders, stamp);
+        geoAttempted++;
+        z = resolveZipForPoint(f.geometry.x, f.geometry.y, zipBoundaryFeatures);
+        if (z) geoResolved++;
+      }
+      if (z) zipCounts[z] = (zipCounts[z] || 0) + (countKey ? (parseInt(a[countKey], 10) || 1) : 1);
       if (cityKey && a[cityKey]) cities.add(String(a[cityKey]).trim());
-    });
+    }
     const zips = Object.keys(zipCounts).sort((a, b) => zipCounts[b] - zipCounts[a])
       .map(z => ({ zip: z, affected: zipCounts[z] }));
     stamp('Resolved zips: ' + zips.map(z => z.zip + '(' + z.affected + ')').join(', '));
-    if (!zipKey) stamp('No zip field in schema — cities recorded instead: ' + Array.from(cities).slice(0, 20).join(', '));
+    if (!zipKey) stamp('No zip field in schema — resolved ' + geoResolved + '/' + geoAttempted + ' incidents via point-in-polygon against cached zip boundaries' + (cities.size ? '; cities also recorded: ' + Array.from(cities).slice(0, 20).join(', ') : ''));
 
     const snapshot = {
       synced_at: new Date().toISOString(),
