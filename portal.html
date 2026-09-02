@@ -20234,7 +20234,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       } else {
         prop.accepted_via = 'customer_self_service';
       }
-      var price = (optionId==='bundle' && (financing==='participate'||financing==='prepaid')) ? opt.participate_price : opt.price;
+      var price = (optionId==='bundle' && (financing==='participate'||financing==='prepaid')) ? opt.participate_price
+        : (financing==='wheelhouse') ? (opt.participate_price||opt.price)
+        : (financing==='wheelhouse_sdcp') ? Math.max(0, (opt.participate_price||opt.price) - (opt.sdcp_rebate||0))
+        : opt.price;
       await client.from('customers').update({ proposal: prop }).eq('id', custId);
       fetch(GHL_PROPOSAL_WEBHOOK, { method:'POST', mode:'no-cors', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({
@@ -23078,14 +23081,26 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var _prop = safeJson(c.proposal, null);
       if (_prop && _prop.status === 'accepted') {
         var _accOpt = (_prop.options||[]).find(function(o){ return o.id===_prop.accepted_option; });
-        var _accPrice = (_prop.accepted_option==='bundle' && _prop.financing==='participate' && _accOpt) ? _accOpt.participate_price : (_accOpt ? _accOpt.price : 0);
+        // Wheelhouse standalone financing (2026-09-02) is always on the Participate price
+        // — 'wheelhouse' finances it as-is, 'wheelhouse_sdcp' finances it minus the
+        // confirmed SDCP incentive (the re-amortized balance). Neither is ever the raw
+        // System Price. The pre-existing 'bundle'+'participate' check above them is a
+        // narrower legacy case, left as-is.
+        var _accPrice = (_prop.accepted_option==='bundle' && _prop.financing==='participate' && _accOpt) ? _accOpt.participate_price
+          : (_prop.financing==='wheelhouse' && _accOpt) ? _accOpt.participate_price
+          : (_prop.financing==='wheelhouse_sdcp' && _accOpt) ? Math.max(0, (_accOpt.participate_price||_accOpt.price) - (_accOpt.sdcp_rebate||0))
+          : (_accOpt ? _accOpt.price : 0);
+        var _accFinLabel = _prop.financing==='prepaid' ? 'Paid in Full (Participate)'
+          : _prop.financing==='wheelhouse_sdcp' ? 'Wheelhouse CU &middot; '+_prop.loan_term+'-year financing (re-amortized w/ SDCP)'
+          : _prop.loan_term ? 'Wheelhouse CU &middot; '+_prop.loan_term+'-year financing'
+          : 'Cash';
         proposalHtml = '<div id="proposalWrap"><div class="sect-label">Your Proposal</div>'+
           '<div style="background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.3);border-radius:12px;padding:20px;">'+
             '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">'+
               '<div style="font-weight:700;color:#fff;">'+(_accOpt?_accOpt.title:'')+'</div>'+
               '<span style="background:rgba(141,198,63,0.15);color:#8DC63F;font-size:0.68rem;font-weight:700;padding:3px 10px;border-radius:20px;">Accepted &#10003;</span>'+
             '</div>'+
-            '<div style="font-size:0.8rem;color:#aaa;margin-bottom:10px;">'+(_prop.financing==='prepaid'?'Paid in Full (Participate)':_prop.loan_term?'Wheelhouse CU &middot; '+_prop.loan_term+'-year financing':'Cash')+'</div>'+
+            '<div style="font-size:0.8rem;color:#aaa;margin-bottom:10px;">'+_accFinLabel+'</div>'+
             '<div style="font-size:1.4rem;font-weight:800;color:#8DC63F;">$'+parseFloat(_accPrice).toLocaleString('en-US',{minimumFractionDigits:2})+'</div>'+
           '</div></div>';
       } else if (_prop.status === 'sent' && _prop.options && _prop.options.length) {
@@ -23143,22 +23158,49 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           var _acceptBtn = _hasParticipate ?
             '<button id="acceptBundle_'+_i+'" data-cid="'+c.id+'" onclick="acceptProposal(\''+c.id+'\',\''+opt.id+'\',\'participate\',(window._selectedLoanTerm||10))" style="width:100%;margin-top:14px;padding:13px;background:#8DC63F;color:#000;border:none;border-radius:100px;font-weight:700;font-size:0.88rem;cursor:pointer;">Accept '+_optNumLabel+' &#10003;</button>' :
             '<button onclick="acceptProposal(\''+c.id+'\',\''+opt.id+'\',\'cash\',null)" style="width:100%;margin-top:14px;padding:13px;background:rgba(255,255,255,0.08);color:#fff;border:1px solid rgba(255,255,255,0.2);border-radius:100px;font-weight:700;font-size:0.88rem;cursor:pointer;">Accept '+_optNumLabel+'</button>';
-          // Wheelhouse CU standalone financing (2026-09-02, per Dennis) — a real loan on
-          // the full System Price, offered as its own path on EVERY option regardless of
-          // whether the rep turned Participate on for it (Participate's own 7.99%/10-20yr
-          // terms above finance the DISCOUNTED Participate price instead — a different
-          // product, not replaced by this). Its own Accept button so choosing it doesn't
-          // get tangled with the Participate/cash button above.
-          var _whMonthly = _wheelhouseMonthly(opt.price);
-          var _whFinHtml = _whMonthly > 0 ?
-            '<div style="margin-top:12px;background:rgba(74,158,255,0.04);border:1px solid rgba(74,158,255,0.18);border-radius:10px;padding:14px;">'+
-              '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#4a9eff;margin-bottom:4px;">Finance with Wheelhouse CU</div>'+
-              '<div style="font-size:0.72rem;color:#888;margin-bottom:10px;">'+(WHEELHOUSE_APR*100).toFixed(2)+'% APR &middot; '+WHEELHOUSE_TERM_YEARS+'-year term &middot; on the full $'+Math.round(opt.price).toLocaleString('en-US')+' price</div>'+
-              '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">'+
-                '<span style="font-size:1.1rem;font-weight:800;color:#4a9eff;">~$'+_whMonthly.toLocaleString('en-US')+'/mo</span>'+
-                '<button onclick="acceptProposal(\''+c.id+'\',\''+opt.id+'\',\'wheelhouse\','+WHEELHOUSE_TERM_YEARS+')" style="width:auto;padding:9px 18px;background:rgba(74,158,255,0.14);border:1px solid rgba(74,158,255,0.45);border-radius:100px;color:#4a9eff;font-weight:700;font-size:0.78rem;cursor:pointer;">Finance &amp; Accept</button>'+
-              '</div>'+
-            '</div>' : '';
+          // Wheelhouse CU standalone financing — corrected 2026-09-02, per Dennis ("I
+          // clicked the wrong option... the loan should be calculated on after Participate
+          // price... never full amount"). Only ever financed on the Participate-discounted
+          // price, never the raw System Price — so this only renders when the rep has
+          // turned Participate on for this option (no Participate price exists to finance
+          // otherwise). A SECOND card, only when a confirmed SDCP incentive is on the
+          // proposal, shows the loan REAMORTIZED at the lower principal once the incentive
+          // posts — a distinct concept from just financing a smaller number: the customer
+          // starts at the Card 1 payment, then the balance drops and the monthly payment
+          // recalculates once SDCP funds land, not before.
+          var _whFinHtml = '';
+          if (_hasParticipate) {
+            var _whPrincipal = opt.participate_price;
+            var _whMonthly = _wheelhouseMonthly(_whPrincipal);
+            _whFinHtml =
+              '<div style="margin-top:12px;background:rgba(74,158,255,0.04);border:1px solid rgba(74,158,255,0.18);border-radius:10px;padding:14px;">'+
+                '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#4a9eff;margin-bottom:4px;">Finance with Wheelhouse CU</div>'+
+                '<div style="font-size:0.72rem;color:#888;margin-bottom:10px;">'+(WHEELHOUSE_APR*100).toFixed(2)+'% APR &middot; '+WHEELHOUSE_TERM_YEARS+'-year term &middot; on your Participate price ($'+Math.round(_whPrincipal).toLocaleString('en-US')+')</div>'+
+                '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">'+
+                  '<span style="font-size:1.1rem;font-weight:800;color:#4a9eff;">~$'+_whMonthly.toLocaleString('en-US')+'/mo</span>'+
+                  '<button onclick="acceptProposal(\''+c.id+'\',\''+opt.id+'\',\'wheelhouse\','+WHEELHOUSE_TERM_YEARS+')" style="width:auto;padding:9px 18px;background:rgba(74,158,255,0.14);border:1px solid rgba(74,158,255,0.45);border-radius:100px;color:#4a9eff;font-weight:700;font-size:0.78rem;cursor:pointer;">Finance &amp; Accept</button>'+
+                '</div>'+
+              '</div>';
+            // opt.sdcp_rebate is only ever present on a SAVED proposal when the rep had
+            // already confirmed sdcpQualified at send time (sendProposal only sets it
+            // `if (build.sdcpRebate && build.sdcpQualified)`) — its mere presence here IS
+            // the confirmation, no separate re-check needed.
+            if (opt.sdcp_rebate > 0) {
+              var _whPrincipalSdcp = Math.max(0, _whPrincipal - opt.sdcp_rebate);
+              var _whMonthlySdcp = _wheelhouseMonthly(_whPrincipalSdcp);
+              _whFinHtml +=
+                '<div style="margin-top:10px;background:rgba(141,198,63,0.04);border:1px solid rgba(141,198,63,0.22);border-radius:10px;padding:14px;">'+
+                  '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#8DC63F;margin-bottom:4px;">Finance with Wheelhouse CU + SDCP Incentive</div>'+
+                  '<div style="font-size:0.72rem;color:#888;line-height:1.55;margin-bottom:10px;">Starts at the payment above; once your $'+Math.round(opt.sdcp_rebate).toLocaleString('en-US')+' SDCP incentive is confirmed and applied to the balance, Wheelhouse re-amortizes your loan lower for the rest of the term. Pending SDCP\'s own qualification.</div>'+
+                  '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">'+
+                    '<div style="text-align:center;"><div style="font-size:0.58rem;color:#666;">Starting payment</div><div style="font-size:0.92rem;font-weight:700;color:#aaa;">~$'+_whMonthly.toLocaleString('en-US')+'/mo</div></div>'+
+                    '<div style="color:#555;font-size:1rem;">&rarr;</div>'+
+                    '<div style="text-align:center;"><div style="font-size:0.58rem;color:#666;">After SDCP (re-amortized)</div><div style="font-size:1.05rem;font-weight:800;color:#8DC63F;">~$'+_whMonthlySdcp.toLocaleString('en-US')+'/mo</div></div>'+
+                  '</div>'+
+                  '<button onclick="acceptProposal(\''+c.id+'\',\''+opt.id+'\',\'wheelhouse_sdcp\','+WHEELHOUSE_TERM_YEARS+')" style="width:100%;padding:9px 18px;background:rgba(141,198,63,0.14);border:1px solid rgba(141,198,63,0.45);border-radius:100px;color:#8DC63F;font-weight:700;font-size:0.78rem;cursor:pointer;">Finance w/ SDCP &amp; Accept</button>'+
+                '</div>';
+            }
+          }
           // Production data (new proposals) and savings panel
           var _pd = opt.prod_data || null;
 
