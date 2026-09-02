@@ -19152,6 +19152,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // retail set per proposal. Quantity-driven, so it is a builder card rather than a fixed
   // catalog line.
   var RR_COST_PER_PANEL = 225;
+  // Wheelhouse CU standalone financing (2026-09-02, per Dennis — "bring back the
+  // financing option as a proposed solution"). A distinct product from the Participate
+  // lease-to-own terms above (which are only offered when a rep turns Participate ON for
+  // an option, and finance the discounted Participate price at 7.99% over 10/20yr) — this
+  // is a straight loan on the real, undiscounted System Price, shown as its own choice on
+  // EVERY option regardless of whether Participate is toggled. One named constant pair so
+  // a future rate change (rates move; this one already did — was 7.99%, is now separately
+  // tracked here at 8.24%) is a one-line edit, same convention as REROOF_COST_PER_SQ.
+  var WHEELHOUSE_APR = 0.0824;
+  var WHEELHOUSE_TERM_YEARS = 15;
+  function _wheelhouseMonthly(principal){
+    var p = parseFloat(principal) || 0;
+    if (p <= 0) return 0;
+    var r = WHEELHOUSE_APR / 12, n = WHEELHOUSE_TERM_YEARS * 12;
+    return Math.round(p * r / (1 - Math.pow(1 + r, -n)));
+  }
   function _rrPanels(build){
     if (!build || !build.rr || !build.rr.on) return 0;
     return Math.max(0, Math.floor(parseFloat(build.rr.panels) || 0));
@@ -19572,17 +19588,41 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '</div>';
         h += '<div style="font-size:0.62rem;color:#555;margin-top:5px;">'+(build.partPriceManual ? 'Manual override &mdash; no longer tracking 70% of System Price.' : 'Auto-tracks 70% of System Price &mdash; edit to override.')+'</div>';
       }
-      if (_isSdcpZip && build.sdcpRebate > 0) {
+      if (_isSdcpZip) {
+        // ⚠️ 2026-09-02, per Dennis ("add in SDCP's incentives on the battery... Abhay's
+        // bill is Care and he'll likely qualify... $4,275"): the dollar amount was never
+        // editable — it only ever displayed whatever flat number sat on the catalog row
+        // ($3,375, the standard tier). A CARE/FERA/Medical-Baseline-qualified customer's
+        // real SDCP incentive is HIGHER, and SDCP's own program terms aren't something
+        // this codebase can verify or compute from here — so per Dennis's own answer
+        // ("Both. Auto-fill from Quoya Assist... also editable on rep level"), the CARE
+        // flag itself auto-detects from Quoya's Bill Analysis (already fetched once per
+        // builder session into _propBillAnalysis — same care/fera/medical_baseline
+        // booleans eval-bill-analysis.js extracts from the uploaded bill), and the amount
+        // is now a real editable field the rep types the confirmed number into — never a
+        // guessed CARE-tier formula, same "never invent a plausible-looking value" rule
+        // as every other financial figure in this file.
+        var _careOn = !!(_propBillAnalysis && (_propBillAnalysis.care || _propBillAnalysis.fera || _propBillAnalysis.medical_baseline));
+        var _careLbl = _propBillAnalysis ? [
+          _propBillAnalysis.care ? 'CARE' : null,
+          _propBillAnalysis.fera ? 'FERA' : null,
+          _propBillAnalysis.medical_baseline ? 'Medical Baseline' : null
+        ].filter(Boolean).join(' / ') : '';
         h += '<div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.06);">';
-        h += '<div style="font-size:0.68rem;color:#4a9eff;font-weight:600;margin-bottom:6px;">&#9889; SDCP territory (zip '+_zipM2[1]+') &mdash; battery may qualify for &minus;$'+Math.round(build.sdcpRebate).toLocaleString('en-US')+'</div>';
+        h += '<div style="font-size:0.68rem;color:#4a9eff;font-weight:600;margin-bottom:6px;">&#9889; SDCP territory (zip '+_zipM2[1]+') &mdash; battery incentive may apply once a Powerwall is added</div>';
+        if (_careOn) {
+          h += '<div style="font-size:0.66rem;color:#ffaa00;background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.25);border-radius:6px;padding:7px 9px;margin-bottom:8px;line-height:1.55;">&#9888; Quoya\'s Bill Analysis shows <strong>'+_careLbl+'</strong> on file &mdash; SDCP\'s income-qualified incentive is typically higher than the standard rate. Confirm the real amount with SDCP and enter it below.</div>';
+        }
+        h += '<div style="display:flex;align-items:end;gap:10px;flex-wrap:wrap;margin-bottom:8px;">';
+        h += '<div><label style="font-size:0.6rem;color:#4a9eff;display:block;margin-bottom:2px;">SDCP incentive ($)</label>';
+        h += '<input type="number" id="propSdcp_'+optIdx+'" value="'+Math.round(build.sdcpRebate||0)+'" step="1" onchange="_propSetSdcpRebate('+optIdx+',this.value)" style="width:120px;background:#0e0e0e;border:1px solid rgba(74,158,255,0.35);border-radius:6px;color:#4a9eff;font-weight:800;padding:6px 8px;font-size:0.85rem;box-sizing:border-box;"/></div>';
+        h += '</div>';
         h += '<div style="font-size:0.64rem;color:#888;line-height:1.5;margin-bottom:6px;">Eligible only if the system is close to net-zero or net-positive to the grid, AND upon SDCP\'s own qualification &mdash; territory alone is not enough.</div>';
         h += '<label style="display:flex;align-items:center;gap:7px;cursor:pointer;">'+
                '<input type="checkbox" '+(build.sdcpQualified?'checked':'')+' onchange="_propToggleSdcpQualified('+optIdx+')" style="width:15px;height:15px;accent-color:#4a9eff;cursor:pointer;"/>'+
-               '<span style="font-size:0.68rem;color:'+(build.sdcpQualified?'#4a9eff':'#aaa')+';font-weight:700;">Confirmed close to net-zero/positive &mdash; include as pending SDCP qualification</span>'+
+               '<span style="font-size:0.68rem;color:'+(build.sdcpQualified?'#4a9eff':'#aaa')+';font-weight:700;">Confirmed &mdash; include as pending SDCP qualification</span>'+
              '</label>';
         h += '</div>';
-      } else if (_isSdcpZip) {
-        h += '<div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.06);font-size:0.68rem;color:#4a9eff;font-weight:600;">&#9889; SDCP territory (zip '+_zipM2[1]+') &mdash; battery incentive may apply once a Powerwall is added</div>';
       }
       h += '</div>';
 
@@ -19689,6 +19729,21 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // unconfirmed incentive must never silently ride into a sent proposal.
   window._propToggleSdcpQualified = function(optIdx) {
     if (_propBuilds[optIdx]) { _propBuilds[optIdx].sdcpQualified = !_propBuilds[optIdx].sdcpQualified; _propRenderBuilds(); }
+  };
+
+  // Rep-editable SDCP incentive amount (2026-09-02, per Dennis) — build.sdcpRebate used to
+  // only ever be the flat catalog default ($3,375 for the standard tier); a CARE/FERA/
+  // Medical-Baseline-qualified customer's real SDCP incentive is higher and case-specific
+  // (Abhay's was $4,275), and this codebase has no verified formula for that tier — so the
+  // rep types the confirmed real amount here rather than the tool guessing one. Never
+  // recomputed elsewhere (_propRecalcRedline doesn't touch sdcpRebate), so a typed value
+  // just persists — no manual/auto flag needed, unlike partPrice/redline which DO get
+  // recomputed on every line-item edit.
+  window._propSetSdcpRebate = function(optIdx, val) {
+    var build = _propBuilds[optIdx];
+    if (!build) return;
+    build.sdcpRebate = Math.max(0, parseFloat(val) || 0);
+    _propRenderBuilds();
   };
 
   window._propPanelInc = function(optIdx) {
@@ -23088,6 +23143,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           var _acceptBtn = _hasParticipate ?
             '<button id="acceptBundle_'+_i+'" data-cid="'+c.id+'" onclick="acceptProposal(\''+c.id+'\',\''+opt.id+'\',\'participate\',(window._selectedLoanTerm||10))" style="width:100%;margin-top:14px;padding:13px;background:#8DC63F;color:#000;border:none;border-radius:100px;font-weight:700;font-size:0.88rem;cursor:pointer;">Accept '+_optNumLabel+' &#10003;</button>' :
             '<button onclick="acceptProposal(\''+c.id+'\',\''+opt.id+'\',\'cash\',null)" style="width:100%;margin-top:14px;padding:13px;background:rgba(255,255,255,0.08);color:#fff;border:1px solid rgba(255,255,255,0.2);border-radius:100px;font-weight:700;font-size:0.88rem;cursor:pointer;">Accept '+_optNumLabel+'</button>';
+          // Wheelhouse CU standalone financing (2026-09-02, per Dennis) — a real loan on
+          // the full System Price, offered as its own path on EVERY option regardless of
+          // whether the rep turned Participate on for it (Participate's own 7.99%/10-20yr
+          // terms above finance the DISCOUNTED Participate price instead — a different
+          // product, not replaced by this). Its own Accept button so choosing it doesn't
+          // get tangled with the Participate/cash button above.
+          var _whMonthly = _wheelhouseMonthly(opt.price);
+          var _whFinHtml = _whMonthly > 0 ?
+            '<div style="margin-top:12px;background:rgba(74,158,255,0.04);border:1px solid rgba(74,158,255,0.18);border-radius:10px;padding:14px;">'+
+              '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#4a9eff;margin-bottom:4px;">Finance with Wheelhouse CU</div>'+
+              '<div style="font-size:0.72rem;color:#888;margin-bottom:10px;">'+(WHEELHOUSE_APR*100).toFixed(2)+'% APR &middot; '+WHEELHOUSE_TERM_YEARS+'-year term &middot; on the full $'+Math.round(opt.price).toLocaleString('en-US')+' price</div>'+
+              '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">'+
+                '<span style="font-size:1.1rem;font-weight:800;color:#4a9eff;">~$'+_whMonthly.toLocaleString('en-US')+'/mo</span>'+
+                '<button onclick="acceptProposal(\''+c.id+'\',\''+opt.id+'\',\'wheelhouse\','+WHEELHOUSE_TERM_YEARS+')" style="width:auto;padding:9px 18px;background:rgba(74,158,255,0.14);border:1px solid rgba(74,158,255,0.45);border-radius:100px;color:#4a9eff;font-weight:700;font-size:0.78rem;cursor:pointer;">Finance &amp; Accept</button>'+
+              '</div>'+
+            '</div>' : '';
           // Production data (new proposals) and savings panel
           var _pd = opt.prod_data || null;
 
@@ -23220,7 +23291,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
                 _rb += '</div>';
                 return _rb;
               })()+
-              _milestones+_finHtml+_acceptBtn+_savingsPanel+
+              _milestones+_finHtml+_acceptBtn+_whFinHtml+_savingsPanel+
             '</div>';
         });
         proposalHtml =
