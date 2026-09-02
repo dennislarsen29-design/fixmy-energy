@@ -19099,8 +19099,36 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         if (sendBtn) { sendBtn.disabled = false; sendBtn.textContent = '⚠ Request Admin Approval'; }
         return;
       }
-      if (statusEl) { statusEl.style.color = '#8DC63F'; statusEl.textContent = '✓ Proposal saved — customer can view via their magic link.'; }
-      setTimeout(function(){ if (modal && modal.parentNode) modal.remove(); }, 1800);
+      // ⚠️ 2026-09-02, per Dennis ("Send to Customer doesn't go anywhere because the
+      // automation isn't built"): correct — until this fix, this branch only ever wrote
+      // customers.proposal to Supabase. Nothing texted or emailed the customer anything;
+      // the rep had to separately remember to tap Copy Link and paste it themselves. Now
+      // fires the SAME GHL webhook trigger this file already uses for the acceptance
+      // notification and the low-commission approval request (GHL_PROPOSAL_WEBHOOK),
+      // tagged type:'proposal_sent' so a GHL Workflow bound to this trigger can branch on
+      // it and actually send the SMS/email via LC Phone — same "portal fires webhook, a
+      // GHL Workflow does the sending" pattern as the diagnostic-fee and agreement flows.
+      // ⚠️ This is fire-and-forget (mode:'no-cors' — the response can't be read), so the
+      // UI can never honestly claim the customer WAS notified, only that the trigger
+      // fired. Copy Link stays the rep-controlled fallback that works with zero GHL setup.
+      var _sendMagicLink = (custRec && custRec.email)
+        ? 'https://fixmy.energy/portal?email=' + encodeURIComponent(custRec.email) + '&code=' + encodeURIComponent(custRec.access_code || (custRec.phone||'').replace(/\D/g,''))
+        : null;
+      var _topSendOpt = options[0] || {};
+      fetch(GHL_PROPOSAL_WEBHOOK, { method: 'POST', mode: 'no-cors', headers: {'Content-Type':'application/json'}, body: JSON.stringify({
+        type: 'proposal_sent',
+        email: (custRec && custRec.email) || '',
+        phone: (custRec && custRec.phone) || '',
+        full_name: ((custRec&&custRec.first_name)||'') + ' ' + ((custRec&&custRec.last_name)||''),
+        customer_id: id,
+        rep_name: (typeof person !== 'undefined' ? person.name : 'Rep'),
+        magic_link: _sendMagicLink,
+        option_count: options.length,
+        top_option_title: _topSendOpt.title || '',
+        top_option_price: _topSendOpt.participate_price || _topSendOpt.price || 0
+      }) }).catch(function(){});
+      if (statusEl) { statusEl.style.color = '#8DC63F'; statusEl.textContent = '✓ Sent — an SMS/email trigger fired (needs a GHL workflow to actually deliver it). Copy Link below to send it yourself as a backup.'; }
+      setTimeout(function(){ if (modal && modal.parentNode) modal.remove(); }, 2600);
     } catch(e) {
       if (statusEl) { statusEl.style.color = '#ef4444'; statusEl.textContent = '✗ ' + e.message; }
       if (sendBtn) { sendBtn.disabled = false; sendBtn.innerHTML = isDraft ? '&#128190; Save Draft' : '&#128228; Send to Customer'; }
@@ -20155,6 +20183,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       await client.from('customers').update({ proposal: prop }).eq('id', custId);
       fetch(GHL_PROPOSAL_WEBHOOK, { method:'POST', mode:'no-cors', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({
+          type: 'proposal_accepted',
           email: data.email||'', full_name: ((data.first_name||'')+' '+(data.last_name||'')).trim(),
           phone: data.phone||'', proposal_option: optionId, proposal_label: opt.title,
           proposal_amount: price, financing: financing||'cash', loan_term: loanTerm||null,
@@ -23335,6 +23364,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     loadUploadStatus(c.id);
     if(c.address) setTimeout(function(){ loadSolarData(c.address); },300);
     setTimeout(function(){ _showPortalOnboarding(c); }, 800);
+    // ⚠️ 2026-09-02, per Dennis ("clicking the link doesn't take them to Option 1"):
+    // #proposalWrap has always existed on a real 'sent' proposal, but it sits several
+    // sections down a long dashboard (info-grid, progress timeline, required-documents
+    // uploaders all come first) — a customer opening their magic link landed at the TOP
+    // of that page with no indication their proposal was even there. A real, undecided
+    // proposal is the single most actionable thing on the whole dashboard, so auto-scroll
+    // to it the moment the page renders. Skipped once accepted — nothing left to decide.
+    if (_prop && _prop.status === 'sent' && !_prop.accepted_option) {
+      setTimeout(function(){
+        var pw = document.getElementById('proposalWrap');
+        if (pw) pw.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 500);
+    }
   }
 
   function ucCard(type,icon,title,desc){ return '<div class="upload-card"><div style="font-size:1.5rem;margin-bottom:8px;">'+icon+'</div><div style="font-weight:700;margin-bottom:5px;font-size:0.85rem;">'+title+'</div><div style="font-size:0.7rem;color:#aaa;line-height:1.5;margin-bottom:12px;">'+desc+'</div><div class="upload-status" id="ust-'+type+'">&#9888; Not Uploaded</div><input type="file" id="ufile-'+type+'" data-type="'+type+'" style="display:none;" onchange="handleUpload(this.dataset.type,this)"/><button class="btn-upload" data-type="'+type+'" onclick="triggerUpload(this.dataset.type)">Upload</button></div>'; }

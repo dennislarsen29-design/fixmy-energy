@@ -1634,6 +1634,25 @@ Reported live off a screenshot: generating a proposal insight for a lead with up
 
 Verified via `node --check` on `generate-proposal-insight.js` and the standard portal.html parse-check.
 
+## Internal Proposal Tool — the real end-to-end SOP (2026-09-02, per Dennis)
+Follow-up after the Save Draft/Record Acceptance/Site Map audit above: Dennis walked the full flow (Send to Customer → Copy Link → customer's magic link → Tech confirming Option 1) and found it dead-ends at three points. Two are now fixed in code; one needs a GHL Workflow only Dennis can build (same "portal fires a webhook, a GHL Workflow does the sending" pattern already used everywhere else in this file — diagnostic-fee flow, agreement flow, no-automation tagging).
+
+**The corrected SOP, end to end:**
+1. Tech/admin builds pricing in the Internal Proposal Tool (`openProposalBuilder`).
+2. **Send to Customer** (`sendProposal`, non-draft) saves `customers.proposal` with `status:'sent'` AND now fires `GHL_PROPOSAL_WEBHOOK` with `type:'proposal_sent'` (email, phone, full_name, magic_link, top_option_title/price, rep_name). ⚠️ **This alone does not send anything** — a GHL Workflow bound to this webhook trigger has to exist to actually SMS/email the customer their link. See "Still needs Dennis" below.
+3. **Copy Link** (`copyProposalLink`) is the rep-controlled fallback that works today with zero GHL setup — copies `https://fixmy.energy/portal?email=...&code=...` to the clipboard for the rep to text/email manually.
+4. Customer opens the magic link → `loadCustomerDashboard` — **now auto-scrolls to `#proposalWrap`** the instant the page renders, whenever a real `status:'sent'`, not-yet-accepted proposal exists. Previously the proposal card rendered several sections down a long dashboard (info-grid → progress timeline → required-documents uploaders all came first) with nothing indicating it was even there — this is what Dennis meant by "clicking the link doesn't take them to Option 1."
+5. Customer taps **Accept Option N** on their own device → `acceptProposal(custId, optionId, financing, loanTerm)` with no 5th arg, stamps `accepted_via:'customer_self_service'`, fires `GHL_PROPOSAL_WEBHOOK` with `type:'proposal_accepted'` (newly added, alongside the existing untyped payload fields — was previously the one payload on this webhook with no `type` at all).
+6. **If the deal closes in person or by phone instead** (no customer magic-link click) — the "Record Acceptance" button in `_proposalToolsRow` (gated `c.proposal.status === 'sent'`, so it appears in the lead editor's Proposal Tools row only after step 2 has actually run) opens `openRecordAcceptance(id)`, listing every sent option with per-financing-term Record buttons → `acceptProposal(..., {id:repId, name:repName})`, stamping `accepted_via:'rep_recorded'` instead. **This is the "Tech can't confirm Option 1" fix** — it existed from the prior audit pass but wasn't discoverable from inside the builder/Preview modal, which is deliberately a dead-end mockup (labeled "(preview)", disabled Accept button) and was never meant to be the real accept path. Record Acceptance lives on the lead editor screen, one level out from the builder.
+
+**Still needs Dennis — a GHL Workflow, not code:** build a Workflow triggered on the same webhook URL as `GHL_PROPOSAL_WEBHOOK` (`.../hooks/gXWwbOVymY0iRfj7c1It/webhook-trigger/224ee5c6-...`), branching on `type`:
+- `type == proposal_sent` → send the customer an SMS + email with `{{trigger.magic_link}}`, using `{{trigger.full_name}}`/`{{trigger.top_option_title}}`/`{{trigger.top_option_price}}` in the message — this is the piece that makes "Send to Customer" actually send something.
+- `type == proposal_accepted` → whatever post-acceptance automation Dennis wants (internal notification, contract kickoff, etc.) — new, previously had no `type` to branch on at all.
+- `type == proposal_approval_request` → the pre-existing low-commission admin-notification branch (unchanged, already working).
+Until that Workflow exists, "Send to Customer" is honest about it — the status message now reads "an SMS/email trigger fired (needs a GHL workflow to actually deliver it)" instead of implying delivery, and the modal stays open longer (2.6s) so the rep actually reads it before it auto-closes.
+
+Verified via the standard `node -e "new Function(...)"` parse-check across all 4 inline `<script>` blocks after every edit.
+
 ## Common Patterns
 ```js
 // Null guard for conditionally-rendered fields (prevents TypeError on NS leads)
