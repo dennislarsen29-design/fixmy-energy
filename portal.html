@@ -8378,7 +8378,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
     if (!prod.hasData) {
       detail.style.display = 'block';
-      detail.innerHTML = '<div style="font-size:0.78rem;color:#888;background:rgba(255,170,0,0.06);border:1px solid rgba(255,170,0,0.2);border-radius:8px;padding:12px;">&#9888; Missing system data — ask tech to add: system size &amp; run Site Map for this address to unlock real savings calculations.</div>';
+      // ⚠️ 2026-09-02, per Dennis: this used to always say "run Site Map," which is wrong
+      // advice for a battery-only build (Site Map only feeds panel/inverter yield — battery
+      // arbitrage savings need a battery line item, not roof imagery). Word it by what's
+      // actually missing instead of a single hardcoded fix.
+      var _noItemsYet = !activeBuild || !activeBuild.lineItems || !activeBuild.lineItems.length;
+      var _msg = _noItemsYet
+        ? 'Add an item to the proposal below to see projected savings.'
+        : '&#9888; Missing system data — a panel or inverter item needs Site Map run for this address; a battery item estimates savings on its own.';
+      detail.innerHTML = '<div style="font-size:0.78rem;color:#888;background:rgba(255,170,0,0.06);border:1px solid rgba(255,170,0,0.2);border-radius:8px;padding:12px;">'+_msg+'</div>';
       return;
     }
     if (!bill) {
@@ -18112,6 +18120,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<div style="font-size:0.64rem;font-weight:600;text-transform:uppercase;letter-spacing:0.07em;color:#666;margin-bottom:7px;">Proposal Tools</div>'+
       '<div style="display:flex;gap:8px;flex-wrap:wrap;">'+
         (!isNS ? '<button type="button" onclick="openProposalBuilder(\''+id+'\')" style="'+pill+'">&#128196; Internal Tool</button>' : '')+
+        (!isNS && c.proposal && c.proposal.status === 'sent' ? '<button type="button" onclick="openRecordAcceptance(\''+id+'\')" title="For a deal closed in person or by phone, where the customer never touches their own magic link." style="'+pill.replace('rgba(74,158,255,0.1)','rgba(141,198,63,0.12)').replace('rgba(74,158,255,0.3)','rgba(141,198,63,0.4)').replace('#4a9eff','#8DC63F')+'">&#9989; Record Acceptance</button>' : '')+
         '<button type="button" onclick="_propOpenAurora('+auroraArgs+')" style="'+pill+'">&#128314; Aurora</button>'+
         '<button type="button" onclick="_propOpenExternal(\'https://app.solargraf.com/dashboard\',\''+jaddr+'\')" style="'+pill+'">&#128208; SolarGraf</button>'+
         '<button type="button" onclick="window.open(\'https://imgur.com/upload\',\'_blank\')" style="'+pill+'">&#128444;&#65039; Imgur</button>'+
@@ -18855,6 +18864,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '<button onclick="var _m=document.getElementById(\'proposalModal\');if(_m)_m.remove();" style="padding:10px 18px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:100px;color:#aaa;cursor:pointer;font-size:0.82rem;">Cancel</button>'+
           '<button onclick="previewProposal(\''+c.id+'\')" style="padding:10px 16px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);border-radius:100px;color:#4a9eff;cursor:pointer;font-size:0.82rem;font-weight:700;">&#128269; Preview</button>'+
           '<button onclick="copyProposalLink(\''+c.id+'\')" id="propCopyLinkBtn" style="padding:10px 16px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);border-radius:100px;color:#aaa;cursor:pointer;font-size:0.82rem;font-weight:600;">&#128203; Copy Link</button>'+
+          '<button id="propDraftBtn" onclick="sendProposal(\''+c.id+'\',false,\'draft\')" title="Persists your pricing so it survives closing this window — stays invisible to the customer until you Send." style="padding:10px 16px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);border-radius:100px;color:#ddd;cursor:pointer;font-size:0.82rem;font-weight:600;">&#128190; Save Draft</button>'+
           '<button id="propSendBtn" onclick="sendProposal(\''+c.id+'\')" style="padding:10px 22px;background:#8DC63F;color:#000;border:none;border-radius:100px;font-weight:700;cursor:pointer;font-size:0.85rem;">&#128228; Send to Customer</button>'+
           '<button id="propApprovalBtn" onclick="sendProposal(\''+c.id+'\',true)" style="display:none;padding:10px 22px;background:rgba(239,68,68,0.15);color:#ef4444;border:1px solid rgba(239,68,68,0.4);border-radius:100px;font-weight:700;cursor:pointer;font-size:0.82rem;">&#9888; Request Admin Approval</button>'+
         '</div>'+
@@ -18866,7 +18876,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     _propServiceType = serviceType;
     window._propInitFromCatalog(c, catalog, existing);
     // Default to Moderate savings scenario
-    setTimeout(function(){ if (bill > 0) propShowScenario('moderate', bill, c.system_size||0); }, 0);
+    setTimeout(function(){ if (bill > 0 && _propBuilds[0] && _propBuilds[0].lineItems.length > 0) propShowScenario('moderate', bill, c.system_size||0); }, 0);
     // Auto-generate insight if bill is set and no existing insight — fires after builder renders
     if (bill > 0 && !existingInsight) {
       setTimeout(function() {
@@ -18880,9 +18890,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
   }
 
-  async function sendProposal(id, approvalRequest) {
+  // mode: 'send' (default) writes status:'sent', fires the GHL webhook, closes the modal.
+  // mode: 'draft' persists the exact same options/savings/insight so nothing is lost, but
+  // never touches GHL and never flips visible-to-customer — status stays 'draft', which
+  // loadCustomerDashboard's own gate already treats as invisible (see the guard there).
+  // 2026-09-02, per Dennis: the builder had no way to save in-progress work without
+  // immediately sending it to the customer.
+  async function sendProposal(id, approvalRequest, mode) {
+    mode = mode || 'send';
+    var isDraft = mode === 'draft';
     var modal = document.getElementById('proposalModal');
-    var sendBtn = document.getElementById('propSendBtn');
+    var sendBtn = document.getElementById(isDraft ? 'propDraftBtn' : 'propSendBtn');
     var statusEl = document.getElementById('propSaveStatus');
     // Derive service type from first selected catalog item
     var _stPrimary = (_propBuilds[0] && _propBuilds[0].lineItems.find(function(li){ return !li.isCustom; }));
@@ -18983,7 +19001,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
     if (!options.length) {
       if (statusEl) { statusEl.style.color = '#ef4444'; statusEl.textContent = 'Add at least one item to build first.'; }
-      if (sendBtn) { sendBtn.disabled = false; sendBtn.innerHTML = '&#128228; Send to Customer'; }
+      if (sendBtn) { sendBtn.disabled = false; sendBtn.innerHTML = isDraft ? '&#128190; Save Draft' : '&#128228; Send to Customer'; }
       return;
     }
 
@@ -19042,7 +19060,21 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var commissionEstimate = options.reduce(function(sum, o){ return sum + (o.rep_commission || 0); }, 0);
     try {
       var client = supabase.createClient(SUPA_URL, SUPA_KEY);
-      var proposal = { status: 'sent', created_at: new Date().toISOString(), options: options, accepted_option: null, financing: null, loan_term: null, approvalRequired: !!approvalRequest };
+      // ⚠️ A draft save must never clobber a real accepted deal — re-check status fresh
+      // from the DB (not the possibly-stale in-memory adminCustomers copy) right before
+      // writing, since that's exactly the kind of real-money data a silent overwrite
+      // would destroy.
+      if (isDraft) {
+        var _preCheck = await client.from('customers').select('proposal').eq('id', id).limit(1);
+        var _preProp = _preCheck.data && _preCheck.data[0] && _preCheck.data[0].proposal;
+        _preProp = _preProp ? (typeof _preProp === 'string' ? JSON.parse(_preProp) : _preProp) : null;
+        if (_preProp && _preProp.status === 'accepted') {
+          if (statusEl) { statusEl.style.color = '#ef4444'; statusEl.textContent = '✗ This proposal was already accepted — saving a draft would overwrite a real deal. Use a fresh proposal instead.'; }
+          if (sendBtn) { sendBtn.disabled = false; sendBtn.innerHTML = '&#128190; Save Draft'; }
+          return;
+        }
+      }
+      var proposal = { status: isDraft ? 'draft' : 'sent', created_at: new Date().toISOString(), options: options, accepted_option: null, financing: null, loan_term: null, approvalRequired: !!approvalRequest };
       if (insight) proposal.insight = insight;
       var custUpdate = { proposal: proposal };
       if (commissionEstimate > 0) custUpdate.commission_estimate = commissionEstimate;
@@ -19054,6 +19086,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (!saved) throw new Error('Proposal column may not exist — run: ALTER TABLE customers ADD COLUMN IF NOT EXISTS proposal jsonb;');
       var idx = adminCustomers.findIndex(function(x){ return x.id===id; });
       if (idx > -1) { adminCustomers[idx].proposal = proposal; if (commissionEstimate > 0) adminCustomers[idx].commission_estimate = commissionEstimate; }
+      if (isDraft) {
+        // Stay open — Save Draft is a checkpoint mid-work, not a finishing action.
+        if (statusEl) { statusEl.style.color = '#8DC63F'; statusEl.textContent = '✓ Draft saved — not visible to the customer yet.'; }
+        if (sendBtn) { sendBtn.disabled = false; sendBtn.innerHTML = '&#128190; Save Draft'; }
+        return;
+      }
       if (approvalRequest) {
         // Notify admin via GHL webhook instead of sending to customer
         await fetch(GHL_PROPOSAL_WEBHOOK, { method: 'POST', mode: 'no-cors', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ type: 'proposal_approval_request', customer_name: ((custRec&&custRec.first_name)||'') + ' ' + ((custRec&&custRec.last_name)||''), customer_id: id, rep_name: (typeof person !== 'undefined' ? person.name : 'Rep'), commission_note: 'Below $1,000 minimum — requires approval' }) }).catch(function(){});
@@ -19065,7 +19103,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       setTimeout(function(){ if (modal && modal.parentNode) modal.remove(); }, 1800);
     } catch(e) {
       if (statusEl) { statusEl.style.color = '#ef4444'; statusEl.textContent = '✗ ' + e.message; }
-      if (sendBtn) { sendBtn.disabled = false; sendBtn.innerHTML = '&#128228; Send to Customer'; }
+      if (sendBtn) { sendBtn.disabled = false; sendBtn.innerHTML = isDraft ? '&#128190; Save Draft' : '&#128228; Send to Customer'; }
     }
   }
 
@@ -19409,15 +19447,26 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '</div>';
       }
 
-      // Workflow action buttons (always visible)
+      // Workflow action buttons
       h += '<div style="display:flex;gap:6px;margin-bottom:8px;">';
       var _buildAuroraArgs = JSON.stringify({ address: _propBuildCust.address||'', firstName: _propBuildCust.first_name||'', lastName: _propBuildCust.last_name||'', email: _propBuildCust.email||'', customerId: _propPropId||'' }).replace(/"/g,'&quot;');
       h += '<button onclick="_propOpenAurora('+_buildAuroraArgs+')" style="flex:1;padding:8px 6px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);border-radius:8px;color:#4a9eff;cursor:pointer;font-size:0.72rem;font-weight:700;">&#9728; Aurora</button>';
       h += '<button onclick="window.open(\'https://imgur.com/upload\',\'_blank\')" style="flex:1;padding:8px 6px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:#aaa;cursor:pointer;font-size:0.72rem;font-weight:700;">&#128247; Imgur</button>';
-      var _solarBtnLabel = (!_propSolarData) ? '&#127755; Site Map' : (_propSolarData.loading ? '&#128338; Analyzing…' : '&#127755; Regenerate');
-      var _solarBtnStyle = 'flex:1;padding:8px 6px;background:rgba(0,180,120,0.1);border:1px solid rgba(0,180,120,0.3);border-radius:8px;color:#00c87a;cursor:pointer;font-size:0.72rem;font-weight:700;';
-      if (_propSolarData && _propSolarData.loading) _solarBtnStyle += 'opacity:0.6;pointer-events:none;';
-      h += '<button onclick="_propGenSolarSite(\''+_propBuildAddr+'\')" style="'+_solarBtnStyle+'">'+_solarBtnLabel+'</button>';
+      // Site Map feeds panel-yield/inverter-recovery math only — hide it once we can tell
+      // this build is genuinely battery-only (a battery item with no panel/inverter-restore
+      // item), since it has nothing to compute for that case. 2026-09-02, per Dennis:
+      // "it's asking for a site map (for a battery only sale)". Still shown before anything
+      // is selected, or once a panel/inverter item IS on the build — only suppressed for
+      // the specific case where it would be irrelevant.
+      var _hasBatteryItem = !!build.lineItems.find(function(li){ return li.id === 'pw3_retrofit' || li.id === 'pw3_expansion_pack'; });
+      var _hasPanelOrInverterItem = build.restoreArray || !!build.lineItems.find(function(li){ return li.id === 'panel_addon_420w' || (li.id && li.id.indexOf('inverter') !== -1); });
+      var _isBatteryOnlyBuild = _hasBatteryItem && !_hasPanelOrInverterItem;
+      if (!_isBatteryOnlyBuild) {
+        var _solarBtnLabel = (!_propSolarData) ? '&#127755; Site Map' : (_propSolarData.loading ? '&#128338; Analyzing…' : '&#127755; Regenerate');
+        var _solarBtnStyle = 'flex:1;padding:8px 6px;background:rgba(0,180,120,0.1);border:1px solid rgba(0,180,120,0.3);border-radius:8px;color:#00c87a;cursor:pointer;font-size:0.72rem;font-weight:700;';
+        if (_propSolarData && _propSolarData.loading) _solarBtnStyle += 'opacity:0.6;pointer-events:none;';
+        h += '<button onclick="_propGenSolarSite(\''+_propBuildAddr+'\')" style="'+_solarBtnStyle+'">'+_solarBtnLabel+'</button>';
+      }
       h += '</div>';
 
       // Solar site map visualization (when generated)
@@ -20076,7 +20125,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     });
   };
 
-  async function acceptProposal(custId, optionId, financing, loanTerm) {
+  // recordedBy: undefined for the customer's own self-service accept (their magic-link
+  // click IS the consent). When present ({rep_id, rep_name}), this is a rep recording a
+  // verbal/in-person acceptance on the customer's behalf — 2026-09-02, per Dennis, so a
+  // deal closed by phone or in person has a real way to be recorded instead of asking the
+  // customer to separately go find their own magic link. Stamped as its own provenance
+  // (accepted_via/accepted_by_rep_*), never disguised as the customer's own click — a rep
+  // recording it is not the same evidentiary weight as the customer's own device/IP, and
+  // the two must stay distinguishable in the data forever, not just at write time.
+  async function acceptProposal(custId, optionId, financing, loanTerm, recordedBy) {
     try {
       var client = supabase.createClient(SUPA_URL, SUPA_KEY);
       var resp = await client.from('customers').select('proposal,first_name,last_name,email,phone').eq('id', custId).limit(1);
@@ -20086,6 +20143,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var opt = (prop.options||[]).find(function(o){ return o.id===optionId; });
       if (!opt) return;
       prop.status = 'accepted'; prop.accepted_option = optionId; prop.financing = financing; prop.loan_term = loanTerm;
+      if (recordedBy && recordedBy.rep_id) {
+        prop.accepted_via = 'rep_recorded';
+        prop.accepted_by_rep_id = recordedBy.rep_id;
+        prop.accepted_by_rep_name = recordedBy.rep_name || '';
+        prop.accepted_recorded_at = new Date().toISOString();
+      } else {
+        prop.accepted_via = 'customer_self_service';
+      }
       var price = (optionId==='bundle' && (financing==='participate'||financing==='prepaid')) ? opt.participate_price : opt.price;
       await client.from('customers').update({ proposal: prop }).eq('id', custId);
       fetch(GHL_PROPOSAL_WEBHOOK, { method:'POST', mode:'no-cors', headers:{'Content-Type':'application/json'},
@@ -20093,9 +20158,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           email: data.email||'', full_name: ((data.first_name||'')+' '+(data.last_name||'')).trim(),
           phone: data.phone||'', proposal_option: optionId, proposal_label: opt.title,
           proposal_amount: price, financing: financing||'cash', loan_term: loanTerm||null,
-          milestone_deposit: opt.milestones.deposit, milestone_remaining: opt.milestones.remaining||null, milestone_permit: opt.milestones.permit||null, milestone_inspection: opt.milestones.inspection||null
+          milestone_deposit: opt.milestones.deposit, milestone_remaining: opt.milestones.remaining||null, milestone_permit: opt.milestones.permit||null, milestone_inspection: opt.milestones.inspection||null,
+          accepted_via: prop.accepted_via, recorded_by_rep: recordedBy ? (recordedBy.rep_name||'') : null
         })
       }).catch(function(e){ console.warn('GHL proposal:', e); });
+      var idx2 = adminCustomers.findIndex(function(x){ return x.id===custId; });
+      if (idx2 > -1) adminCustomers[idx2].proposal = prop;
+      // A rep recording this from the admin/tech portal has no #proposalWrap on the page
+      // (that element only exists inside the customer's own magic-link view) — the caller
+      // builds its own confirmation UI instead of falling through to the customer-facing one.
+      if (recordedBy && recordedBy.rep_id) return true;
       var wrap = document.getElementById('proposalWrap');
       // Same guard as the proposal-milestones panel: an option with no deposit configured
       // (opt.milestones stays {}) must not read as "$NaN deposit" in the confirmation the
@@ -20111,6 +20183,84 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '</div>';
     } catch(e) { alert('Error: '+e.message); }
   }
+
+  // "Record Acceptance" — 2026-09-02, per Dennis: a rep who closes a deal in person or by
+  // phone had no way to record it; Preview's own Accept button is deliberately disabled
+  // (it's a mockup of the customer's view, not a live action), and the only real Accept
+  // lives on the customer's own magic-link page. This is a distinct, honestly-labeled
+  // rep-side action — see acceptProposal's recordedBy param for how the provenance is kept
+  // separate from a genuine customer self-service accept.
+  window.openRecordAcceptance = async function(id) {
+    var existing = document.getElementById('recordAcceptModal');
+    if (existing) existing.remove();
+    var c = adminCustomers.find(function(x){ return x.id === id; });
+    if (!c) return;
+    var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var resp = await client.from('customers').select('proposal').eq('id', id).limit(1);
+    var raw = resp.data && resp.data[0] && resp.data[0].proposal;
+    var prop = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
+    if (!prop || prop.status !== 'sent' || !prop.options || !prop.options.length) {
+      alert(prop && prop.status === 'accepted'
+        ? 'This proposal has already been accepted.'
+        : 'No sent proposal on file yet — send one from the Internal Tool first.');
+      return;
+    }
+    var repId = 'admin', repName = 'Admin';
+    try { if (typeof person !== 'undefined' && person) { repId = person.id; repName = person.name || repId; } } catch(e) {}
+    var optsHtml = prop.options.map(function(opt, i) {
+      var hasParticipate = !!(opt.participate && opt.participate_price);
+      var label = 'Option ' + (i+1) + ' — ' + esc(opt.title||'');
+      if (!hasParticipate) {
+        return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.08);">'+
+          '<div><div style="font-weight:700;font-size:0.85rem;">'+label+'</div><div style="font-size:0.8rem;color:#8DC63F;">$'+parseFloat(opt.price).toLocaleString('en-US',{minimumFractionDigits:2})+' cash</div></div>'+
+          '<button onclick="_recordAcceptConfirm(\''+id+'\',\''+opt.id+'\',\'cash\',null,'+i+',\''+repId+'\',\''+esc(repName).replace(/'/g,"\\'")+'\')" style="width:auto;padding:8px 16px;background:#8DC63F;color:#000;border:none;border-radius:100px;font-weight:700;font-size:0.78rem;cursor:pointer;">Record</button>'+
+        '</div>';
+      }
+      return '<div style="padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.08);">'+
+        '<div style="font-weight:700;font-size:0.85rem;margin-bottom:6px;">'+label+' — $'+parseFloat(opt.participate_price).toLocaleString('en-US',{minimumFractionDigits:2})+' <span style="color:#666;font-weight:400;">w/ Participate</span></div>'+
+        '<div style="display:flex;gap:6px;flex-wrap:wrap;">'+
+          ['10','20','prepaid'].map(function(t){
+            // Matches selectLoanTerm's own onclick exactly: prepaid is its own financing
+            // value (no loan), 10/20 are 'participate' with an integer loan term.
+            var tLabel = t==='prepaid' ? 'Prepaid' : t+'-yr loan';
+            var fin = t==='prepaid' ? 'prepaid' : 'participate';
+            var term = t==='prepaid' ? 'null' : t;
+            return '<button onclick="_recordAcceptConfirm(\''+id+'\',\''+opt.id+'\',\''+fin+'\','+term+','+i+',\''+repId+'\',\''+esc(repName).replace(/'/g,"\\'")+'\')" style="width:auto;padding:7px 12px;background:rgba(141,198,63,0.12);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:100px;font-size:0.74rem;font-weight:700;cursor:pointer;">Record — '+tLabel+'</button>';
+          }).join('')+
+        '</div></div>';
+    }).join('');
+    var modal = document.createElement('div');
+    modal.id = 'recordAcceptModal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px;';
+    modal.innerHTML =
+      '<div style="background:#1a1c17;border:1px solid rgba(255,255,255,0.12);border-radius:14px;padding:20px 22px;max-width:460px;width:100%;">'+
+        '<div style="font-size:0.62rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#8DC63F;margin-bottom:4px;">Record Acceptance</div>'+
+        '<div style="font-weight:700;font-size:1rem;margin-bottom:4px;">'+esc((c.first_name||'')+' '+(c.last_name||''))+'</div>'+
+        '<div style="font-size:0.75rem;color:#888;margin-bottom:14px;">Use this only when the customer has verbally agreed — in person or by phone — and never touched their own magic link. Recorded as accepted by <b>'+esc(repName)+'</b>, not as the customer\'s own click.</div>'+
+        optsHtml+
+        '<button onclick="document.getElementById(\'recordAcceptModal\').remove();" style="width:100%;margin-top:14px;padding:10px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:100px;color:#aaa;cursor:pointer;font-size:0.82rem;">Cancel</button>'+
+      '</div>';
+    document.body.appendChild(modal);
+  };
+
+  window._recordAcceptConfirm = async function(custId, optionId, financing, loanTerm, optIdx, repId, repName) {
+    var c = adminCustomers.find(function(x){ return x.id === custId; });
+    var name = c ? ((c.first_name||'')+' '+(c.last_name||'')).trim() : 'this customer';
+    if (!confirm('Confirm: ' + name + ' has verbally agreed to this option. Record it as accepted by ' + repName + '?')) return;
+    try {
+      var ok = await acceptProposal(custId, optionId, financing, loanTerm, { rep_id: repId, rep_name: repName });
+      var modal = document.getElementById('recordAcceptModal');
+      if (ok && modal) {
+        modal.querySelector('div').innerHTML =
+          '<div style="text-align:center;padding:20px 0;">'+
+            '<div style="font-size:2rem;margin-bottom:10px;">&#9989;</div>'+
+            '<div style="font-weight:700;color:#8DC63F;margin-bottom:6px;">Acceptance recorded</div>'+
+            '<div style="font-size:0.8rem;color:#888;margin-bottom:16px;">Logged as accepted by '+esc(repName)+' on the customer\'s behalf.</div>'+
+            '<button onclick="document.getElementById(\'recordAcceptModal\').remove();" style="width:auto;padding:9px 20px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:100px;color:#aaa;cursor:pointer;font-size:0.82rem;">Close</button>'+
+          '</div>';
+      }
+    } catch(e) { alert('Error: ' + e.message); }
+  };
 
   window.propCustScen = function(optIdx, scenKey) {
     var saved = window._custOptSavings && window._custOptSavings[optIdx+'_'+scenKey];
