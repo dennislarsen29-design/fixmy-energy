@@ -1690,6 +1690,17 @@ Dennis: *"I clicked the wrong option on that last one. The loan should be calcul
 
 Verified via the standard `node -e "new Function(...)"` parse-check across all 4 inline `<script>` blocks after every edit.
 
+## Stale portal.html cached in Safari — Cosmic/Ronda/Cristina had to clear history (2026-09-02, per Dennis)
+Reported as "is it time to move to a native app for more reliable updates?" — it wasn't an architecture problem. `netlify.toml` had **no `[[headers]]` block anywhere** in the whole file, so every HTML page (portal.html included) shipped with zero explicit cache policy — Safari's own caching heuristics decided how long to hold onto an old copy, with nothing telling it a new deploy existed. That's exactly "have to clear history to see updates."
+- **Fix 1 — `Cache-Control: no-cache, must-revalidate` on `/*.html`.** `no-cache` does not mean "don't cache" — it still allows a fast conditional reload (a 304 when nothing changed), it just guarantees the browser checks with the server on every load instead of assuming its old copy is still good. Covers the common case: closing and reopening the tab, or a fresh page load, now always gets the latest deploy.
+- **Fix 2 — an update-check banner, since headers alone don't reach a tab that's already open.** Cosmic/Ronda/Cristina's actual usage pattern (an iPad left open on the dialer/ops view for hours) is exactly the case Fix 1 can't help — a loaded page never re-fetches itself on its own. `_pvCaptureBuildTag()`/`_pvCheckForUpdate()` (portal.html, right before the AUTO LOGIN block) poll this same URL's own `Last-Modified`/`ETag` via a plain `HEAD` request (`cache:'no-store'`, so the check itself can never be answered from a stale cache) every 5 minutes; the instant the tag changes, a dismissible bottom banner appears — "✨ A new version of this app is ready" with **Refresh Now** / **Later**.
+- ⚠️ **Deliberately never auto-reloads.** This codebase has repeated, hard-won lessons elsewhere (a GPS tick wiping a typed note, a re-render nuking an open modal — see the canvass/dialer entries throughout this file) about a surprise re-render destroying in-progress work. An unannounced page reload is the same mistake at the scale of the whole app — the rep decides when, never the code.
+- **Still worth checking if this recurs on a specific device:** whether the affected person has the portal saved to their iOS Home Screen pointed at a stale Netlify **deploy-preview** URL (`*.netlify.app`, a snapshot of one branch/PR) instead of the real production domain — that would never update regardless of these fixes, since it's a different, frozen deployment entirely. Ask them to confirm the address bar reads `fixmy.energy`, not a `netlify.app` subdomain, before assuming the cache fix didn't work.
+- **Not built, and not needed unless this keeps recurring:** a real service-worker-based PWA update flow (versioned cache names, `skipWaiting`/`clients.claim`). That's meaningfully more complexity and ongoing maintenance than this app has needed so far — the two fixes above address the actual reported symptom without it.
+- Verify live once deployed: `curl -I https://fixmy.energy/portal.html` should show `cache-control: no-cache, must-revalidate` in the response headers.
+
+Verified via the standard `node -e "new Function(...)"` parse-check across all 4 inline `<script>` blocks after every edit.
+
 ## Common Patterns
 ```js
 // Null guard for conditionally-rendered fields (prevents TypeError on NS leads)

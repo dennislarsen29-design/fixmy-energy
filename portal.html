@@ -23478,6 +23478,53 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     } catch(e){}
     return base;
   }
+  // ── UPDATE CHECK (2026-09-02, per Dennis) ───────────────────────────────────
+  // The new Cache-Control header (netlify.toml) fixes the common case — a rep who
+  // closes and reopens the tab always gets the latest deploy. It does NOT help
+  // someone who leaves this tab open for hours/days (an iPad left on the dialer or
+  // a kiosk-style Ops tablet, exactly how Cosmic/Ronda/Cristina actually use this),
+  // since a page that's already loaded never re-fetches itself on its own. This
+  // polls this same URL's own Last-Modified/ETag (a plain HEAD, cache:'no-store' so
+  // it can never be answered from a stale cache) and shows a dismissible banner the
+  // moment it changes — i.e. the instant a new deploy actually lands, not on some
+  // fixed guess of how often deploys happen.
+  // ⚠️ Deliberately never auto-reloads. This app has repeated, hard-won lessons
+  // elsewhere (GPS ticks wiping a typed note, a re-render nuking an open modal)
+  // about a surprise re-render destroying in-progress work — an unannounced reload
+  // is the same mistake at the scale of the whole page. The rep decides when.
+  var _pvBuildTag = null;
+  var _pvUpdateBannerShown = false;
+  function _pvTagFromHeaders(r) { return r.headers.get('etag') || r.headers.get('last-modified') || null; }
+  function _pvCaptureBuildTag() {
+    fetch(location.pathname, { method: 'HEAD', cache: 'no-store' })
+      .then(function(r){ _pvBuildTag = _pvTagFromHeaders(r); })
+      .catch(function(){});
+  }
+  function _pvShowUpdateBanner() {
+    if (_pvUpdateBannerShown || document.getElementById('pvUpdateBanner')) return;
+    _pvUpdateBannerShown = true;
+    var b = document.createElement('div');
+    b.id = 'pvUpdateBanner';
+    b.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:99998;background:#8DC63F;color:#1A1A1A;padding:12px 16px;display:flex;align-items:center;justify-content:center;gap:14px;flex-wrap:wrap;font-size:0.85rem;font-weight:700;box-shadow:0 -2px 12px rgba(0,0,0,0.25);';
+    b.innerHTML = '<span>&#10024; A new version of this app is ready.</span>'+
+      '<button onclick="location.reload()" style="width:auto;padding:7px 16px;background:#1A1A1A;color:#8DC63F;border:none;border-radius:100px;font-weight:800;font-size:0.8rem;cursor:pointer;">&#8635; Refresh Now</button>'+
+      '<button onclick="document.getElementById(\'pvUpdateBanner\').remove()" style="width:auto;background:none;border:none;color:#1A1A1A;opacity:0.7;font-size:0.8rem;cursor:pointer;text-decoration:underline;">Later</button>';
+    document.body.appendChild(b);
+  }
+  function _pvCheckForUpdate() {
+    if (!_pvBuildTag) return; // haven't captured a baseline yet — nothing to compare
+    fetch(location.pathname, { method: 'HEAD', cache: 'no-store' })
+      .then(function(r){
+        var tag = _pvTagFromHeaders(r);
+        if (tag && tag !== _pvBuildTag) _pvShowUpdateBanner();
+      })
+      .catch(function(){ /* offline or blocked — try again next interval */ });
+  }
+  window.addEventListener('load', function(){
+    _pvCaptureBuildTag();
+    setInterval(_pvCheckForUpdate, 5 * 60 * 1000); // every 5 min — deploys aren't that frequent, and this is a pure background check
+  });
+
   // ── AUTO LOGIN ─────────────────────────────────────────────────────────────
   window.addEventListener('load', async function() {
     // Magic link URL params take priority — skip session restore if present
