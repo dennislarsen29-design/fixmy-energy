@@ -1625,6 +1625,15 @@ There was exactly one path to `acceptProposal` — the customer's own magic-link
 
 Verified via the standard `node -e "new Function(...)"` parse-check across all 4 inline `<script>` blocks after every edit.
 
+### A dead photo URL took down the whole Quoya Assist insight (fixed 2026-09-02)
+Reported live off a screenshot: generating a proposal insight for a lead with uploaded photos returned "Could not generate insight: Claude API error 400: {...\"Unable to download the file. Please verify the URL and try again.\"}" — nothing generated at all, including the plain customer-facing paragraph that has nothing to do with photos.
+- **Root cause:** `generate-proposal-insight.js` sends every uploaded photo as an `image` content block with `source:{type:'url', url:p.url}` — Anthropic fetches each URL server-side. All photo blocks ride in the SAME message as the customer paragraph request, so if even ONE photo's Storage URL is unreachable (a deleted file, a row whose object never actually finished uploading, a bucket-policy hiccup), Anthropic 400s the ENTIRE request and the rep gets nothing — not even the text-only insight the photos were never required for.
+- **Fix:** `callClaude(withPhotos)` is now a retryable helper. On a 400 with photos attached, the function retries once with photos dropped entirely (a 400 on this endpoint is essentially always a request-shape problem — most commonly one bad image URL — never billing/auth/rate-limit, which come back as 401/403/429/529 instead, so this retry is bounded and cheap). The retry's result still returns a normal customer paragraph; a `photo_warning` field tells the rep photos couldn't be read this pass. `generateProposalInsight()` in portal.html prepends that warning as a bracketed, editable line at the top of the (already rep-reviewed-before-send) insight textarea — no new UI element, matches the existing "Rep reviews and edits before sending" contract.
+- **Not fixed here, flagged:** WHY a specific photo's URL is unreachable wasn't diagnosed — the sandbox this was built in can't reach `supabase.co` to test the actual failing URL, and doing so wasn't necessary for the fix (the retry makes the failure mode survivable regardless of cause). If this recurs on the same lead, check whether that specific `job_photos` row's `url` actually resolves (deleted Storage object vs. a genuinely malformed URL) before assuming the retry-fallback is masking a real, fixable data problem.
+- Same family as the Regrid `no_key`/Tracerfy 429/permit-tally lesson repeated throughout this file, one level removed: **a single failure inside a batched request must not be allowed to take the whole batch down when the rest of the request doesn't depend on it.**
+
+Verified via `node --check` on `generate-proposal-insight.js` and the standard portal.html parse-check.
+
 ## Common Patterns
 ```js
 // Null guard for conditionally-rendered fields (prevents TypeError on NS leads)

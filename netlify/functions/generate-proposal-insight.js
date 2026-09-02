@@ -166,24 +166,44 @@ exports.handler = async function(event) {
 
   // When photos are present, Quoya first reads the equipment and appends a short tech-facing
   // "Quoya Insight" block (issues / recalls / warranty / suggested fixes), then the customer
-  // paragraph. Photos ride as image blocks; web_search lets it verify recalls/warranty.
-  const hasPhotos = photos.length > 0;
-  const content = [];
-  photos.forEach(p => content.push({ type: 'image', source: { type: 'url', url: p.url } }));
-  content.push({ type: 'text', text: (hasPhotos
-    ? `Uploaded equipment photos are attached (labels: ${photos.map(p => p.label || 'unlabeled').join(', ')}).\n\n`
-    : '') + userMessage });
+  // paragraph. Photos ride as image blocks (source:{type:'url'}) — Anthropic fetches them
+  // server-side. A dead/unreachable Storage URL (deleted file, bucket ACL hiccup, a photo row
+  // whose object never actually landed) makes Anthropic's fetch fail with a 400
+  // "Unable to download the file" — and because ALL photo blocks ride in the SAME message as
+  // the customer-facing paragraph, one bad photo used to take the whole insight down with it,
+  // including the plain-text paragraph that has nothing to do with photos at all.
+  const buildContent = (withPhotos) => {
+    const c = [];
+    if (withPhotos) photos.forEach(p => c.push({ type: 'image', source: { type: 'url', url: p.url } }));
+    c.push({ type: 'text', text: (withPhotos
+      ? `Uploaded equipment photos are attached (labels: ${photos.map(p => p.label || 'unlabeled').join(', ')}).\n\n`
+      : '') + userMessage });
+    return c;
+  };
 
-  const photoSystemAddon = hasPhotos ? `
+  const photoSystemAddon = `
 
 PHOTO ANALYSIS (Quoya Insight) — when equipment photos are attached, BEFORE the customer paragraph, add a short technician-facing block titled "QUOYA INSIGHT (tech):" with 2–5 bullet points that:
 - Identify the equipment you can see (inverter/panel/battery/MSP make & model, and any visible serial/model numbers).
 - Flag likely issues, failure signs, or code concerns visible in the photos.
 - Use web_search to check for known recalls, common failure modes, and warranty status/terms for the identified make/model or serial where possible — cite what you find briefly.
 - Suggest what the tech should verify or bring to the diagnostic appointment.
-Keep it factual and only claim what the photos or search support. After that block, add a line "---" and then the customer-facing paragraph per the rules below.` : '';
+Keep it factual and only claim what the photos or search support. After that block, add a line "---" and then the customer-facing paragraph per the rules below.`;
 
-  try {
+  const buildSystem = (withPhotos) => `You are Quoya, Solar Review's solar assessment + sales AI.${withPhotos ? photoSystemAddon : ''}
+
+CUSTOMER PARAGRAPH RULES:
+${focusInstructions}
+- Use ONLY the data provided. Never invent numbers. If diagnostic findings are given, reference them directly and specifically — the tech saw this with their own eyes, making it credible and personal to this homeowner.
+- If calculated_monthly_savings or calculated_annual_savings are provided, use those exact numbers — they were derived from actual kWh production × verified SDG&E rates, not guessed.
+- If Google Solar API data is provided, reference it as an address-specific estimate for this roof.
+- Write in plain conversational English. No jargon, no buzzwords.
+- Do NOT start with "I" or "Your system". Do NOT use the word "journey".
+- Output the customer paragraph with no labels/headers/quotes${withPhotos ? ' (the QUOYA INSIGHT block above is the only exception when photos are attached)' : ''}.
+
+${RESEARCH_CONTEXT}`;
+
+  async function callClaude(withPhotos) {
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -194,37 +214,43 @@ Keep it factual and only claim what the photos or search support. After that blo
       },
       body: JSON.stringify({
         model: 'claude-sonnet-5',
-        max_tokens: hasPhotos ? 1100 : 500,
-        tools: hasPhotos ? [{ type: 'web_search_20250305', name: 'web_search', max_uses: 4 }] : undefined,
-        system: `You are Quoya, Solar Review's solar assessment + sales AI.${photoSystemAddon}
-
-CUSTOMER PARAGRAPH RULES:
-${focusInstructions}
-- Use ONLY the data provided. Never invent numbers. If diagnostic findings are given, reference them directly and specifically — the tech saw this with their own eyes, making it credible and personal to this homeowner.
-- If calculated_monthly_savings or calculated_annual_savings are provided, use those exact numbers — they were derived from actual kWh production × verified SDG&E rates, not guessed.
-- If Google Solar API data is provided, reference it as an address-specific estimate for this roof.
-- Write in plain conversational English. No jargon, no buzzwords.
-- Do NOT start with "I" or "Your system". Do NOT use the word "journey".
-- Output the customer paragraph with no labels/headers/quotes (the QUOYA INSIGHT block above is the only exception when photos are attached).
-
-${RESEARCH_CONTEXT}`,
-        messages: [{ role: 'user', content }],
+        max_tokens: withPhotos ? 1100 : 500,
+        tools: withPhotos ? [{ type: 'web_search_20250305', name: 'web_search', max_uses: 4 }] : undefined,
+        system: buildSystem(withPhotos),
+        messages: [{ role: 'user', content: buildContent(withPhotos) }],
       }),
     });
-
     if (!resp.ok) {
       const errText = await resp.text().catch(() => '');
-      return { statusCode: 200, headers: CORS, body: JSON.stringify({ error: 'Claude API error ' + resp.status + ': ' + errText.slice(0, 200) }) };
+      return { ok: false, status: resp.status, errText };
     }
-
     const data = await resp.json();
-    // web_search returns mixed blocks (text + tool_use + tool_result) — join the text blocks.
     const insight = Array.isArray(data.content)
       ? data.content.filter(b => b.type === 'text').map(b => b.text).join('').trim()
       : (data.content?.[0]?.text?.trim() ?? '');
-    if (!insight) return { statusCode: 200, headers: CORS, body: JSON.stringify({ error: 'No insight returned' }) };
+    return { ok: true, insight };
+  }
 
-    return { statusCode: 200, headers: CORS, body: JSON.stringify({ insight }) };
+  const hasPhotos = photos.length > 0;
+  try {
+    let result = await callClaude(hasPhotos);
+
+    // A 400 with photos attached is almost always Anthropic rejecting the request SHAPE
+    // (most commonly one of the image URLs couldn't be fetched) — never a billing/auth/rate
+    // problem, which come back as 401/403/429/529 instead. Retry once with the photos
+    // dropped so a single bad Storage URL doesn't cost the rep the whole customer paragraph.
+    let photoWarning = null;
+    if (!result.ok && hasPhotos && result.status === 400) {
+      photoWarning = 'Quoya could not read the uploaded photos this time (one may be missing or unreachable) — generated without the equipment analysis.';
+      result = await callClaude(false);
+    }
+
+    if (!result.ok) {
+      return { statusCode: 200, headers: CORS, body: JSON.stringify({ error: 'Claude API error ' + result.status + ': ' + result.errText.slice(0, 200) }) };
+    }
+    if (!result.insight) return { statusCode: 200, headers: CORS, body: JSON.stringify({ error: 'No insight returned' }) };
+
+    return { statusCode: 200, headers: CORS, body: JSON.stringify({ insight: result.insight, photo_warning: photoWarning }) };
   } catch (e) {
     return { statusCode: 200, headers: CORS, body: JSON.stringify({ error: e.message }) };
   }
