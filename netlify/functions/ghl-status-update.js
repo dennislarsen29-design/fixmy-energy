@@ -1,7 +1,17 @@
 // Receives status update webhooks from GHL and updates the customer record in Supabase.
 // Trigger types:
 //   'invoice_paid'     — customer paid invoice → set invoice_status = 'paid'
+//   'invoice_created'  — invoice generated/sent to customer → set invoice_status = 'sent'
 //   'agreement_signed' — customer signed agreement → set agreement_status = 'signed'
+//   'agreement_sent'   — agreement sent to customer → set agreement_status = 'sent'
+//
+// ⚠️ 2026-09-03: found via the GHL "Send-Diag-Agreement" workflow's Execution logs
+// showing 100% "Failed" on its Webhook step across many contacts/days. CLAUDE.md has
+// documented all four trigger values above since this function was built, but the
+// code itself only ever implemented 'invoice_paid'/'agreement_signed' — any call with
+// 'invoice_created' or 'agreement_sent' hit the `return 400 'Unknown trigger'` branch
+// below on every single request, which is exactly the failure shape reported (never
+// intermittent, never one contact — every execution, for weeks). Added both.
 
 const SUPA_URL = 'https://kbtobyoumvbcxfbugsid.supabase.co';
 const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtidG9ieW91bXZiY3hmYnVnc2lkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ1NjY5MDcsImV4cCI6MjA5MDE0MjkwN30.nLE0TlMu43E4dNRxxjoc6P1OQMjfwXgonbA2MrCCrhk';
@@ -29,9 +39,14 @@ exports.handler = async function(event) {
   let updates = {};
   if (trigger === 'invoice_paid') {
     updates = { invoice_status: 'paid' };
+  } else if (trigger === 'invoice_created') {
+    updates = { invoice_status: 'sent' };
   } else if (trigger === 'agreement_signed') {
     updates = { agreement_status: 'signed' };
+  } else if (trigger === 'agreement_sent') {
+    updates = { agreement_status: 'sent' };
   } else {
+    console.warn('ghl-status-update: unknown trigger', trigger, 'for', email || phone);
     return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Unknown trigger: ' + trigger }) };
   }
 
