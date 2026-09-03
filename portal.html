@@ -1185,16 +1185,51 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
   }
 
+  // Closes the popup and records dismissal — the GPS-knock-leads global flag
+  // (unchanged) PLUS the specific Web Partial Capture ids currently shown, so
+  // dismissing silences those exact records for the rest of the session without
+  // suppressing a genuinely new partial that arrives later (a different id).
+  window.dismissBbPopup = function(partialIds) {
+    var el = document.getElementById('bbHotPopup'); if (el) el.remove();
+    sessionStorage.setItem('bbPopupDismissed', '1');
+    try {
+      var ids = JSON.parse(sessionStorage.getItem('bbPartialsDismissedIds') || '[]');
+      (partialIds || []).forEach(function(id){ if (ids.indexOf(id) === -1) ids.push(id); });
+      sessionStorage.setItem('bbPartialsDismissedIds', JSON.stringify(ids));
+    } catch(e) {}
+  };
+
   async function showBlackBoxPopup() {
     var alreadyDismissed = !!sessionStorage.getItem('bbPopupDismissed');
+    // ⚠️ 2026-09-03, per Dennis — real bugs found in this popup, all in the "Web
+    // Partial Captures" section (a stub with just name+address, matching Neil
+    // Fjellestad's card exactly — see the partial-lead-capture duplication fix
+    // documented elsewhere in this file):
+    // (1) The query never excluded archived=true rows, so a stub an admin had
+    //     already archived (the correct resolution for a duplicate/dead partial)
+    //     kept resurfacing on every 5-min poll and every fresh login forever —
+    //     archiving it did nothing to stop the nag.
+    // (2) Dismissal was tracked as one global session flag, and this section was
+    //     deliberately exempt from it ("always checked, not suppressed by
+    //     dismiss") — so tapping "Got It" never actually silenced a partial; the
+    //     next 5-minute poll (or any idle navigation that re-triggered a render)
+    //     brought the identical card straight back.
+    // Fix: exclude archived rows outright (same filter the main admin query
+    // already uses), and track dismissal PER LEAD ID rather than one global flag
+    // — dismissing a partial silences that specific one for the rest of the
+    // session, while a genuinely NEW partial capture (a different id) can still
+    // interrupt, which is what the original "not suppressed by dismiss" design
+    // was actually trying to preserve.
+    var dismissedIds = [];
+    try { dismissedIds = JSON.parse(sessionStorage.getItem('bbPartialsDismissedIds') || '[]'); } catch(e) {}
     try {
       var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
 
-      // Partial web captures — always checked, not suppressed by dismiss
       var cutoff24 = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
       var { data: partials } = await c2.from('customers')
-        .select('id,first_name,last_name,address,phone,email,created_at,sold_type,diagnostic_date,step')
+        .select('id,first_name,last_name,address,phone,email,created_at,sold_type,diagnostic_date,step,archived')
         .eq('partial_capture', true)
+        .or('archived.is.null,archived.eq.false')
         .gte('created_at', cutoff24)
         .order('created_at', {ascending: false})
         .limit(5);
@@ -1203,8 +1238,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var hasAddr = (p.address||'').trim().length > 0;
         // Anyone with a booked appointment, a sold job, or pipeline progress is
         // NOT a partial capture, whatever the flag says — never show them here.
-        var isActuallyPartial = !p.sold_type && !p.diagnostic_date && (p.step||1) <= 1;
-        return hasName && hasAddr && isActuallyPartial;
+        // Per Dennis, a genuine partial capture is specifically name+address with
+        // NO phone, NO email, and no evaluation time set yet — check phone/email
+        // directly too (not just the partial_capture flag) as a belt-and-braces
+        // guard in case that flag ever drifts out of sync with the real record.
+        var isActuallyPartial = !p.sold_type && !p.diagnostic_date && (p.step||1) <= 1 && !p.phone && !p.email;
+        return hasName && hasAddr && isActuallyPartial && dismissedIds.indexOf(p.id) === -1;
       });
 
       // GPS knock hot leads — suppressed if dismissed this session
@@ -1240,6 +1279,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       window._bbHotLeads = hotLeads.map(function(l) {
         return { id: l.id, first_name: l.first_name||'', last_name: l.last_name||'', address: l.address||'', phone: l.phone||'', knock_status: l.knock_status||'' };
       });
+      window._bbShownPartialIds = partials.map(function(p){ return p.id; });
 
       var totalCount = partials.length + hotLeads.length;
       var inner = '<div style="background:#1a1a1a;border:1px solid #333;border-radius:14px;max-width:440px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,0.8);overflow:hidden;">';
@@ -1247,7 +1287,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // Header
       inner += '<div style="background:rgba(141,198,63,0.07);padding:14px 18px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #282828;">';
       inner += '<h3 style="color:#8DC63F;margin:0;font-size:1rem;">&#128293; '+totalCount+' Hot Lead'+(totalCount>1?'s':'')+' Waiting</h3>';
-      inner += '<button onclick="document.getElementById(\'bbHotPopup\').remove();sessionStorage.setItem(\'bbPopupDismissed\',\'1\');" style="background:none;border:none;color:#6b7280;font-size:1.2rem;cursor:pointer;padding:0 4px;">&times;</button>';
+      inner += '<button onclick="dismissBbPopup(window._bbShownPartialIds)" style="background:none;border:none;color:#6b7280;font-size:1.2rem;cursor:pointer;padding:0 4px;">&times;</button>';
       inner += '</div><div style="max-height:320px;overflow-y:auto;">';
 
       // Partial web leads section
@@ -1266,7 +1306,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           if (p.address) inner += '<div style="font-size:0.7rem;color:#9ca3af;">&#128205; '+p.address+'</div>';
           if (p.phone)   inner += '<div style="font-size:0.7rem;color:#9ca3af;">&#128222; '+p.phone+'</div>';
           if (em && !em.endsWith('@setter.local')) inner += '<div style="font-size:0.7rem;color:#9ca3af;">&#9993; '+em+'</div>';
-          inner += '<button onclick="document.getElementById(\'bbHotPopup\').remove();sessionStorage.setItem(\'bbPopupDismissed\',\'1\');openLeadEditor(\''+p.id+'\');" style="margin-top:5px;width:100%;padding:5px;background:rgba(251,146,60,0.1);border:1px solid rgba(251,146,60,0.3);border-radius:7px;color:#fb923c;font-weight:700;font-size:0.72rem;cursor:pointer;">Call / Open Lead &#8594;</button>';
+          inner += '<button onclick="dismissBbPopup([\''+p.id+'\']);openLeadEditor(\''+p.id+'\');" style="margin-top:5px;width:100%;padding:5px;background:rgba(251,146,60,0.1);border:1px solid rgba(251,146,60,0.3);border-radius:7px;color:#fb923c;font-weight:700;font-size:0.72rem;cursor:pointer;">Call / Open Lead &#8594;</button>';
           inner += '</div>';
         });
         inner += '</div>';
@@ -1304,13 +1344,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // Action buttons
       inner += '<div style="padding:12px 16px;border-top:1px solid #282828;display:flex;flex-direction:column;gap:8px;">';
       inner += '<div style="display:flex;gap:8px;">';
-      inner += '<button onclick="document.getElementById(\'bbHotPopup\').remove();sessionStorage.setItem(\'bbPopupDismissed\',\'1\');" style="flex:1;padding:10px;background:#8DC63F;color:#1A1A1A;border:none;border-radius:8px;font-weight:700;cursor:pointer;font-size:0.85rem;">Got It — Stay on Leads</button>';
-      inner += '<button onclick="document.getElementById(\'bbHotPopup\').remove();sessionStorage.setItem(\'bbPopupDismissed\',\'1\');renderAdminCanvassView();" style="padding:10px 16px;background:#2a2a2a;color:#9ca3af;border:none;border-radius:8px;cursor:pointer;font-size:0.85rem;">View Black Box</button>';
+      inner += '<button onclick="dismissBbPopup(window._bbShownPartialIds)" style="flex:1;padding:10px;background:#8DC63F;color:#1A1A1A;border:none;border-radius:8px;font-weight:700;cursor:pointer;font-size:0.85rem;">Got It — Stay on Leads</button>';
+      inner += '<button onclick="dismissBbPopup(window._bbShownPartialIds);renderAdminCanvassView();" style="padding:10px 16px;background:#2a2a2a;color:#9ca3af;border:none;border-radius:8px;cursor:pointer;font-size:0.85rem;">View Black Box</button>';
       inner += '</div>';
       if (hotLeads.length) {
         inner += '<div style="display:flex;gap:8px;">';
-        inner += '<button onclick="(function(){try{localStorage.setItem(\'bbSavedLeads\',JSON.stringify((window._bbHotLeads||[]).map(function(l){return l.id;})));}catch(e){}document.getElementById(\'bbHotPopup\').remove();sessionStorage.setItem(\'bbPopupDismissed\',\'1\');})()" style="flex:1;padding:9px;background:#1f2937;color:#8DC63F;border:1px solid #374151;border-radius:8px;cursor:pointer;font-size:0.8rem;">&#128204; Save for Next Login</button>';
-        inner += '<button onclick="(function(){try{sessionStorage.setItem(\'bbPinnedRouteLeads\',JSON.stringify(window._bbHotLeads||[]));}catch(e){}document.getElementById(\'bbHotPopup\').remove();sessionStorage.setItem(\'bbPopupDismissed\',\'1\');renderAdminView(\'dashboard\');})()" style="flex:1;padding:9px;background:#1f2937;color:#a78bfa;border:1px solid #374151;border-radius:8px;cursor:pointer;font-size:0.8rem;">&#128203; Push to Routes</button>';
+        inner += '<button onclick="(function(){try{localStorage.setItem(\'bbSavedLeads\',JSON.stringify((window._bbHotLeads||[]).map(function(l){return l.id;})));}catch(e){}dismissBbPopup(window._bbShownPartialIds);})()" style="flex:1;padding:9px;background:#1f2937;color:#8DC63F;border:1px solid #374151;border-radius:8px;cursor:pointer;font-size:0.8rem;">&#128204; Save for Next Login</button>';
+        inner += '<button onclick="(function(){try{sessionStorage.setItem(\'bbPinnedRouteLeads\',JSON.stringify(window._bbHotLeads||[]));}catch(e){}dismissBbPopup(window._bbShownPartialIds);renderAdminView(\'dashboard\');})()" style="flex:1;padding:9px;background:#1f2937;color:#a78bfa;border:1px solid #374151;border-radius:8px;cursor:pointer;font-size:0.8rem;">&#128203; Push to Routes</button>';
         inner += '</div>';
       }
       inner += '</div></div>'; // end buttons + card
@@ -20986,6 +21026,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '</div>'+
         '</div>'+
       '</div>'+
+      '<div id="edSolarPanel_'+c.id+'" style="margin:4px 0 16px;"></div>'+
       (isNSEdit ?
         '<div class="editor-section-title">Axia/QCell Pipeline Status</div>'+
         '<div class="ed-grid" style="margin-bottom:8px;">'+
@@ -21128,6 +21169,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     loadEditorPhotos(c.id);
     edLoadPayments();
     edLoadAccounting();
+    if (c.address) loadEditorSolarPanel(c.address, 'edSolarPanel_'+c.id, c.id);
   }
 
   // ── Accounting panel: Sub Sheet costs + commissions per SOP ────────────────
@@ -23599,6 +23641,46 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
   function solarStat(val,label){ return '<div style="text-align:center;background:rgba(255,255,255,0.03);border-radius:8px;padding:10px 4px;"><div style="font-size:0.95rem;font-weight:700;color:#8DC63F;">'+val+'</div><div style="font-size:0.6rem;color:#aaa;margin-top:3px;">'+label+'</div></div>'; }
 
+  // ── Rooftop Solar Intelligence — admin/tech lead editors (2026-09-03, per Dennis:
+  // "this was lost somewhere, already shows up in Customer's Portal and Ops") ────────
+  // The satellite image + Google Solar API stats panel already exists on the customer
+  // portal (loadSolarData → #solarWrap) and the Ops job-detail view (loadOpsSolarPanel
+  // → #opssolar_<jid>) — both duplicate the same geocode → static-map → Solar API
+  // fetch sequence independently. Rather than writing a THIRD near-identical copy for
+  // the admin/tech lead editors, this is the one shared implementation both new call
+  // sites (openLeadEditor, salesEditLead) use — loadSolarData/loadOpsSolarPanel are
+  // left exactly as they are (already working, customer- and Ops-facing, not worth
+  // the risk of touching under this ask) rather than retrofitted onto this too.
+  var _editorSolarCache = {};
+  async function loadEditorSolarPanel(address, elId, cacheKey) {
+    var wrap = document.getElementById(elId);
+    if (!wrap) return;
+    if (cacheKey && _editorSolarCache[cacheKey]) { wrap.innerHTML = _editorSolarCache[cacheKey]; return; }
+    if (!address || address === '--') { wrap.innerHTML = ''; return; }
+    wrap.innerHTML = '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:12px;"><strong style="font-size:0.75rem;color:#8DC63F;">&#127752; Rooftop Solar Intelligence</strong><p style="color:#888;font-size:0.72rem;margin-top:6px;">Analyzing rooftop&hellip;</p></div>';
+    try {
+      var geo = await fetch('https://maps.googleapis.com/maps/api/geocode/json?address='+encodeURIComponent(address)+'&key='+GKEY);
+      var gd = await geo.json();
+      if (gd.status !== 'OK') { wrap.innerHTML = ''; return; }
+      var loc = gd.results[0].geometry.location;
+      var sat = 'https://maps.googleapis.com/maps/api/staticmap?center='+encodeURIComponent(address)+'&zoom=19&size=640x220&maptype=satellite&markers=color:red%7C'+loc.lat+','+loc.lng+'&key='+GKEY;
+      var sr = await fetch('https://solar.googleapis.com/v1/buildingInsights:findClosest?location.latitude='+loc.lat+'&location.longitude='+loc.lng+'&requiredQuality=LOW&key='+GKEY);
+      var s = sr.status === 200 ? (await sr.json()).solarPotential : null;
+      var stats = '';
+      if (s) {
+        var maxKw = s.maxArrayPanelsCount ? (s.maxArrayPanelsCount*0.4).toFixed(1) : '--';
+        var sunHrs = s.maxSunshineHoursPerYear ? Math.round(s.maxSunshineHoursPerYear) : '--';
+        stats = '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:10px;">'+solarStat(s.maxArrayPanelsCount||'--','Max Panels')+solarStat(maxKw+' kW','Max Capacity')+solarStat(sunHrs+' hrs','Peak Sun/Yr')+'</div>';
+      }
+      var html = '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:12px;">'+
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><span style="font-size:0.75rem;font-weight:700;color:#8DC63F;">&#127752; Rooftop Solar Intelligence</span><span style="font-size:0.6rem;color:#666;">Google Solar API</span></div>'+
+        '<img src="'+sat+'" style="width:100%;border-radius:8px;max-height:180px;object-fit:cover;" onerror="this.style.display=\'none\'"/>'+stats+'</div>';
+      if (cacheKey) _editorSolarCache[cacheKey] = html;
+      wrap.innerHTML = html;
+    } catch(e) { wrap.innerHTML = '<div style="font-size:0.72rem;color:#888;padding:4px 0;">Solar data unavailable for this address.</div>'; }
+  }
+  window.loadEditorSolarPanel = loadEditorSolarPanel;
+
   // On session restore, the TECHS/SALES_REPS/SETTERS hardcoded arrays are only used to
   // recover id/name/code — they carry no DB-only fields like his_license. Re-fetch the
   // real team_members row so those fields reflect the CURRENT database state on every
@@ -25252,6 +25334,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             '<div id="seBillUploadStatus" style="font-size:0.65rem;margin-top:3px;min-height:14px;"></div>'+
           '</div>'+
         '</div>'+
+        '<div id="seSolarPanel_'+l.id+'" style="margin:4px 0 16px;"></div>'+
         '<div class="editor-section-title" data-tour="notes">Notes</div>'+
         '<div id="seNotesLog" style="margin-bottom:8px;">'+_renderNotesLog(_parseNotes(l.notes||''))+'</div>'+
         '<textarea id="seNoteInput" class="ed-input" rows="2" placeholder="Add a note…" style="margin-bottom:6px;"></textarea>'+
@@ -25282,6 +25365,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       slot.scrollIntoView({behavior:'smooth',block:'start'});
       currentJobId = l.id;
       loadJobPhotos(l.id).then(function() { window.renderSalesPhotoGrid(l.id); });
+      if (l.address) loadEditorSolarPanel(l.address, 'seSolarPanel_'+l.id, l.id);
     };
 
     window.renderSalesPhotoGrid = function(id) {
