@@ -18295,6 +18295,81 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return h;
   }
 
+  // ── Administration status vocabulary (2026-09-03, per Dennis — "the lead page is
+  // complicated, messy, and redundant") ───────────────────────────────────────────
+  // Invoice/Deposit/Agreement used to render their raw, granular field values
+  // straight onto cards and editors (e.g. "INV: overdue", "AGR: sent") — different
+  // wording in different places for what a rep or Dennis really just wants to know
+  // as one of: has this been collected, is it still coming, or does it not apply to
+  // this lead at all. These two functions are the ONE place that answer is computed,
+  // shared by buildLeadCard (both portals' lead list) and both lead editors, so the
+  // wording can never drift between them again. Per Dennis's explicit choice: this is
+  // a COMPUTED DISPLAY only — the real invoice_status/agreement_status fields
+  // underneath are untouched and still drive Sign & Pay, auto-conversion-to-job, and
+  // the overdue/partial-payment banners exactly as before. Nothing here is a new
+  // manually-typed field.
+  function diagFeeStatus(c) {
+    if (!c) return 'na';
+    if (c.lead_category === 'new_solar') return 'na';           // Axia/QCell never charges this
+    if (c.invoice_status === 'paid') return 'collected';        // real money always wins, regardless of what the job became later
+    if (['sent','pending','partial','overdue'].indexOf(c.invoice_status) >= 0) return 'pending';
+    // Nothing charged (invoice_status none/unset) — NA only when the job itself
+    // never involves a Solar-Review-collected diagnostic fee: Axia (caught above),
+    // or a battery retrofit / monitoring job where Cosmic collects directly and no
+    // fee was ever due here (see the 2026-08-30 "Cosmic collects directly" change).
+    // Everything else (a live lead, or a diagnostic-sold job not yet charged) is
+    // still genuinely on its way to being collected.
+    if (c.sold_type === 'battery_retrofit' || c.sold_type === 'monitoring') return 'na';
+    return 'pending';
+  }
+  function agreementDisplayStatus(c) {
+    if (!c) return 'na';
+    if (c.agreement_status === 'signed') return 'collected';
+    if (c.agreement_status === 'declined') return 'declined';
+    if (c.agreement_status === 'pending' || c.agreement_status === 'sent') return 'pending';
+    if (c.lead_category === 'new_solar') return 'na';           // Axia/QCell has no Sign & Pay agreement flow
+    return 'pending';
+  }
+  var ADMIN_STATUS_META = {
+    collected: { label:'Collected', icon:'&#9989;', color:'#8DC63F', bg:'rgba(141,198,63,0.12)' },
+    pending:   { label:'Pending',   icon:'&#9203;',  color:'#ffaa00', bg:'rgba(255,170,0,0.12)' },
+    declined:  { label:'Declined',  icon:'&#10060;', color:'#ef4444', bg:'rgba(239,68,68,0.12)' },
+    na:        { label:'N/A',       icon:'&mdash;',  color:'#777',    bg:'rgba(255,255,255,0.05)' }
+  };
+  function adminStatusBadgeHtml(key, prefix) {
+    var m = ADMIN_STATUS_META[key] || ADMIN_STATUS_META.na;
+    return '<span class="mini-badge" style="background:'+m.bg+';color:'+m.color+';font-weight:700;">'+(prefix?prefix+': ':'')+m.icon+' '+m.label+'</span>';
+  }
+  // Battery & System Upgrade M1/$1,000 flat + M2/80% + M3/20% of the remainder —
+  // per Dennis, 2026-09-03. M1 reuses the existing deposit_status/deposit_amount
+  // fields (a battery job's deposit IS the $1,000 — no separate column needed).
+  // ⚠️ M2/M3 deliberately reuse the EXISTING milestone2_status/milestone2_amount and
+  // milestone3_status/milestone3_amount columns too, rather than new ones — found
+  // while building this that those columns already power two live features beyond
+  // the old lead-editor UI being replaced here: the admin Jobs card's "M2 Paid"/
+  // "M3 Paid" buttons (markOpsMilestonePaid — Solar Review confirming it paid the
+  // Ops partner) and the Ops Portal's own Revenue tab ("Payment 2"/"Payment 3"
+  // owed). Introducing parallel new columns would have silently orphaned both.
+  // Reusing them means: the amount is now auto-computed from br_revenue instead of
+  // hand-typed (so markOpsMilestonePaid's confirm dialog and the Ops Portal's owed
+  // total are now always accurate, a real improvement, not just a UI simplification),
+  // and the old Stripe "Payment Link"/"Payment Method" sub-fields (milestone2_url/
+  // milestone2_payment_method and the M3 equivalents) are dropped from the editor
+  // entirely — Cosmic collects directly from the customer now (2026-08-30), so
+  // Solar Review never needs to generate/send a Stripe milestone link again. Checked:
+  // no other file reads those two columns, so removing them from the editor is safe.
+  var BR_M1_FIXED = 1000;
+  function brMilestoneAmounts(c) {
+    var total = parseFloat(c.br_revenue) || 0;
+    var m1 = parseFloat(c.deposit_amount) || (total ? Math.min(BR_M1_FIXED, total) : BR_M1_FIXED);
+    var remainder = Math.max(0, total - m1);
+    return { m1: m1, m2: remainder * 0.8, m3: remainder * 0.2, total: total };
+  }
+  window.diagFeeStatus = diagFeeStatus;
+  window.agreementDisplayStatus = agreementDisplayStatus;
+  window.adminStatusBadgeHtml = adminStatusBadgeHtml;
+  window.brMilestoneAmounts = brMilestoneAmounts;
+
   function buildLeadCard(c) {
     var isNS = c.lead_category === 'new_solar';
     var magic = 'https://fixmy.energy/portal?email='+encodeURIComponent(c.email||'')+'&code='+encodeURIComponent(c.access_code||(c.phone||'').replace(/\D/g,''));
@@ -18304,8 +18379,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var _cardDate = c.updated_at || c.created_at;
     var _cardDateIsUpdate = !!(c.updated_at && c.created_at && c.updated_at !== c.created_at);
     var created = _cardDate ? (_cardDateIsUpdate ? 'Updated ' : '') + new Date(_cardDate).toLocaleDateString('en-US',{month:'short',day:'numeric'}) : '';
-    var invBadge = c.invoice_status&&c.invoice_status!=='none' ? '<span class="mini-badge" style="background:rgba(255,170,0,0.12);color:#ffaa00;">INV: '+c.invoice_status+'</span>' : '';
-    var agBadge  = c.agreement_status&&c.agreement_status!=='none' ? '<span class="mini-badge" style="background:rgba(74,158,255,0.12);color:#4a9eff;">AGR: '+c.agreement_status+'</span>' : '';
+    // Diagnostic Fee / Agreement badges — computed Collected/Pending/Declined/N-A labels
+    // (diagFeeStatus/agreementDisplayStatus, defined above) rather than the raw
+    // invoice_status/agreement_status string, so a card never again reads "INV: sent"
+    // in one place and "Sign & Pay pending" in another for the same underlying state.
+    // Hidden entirely at N/A (no diagnostic fee ever applies here) so a card isn't
+    // cluttered with a badge that has nothing to say — same as the old !=='none' gate.
+    var _invSt = diagFeeStatus(c);
+    var invBadge = _invSt !== 'na' ? adminStatusBadgeHtml(_invSt, 'Fee') : '';
+    var _agSt = agreementDisplayStatus(c);
+    var agBadge  = _agSt !== 'na' ? adminStatusBadgeHtml(_agSt, 'Agmt') : '';
     var opsBadge = (c.ops_ready&&!c.assigned_ops) ? '<span class="mini-badge" style="background:rgba(249,115,22,0.15);color:#f97316;">🔧 OPS NEEDED</span>' : '';
     // Only a genuine unfinished partial (explicit partial_capture flag) is "incomplete".
     // A completed booking that merely lacks a diagnostic_date (e.g. GHL AppointmentCreate
@@ -20933,46 +21016,70 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             '<div id="edBookStatus" style="font-size:0.72rem;color:#888;margin-top:6px;"></div>'+
           '</div>'+
         '</div>'+
-        '<div class="editor-section-title">Invoice</div>'+
-        '<div class="ed-grid">'+
-          edSelect('Invoice Status','edInvSt',c.invoice_status||'none',[['none','None'],['draft','Draft'],['sent','Sent'],['pending','Payment Due'],['paid','Paid'],['partial','Partially Paid'],['overdue','Overdue']])+
-          edField('Amount ($)','edInvAmt',c.invoice_amount||'','number')+
-        '</div>'+
-        '<div id="edPaymentsPanel" data-cid="'+c.id+'" style="margin:4px 0 10px;"><div style="font-size:0.7rem;color:#555;">Loading payments&hellip;</div></div>'
+        ''
       : '')+
-      '<div id="edAcctPanel" data-cid="'+c.id+'" data-cat="'+(c.lead_category||'fixmy')+'" data-rep="'+(c.rep_id||'')+'" data-ops="'+(c.assigned_ops||'')+'" style="margin:4px 0 10px;"></div>'+
-      (!isNSEdit ?
-        '<div class="editor-section-title">Deposit &amp; Milestones</div>'+
-        '<div class="ed-grid">'+
-          edSelect('Deposit Status','edDepSt',c.deposit_status||'none',[['none','None'],['sent','Invoice Sent'],['pending','Processing / Pending'],['paid','Paid ✓']])+
-          edField('Deposit Amount ($)','edDepAmt',c.deposit_amount||'','number')+
-        '</div>'+
-        (c.sold_type === 'battery_retrofit' ?
-          '<div style="padding:6px 12px;background:rgba(155,109,232,0.07);border:1px solid rgba(155,109,232,0.2);border-radius:8px;font-size:0.7rem;color:#9b6de8;margin:8px 0;">Powerwall 3 — 3 Milestone Payment Schedule</div>'+
+      // ── Administration Tab (2026-09-03, per Dennis — "the lead page is complicated,
+      // messy, and redundant") ────────────────────────────────────────────────────────
+      // Was 4 separate always-open sections (Invoice, Deposit & Milestones, Agreement,
+      // Sub Sheet/Commissions) scattered through the editor. Now one collapsed-by-
+      // default <details>, so the editor reads short by default and an admin opens it
+      // only when they actually need payment/agreement detail. The summary line shows
+      // the computed Fee/Agreement badges even while collapsed, so the common case
+      // ("is this customer paid up?") needs no click at all.
+      '<details id="edAdminTab" style="margin:12px 0 16px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.1);border-radius:12px;overflow:hidden;">'+
+        '<summary style="cursor:pointer;padding:12px 16px;font-weight:700;color:#F3EDE3;font-size:0.85rem;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">'+
+          '<span>&#128203; Administration Tab</span>'+
+          '<span style="display:flex;gap:6px;flex-wrap:wrap;">'+
+            (!isNSEdit ? adminStatusBadgeHtml(diagFeeStatus(c),'Fee') : '')+
+            adminStatusBadgeHtml(agreementDisplayStatus(c),'Agmt')+
+          '</span>'+
+        '</summary>'+
+        '<div style="padding:2px 16px 16px;">'+
+        (!isNSEdit ?
+          '<div class="editor-section-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;"><span>Diagnostic Fee Payment</span>'+adminStatusBadgeHtml(diagFeeStatus(c))+'</div>'+
           '<div class="ed-grid">'+
-            edSelect('M2 Method','edM2Method',c.milestone2_payment_method||'card',[['card','Credit Card (+3%)'],['ach','ACH (+1%)'],['check','Check (0%)']])+
-            '<div><label class="ed-label">M2 Base Amt ($) — 50% at Install</label><input type="number" id="edM2Amt" class="ed-input" value="'+(c.milestone2_amount||'')+'" oninput="updateMilestoneFee(2)" onchange="updateMilestoneFee(2)"/><div id="edM2Fee" style="font-size:0.7rem;color:#8DC63F;margin-top:3px;"></div></div>'+
-            edField('M2 Stripe Link','edM2Url',c.milestone2_url||'','url')+
-            edSelect('M2 Status','edM2St',c.milestone2_status||'none',[['none','None'],['sent','Invoice Sent'],['pending','Pending Payment'],['paid','Paid ✓']])+
+            edSelect('Invoice Status','edInvSt',c.invoice_status||'none',[['none','None'],['draft','Draft'],['sent','Sent'],['pending','Payment Due'],['paid','Paid'],['partial','Partially Paid'],['overdue','Overdue']])+
+            edField('Amount ($)','edInvAmt',c.invoice_amount||'','number')+
           '</div>'+
-          '<div class="ed-grid" style="margin-top:8px;">'+
-            edSelect('M3 Method','edM3Method',c.milestone3_payment_method||'card',[['card','Credit Card (+3%)'],['ach','ACH (+1%)'],['check','Check (0%)']])+
-            '<div><label class="ed-label">M3 Base Amt ($) — 50% at Inspection</label><input type="number" id="edM3Amt" class="ed-input" value="'+(c.milestone3_amount||'')+'" oninput="updateMilestoneFee(3)" onchange="updateMilestoneFee(3)"/><div id="edM3Fee" style="font-size:0.7rem;color:#8DC63F;margin-top:3px;"></div></div>'+
-            edField('M3 Stripe Link','edM3Url',c.milestone3_url||'','url')+
-            edSelect('M3 Status','edM3St',c.milestone3_status||'none',[['none','None'],['sent','Invoice Sent'],['pending','Pending Payment'],['paid','Paid ✓']])+
+          '<div id="edPaymentsPanel" data-cid="'+c.id+'" style="margin:4px 0 10px;"><div style="font-size:0.7rem;color:#555;">Loading payments&hellip;</div></div>'
+        : '')+
+        (!isNSEdit && c.sold_type === 'battery_retrofit' ? (function(){
+          var amt = brMilestoneAmounts(c);
+          var opsLabel = ({ops1:'Jon Klos',ops2:'John Espinoza',ops3:'Cosmic Solar',ops4:'Axia'})[c.assigned_ops] || 'the Sub';
+          return '<div class="editor-section-title">Battery &amp; System Upgrade</div>'+
+            '<div style="padding:6px 12px;background:rgba(155,109,232,0.07);border:1px solid rgba(155,109,232,0.2);border-radius:8px;font-size:0.7rem;color:#9b6de8;margin-bottom:10px;">Paid directly to '+opsLabel+' — tracked here to confirm each milestone actually got collected, not to bill it.</div>'+
+            '<div class="ed-grid">'+
+              edSelect('M1 — $1,000 Deposit','edDepSt',c.deposit_status||'none',[['none','None'],['sent','Invoice Sent'],['pending','Pending'],['paid','Collected ✓']])+
+              edField('M1 Amount ($)','edDepAmt',c.deposit_amount||BR_M1_FIXED,'number')+
+            '</div>'+
+            '<div class="ed-grid" style="margin-top:8px;">'+
+              edSelect('M2 — 80% of Remainder ($'+amt.m2.toFixed(2)+')','edM2St',c.milestone2_status||'none',[['none','Not Yet Due'],['pending','Pending'],['paid','Collected ✓']])+
+            '</div>'+
+            '<div class="ed-grid" style="margin-top:8px;">'+
+              edSelect('M3 — 20% of Remainder ($'+amt.m3.toFixed(2)+')','edM3St',c.milestone3_status||'none',[['none','Not Yet Due'],['pending','Pending'],['paid','Collected ✓']])+
+            '</div>';
+        })() : '')+
+        (!isNSEdit && c.sold_type !== 'battery_retrofit' ?
+          '<div class="editor-section-title">Deposit</div>'+
+          '<div class="ed-grid">'+
+            edSelect('Deposit Status','edDepSt',c.deposit_status||'none',[['none','None'],['sent','Invoice Sent'],['pending','Processing / Pending'],['paid','Paid ✓']])+
+            edField('Deposit Amount ($)','edDepAmt',c.deposit_amount||'','number')+
           '</div>'
-        : '')
-      : '')+
+        : '')+
+        '<div class="editor-section-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;"><span>Agreement</span>'+adminStatusBadgeHtml(agreementDisplayStatus(c))+'</div>'+
+        '<div class="ed-grid">'+
+          edSelect('Agreement Status','edAgSt',c.agreement_status||'none',[['none','None'],['pending','Pending'],['sent','Sent'],['signed','Signed'],['declined','Declined']])+
+        '</div>'+
+        '<div class="editor-section-title">Sub Sheet &amp; Commissions</div>'+
+        '<div id="edAcctPanel" data-cid="'+c.id+'" data-cat="'+(c.lead_category||'fixmy')+'" data-rep="'+(c.rep_id||'')+'" data-ops="'+(c.assigned_ops||'')+'" style="margin:4px 0 10px;"></div>'+
+        '</div>'+
+      '</details>'+
       (!isNSEdit && (c.step||1) >= 3 ?
         '<div class="editor-section-title">Diagnostic Assessment (Visible to Customer)</div>'+
         '<div class="ed-full" style="margin-bottom:16px;">'+
           '<textarea id="edDiagFindings" class="ed-input" rows="4" style="width:100%;resize:vertical;box-sizing:border-box;" placeholder="Enter findings, recommendations, or notes to share with the customer...">'+(c.diagnostic_findings||'')+'</textarea>'+
         '</div>'
       : '')+
-      '<div class="editor-section-title">Agreement</div>'+
-      '<div class="ed-grid">'+
-        edSelect('Agreement Status','edAgSt',c.agreement_status||'none',[['none','None'],['pending','Pending'],['sent','Sent'],['signed','Signed'],['declined','Declined']])+
-      '</div>'+
       '<div class="editor-section-title">Assignment</div>'+
       '<div class="ed-grid">'+
         edSelect('Setter / Dialer','edSetterName',c.setter_name||'none',[['none','— Unassigned —'],['Dennis Larsen','Dennis Larsen'],['Ranie','Ranie'],['Michael Smith','Michael Smith'],['Cristina Huang','Cristina Huang'],['Ronda','Ronda'],['Setter','Setter']])+
@@ -21425,20 +21532,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   function edSelect(label,id,val,options){ var opts=options.map(function(o){ return '<option value="'+o[0]+'"'+(o[0]==val?' selected':'')+'>'+o[1]+'</option>'; }).join(''); return '<div><label class="ed-label">'+label+'</label><select id="'+id+'" class="ed-input">'+opts+'</select></div>'; }
   function closeLeadEditor(){ var slot=document.getElementById('editorSlot'); if(slot) slot.innerHTML=''; }
 
-  function updateMilestoneFee(n) {
-    var amtEl = document.getElementById('edM'+n+'Amt');
-    var methodEl = document.getElementById('edM'+n+'Method');
-    var feeEl = document.getElementById('edM'+n+'Fee');
-    if (!amtEl || !methodEl || !feeEl) return;
-    var base = parseFloat(amtEl.value);
-    if (!base || isNaN(base)) { feeEl.textContent = ''; return; }
-    var rates = {card:0.03, ach:0.01, check:0};
-    var rate = rates[methodEl.value] || 0.03;
-    var total = (base * (1 + rate)).toFixed(2);
-    var fee = (base * rate).toFixed(2);
-    feeEl.textContent = rate > 0 ? 'Customer pays: $'+Number(total).toLocaleString()+' (incl. $'+Number(fee).toLocaleString()+' fee)' : 'Customer pays: $'+Number(base).toLocaleString()+' (no fee)';
-  }
-
   async function saveLeadEditor(opts) {
     opts = opts || {}; var isAutoSave = opts.auto || false;
     var id = document.getElementById('edId').value;
@@ -21554,14 +21647,21 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       updates.deposit_amount = parseFloat((document.getElementById('edDepAmt')||{}).value)||null;
       // Ops Milestone 1 retired 2026-08-30 (per Dennis) — no editor field writes it
       // anymore. M2/M3 (bigger retrofit/install milestone billing) are unaffected.
-      updates.milestone2_status = (document.getElementById('edM2St')||{}).value||null;
-      updates.milestone2_amount = parseFloat((document.getElementById('edM2Amt')||{}).value)||null;
-      updates.milestone2_url = (document.getElementById('edM2Url')||{}).value||null;
-      updates.milestone2_payment_method = (document.getElementById('edM2Method')||{}).value||null;
-      updates.milestone3_status = (document.getElementById('edM3St')||{}).value||null;
-      updates.milestone3_amount = parseFloat((document.getElementById('edM3Amt')||{}).value)||null;
-      updates.milestone3_url = (document.getElementById('edM3Url')||{}).value||null;
-      updates.milestone3_payment_method = (document.getElementById('edM3Method')||{}).value||null;
+      // 2026-09-03: the Administration Tab's Battery & System Upgrade card only shows
+      // an M2/M3 STATUS select now (no Stripe link/method — Cosmic collects directly
+      // from the customer, see the note above brMilestoneAmounts) — the amount is
+      // auto-computed from br_revenue at save time instead of hand-typed, so it stays
+      // correct for markOpsMilestonePaid's confirm dialog and the Ops Portal's owed
+      // total without anyone having to remember to update it. Only written when the
+      // status selects actually exist in the DOM (i.e. sold_type==='battery_retrofit'
+      // — same gate the editor UI itself uses) so a non-battery FixMy save can't zero
+      // out amounts that a still-open battery job legitimately has on file.
+      var _edM2StEl = document.getElementById('edM2St'), _edM3StEl = document.getElementById('edM3St');
+      if (_edM2StEl || _edM3StEl) {
+        var _brAmt = brMilestoneAmounts(cRec);
+        if (_edM2StEl) { updates.milestone2_status = _edM2StEl.value||null; updates.milestone2_amount = _brAmt.m2 || null; }
+        if (_edM3StEl) { updates.milestone3_status = _edM3StEl.value||null; updates.milestone3_amount = _brAmt.m3 || null; }
+      }
       updates.diagnostic_findings = (document.getElementById('edDiagFindings')||{}).value||null;
       if (!updates.assigned_ops) updates.assigned_ops = null;
     }
@@ -23255,6 +23355,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var _m2a = c.milestone2_amount ? '$'+parseFloat(c.milestone2_amount).toFixed(2) : 'TBD';
       var _m2clr = _m2s==='paid'?'#8DC63F':'#666';
       var _m2lbl = _m2s==='paid'?'Paid &#10003;':'Pending after install';
+      // M3 added 2026-09-03, per Dennis's M1/M2/M3 (80%/20% of remainder) schedule —
+      // the customer view only ever showed 2 of the 3 milestones until now.
+      var _m3s = c.milestone3_status || 'none';
+      var _m3a = c.milestone3_amount ? '$'+parseFloat(c.milestone3_amount).toFixed(2) : 'TBD';
+      var _m3clr = _m3s==='paid'?'#8DC63F':'#666';
+      var _m3lbl = _m3s==='paid'?'Paid &#10003;':'Pending after inspection';
       brHtml = '<div class="sect-label">Battery Installation & Retrofit Milestones</div>'+
         '<div class="card" style="padding:0;overflow:hidden;">'+
           '<div style="display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid rgba(255,255,255,0.06);">'+
@@ -23265,11 +23371,18 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
               (_m1s==='sent'&&c.invoice_url?'<a href="'+c.invoice_url+'" target="_blank" style="display:inline-block;margin-top:6px;font-size:0.7rem;padding:4px 12px;background:#8DC63F;color:#000;border-radius:100px;font-weight:700;text-decoration:none;">Pay Now</a>':'')+
             '</div>'+
           '</div>'+
-          '<div style="display:flex;justify-content:space-between;align-items:center;padding:14px 16px;">'+
+          '<div style="display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid rgba(255,255,255,0.06);">'+
             '<div><div style="font-size:0.82rem;font-weight:700;">Completion (M2)</div><div style="font-size:0.68rem;color:#666;margin-top:2px;">After install sign-off</div></div>'+
             '<div style="text-align:right;">'+
               '<div style="font-size:0.85rem;font-weight:700;color:'+_m2clr+';">'+_m2lbl+'</div>'+
               (_m2a!=='TBD'?'<div style="font-size:0.7rem;color:#555;margin-top:1px;">'+_m2a+'</div>':'')+
+            '</div>'+
+          '</div>'+
+          '<div style="display:flex;justify-content:space-between;align-items:center;padding:14px 16px;">'+
+            '<div><div style="font-size:0.82rem;font-weight:700;">Final Payment (M3)</div><div style="font-size:0.68rem;color:#666;margin-top:2px;">After inspection</div></div>'+
+            '<div style="text-align:right;">'+
+              '<div style="font-size:0.85rem;font-weight:700;color:'+_m3clr+';">'+_m3lbl+'</div>'+
+              (_m3a!=='TBD'?'<div style="font-size:0.7rem;color:#555;margin-top:1px;">'+_m3a+'</div>':'')+
             '</div>'+
           '</div>'+
         '</div>';
