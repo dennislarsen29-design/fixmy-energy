@@ -28,7 +28,7 @@ const PORTALS = {
   oceanside:  'https://aca.accela.com/oceanside/',
 };
 
-// All 16 defunct installers — same list as PS_INSTALLERS in portal.html
+// Same list as PS_INSTALLERS in portal.html — kept in sync by hand, no build step.
 const INSTALLER_NAMES = [
   { label: 'SunPower',            names: ['SunPower Corporation', 'Complete Solar Inc', 'BRS Field Ops'] },
   { label: 'Titan Solar',         names: ['Titan Solar Power', 'Titan Solar'] },
@@ -48,6 +48,19 @@ const INSTALLER_NAMES = [
   { label: 'Lumio',               names: ['Lumio Inc', '1st Light Energy'] },
   { label: 'Infinity Energy',     names: ['Infinity Energy Inc', 'Infinity Energy'] },
   { label: 'Suntuity Renewables', names: ['Suntuity Renewables', 'Suntuity'] },
+  // Backfilled 2026-09-03 — Sunworks/SunPro Solar were live in PS_INSTALLERS and the nightly
+  // pipeline's INSTALLERS array but were never mirrored here. Found while auditing this list
+  // for the 5 new defunct-installer additions below — same "built in one place, not the
+  // other" drift documented repeatedly in CLAUDE.md.
+  { label: 'Sunworks',            names: ['Sunworks Inc', 'Sunworks United Inc'] },
+  { label: 'SunPro Solar',        names: ['SunPro Solar Inc', 'SunPro Solar LLC'] },
+  // Added 2026-09-03, per Dennis + a defunct-installer web sweep — see CLAUDE.md
+  // "Defunct Solar Installer Database" Priority 1 table for sourcing/dates.
+  { label: 'Solare Energy',       names: ['Solare Energy Inc', 'Solare Energy'] },
+  { label: 'Simply Solar',        names: ['Simply Solar LLC', 'Simply Solar'] },
+  { label: 'Harness Power',       names: ['Harness Power'] },
+  { label: 'Solcius',             names: ['Solcius LLC', 'Solcius'] },
+  { label: 'PosiGen',             names: ['PosiGen, PBC', 'PosiGen PBC', 'PosiGen'] },
 ];
 
 function csvEsc(v) {
