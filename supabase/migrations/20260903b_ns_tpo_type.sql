@@ -1,0 +1,11 @@
+-- Axia/QCell PPW commission inputs — TPO provider selector (2026-09-03, per Dennis).
+-- ns_is_tpo (boolean, added 2026-08-29b) only distinguishes TPO vs Cash/Loan; it can't
+-- tell WHICH TPO provider was used, and each provider carries its own standard
+-- Redline/Domestic-Content-Bonus rate (EnFin $2.20/$0.45, Lightreach $2.20/$0.25,
+-- Participate $2.19/$0 — see CLAUDE.md's "EnFin's Redline is a standard rate" entry
+-- for the EnFin figures already confirmed by Dennis). Storing which provider was
+-- picked lets the commission-inputs UI show the right selection on reopen instead of
+-- the admin having to re-derive it from the raw dollar values, and preserves the
+-- redline/dc_bonus columns' existing meaning and formula (_nsCalcCommission) exactly
+-- as they already work — this is purely a UI-selection memory field.
+alter table customers add column if not exists ns_tpo_type text;

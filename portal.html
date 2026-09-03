@@ -2057,6 +2057,51 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     delete _axiaCommCache[cid];
     if (typeof edLoadAccounting === 'function') edLoadAccounting();
   };
+  // system_size is a TEXT column (matches every other System Size field in this file —
+  // the main Customer Info field, _nsCalcCommission's own parseFloat(c.system_size)) so
+  // it's saved raw, not parseFloat'd like edSaveNsField's numeric fields.
+  window.edSaveNsSystemSize = async function(cid, val) {
+    var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var v = (val||'').trim() || null;
+    var { error } = await pc.from('customers').update({ system_size: v }).eq('id', cid);
+    if (error) { alert('Could not save: '+error.message); return; }
+    var rec = (adminCustomers||[]).find(function(x){ return x.id===cid; });
+    if (rec) rec.system_size = v;
+    delete _axiaCommCache[cid];
+    if (typeof edLoadAccounting === 'function') edLoadAccounting();
+  };
+  // Axia/QCell TPO provider presets (2026-09-03, per Dennis — "the pricing input needs
+  // to be adjusted slightly... EnFin's Redline is a standard rate" is already confirmed
+  // AUTHORITATIVE elsewhere in this file for the EnFin figures). Each TPO lender/program
+  // carries its own standard Redline + Domestic Content Bonus rate; Cash/Loan carries
+  // neither (redline never applies to a cash/loan deal). Picking one AUTOFILLS the
+  // Redline/DC Bonus inputs from the preset — still editable afterward per-deal, same
+  // "auto-fill but never lock" convention used throughout this file (e.g. Quoya Assist).
+  var AXIA_TPO_PRESETS = [
+    { id:'cash',        label:'Cash / Loan', redline:0,    dcBonus:0,    isTpo:false },
+    { id:'enfin',       label:'EnFin',       redline:2.20, dcBonus:0.45, isTpo:true },
+    { id:'lightreach',  label:'Lightreach',  redline:2.20, dcBonus:0.25, isTpo:true },
+    { id:'participate', label:'Participate', redline:2.19, dcBonus:0,    isTpo:true }
+  ];
+  function _axiaTpoPreset(id) { return AXIA_TPO_PRESETS.find(function(t){ return t.id===id; }) || AXIA_TPO_PRESETS[0]; }
+  // Derives a TPO selection for a record that predates ns_tpo_type (2026-09-03) —
+  // falls back to the boolean ns_is_tpo the same way the modal's binary toggle already
+  // did, so an older row still renders a sane default instead of nothing selected.
+  function _axiaTpoTypeFor(c) {
+    if (c.ns_tpo_type) return c.ns_tpo_type;
+    return (c.ns_is_tpo === true || parseFloat(c.ns_redline_ppw) > 0) ? 'enfin' : 'cash';
+  }
+  window.edSetNsTpo = async function(cid, tpoId) {
+    var preset = _axiaTpoPreset(tpoId);
+    var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var patch = { ns_tpo_type: preset.id, ns_is_tpo: preset.isTpo, ns_redline_ppw: preset.redline, ns_dc_bonus_ppw: preset.dcBonus };
+    var { error } = await pc.from('customers').update(patch).eq('id', cid);
+    if (error) { alert('Could not save: '+error.message); return; }
+    var rec = (adminCustomers||[]).find(function(x){ return x.id===cid; });
+    if (rec) Object.assign(rec, patch);
+    delete _axiaCommCache[cid];
+    if (typeof edLoadAccounting === 'function') edLoadAccounting();
+  };
   // Same single-field-save pattern as edSaveNsField, for a Battery Retrofit's br_revenue/
   // br_redline fields (2026-08-30, per Dennis — Cosmic collects these deals directly, so
   // there's no real payments/job_costs to derive commission from; see edLoadAccounting).
@@ -20768,9 +20813,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   window._axiaCommDraft = null;
   function openAxiaCommModal(id, pendingUpdates, rec, finish) {
     var c = rec || {};
-    var isTpo = c.ns_is_tpo === true || (parseFloat(c.ns_redline_ppw) > 0);
+    var tpoType = _axiaTpoTypeFor(c);
     window._axiaCommPending = { id: id, updates: pendingUpdates||{}, rec: c, finish: finish };
-    window._axiaCommDraft = { ns_is_tpo: isTpo };
+    window._axiaCommDraft = { tpoType: tpoType };
     var sysVal = c.system_size!=null ? c.system_size : '';
     var baseVal = c.ns_base_ppw!=null ? c.ns_base_ppw : '';
     var redlineVal = c.ns_redline_ppw!=null ? c.ns_redline_ppw : '';
@@ -20795,13 +20840,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '<input type="number" step="0.01" id="axiaBasePpw" value="'+baseVal+'" oninput="_axiaCommModalRecalc()" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:9px 12px;font-size:0.9rem;box-sizing:border-box;"/>'+
         '</div>'+
         '<div style="margin-bottom:8px;">'+
-          '<label style="font-size:0.68rem;color:#888;display:block;margin-bottom:6px;">Financing Type (TPO)</label>'+
-          '<div style="display:flex;gap:8px;">'+
-            '<button type="button" id="axiaTpoOff" onclick="_axiaCommModalSetTpo(false)" style="flex:1;padding:10px 8px;border-radius:10px;font-size:0.78rem;font-weight:700;cursor:pointer;border:1px solid rgba(255,255,255,0.12);background:'+(isTpo?'rgba(255,255,255,0.04)':'rgba(141,198,63,0.15)')+';color:'+(isTpo?'#aaa':'#8DC63F')+';">Cash / Loan<div style="font-weight:400;font-size:0.62rem;opacity:0.8;margin-top:2px;">No redline</div></button>'+
-            '<button type="button" id="axiaTpoOn" onclick="_axiaCommModalSetTpo(true)" style="flex:1;padding:10px 8px;border-radius:10px;font-size:0.78rem;font-weight:700;cursor:pointer;border:1px solid rgba(255,255,255,0.12);background:'+(isTpo?'rgba(74,158,255,0.18)':'rgba(255,255,255,0.04)')+';color:'+(isTpo?'#4a9eff':'#aaa')+';">TPO — Lease/PPA<div style="font-weight:400;font-size:0.62rem;opacity:0.8;margin-top:2px;">Redline applies</div></button>'+
+          '<label style="font-size:0.68rem;color:#888;display:block;margin-bottom:6px;">Financing (TPO)</label>'+
+          '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;">'+
+            AXIA_TPO_PRESETS.map(function(t){
+              var sel = t.id === tpoType;
+              return '<button type="button" id="axiaTpo_'+t.id+'" onclick="_axiaCommModalSetTpo(\''+t.id+'\')" style="padding:9px 4px;border-radius:9px;font-size:0.72rem;font-weight:700;cursor:pointer;border:1px solid '+(sel?'rgba(74,158,255,0.4)':'rgba(255,255,255,0.12)')+';background:'+(sel?'rgba(74,158,255,0.18)':'rgba(255,255,255,0.04)')+';color:'+(sel?'#4a9eff':'#aaa')+';">'+t.label+'</button>';
+            }).join('')+
           '</div>'+
         '</div>'+
-        '<div id="axiaRedlineFields" style="display:'+(isTpo?'block':'none')+';margin-bottom:6px;">'+
+        '<div id="axiaRedlineFields" style="display:'+(tpoType!=='cash'?'block':'none')+';margin-bottom:6px;">'+
           '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px;">'+
             '<div><label style="font-size:0.65rem;color:#888;display:block;margin-bottom:5px;">Redline ($/W)</label><input type="number" step="0.01" id="axiaRedline" value="'+redlineVal+'" oninput="_axiaCommModalRecalc()" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:8px 10px;font-size:0.85rem;box-sizing:border-box;"/></div>'+
             '<div><label style="font-size:0.65rem;color:#888;display:block;margin-bottom:5px;">DC Bonus ($/W)</label><input type="number" step="0.01" id="axiaDcBonus" value="'+dcVal+'" oninput="_axiaCommModalRecalc()" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:8px 10px;font-size:0.85rem;box-sizing:border-box;"/></div>'+
@@ -20816,21 +20863,33 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     document.body.appendChild(modal);
     window._axiaCommModalRecalc();
   }
-  window._axiaCommModalSetTpo = function(isTpo) {
-    window._axiaCommDraft.ns_is_tpo = isTpo;
-    var rl = document.getElementById('axiaRedlineFields'); if (rl) rl.style.display = isTpo ? 'block' : 'none';
-    var off = document.getElementById('axiaTpoOff'), on = document.getElementById('axiaTpoOn');
-    if (off) { off.style.background = isTpo?'rgba(255,255,255,0.04)':'rgba(141,198,63,0.15)'; off.style.color = isTpo?'#aaa':'#8DC63F'; }
-    if (on)  { on.style.background  = isTpo?'rgba(74,158,255,0.18)':'rgba(255,255,255,0.04)'; on.style.color  = isTpo?'#4a9eff':'#aaa'; }
+  // 2026-09-03, per Dennis: extended from a binary Cash/Loan-vs-TPO toggle to the real
+  // 4 financing types (Cash/Loan · EnFin · Lightreach · Participate), each carrying its
+  // own standard Redline/DC Bonus rate (AXIA_TPO_PRESETS) — picking one AUTOFILLS the
+  // Redline/DC Bonus inputs so nobody has to remember or look up the rate, but they
+  // stay directly editable afterward for a deal that genuinely differs from standard.
+  window._axiaCommModalSetTpo = function(tpoId) {
+    var preset = _axiaTpoPreset(tpoId);
+    window._axiaCommDraft.tpoType = preset.id;
+    var rl = document.getElementById('axiaRedlineFields'); if (rl) rl.style.display = preset.id!=='cash' ? 'block' : 'none';
+    var rlIn = document.getElementById('axiaRedline'), dcIn = document.getElementById('axiaDcBonus');
+    if (rlIn) rlIn.value = preset.redline; if (dcIn) dcIn.value = preset.dcBonus;
+    AXIA_TPO_PRESETS.forEach(function(t){
+      var btn = document.getElementById('axiaTpo_'+t.id); if (!btn) return;
+      var sel = t.id === preset.id;
+      btn.style.background = sel?'rgba(74,158,255,0.18)':'rgba(255,255,255,0.04)';
+      btn.style.borderColor = sel?'rgba(74,158,255,0.4)':'rgba(255,255,255,0.12)';
+      btn.style.color = sel?'#4a9eff':'#aaa';
+    });
     window._axiaCommModalRecalc();
   };
   window._axiaCommModalRecalc = function() {
     var pend = window._axiaCommPending; if (!pend) return;
     var sys = parseFloat((document.getElementById('axiaSysSize')||{}).value) || 0;
     var base = parseFloat((document.getElementById('axiaBasePpw')||{}).value) || 0;
-    var isTpo = !!(window._axiaCommDraft||{}).ns_is_tpo;
-    var redline = isTpo ? (parseFloat((document.getElementById('axiaRedline')||{}).value) || 0) : 0;
-    var dcBonus = isTpo ? (parseFloat((document.getElementById('axiaDcBonus')||{}).value) || 0) : 0;
+    var tpoType = (window._axiaCommDraft||{}).tpoType || 'cash';
+    var redline = tpoType!=='cash' ? (parseFloat((document.getElementById('axiaRedline')||{}).value) || 0) : 0;
+    var dcBonus = tpoType!=='cash' ? (parseFloat((document.getElementById('axiaDcBonus')||{}).value) || 0) : 0;
     var draftRec = Object.assign({}, pend.rec, { system_size: sys, ns_base_ppw: base, ns_redline_ppw: redline, ns_dc_bonus_ppw: dcBonus });
     var calc = _nsCalcCommission(draftRec);
     var box = document.getElementById('axiaCommPreview'); if (!box) return;
@@ -20857,11 +20916,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var pend = window._axiaCommPending; if (!pend) return;
     var sys = parseFloat((document.getElementById('axiaSysSize')||{}).value) || null;
     var base = parseFloat((document.getElementById('axiaBasePpw')||{}).value) || null;
-    var isTpo = !!(window._axiaCommDraft||{}).ns_is_tpo;
+    var tpoType = (window._axiaCommDraft||{}).tpoType || 'cash';
+    var isTpo = tpoType !== 'cash';
     var redline = isTpo ? (parseFloat((document.getElementById('axiaRedline')||{}).value) || 0) : 0;
     var dcBonus = isTpo ? (parseFloat((document.getElementById('axiaDcBonus')||{}).value) || 0) : 0;
     var finalUpdates = Object.assign({}, pend.updates, {
-      system_size: sys, ns_base_ppw: base, ns_is_tpo: isTpo,
+      system_size: sys, ns_base_ppw: base, ns_is_tpo: isTpo, ns_tpo_type: tpoType,
       ns_redline_ppw: redline, ns_dc_bonus_ppw: dcBonus
     });
     try {
@@ -21300,17 +21360,38 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       } else if (cat === 'new_solar') {
         // ── Axia/QCell: Base PPW / Redline commission formula (2026-08-29, per Dennis,
         // AUTHORITATIVE) — replaces the old manual prompt()-entered estimate.
+        // 2026-09-03: added a System Size input (this panel had none — the main
+        // Customer Info System Size field is hidden entirely for Axia/QCell leads, so
+        // there was genuinely nowhere to enter it, hence the red warning below always
+        // firing) and a real 4-way TPO selector (Cash/Loan · EnFin · Lightreach ·
+        // Participate) replacing the old unconditional, hardcoded "EnFin Redline"
+        // label — each preset autofills Redline/DC Bonus (still editable per-deal
+        // after) via AXIA_TPO_PRESETS/edSetNsTpo, same pattern openAxiaCommModal's own
+        // Cash/Loan-vs-TPO toggle already used, extended from binary to 4 options in
+        // both places so the two don't drift.
         var nsRec = (adminCustomers||[]).find(function(x){ return x.id===cid; }) || {};
         var calc = _nsCalcCommission(nsRec);
         var m2 = function(n){ return '$'+(parseFloat(n)||0).toLocaleString(undefined,{maximumFractionDigits:2}); };
+        var nsTpoSel = _axiaTpoTypeFor(nsRec);
         h += '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 12px;margin-bottom:8px;">';
         h += '<div style="font-size:0.66rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#4a9eff;margin-bottom:8px;">&#9889; PPW Commission Inputs</div>';
-        h += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px;">';
+        h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">';
+        h += '<div><label style="font-size:0.6rem;color:#888;display:block;margin-bottom:2px;">System Size (kW)</label><input type="text" value="'+esc(nsRec.system_size||'')+'" onchange="edSaveNsSystemSize(\''+cid+'\',this.value)" style="width:100%;background:#0e0e0e;border:1px solid rgba(255,255,255,0.12);border-radius:6px;color:#ccc;padding:5px 7px;font-size:0.78rem;box-sizing:border-box;"/></div>';
         h += '<div><label style="font-size:0.6rem;color:#888;display:block;margin-bottom:2px;">Base PPW ($/W)</label><input type="number" step="0.01" value="'+(nsRec.ns_base_ppw!=null?nsRec.ns_base_ppw:'')+'" onchange="edSaveNsField(\''+cid+'\',\'ns_base_ppw\',this.value)" style="width:100%;background:#0e0e0e;border:1px solid rgba(255,255,255,0.12);border-radius:6px;color:#ccc;padding:5px 7px;font-size:0.78rem;box-sizing:border-box;"/></div>';
-        h += '<div><label style="font-size:0.6rem;color:#888;display:block;margin-bottom:2px;">EnFin Redline ($/W)</label><input type="number" step="0.01" value="'+(nsRec.ns_redline_ppw!=null?nsRec.ns_redline_ppw:'')+'" onchange="edSaveNsField(\''+cid+'\',\'ns_redline_ppw\',this.value)" style="width:100%;background:#0e0e0e;border:1px solid rgba(255,255,255,0.12);border-radius:6px;color:#ccc;padding:5px 7px;font-size:0.78rem;box-sizing:border-box;"/></div>';
-        h += '<div><label style="font-size:0.6rem;color:#888;display:block;margin-bottom:2px;">Domestic Content Bonus ($/W)</label><input type="number" step="0.01" value="'+(nsRec.ns_dc_bonus_ppw!=null?nsRec.ns_dc_bonus_ppw:'')+'" onchange="edSaveNsField(\''+cid+'\',\'ns_dc_bonus_ppw\',this.value)" style="width:100%;background:#0e0e0e;border:1px solid rgba(255,255,255,0.12);border-radius:6px;color:#ccc;padding:5px 7px;font-size:0.78rem;box-sizing:border-box;"/></div>';
         h += '</div>';
-        if (!nsRec.system_size) h += '<div style="font-size:0.62rem;color:#ef4444;margin-bottom:6px;">&#9888; No System Size (kW) on file — Gross Commission needs it. Set it on the lead.</div>';
+        h += '<div style="margin-bottom:8px;"><label style="font-size:0.6rem;color:#888;display:block;margin-bottom:4px;">Financing (TPO)</label><div style="display:grid;grid-template-columns:repeat(4,1fr);gap:5px;">';
+        AXIA_TPO_PRESETS.forEach(function(t){
+          var sel = t.id === nsTpoSel;
+          h += '<button type="button" onclick="edSetNsTpo(\''+cid+'\',\''+t.id+'\')" style="padding:6px 4px;border-radius:7px;font-size:0.66rem;font-weight:700;cursor:pointer;border:1px solid '+(sel?'rgba(74,158,255,0.4)':'rgba(255,255,255,0.12)')+';background:'+(sel?'rgba(74,158,255,0.18)':'rgba(255,255,255,0.03)')+';color:'+(sel?'#4a9eff':'#999')+';">'+t.label+'</button>';
+        });
+        h += '</div></div>';
+        if (nsTpoSel !== 'cash') {
+          h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">';
+          h += '<div><label style="font-size:0.6rem;color:#888;display:block;margin-bottom:2px;">Redline ($/W)</label><input type="number" step="0.01" value="'+(nsRec.ns_redline_ppw!=null?nsRec.ns_redline_ppw:'')+'" onchange="edSaveNsField(\''+cid+'\',\'ns_redline_ppw\',this.value)" style="width:100%;background:#0e0e0e;border:1px solid rgba(255,255,255,0.12);border-radius:6px;color:#ccc;padding:5px 7px;font-size:0.78rem;box-sizing:border-box;"/></div>';
+          h += '<div><label style="font-size:0.6rem;color:#888;display:block;margin-bottom:2px;">Domestic Content Bonus ($/W)</label><input type="number" step="0.01" value="'+(nsRec.ns_dc_bonus_ppw!=null?nsRec.ns_dc_bonus_ppw:'')+'" onchange="edSaveNsField(\''+cid+'\',\'ns_dc_bonus_ppw\',this.value)" style="width:100%;background:#0e0e0e;border:1px solid rgba(255,255,255,0.12);border-radius:6px;color:#ccc;padding:5px 7px;font-size:0.78rem;box-sizing:border-box;"/></div>';
+          h += '</div>';
+        }
+        if (!nsRec.system_size) h += '<div style="font-size:0.62rem;color:#ef4444;margin-bottom:6px;">&#9888; No System Size (kW) on file — Gross Commission needs it. Set it above.</div>';
         h += '<div style="font-size:0.72rem;color:#aaa;line-height:1.8;">Net PPW <b style="color:#8DC63F;">'+m2(calc.netPpw)+'</b> &times; '+calc.watts.toLocaleString()+' W = Gross Commission <b style="color:#4a9eff;">'+m2(calc.revenue)+'</b></div>';
         h += '<div style="font-size:0.68rem;margin-top:4px;">'+(calc.isBlackBox?'<span style="color:#f97316;">&#128230; Black Box lead &mdash; '+Math.round(calc.poolPct*100)+'% pool</span>':'<span style="color:#8DC63F;">&#127919; Self-Sourced &mdash; '+Math.round(calc.poolPct*100)+'% pool</span>')+(calc.hasSetter?' &middot; split '+Math.round(calc.closerPct*100)+'/'+Math.round(calc.setterPct*100):'')+'</div>';
         h += '</div>';
