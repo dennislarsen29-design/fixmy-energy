@@ -1,7 +1,7 @@
 // bb-auto-pipeline-background.js
 // Automated Black Box nightly pipeline — runs as a Netlify background function (15-min budget).
 //
-// Phase 1: Pull permits from all 16 defunct installers via Socrata open data, insert new leads.
+// Phase 1: Pull permits from all defunct installers via Socrata open data, insert new leads.
 // Phase 2: SANDAG / Regrid owner lookup for all leads missing title_owner (up to 2000 per run).
 // Phase 3: Submit all no-contact leads to Tracerfy skip-trace, poll up to 4 min, apply results.
 //
@@ -31,7 +31,14 @@ const INSTALLERS = [
   { name: 'Sunworks',              names: ['Sunworks Inc', 'Sunworks United Inc'] },
   { name: 'SunPro Solar',          names: ['SunPro Solar Inc', 'SunPro Solar LLC'] },
   { name: 'Infinity Energy',       names: ['Infinity Energy Inc', 'Infinity Energy'] },
-  { name: 'Suntuity Renewables',   names: ['Suntuity Renewables', 'Suntuity'] }
+  { name: 'Suntuity Renewables',   names: ['Suntuity Renewables', 'Suntuity'] },
+  // Added 2026-09-03, per Dennis + a defunct-installer web sweep — see CLAUDE.md
+  // "Defunct Solar Installer Database" Priority 1 table for sourcing/dates.
+  { name: 'Solare Energy',         names: ['Solare Energy Inc', 'Solare Energy'] },
+  { name: 'Simply Solar',          names: ['Simply Solar LLC', 'Simply Solar'] },
+  { name: 'Harness Power',         names: ['Harness Power'] },
+  { name: 'Solcius',               names: ['Solcius LLC', 'Solcius'] },
+  { name: 'PosiGen',               names: ['PosiGen, PBC', 'PosiGen PBC', 'PosiGen'] }
 ];
 
 const BASE_SD_CITY = 'https://data.sandiego.gov/resource/nt65-c7a7.json';
@@ -454,7 +461,7 @@ Active geographic coverage: San Diego County + ${activeExpansionZips.size} expan
 
 Respond ONLY with raw JSON, no markdown, no code fences:
 {"summary":"one sentence status","topOpportunity":"which segment to focus on and why","missingVariants":[{"installer":"exact installer name from list","variants":["alternate spelling 1","alternate spelling 2"]}],"marketingAngle":"fresh outreach angle based on data","zipFocus":"any zip patterns worth targeting more","importInsight":"one actionable suggestion to improve contact rates or import completeness"}
-Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom Forever, Petersen Dean, Sungevity, Lumio, ADT Solar, Pink Energy, Vision Solar, RGS Energy, Verengo, Kota Energy, American Solar Direct, OneRoof Energy.`;
+Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom Forever, Petersen Dean, Sungevity, Lumio, ADT Solar, Pink Energy, Vision Solar, RGS Energy, Verengo, Kota Energy, American Solar Direct, OneRoof Energy, Solare Energy, Simply Solar, Harness Power, Solcius, PosiGen.`;
 
       const aiResp = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
