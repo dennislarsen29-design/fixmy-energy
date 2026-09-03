@@ -19335,10 +19335,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       build.participate = !!row.participate;
       build.partPrice   = row.default_participate_price != null ? parseFloat(row.default_participate_price) : null;
       build.teslaRebate = 0; // Tesla Visa gift card promo expired 2026-07 — no longer pulled from catalog (was row.tesla_rebate)
-      // SDCP rebate only if customer zip is in SDCP territory
+      // SDCP rebate only if customer zip is in SDCP territory.
+      // ⚠️ 2026-09-03, real bug: a bare `\b(\d{5})\b` with no /g flag returns the FIRST
+      // 5-digit run in the address — for a house number that happens to be 5 digits
+      // (e.g. "13175 Janetta Pl, San Diego, CA 92130"), that's the STREET NUMBER, not
+      // the zip. extractZip() already exists specifically to get this right (global
+      // match, takes the LAST 5-digit group) — use it instead of a second ad hoc regex.
       var _sdcpCust = adminCustomers ? (adminCustomers.find(function(x){ return x.id===_propPropId; })||{}) : {};
-      var _sdcpZipM = (_sdcpCust.address||'').match(/\b(\d{5})\b/);
-      build.sdcpRebate  = (_sdcpZipM && typeof SDCP_ZIPS!=='undefined' && SDCP_ZIPS.has(_sdcpZipM[1]))
+      var _sdcpZip = extractZip(_sdcpCust.address||'');
+      build.sdcpRebate  = (_sdcpZip && typeof SDCP_ZIPS!=='undefined' && SDCP_ZIPS.has(_sdcpZip))
         ? (parseFloat(row.sdcp_rebate)||0) : 0;
     }
     build.lineItems.push({ id: row.option_key, name: row.title, subtitle: row.subtitle||'', description: row.description||'', price: parseFloat(row.default_price)||0, isCustom: false });
@@ -19710,8 +19715,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var _partAuto = Math.round((build.price || 0) * 0.70);
       var _partVal = (build.partPrice != null && build.partPrice > 0) ? Math.round(build.partPrice) : _partAuto;
       var _partSave = Math.max(0, Math.round(build.price) - _partVal);
-      var _zipM2 = (_propBuildCust.address||'').match(/\b(\d{5})\b/);
-      var _isSdcpZip = !!(_zipM2 && typeof SDCP_ZIPS !== 'undefined' && SDCP_ZIPS.has(_zipM2[1]));
+      // ⚠️ 2026-09-03: this used to be a bare `\b(\d{5})\b` with no /g flag, which
+      // returns the FIRST 5-digit run in the address — a 5-digit house number (e.g.
+      // "13175 Janetta Pl, San Diego, CA 92130") matched before the real zip did, so
+      // this whole SDCP block silently never rendered for any address whose street
+      // number happens to be exactly 5 digits, even in confirmed SDCP territory.
+      // extractZip() already exists to get this right (global match, last group).
+      var _zipCode2 = extractZip(_propBuildCust.address||'');
+      var _isSdcpZip = !!(_zipCode2 && typeof SDCP_ZIPS !== 'undefined' && SDCP_ZIPS.has(_zipCode2));
       h += '<div style="border:1px solid '+(_partOn?'rgba(141,198,63,0.55)':'rgba(141,198,63,0.25)')+';background:'+(_partOn?'rgba(141,198,63,0.09)':'rgba(141,198,63,0.03)')+';border-radius:10px;padding:12px;margin-bottom:10px;">';
       h += '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">';
       h += '<div onclick="_propTogglePart('+optIdx+')" style="cursor:pointer;user-select:none;flex:1;min-width:180px;">';
@@ -19749,7 +19760,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           _propBillAnalysis.medical_baseline ? 'Medical Baseline' : null
         ].filter(Boolean).join(' / ') : '';
         h += '<div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.06);">';
-        h += '<div style="font-size:0.68rem;color:#4a9eff;font-weight:600;margin-bottom:6px;">&#9889; SDCP territory (zip '+_zipM2[1]+') &mdash; battery incentive may apply once a Powerwall is added</div>';
+        h += '<div style="font-size:0.68rem;color:#4a9eff;font-weight:600;margin-bottom:6px;">&#9889; SDCP territory (zip '+_zipCode2+') &mdash; battery incentive may apply once a Powerwall is added</div>';
         if (_careOn) {
           h += '<div style="font-size:0.66rem;color:#ffaa00;background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.25);border-radius:6px;padding:7px 9px;margin-bottom:8px;line-height:1.55;">&#9888; Quoya\'s Bill Analysis shows <strong>'+_careLbl+'</strong> on file &mdash; SDCP\'s income-qualified incentive is typically higher than the standard rate. Confirm the real amount with SDCP and enter it below.</div>';
         }
@@ -19937,9 +19948,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var _batRow = _propCatItems && _propCatItems.find(function(r){ return r.service_type === 'battery_retrofit'; });
     if (count > 0 && _batRow) {
       build.teslaRebate = 0;
+      // Same fix as _propAddCatItem above — use extractZip (last 5-digit group), not a
+      // bare regex that grabs a 5-digit street number instead of the real zip.
       var _zc = adminCustomers ? (adminCustomers.find(function(x){ return x.id===_propPropId; })||{}) : {};
-      var _zm = (_zc.address||'').match(/\b(\d{5})\b/);
-      build.sdcpRebate = (_zm && typeof SDCP_ZIPS!=='undefined' && SDCP_ZIPS.has(_zm[1]))
+      var _zStep = extractZip(_zc.address||'');
+      build.sdcpRebate = (_zStep && typeof SDCP_ZIPS!=='undefined' && SDCP_ZIPS.has(_zStep))
         ? (parseFloat(_batRow.sdcp_rebate)||0) : 0;
     } else if (count === 0) {
       build.teslaRebate = 0;
