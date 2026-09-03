@@ -101,9 +101,14 @@ exports.handler = async function(event) {
   }
 
   // ── Check for existing record ──────────────────────────────────────────────────────────────────────────────────────────
-  // Match on email first, then phone. Finally match on address, but only against partial
-  // records that have no contact info yet — this upgrades an address-only partial into the
-  // full booking instead of creating a duplicate household.
+  // Callers that already know the row (book.html tracks the id this function returns
+  // across a session's partial → submit → confirmed calls, 2026-09-03) pass customerId
+  // directly, skipping the email/phone/address guess entirely so an ambiguous or
+  // incomplete address can never create a duplicate or patch the wrong customer — same
+  // pattern already used by createNewLead()/ghl-book.js elsewhere in this codebase.
+  // Otherwise: match on email first, then phone, then address — but only against
+  // partial records that have no contact info yet — upgrading an address-only partial
+  // into the full booking instead of creating a duplicate household.
   const supaHeaders = {
     'Content-Type': 'application/json',
     'apikey': SUPA_KEY,
@@ -117,8 +122,9 @@ exports.handler = async function(event) {
     return (rows && rows.length) ? rows[0].id : null;
   }
 
-  let existingId = null;
-  if (email)                 existingId = await findId('email=eq.' + encodeURIComponent(email));
+  const passedCustomerId = (payload.customerId == null ? '' : String(payload.customerId)).trim();
+  let existingId = passedCustomerId || null;
+  if (!existingId && email)                 existingId = await findId('email=eq.' + encodeURIComponent(email));
   if (!existingId && digits) existingId = await findId('access_code=eq.' + digits);
   if (!existingId && address) {
     existingId = await findId(
@@ -255,24 +261,61 @@ exports.handler = async function(event) {
     };
   }
 
+  // The row id — needed so the client can pass it back as customerId on every later
+  // call in this same session (see above). Comes back on both INSERT and PATCH since
+  // both requests carry Prefer: return=representation.
+  let resultId = existingId || null;
+  try {
+    const rows = JSON.parse(resultBody);
+    if (Array.isArray(rows) && rows[0] && rows[0].id) resultId = rows[0].id;
+  } catch (e) { /* not JSON (e.g. return=minimal path) — resultId stays whatever existingId was */ }
+
   // ── Absorb orphan partials ─────────────────────────────────────────────────
   // A mid-typed partial ("3335 Laurashawn", no phone/email) never equals the
   // completed full address ("3335 Laurashawn Ave, La Mesa, CA"), so it lingers as
   // a duplicate flagged "Booking Incomplete — Call Back". When a real booking
   // (has contact info, not itself a partial) is processed, archive any contactless
-  // partial whose address shares this booking's house-number + street name.
+  // partial that's a real prefix of this booking's address either way.
+  //
+  // ⚠️ 2026-09-03: the original version only checked `partial.address ILIKE
+  // '<completion's first 2 tokens>%'` — which assumes the partial's stored address
+  // already contains at least "house number + street name". A partial fired on a
+  // half-typed address (the customer tabbed away before Google Places finished
+  // autocompleting — book.html's own maybeSend() had no minimum-address guard,
+  // unlike index.html's homepage form, which was fixed for this exact bug on
+  // 2026-07-17) can be as short as the bare house number ("6719"), which can never
+  // match an ILIKE pattern requiring it to start with a longer string — the Neil
+  // Fjellestad duplicate report. Now fetches contactless partial candidates by
+  // house number only (a cheap SQL-side pre-filter) and does the real prefix check
+  // in JS, symmetric either direction, so a stub of any length is caught.
   if (!isPartial && address && (email || digits)) {
     try {
-      const toks = address.trim().split(/\s+/).slice(0, 2).join(' ');
-      if (toks && /\d/.test(toks)) {
-        let cleanupFilter = 'address=ilike.' + encodeURIComponent(toks + '%')
-          + '&partial_capture=eq.true&phone=is.null&email=is.null';
-        if (existingId) cleanupFilter += '&id=neq.' + encodeURIComponent(existingId);
-        await fetch(SUPA_URL + '/rest/v1/customers?' + cleanupFilter, {
-          method: 'PATCH',
-          headers: { ...supaHeaders, 'Prefer': 'return=minimal' },
-          body: JSON.stringify({ partial_capture: false, archived: true })
-        }).catch(() => {});
+      const firstTok = address.trim().split(/\s+/)[0];
+      if (firstTok && /^\d+$/.test(firstTok)) {
+        const candResp = await fetch(
+          SUPA_URL + '/rest/v1/customers?select=id,address&address=ilike.' + encodeURIComponent(firstTok + '%')
+            + '&partial_capture=eq.true&phone=is.null&email=is.null&limit=25',
+          { headers: supaHeaders }
+        );
+        const candidates = candResp.ok ? await candResp.json() : [];
+        const addrLower = address.trim().toLowerCase();
+        const toArchive = (candidates || [])
+          .filter(c => c.id !== existingId && c.address)
+          .filter(c => {
+            const cLower = c.address.trim().toLowerCase();
+            // Either address is a real prefix of the other — catches a bare house
+            // number ("6719") as well as the original "num + street" stub case.
+            return addrLower.indexOf(cLower) === 0 || cLower.indexOf(addrLower) === 0;
+          })
+          .map(c => c.id);
+        for (const id of toArchive) {
+          await fetch(SUPA_URL + '/rest/v1/customers?id=eq.' + encodeURIComponent(id), {
+            method: 'PATCH',
+            headers: { ...supaHeaders, 'Prefer': 'return=minimal' },
+            body: JSON.stringify({ partial_capture: false, archived: true })
+          }).catch(() => {});
+        }
+        if (toArchive.length) console.log('Absorbed', toArchive.length, 'orphan partial(s) into', resultId);
       }
     } catch (e) { /* best-effort cleanup — never block the booking */ }
   }
@@ -281,6 +324,6 @@ exports.handler = async function(event) {
   return {
     statusCode: 200,
     headers: corsHeaders,
-    body: JSON.stringify({ ok: true, action: existingId ? 'updated' : 'created' })
+    body: JSON.stringify({ ok: true, action: existingId ? 'updated' : 'created', id: resultId })
   };
 };

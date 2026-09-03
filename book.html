@@ -328,6 +328,34 @@ fbq('track','ViewContent',{content_name:'Book Solar Diagnostic'});
 var _captureLevel = 0; // 0=none 1=name+addr 2=+phone 3=+email
 var _addrChosen   = false;
 
+// ── Session-tracked customer id (2026-09-03, per Dennis — "any accounts processed
+// online are duplicating") ──────────────────────────────────────────────────────
+// Every partial/submit/confirmed call below used to let ghl-inbound.js GUESS which
+// row to update from email/phone/address alone — fragile the moment the address
+// isn't yet a clean, complete string (see maybeSend()'s guard below for the exact
+// failure mode this caused). Once the FIRST call in a session returns a real row
+// id, every later call in this same session passes it straight through as
+// customerId, so ghl-inbound.js never has to guess again — same "pass customerId
+// directly" pattern already used by createNewLead()/ghl-book.js elsewhere in this
+// codebase. Persisted to sessionStorage so a page reload mid-form still resumes the
+// same row instead of starting a new one.
+var _ghlInboundId = null;
+try { _ghlInboundId = sessionStorage.getItem('ghlInboundId') || null; } catch (e) {}
+
+function _ghlInboundPost(body) {
+  if (_ghlInboundId) body.customerId = _ghlInboundId;
+  return fetch('/.netlify/functions/ghl-inbound', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  }).then(function(r){ return r.json(); }).then(function(d){
+    if (d && d.id && !_ghlInboundId) {
+      _ghlInboundId = d.id;
+      try { sessionStorage.setItem('ghlInboundId', d.id); } catch (e) {}
+    }
+    return d;
+  }).catch(function(){});
+}
+
 /* ── Google Places ── */
 window.initAddrAC = function() {
   var inp = document.getElementById('fAddress');
@@ -347,22 +375,29 @@ function maybeSend() {
   var ph   = document.getElementById('fPhone').value.trim();
   var em   = document.getElementById('fEmail').value.trim();
 
+  // ⚠️ 2026-09-03: firing on a half-typed address ("6719", no street name yet — the
+  // customer tabbed to Phone before Google Places finished autocompleting) created a
+  // stub row that ghl-inbound.js's address matching could never reliably absorb back
+  // into the real booking — the Neil Fjellestad duplicate report. index.html's
+  // homepage form was already fixed for this exact bug on 2026-07-17 (see
+  // partialSave there — requires a comma before sending); book.html never got the
+  // same guard. Require the address to actually look like a real address before
+  // ever sending one — same signal validateForm() below already uses.
+  var addrLooksReal = addr.length > 5 && addr.indexOf(',') > -1;
+
   var level = 0;
-  if (fn && ln && addr) level = 1;
-  if (fn && ln && addr && ph) level = 2;
-  if (fn && ln && addr && ph && em) level = 3;
+  if (fn && ln && addrLooksReal) level = 1;
+  if (fn && ln && addrLooksReal && ph) level = 2;
+  if (fn && ln && addrLooksReal && ph && em) level = 3;
 
   if (level === 0 || level <= _captureLevel) return;
   _captureLevel = level;
 
-  fetch('/.netlify/functions/ghl-inbound', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(Object.assign({
-      firstName: fn, lastName: ln,
-      phone: ph || null, email: em || null, address1: addr || null,
-      source: 'book_page_partial'
-    }, getAttribution()))
-  }).catch(function(){});
+  _ghlInboundPost(Object.assign({
+    firstName: fn, lastName: ln,
+    phone: ph || null, email: em || null, address1: addr || null,
+    source: 'book_page_partial'
+  }, getAttribution()));
 }
 document.getElementById('fLast').addEventListener('blur', maybeSend);
 document.getElementById('fAddress').addEventListener('blur', maybeSend);
@@ -439,10 +474,7 @@ async function bookSlot(btn) {
   var end   = btn.dataset.end;
   var label = decodeURIComponent(btn.dataset.label);
 
-  fetch('/.netlify/functions/ghl-inbound', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(Object.assign({ firstName: fn, lastName: ln, phone: ph, email: em||null, address1: addr||null, source: 'book_page_submit', tags: ['webpage-lead'] }, getAttribution()))
-  }).catch(function(){});
+  var _submitPost = _ghlInboundPost(Object.assign({ firstName: fn, lastName: ln, phone: ph, email: em||null, address1: addr||null, source: 'book_page_submit', tags: ['webpage-lead'] }, getAttribution()));
 
   if (typeof gtag !== 'undefined') {
     gtag('event', 'select_time_slot', { event_category: 'book_page' });
@@ -474,13 +506,17 @@ async function bookSlot(btn) {
     // diagnostic_date + definitively clears partial_capture) so booked
     // customers never resemble partial captures, independent of the GHL
     // AppointmentCreate webhook being wired.
-    fetch('/.netlify/functions/ghl-inbound', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(Object.assign({
-        firstName: fn, lastName: ln, phone: ph, email: em||null, address1: addr||null,
-        source: 'book_page_confirmed', selectedSlot: start, selectedSlotEndTime: end
-      }, getAttribution()))
-    }).catch(function(){});
+    // ⚠️ Awaited (unlike the fire-and-forget calls above) so _ghlInboundId is
+    // guaranteed to have resolved from the book_page_submit call before this one
+    // fires — otherwise this could still race and fall back to guessing the row
+    // by address/phone, which is exactly what this whole change set exists to stop
+    // needing. Adds at most one fast round trip, after the much slower ghl-book
+    // call this already waits on.
+    await _submitPost;
+    _ghlInboundPost(Object.assign({
+      firstName: fn, lastName: ln, phone: ph, email: em||null, address1: addr||null,
+      source: 'book_page_confirmed', selectedSlot: start, selectedSlotEndTime: end
+    }, getAttribution()));
 
     // The appointment only truly booked if GHL returned an appointment id with no
     // error. The contact/lead is captured either way — so on appointment failure we

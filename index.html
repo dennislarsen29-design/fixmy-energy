@@ -1055,30 +1055,49 @@ footer { background: #111; padding: 56px 48px 32px; }
       catch(e) { console.warn('Supabase init error:', e); }
     }
 
+    // Tracks the real customers.id for this browsing session once ghl-inbound
+    // has created/matched one, so every later call in the same session (a
+    // partial keystroke, then the full submit) patches that exact row instead
+    // of re-guessing by email/phone/address — the guess is what let a
+    // half-typed address ("6719") create a stub that a completed booking with
+    // the full address ("6719 Park Ridge Blvd...") could never match back to.
+    // Same fix already applied to book.html's /book funnel (2026-09-03).
+    var _ghlInboundId = null;
+    try { _ghlInboundId = sessionStorage.getItem('ghlInboundId') || null; } catch (e) {}
+
+    function _ghlInboundPost(body) {
+      if (_ghlInboundId) body.customerId = _ghlInboundId;
+      return fetch('/.netlify/functions/ghl-inbound', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      }).then(function(r){ return r.json(); }).then(function(d){
+        if (d && d.id && !_ghlInboundId) {
+          _ghlInboundId = d.id;
+          try { sessionStorage.setItem('ghlInboundId', d.id); } catch (e) {}
+        }
+        return d;
+      }).catch(function(e){ console.warn('Portal sync failed:', e); });
+    }
+
     async function upsertToPortal(data) {
       // Routed through ghl-inbound so homepage leads share the same dedupe,
       // partial-upgrade, and attribution logic as /book — and no longer
       // require an email to reach the portal.
-      try {
-        await fetch('/.netlify/functions/ghl-inbound', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(Object.assign({
-            firstName:       data.first_name || '',
-            lastName:        data.last_name  || '',
-            email:           data.email      || null,
-            phone:           data.phone      || null,
-            address1:        data.address    || null,
-            system_size:     data.system_size     || null,
-            utility:         data.utility         || null,
-            monthly_bill:    data.monthly_bill    || null,
-            years_installed: data.years_installed || null,
-            tech_note:       data.tech_note       || null,
-            source: 'homepage_submit'
-          }, (typeof getAttribution === 'function' ? getAttribution() : {})))
-        });
-        console.log('Portal synced for:', data.email || data.phone || data.address);
-      } catch(e) { console.warn('Portal sync failed:', e); }
+      await _ghlInboundPost(Object.assign({
+        firstName:       data.first_name || '',
+        lastName:        data.last_name  || '',
+        email:           data.email      || null,
+        phone:           data.phone      || null,
+        address1:        data.address    || null,
+        system_size:     data.system_size     || null,
+        utility:         data.utility         || null,
+        monthly_bill:    data.monthly_bill    || null,
+        years_installed: data.years_installed || null,
+        tech_note:       data.tech_note       || null,
+        source: 'homepage_submit'
+      }, (typeof getAttribution === 'function' ? getAttribution() : {})));
+      console.log('Portal synced for:', data.email || data.phone || data.address);
     }
   </script>
 
@@ -2417,18 +2436,14 @@ document.querySelectorAll('.fade').forEach(el => io.observe(el));
         // Portal (Supabase via ghl-inbound) — NOT the GHL booking webhook.
         // Partials used to fire the same GHL webhook as completed leads, which
         // triggered "appointment booked" automations for people who never booked.
-        fetch('/.netlify/functions/ghl-inbound', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(Object.assign({
-            firstName: snapshot.first_name || '',
-            lastName:  snapshot.last_name  || '',
-            phone:     snapshot.phone      || null,
-            email:     snapshot.email      || null,
-            address1:  snapshot.address    || null,
-            source: 'homepage_partial'
-          }, (typeof getAttribution === 'function' ? getAttribution() : {})))
-        }).catch(function(e){ console.log('Portal partial error:', e); });
+        _ghlInboundPost(Object.assign({
+          firstName: snapshot.first_name || '',
+          lastName:  snapshot.last_name  || '',
+          phone:     snapshot.phone      || null,
+          email:     snapshot.email      || null,
+          address1:  snapshot.address    || null,
+          source: 'homepage_partial'
+        }, (typeof getAttribution === 'function' ? getAttribution() : {})));
       }, 2000); // 2 second debounce so it doesn't fire on every keystroke
     }
   }
