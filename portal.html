@@ -15462,6 +15462,27 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     });
   }
 
+  // Real-PDF signing engine (2026-09-05) — same dynamic-script pattern as finLoadChartJs.
+  function _loadPdfJs(){
+    return new Promise(function(resolve){
+      if (window.pdfjsLib) return resolve(true);
+      if (document.getElementById('pdfJsLib')) {
+        var t = setInterval(function(){ if (window.pdfjsLib) { clearInterval(t); resolve(true); } }, 150);
+        setTimeout(function(){ clearInterval(t); resolve(!!window.pdfjsLib); }, 8000);
+        return;
+      }
+      var s = document.createElement('script');
+      s.id = 'pdfJsLib';
+      s.src = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js';
+      s.onload = function(){
+        try { window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js'; } catch(e){}
+        resolve(true);
+      };
+      s.onerror = function(){ resolve(false); };
+      document.head.appendChild(s);
+    });
+  }
+
   function finEnsureCss(){
     if (document.getElementById('finCss')) return;
     var st = document.createElement('style');
@@ -18382,15 +18403,218 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   }
 
   var DEAL_DOC_TYPES = [
+    // ⚠️ 2026-09-05, per Dennis — "not this fabricated version... it needs to be the
+    // actual PDF that was uploaded and overlay customer's input (signature, dates,
+    // etc)... DocuSign style signatures with actual PDFs." `hasPdfTemplate:true` marks a
+    // doc as migrated onto the real-PDF engine (see `document_templates` + PDF_FIELD_
+    // TYPE_META below) — the HTML-reproduction body below is kept ONLY as the pre-real-
+    // PDF fallback until a document_templates row exists and is confirmed; it is not the
+    // direction this is going. Tesla's agreement is untouched in this pass (Dennis has
+    // only reviewed the CPUC one so far) — same fallback applies to it today.
     { id:'cpuc_guide', label:'California Solar Consumer Protection Guide (CPUC)', icon:'&#128214;',
       appliesWhen: function(c){ return c && c.lead_category !== 'new_solar'; },
       initialsKeys: ['aff1','aff2','aff3','aff4','aff5','aff6','aff7','aff8','aff9','aff10','aff11','aff12'],
+      hasPdfTemplate: true,
       body: function(c){ return _dealDocBodyCpuc(c); } },
     { id:'tesla_sdcp', label:'Tesla SDCP Solar Battery Savings Participation Agreement', icon:'&#128267;',
       appliesWhen: function(c){ return _dealDocSdcpRelevant(c); },
       initialsKeys: [],
       body: function(c){ return _dealDocBodyTesla(c); } }
   ];
+
+  // ── Real-PDF DocuSign-style field engine (2026-09-05) ───────────────────────
+  var PDF_FIELD_TYPE_META = {
+    initials:  { color:'#ffaa00', label:'Initials' },
+    signature: { color:'#8DC63F', label:'Signature' },
+    date:      { color:'#4a9eff', label:'Date' },
+    text:      { color:'#9b6de8', label:'Text' }
+  };
+  var _docTemplatesCache = {};
+  async function _loadDocTemplate(docType, force) {
+    if (_docTemplatesCache[docType] && !force) return _docTemplatesCache[docType];
+    try {
+      var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var resp = await client.from('document_templates').select('*').eq('doc_type', docType).limit(1);
+      var row = (resp.data && resp.data[0]) || null;
+      _docTemplatesCache[docType] = row;
+      return row;
+    } catch(e) { console.warn('document_templates load:', e); return null; }
+  }
+
+  // ── Template editor — admin reviews/adjusts Claude's auto-placed field positions
+  // over the REAL rendered PDF before any customer ever signs against it. Fields are
+  // stored as fractions (0-1) of page width/height so they're resolution-independent
+  // regardless of what scale pdf.js renders at.
+  var _tplState = null; // { docType, template, pdf, pageScale: {pageIdx: {w,h}} }
+  window.openDocTemplateEditor = async function(docType) {
+    var def = DEAL_DOC_TYPES.find(function(d){ return d.id === docType; });
+    if (!def || !def.hasPdfTemplate) { alert('This document isn\'t on the real-PDF engine yet.'); return; }
+    var pdfOk = await _loadPdfJs();
+    if (!pdfOk) { alert('Could not load the PDF renderer — check your connection and try again.'); return; }
+    var tpl = await _loadDocTemplate(docType, true);
+    if (!tpl) { alert('No document_templates row for "'+docType+'" — nothing to configure yet.'); return; }
+    var overlay = document.createElement('div');
+    overlay.id = 'tplEditorOverlay';
+    overlay.style.cssText = 'position:fixed;inset:0;background:#0e0e0e;z-index:10500;overflow-y:auto;';
+    overlay.innerHTML = '<div style="max-width:900px;margin:0 auto;padding:16px 14px 100px;color:#F3EDE3;">'+
+      '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:6px;">'+
+        '<div style="font-size:0.9rem;font-weight:800;">&#128295; Configure Fields &mdash; '+esc(def.label)+'</div>'+
+        '<button onclick="_tplCloseEditor()" style="width:auto;background:none;border:none;color:#888;font-size:1.4rem;cursor:pointer;line-height:1;">&times;</button>'+
+      '</div>'+
+      '<div style="font-size:0.72rem;color:#888;line-height:1.6;margin-bottom:14px;">Drag a box to reposition it; drag the bottom-right corner to resize. These were auto-placed from reading the document — check every page against the real text before confirming. Nothing a customer signs uses this until you tap <b>Mark Confirmed</b>.</div>'+
+      '<div id="tplStatus" style="font-size:0.72rem;color:#8DC63F;min-height:16px;margin-bottom:8px;"></div>'+
+      '<div id="tplPages"></div>'+
+      '<div style="position:fixed;bottom:0;left:0;right:0;background:#161616;border-top:1px solid rgba(255,255,255,0.1);padding:12px 16px;display:flex;gap:8px;z-index:10501;">'+
+        '<button onclick="_tplSave(false)" style="width:auto;flex:1;padding:12px;background:rgba(74,158,255,0.14);border:1px solid rgba(74,158,255,0.4);border-radius:10px;color:#4a9eff;font-weight:700;font-size:0.82rem;cursor:pointer;">&#128190; Save Positions</button>'+
+        '<button onclick="_tplSave(true)" style="width:auto;flex:1;padding:12px;background:#8DC63F;border:none;border-radius:10px;color:#000;font-weight:800;font-size:0.82rem;cursor:pointer;">&#9989; Save &amp; Mark Confirmed</button>'+
+      '</div>'+
+    '</div>';
+    document.body.appendChild(overlay);
+    _tplState = { docType: docType, template: tpl, pageScale: {} };
+    try {
+      var loadingTask = window.pdfjsLib.getDocument(tpl.pdf_path);
+      var pdf = await loadingTask.promise;
+      _tplState.pdf = pdf;
+      await _tplRenderAllPages();
+    } catch(e) {
+      var st = document.getElementById('tplStatus');
+      if (st) { st.style.color = '#ef4444'; st.textContent = 'Could not load PDF: ' + e.message; }
+    }
+  };
+
+  window._tplCloseEditor = function() {
+    var o = document.getElementById('tplEditorOverlay'); if (o) o.remove();
+    _tplState = null;
+  };
+
+  async function _tplRenderAllPages() {
+    var wrap = document.getElementById('tplPages'); if (!wrap || !_tplState) return;
+    var pdf = _tplState.pdf;
+    var targetWidth = Math.min(820, (document.getElementById('tplPages')||{}).clientWidth || 820);
+    var h = '';
+    for (var i = 1; i <= pdf.numPages; i++) {
+      h += '<div style="position:relative;margin-bottom:18px;background:#000;" id="tplPageWrap_'+(i-1)+'">'+
+        '<canvas id="tplCanvas_'+(i-1)+'"></canvas>'+
+        '<div id="tplFieldsLayer_'+(i-1)+'" style="position:absolute;inset:0;"></div>'+
+        '<div style="position:absolute;top:4px;left:4px;background:rgba(0,0,0,0.6);color:#888;font-size:0.62rem;padding:2px 7px;border-radius:6px;">Page '+i+'</div>'+
+      '</div>';
+    }
+    wrap.innerHTML = h;
+    for (var p = 1; p <= pdf.numPages; p++) {
+      await _tplRenderPage(p - 1, targetWidth);
+    }
+  }
+
+  async function _tplRenderPage(pageIdx, targetWidth) {
+    var page = await _tplState.pdf.getPage(pageIdx + 1);
+    var baseViewport = page.getViewport({ scale: 1 });
+    var scale = targetWidth / baseViewport.width;
+    var viewport = page.getViewport({ scale: scale });
+    var canvas = document.getElementById('tplCanvas_' + pageIdx);
+    if (!canvas) return;
+    canvas.width = viewport.width; canvas.height = viewport.height;
+    canvas.style.width = viewport.width + 'px'; canvas.style.height = viewport.height + 'px';
+    var ctx = canvas.getContext('2d');
+    await page.render({ canvasContext: ctx, viewport: viewport }).promise;
+    _tplState.pageScale[pageIdx] = { w: viewport.width, h: viewport.height };
+    _tplRenderFieldsForPage(pageIdx);
+  }
+
+  function _tplRenderFieldsForPage(pageIdx) {
+    var layer = document.getElementById('tplFieldsLayer_' + pageIdx);
+    var dims = _tplState.pageScale[pageIdx];
+    if (!layer || !dims) return;
+    var fields = (_tplState.template.fields || []).filter(function(f){ return f.page === pageIdx; });
+    layer.innerHTML = fields.map(function(f){
+      var meta = PDF_FIELD_TYPE_META[f.type] || PDF_FIELD_TYPE_META.text;
+      var left = f.x * dims.w, top = f.y * dims.h, w = f.w * dims.w, h = f.h * dims.h;
+      return '<div class="tpl-field" data-id="'+esc(f.id)+'" data-page="'+pageIdx+'" '+
+        'style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;'+
+        'border:2px solid '+meta.color+';background:'+meta.color+'22;cursor:move;box-sizing:border-box;touch-action:none;">'+
+        '<div style="position:absolute;top:-18px;left:0;font-size:0.6rem;color:'+meta.color+';font-weight:700;white-space:nowrap;background:rgba(0,0,0,0.7);padding:1px 5px;border-radius:4px;">'+esc(f.label||f.id)+'</div>'+
+        '<div class="tpl-resize-handle" data-id="'+esc(f.id)+'" data-page="'+pageIdx+'" style="position:absolute;right:-5px;bottom:-5px;width:12px;height:12px;background:'+meta.color+';border-radius:50%;cursor:nwse-resize;touch-action:none;"></div>'+
+      '</div>';
+    }).join('');
+    Array.prototype.forEach.call(layer.querySelectorAll('.tpl-field'), _tplWireDrag);
+    Array.prototype.forEach.call(layer.querySelectorAll('.tpl-resize-handle'), _tplWireResize);
+  }
+
+  function _tplFieldById(id) {
+    return (_tplState.template.fields || []).find(function(f){ return f.id === id; });
+  }
+
+  function _tplWireDrag(el) {
+    el.addEventListener('pointerdown', function(e){
+      if (e.target.classList.contains('tpl-resize-handle')) return;
+      e.preventDefault();
+      var id = el.dataset.id, pageIdx = Number(el.dataset.page);
+      var dims = _tplState.pageScale[pageIdx];
+      var field = _tplFieldById(id);
+      var startX = e.clientX, startY = e.clientY;
+      var origX = field.x, origY = field.y;
+      try { el.setPointerCapture(e.pointerId); } catch(capErr) {}
+      function move(ev) {
+        var dx = (ev.clientX - startX) / dims.w, dy = (ev.clientY - startY) / dims.h;
+        field.x = Math.max(0, Math.min(1 - field.w, origX + dx));
+        field.y = Math.max(0, Math.min(1 - field.h, origY + dy));
+        el.style.left = (field.x * dims.w) + 'px';
+        el.style.top = (field.y * dims.h) + 'px';
+      }
+      function up(ev) {
+        try { el.releasePointerCapture(e.pointerId); } catch(relErr) {}
+        el.removeEventListener('pointermove', move);
+        el.removeEventListener('pointerup', up);
+      }
+      el.addEventListener('pointermove', move);
+      el.addEventListener('pointerup', up);
+    });
+  }
+
+  function _tplWireResize(handle) {
+    handle.addEventListener('pointerdown', function(e){
+      e.preventDefault(); e.stopPropagation();
+      var id = handle.dataset.id, pageIdx = Number(handle.dataset.page);
+      var dims = _tplState.pageScale[pageIdx];
+      var field = _tplFieldById(id);
+      var fieldEl = handle.parentElement;
+      var startX = e.clientX, startY = e.clientY;
+      var origW = field.w, origH = field.h;
+      try { handle.setPointerCapture(e.pointerId); } catch(capErr) {}
+      function move(ev) {
+        var dw = (ev.clientX - startX) / dims.w, dh = (ev.clientY - startY) / dims.h;
+        field.w = Math.max(0.02, Math.min(1 - field.x, origW + dw));
+        field.h = Math.max(0.015, Math.min(1 - field.y, origH + dh));
+        fieldEl.style.width = (field.w * dims.w) + 'px';
+        fieldEl.style.height = (field.h * dims.h) + 'px';
+      }
+      function up(ev) {
+        try { handle.releasePointerCapture(e.pointerId); } catch(relErr) {}
+        handle.removeEventListener('pointermove', move);
+        handle.removeEventListener('pointerup', up);
+      }
+      handle.addEventListener('pointermove', move);
+      handle.addEventListener('pointerup', up);
+    });
+  }
+
+  window._tplSave = async function(markConfirmed) {
+    if (!_tplState) return;
+    var st = document.getElementById('tplStatus');
+    if (st) { st.style.color = '#8DC63F'; st.textContent = 'Saving…'; }
+    var repName = 'Admin';
+    try { if (typeof person !== 'undefined' && person) repName = person.name || repName; } catch(e){}
+    var payload = { fields: _tplState.template.fields, updated_at: new Date().toISOString() };
+    if (markConfirmed) { payload.confirmed = true; payload.confirmed_by = repName; payload.confirmed_at = new Date().toISOString(); }
+    try {
+      var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var resp = await client.from('document_templates').update(payload).eq('doc_type', _tplState.docType);
+      if (resp.error) throw resp.error;
+      _docTemplatesCache[_tplState.docType] = null; // force a fresh reload next time anything reads it
+      if (st) { st.style.color = '#8DC63F'; st.textContent = markConfirmed ? '✓ Saved and marked confirmed.' : '✓ Positions saved.'; }
+    } catch(e) {
+      if (st) { st.style.color = '#ef4444'; st.textContent = 'Could not save: ' + e.message; }
+    }
+  };
 
   var CPUC_AFFIRMATIONS = [
     'I have not yet entered into a contract for solar with the solar provider signing.',
@@ -18486,6 +18710,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<div style="font-size:0.78rem;color:#F3EDE3;font-weight:600;">'+d.icon+' '+esc(d.label)+'</div>'+
         '<div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">'+
           '<span class="mini-badge" style="background:'+meta.bg+';color:'+meta.color+';font-weight:700;white-space:nowrap;">'+meta.label+'</span>'+
+          (d.hasPdfTemplate && typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE === 'admin' ?
+            '<button type="button" onclick="openDocTemplateEditor(\''+d.id+'\')" title="Review/adjust where fields sit on the real PDF" style="width:auto;padding:6px 12px;background:rgba(155,109,232,0.1);border:1px solid rgba(155,109,232,0.35);border-radius:100px;color:#9b6de8;font-size:0.68rem;font-weight:700;cursor:pointer;">&#9881; Fields</button>' : '')+
           '<button type="button" onclick="openDealDoc(\''+c.id+'\',\''+d.id+'\')" style="width:auto;padding:6px 14px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);border-radius:100px;color:#F3EDE3;font-size:0.7rem;font-weight:700;cursor:pointer;">Open</button>'+
         '</div></div>';
     }).join('');
