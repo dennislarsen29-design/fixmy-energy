@@ -18190,6 +18190,252 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '</div></div>';
   }
 
+  // ── Lead-to-Agreements document engine (2026-09-05, per Dennis) ─────────────
+  // Built off 6 real uploaded documents (CPUC Consumer Guide, Participate's 52-page
+  // Customer Agreement, SDCP Participant Enrollment Form, Tesla's SDCP Participation
+  // Agreement, and two SDG&E interconnection variants). Only two are live in this pass —
+  // CPUC Guide + Tesla SDCP Agreement, the two simplest (static legal text, no real
+  // per-customer blanks besides the final signature). Participate/SDCP/SDG&E IX are
+  // NOT built yet: Participate's 52-pager and both SDG&E forms have zero real AcroForm
+  // fields (confirmed by inspecting the actual PDFs), so soft-seeding them needs the
+  // same reproduce-as-our-own-page treatment as these two — same engine, more content,
+  // next pass. The SDCP Enrollment Form DOES have 37 real AcroForm fields and deserves a
+  // real PDF-fill (pdf-lib) rather than this HTML-reproduction approach — also next pass.
+  // Storage: `deal_documents` (migration 20260905_deal_documents.sql, ✅ applied) — one
+  // row per (customer, doc_type), unique constraint so upsert-by-conflict always lands
+  // on the same row. `initials` is a per-line {key: 'JD'|'N/A'} map for documents (like
+  // the CPUC Guide) that require an individual initial/N-A on each affirmation, matching
+  // the real form's own instruction ("Each box MUST contain your initials or 'N/A'").
+  //
+  // ⚠️ Cosmic's contractor block (name/address/license/phone/email) is hardcoded from the
+  // Participate PDF's own Disclosure Statement page — this assumes Cosmic is the Ops
+  // partner on every deal that needs this document. OPS_PARTNERS has no license/address/
+  // phone fields today, so a battery-retrofit job assigned to a DIFFERENT ops partner
+  // would still show Cosmic's info here. Flagged rather than silently wrong — generalize
+  // this (add those fields to OPS_PARTNERS) if a non-Cosmic partner ever needs this flow.
+  var COSMIC_CONTRACTOR_INFO = { name:'Cosmic Solar & Roofing', address:'943 Poinsettia Ave., Ste 401, Vista, CA 92081', phone:'(760) 749-1111', email:'solarroof@cosmicsolar.com', license:'831831', licenseClass:'C-46 (Solar Contractor)' };
+
+  // SDCP relevance mirrors the proposal builder's own gate: a confirmed sdcp_rebate on
+  // any option in the saved proposal (build.sdcpQualified was already required before
+  // sendProposal ever writes opt.sdcp_rebate — see the proposal builder's own comment).
+  function _dealDocSdcpRelevant(c) {
+    try {
+      var opts = (c && c.proposal && c.proposal.options) || [];
+      return opts.some(function(o){ return (o.sdcp_rebate||0) > 0; });
+    } catch(e) { return false; }
+  }
+
+  var DEAL_DOC_TYPES = [
+    { id:'cpuc_guide', label:'California Solar Consumer Protection Guide (CPUC)', icon:'&#128214;',
+      appliesWhen: function(c){ return c && c.lead_category !== 'new_solar'; },
+      initialsKeys: ['aff1','aff2','aff3','aff4','aff5','aff6','aff7','aff8','aff9','aff10','aff11','aff12'],
+      body: function(c){ return _dealDocBodyCpuc(c); } },
+    { id:'tesla_sdcp', label:'Tesla SDCP Solar Battery Savings Participation Agreement', icon:'&#128267;',
+      appliesWhen: function(c){ return _dealDocSdcpRelevant(c); },
+      initialsKeys: [],
+      body: function(c){ return _dealDocBodyTesla(c); } }
+  ];
+
+  var CPUC_AFFIRMATIONS = [
+    'I have not yet entered into a contract for solar with the solar provider signing.',
+    'The solar provider provided me with a copy of this 7-page Solar Consumer Protection Guide before they collected my signature below.',
+    'The solar provider gave me the time to read this entire 7-page guide and visit the CPUC’s online Solar Consumer Protection Guide (www.cpuc.ca.gov/solarguide).',
+    'I was provided an option to sign this Solar Consumer Protection Guide electronically or in handwriting if I requested.',
+    'If I was solicited as part of a door-to-door sale and did not expressly request an electronic format, a copy of the Solar Consumer Protection Guide was provided in paper format.',
+    'The solar provider gave me the opportunity to read this guide in Spanish, Chinese, Korean, Vietnamese, Tagalog, Armenian, or Dari if they spoke to me in one of those languages.',
+    'If I choose to sign the Solar Consumer Protection Guide electronically, I am using an email address that was created and controlled by me prior to the sale, lease, or power purchase agreement.',
+    'I have received a Solar Energy System Disclosure Document, which lists the financial details of my solar and or/battery system.',
+    'In Section 4 “Energy Savings” of the Solar Energy System Disclosure Document, if the solar provider was not able to use my one-hour interval electric consumption data, the solar provider has given me a satisfactory explanation as to why, and I attest that they made a reasonable effort to access this data.',
+    'I understand that any estimate I receive on my potential electricity bill savings not contained in the Solar Energy System Disclosure Document was calculated using the average electricity rate escalation calculated by the CPUC, at most. I can find this maximum average at www.cpuc.ca.gov/solarguide, and can ask my installer what rate was used at any time.',
+    'I have asked my contractor for an explanation of any bill savings estimate I received.',
+    'The solar provider has explained and provided me documentation on the finances of this installation, including how much I am paying now, how much I will be paying each month, and how any interest or escalation rates will affect my payments in the future.'
+  ];
+
+  function _dealDocBodyCpuc(c) {
+    var draft = window._dealDocDraftInitials || {};
+    var rows = CPUC_AFFIRMATIONS.map(function(text, i){
+      var key = 'aff'+(i+1);
+      var val = draft[key] != null ? draft[key] : '';
+      return '<div style="display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.05);">'+
+        '<input type="text" placeholder="Initials or N/A" value="'+esc(val)+'" oninput="_dealDocSetInitial(\''+key+'\',this.value)" style="width:88px;flex-shrink:0;background:#0e0e0e;border:1px solid rgba(255,255,255,0.15);border-radius:6px;padding:6px 8px;color:#8DC63F;font-size:0.72rem;font-weight:700;text-align:center;"/>'+
+        '<div style="font-size:0.76rem;color:#ccc;line-height:1.5;">'+(i+1)+'. '+esc(text)+'</div>'+
+      '</div>';
+    }).join('');
+    return '<div style="font-size:0.68rem;color:#888;margin-bottom:10px;">Published by the California Public Utilities Commission &middot; full guide: <a href="https://www.cpuc.ca.gov/solarguide" target="_blank" style="color:#4a9eff;">cpuc.ca.gov/solarguide</a>. This capture affirms the statements below, per Business &amp; Professions Code &sect; 7169.</div>'+
+      '<div style="background:rgba(255,170,0,0.06);border:1px solid rgba(255,170,0,0.2);border-radius:8px;padding:10px 12px;margin-bottom:14px;">'+
+        '<div style="font-size:0.7rem;font-weight:700;color:#ffaa00;margin-bottom:6px;">&#9888; Watch Out for False Claims</div>'+
+        '<div style="font-size:0.7rem;color:#bbb;line-height:1.6;">"Free solar" &mdash; solar is rarely free. "Never pay a bill again" &mdash; a solar loan/lease/PPA still bills monthly. "Sign now" &mdash; an honest provider never rushes you. "Register as an LLC for tax credits" &mdash; a residential system doesn’t qualify for business tax credits; this is illegal advice.</div>'+
+      '</div>'+
+      '<div style="font-size:0.72rem;font-weight:700;color:#F3EDE3;margin-bottom:6px;">Please affirm each statement below (initial each line, or write “N/A” if it does not apply):</div>'+
+      rows+
+      '<div style="margin-top:14px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.1);font-size:0.74rem;color:#ccc;line-height:1.6;">By signing, I affirm that I have read and understand the California Solar Consumer Protection Guide. I also affirm that information from my solar contract, interconnection application, Solar Energy System Disclosure Document, and/or financing agreement may be reviewed and collected by state regulators to ensure compliance with California’s solar consumer protection laws.</div>'+
+      '<div style="margin-top:14px;padding:10px 12px;background:rgba(255,255,255,0.03);border-radius:8px;font-size:0.68rem;color:#888;line-height:1.7;">'+
+        '<b style="color:#aaa;">Solar Provider</b><br/>'+
+        'Company: '+esc(COSMIC_CONTRACTOR_INFO.name)+' &middot; '+esc(COSMIC_CONTRACTOR_INFO.phone)+' &middot; '+esc(COSMIC_CONTRACTOR_INFO.email)+'<br/>'+
+        'Address: '+esc(COSMIC_CONTRACTOR_INFO.address)+'<br/>'+
+        'CSLB License: '+esc(COSMIC_CONTRACTOR_INFO.license)+' ('+esc(COSMIC_CONTRACTOR_INFO.licenseClass)+')'+
+      '</div>';
+  }
+
+  function _dealDocBodyTesla(c) {
+    var name = esc((c.first_name||'')+' '+(c.last_name||''));
+    return '<div style="font-size:0.78rem;font-weight:700;color:#F3EDE3;margin-bottom:10px;">San Diego Community Power Solar Battery Savings Program &mdash; Participation Agreement</div>'+
+      '<div style="font-size:0.74rem;color:#ccc;line-height:1.65;">'+
+      'San Diego Community Power (“SDCP”) created a virtual power plant (“VPP”) program called Solar Battery Savings (the “Program”) to help reduce stress on the electrical grid, supported by Tesla, Inc. (“Tesla”). This Program compensates eligible customers for energy discharged from their Tesla Powerwall during designated hours during the day. Tesla supports this Program, which is open to customers with one or more eligible Tesla Powerwall(s) (each, a “Device”) that Tesla will control during demand response events (each, an “Event”). Your participation is subject to your agreement to be bound by these terms and conditions with Tesla (“Terms”). By signing below, '+name+' (“You” or “Participant”) acknowledges that You have read these Terms and agree to be legally bound by them.'+
+      '</div>'+
+      '<ol style="font-size:0.74rem;color:#ccc;line-height:1.7;padding-left:18px;margin-top:12px;">'+
+        '<li><b>Eligibility and Enrollment.</b> Upon completing the necessary information and agreeing to the Terms, Tesla will submit Your application to Your Utility, which shall accept or reject participation in its sole discretion. Eligibility includes: You are at least 18; You are an SDCP member; You have a complete interconnection application for BESS and remain compliant with interconnection requirements; You have authority to control the Device.</li>'+
+        '<li><b>Authority.</b> You should not participate unless You have the authority to control the Device(s) and are the customer of record for the utility account at the installation address. By accepting these Terms, You confirm both.</li>'+
+        '<li><b>Grant of Control Over Your Device.</b> By accepting these Terms, You grant Tesla remote access to control the enrolled Device to automatically charge and/or discharge it during an Event, at any time and to any level, while making efforts to respect Your preferences as configured in the Tesla App.</li>'+
+        '<li><b>Term.</b> This Agreement commences upon acceptance and continues for one year, automatically renewing for additional one-year terms until either party terminates as allowed under these Terms.</li>'+
+        '<li><b>Program Events.</b> Events are called subject to the Program Rules (SDCP Solar Battery Savings program manual). Tesla will control the Device to respond during Events, making reasonable efforts to maximize performance within Your app preferences.</li>'+
+        '<li><b>Compensation.</b> The Program pays an annual check or direct deposit based on kWh dispatched during Events. Tesla does not guarantee any specific level of compensation; SDCP defines the calculation in its published Program Rules. This Compensation is the only payment You receive from Tesla or SDCP for participating &mdash; You remain responsible for all other costs of participation, including the cost of electricity to charge Your Device.</li>'+
+        '<li><b>Your Device Data and Other Information.</b> SDCP and Tesla will have access to certain personal identifiable information and energy-use data (“Confidential Information”) to administer the Program, per Tesla’s Customer Privacy Policy (tesla.com/legal), and may share it with regulators upon valid legal request, or anonymized without further consent.</li>'+
+        '<li><b>Program Communications.</b> By accepting these Terms, You consent to Tesla, Your Utility, and other Program agents contacting You by email, SMS, or telephone &mdash; including automatic dialing systems and recorded voice &mdash; notwithstanding any Do-Not-Call registration.</li>'+
+        '<li><b>Enrollment Into Other VPP Programs.</b> Enrollment means You are interested in participating in Virtual Power Plant programs generally; You grant Tesla the right to apply on Your behalf to, or unenroll You from, similar follow-on VPP programs, with notice and an option to unenroll.</li>'+
+        '<li><b>No Warranty; Disclaimer.</b> Tesla expressly disclaims all warranties of any kind relating to this Program.</li>'+
+        '<li><b>Limitation of Liability.</b> Tesla is not liable for any direct, indirect, incidental, special, or consequential damages arising in connection with the Program, including reduced Device charge during a power outage. Your sole remedy for dissatisfaction is to discontinue participation.</li>'+
+        '<li><b>Termination.</b> Either party may terminate at any time for any reason &mdash; Tesla with 5 days’ written notice to Your Tesla-app email; You by emailing vppsupport@tesla.com, effective within 5 days.</li>'+
+        '<li><b>General.</b> These Terms and the Program Rules are the entire agreement; not assignable by You without Tesla’s consent; invalid provisions are severable; Sections 7, 8, 10, 12, and 13 survive termination; governed by California law; amendable by Tesla on 5 days’ written notice.</li>'+
+        '<li><b>Tesla Arbitration Requirement.</b> Any unresolved dispute is decided by a single arbitrator under AAA Consumer Arbitration Rules, not a judge or jury, held in Your county of legal residence with Tesla paying AAA fees. Claims cannot be brought as a class/representative action. You may opt out of arbitration within 30 days of Your initial System order by written letter to Tesla, Inc., P.O. Box 15430, Fremont, CA 94539-7970.</li>'+
+        '<li>The San Diego Community Power Solar Battery Savings program terms and conditions (Appendix A of the Program Manual, sdcommunitypower.org) are incorporated by reference as part of this Participation Agreement.</li>'+
+      '</ol>'+
+      '<div style="margin-top:12px;font-size:0.76rem;color:#ddd;font-weight:600;">By signing below, I agree to abide by the SDCP Program Terms and the terms of this San Diego Community Power Solar Battery Savings Program Participation Agreement.</div>';
+  }
+
+  var _dealDocsCache = {};
+  async function _dealDocsLoad(customerId) {
+    try {
+      var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var resp = await client.from('deal_documents').select('*').eq('customer_id', customerId);
+      var map = {};
+      (resp.data||[]).forEach(function(r){ map[r.doc_type] = r; });
+      _dealDocsCache[customerId] = map;
+      return map;
+    } catch(e) { console.warn('deal_documents load:', e); return {}; }
+  }
+
+  function _agreementsRow(c) {
+    if (!c || !c.id) return '';
+    var applicable = DEAL_DOC_TYPES.filter(function(d){ return d.appliesWhen(c); });
+    if (!applicable.length) return '';
+    var cache = _dealDocsCache[c.id] || {};
+    var rows = applicable.map(function(d){
+      var row = cache[d.id];
+      var status = row ? row.status : 'pending';
+      var meta = status==='signed' ? {bg:'rgba(141,198,63,0.12)',color:'#8DC63F',label:'&#9989; Signed'}
+        : status==='reviewed' ? {bg:'rgba(74,158,255,0.12)',color:'#4a9eff',label:'&#128065; Reviewed'}
+        : {bg:'rgba(255,170,0,0.12)',color:'#ffaa00',label:'&#9203; Not Started'};
+      return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid rgba(255,255,255,0.06);">'+
+        '<div style="font-size:0.78rem;color:#F3EDE3;font-weight:600;">'+d.icon+' '+esc(d.label)+'</div>'+
+        '<div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">'+
+          '<span class="mini-badge" style="background:'+meta.bg+';color:'+meta.color+';font-weight:700;white-space:nowrap;">'+meta.label+'</span>'+
+          '<button type="button" onclick="openDealDoc(\''+c.id+'\',\''+d.id+'\')" style="width:auto;padding:6px 14px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);border-radius:100px;color:#F3EDE3;font-size:0.7rem;font-weight:700;cursor:pointer;">Open</button>'+
+        '</div></div>';
+    }).join('');
+    return '<div id="agreementsRow_'+c.id+'" style="margin-bottom:14px;">'+
+      '<div style="font-size:0.64rem;font-weight:600;text-transform:uppercase;letter-spacing:0.07em;color:#666;margin-bottom:7px;">&#128196; Agreements</div>'+
+      '<div style="background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:2px 12px;">'+rows+'</div>'+
+    '</div>';
+  }
+
+  function _dealDocSignBlockHtml(c, def) {
+    var repName = 'Rep';
+    try { if (typeof person !== 'undefined' && person) repName = person.name || repName; } catch(e){}
+    return '<div style="margin-top:16px;padding-top:14px;border-top:1px solid rgba(255,255,255,0.1);">'+
+      '<div style="font-size:0.68rem;color:#888;margin-bottom:10px;">Typed name below is captured as the customer’s signature. Walk the customer through the document above before either button.</div>'+
+      '<input id="dealDocSigName" type="text" placeholder="Customer full name" value="'+esc((c.first_name||'')+' '+(c.last_name||''))+'" style="width:100%;box-sizing:border-box;background:#0e0e0e;border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:9px 12px;color:#F3EDE3;font-size:0.82rem;margin-bottom:10px;"/>'+
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;">'+
+        '<button type="button" onclick="_dealDocMarkReviewed(\''+c.id+'\',\''+def.id+'\')" style="width:auto;flex:1;min-width:170px;padding:11px;background:rgba(74,158,255,0.12);border:1px solid rgba(74,158,255,0.4);border-radius:10px;color:#4a9eff;font-size:0.76rem;font-weight:700;cursor:pointer;">&#128065; Mark Reviewed (Soft-Seed)</button>'+
+        '<button type="button" onclick="_dealDocSign(\''+c.id+'\',\''+def.id+'\')" style="width:auto;flex:1;min-width:170px;padding:11px;background:#8DC63F;border:none;border-radius:10px;color:#000;font-size:0.76rem;font-weight:800;cursor:pointer;">&#9989; Capture Signature Now</button>'+
+      '</div>'+
+      '<div style="font-size:0.6rem;color:#555;margin-top:8px;">Reviewed with '+esc(repName)+' present, on this device.</div>'+
+    '</div>';
+  }
+
+  function _dealDocModalHtml(c, def, row) {
+    var alreadySigned = row.status === 'signed';
+    var body = def.body(c, row);
+    return '<div style="background:#1a1c17;border:1px solid rgba(255,255,255,0.12);border-radius:14px;padding:20px 22px;max-width:680px;width:100%;margin-bottom:30px;">'+
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:14px;">'+
+        '<div><div style="font-size:0.62rem;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#8DC63F;">'+def.icon+' '+esc(def.label)+'</div>'+
+        '<div style="font-size:0.7rem;color:#888;margin-top:2px;">'+esc((c.first_name||'')+' '+(c.last_name||''))+' &middot; '+esc(c.address||'')+'</div></div>'+
+        '<button onclick="document.getElementById(\'dealDocModal\').remove()" style="width:auto;background:none;border:none;color:#888;font-size:1.3rem;cursor:pointer;line-height:1;">&times;</button>'+
+      '</div>'+
+      (alreadySigned ? '<div style="background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.3);border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:0.74rem;color:#8DC63F;">&#9989; Signed by <b>'+esc(row.signed_by_name||'')+'</b> on '+(row.signed_at?new Date(row.signed_at).toLocaleString():'')+'</div>' : '')+
+      '<div id="dealDocBody" style="max-height:50vh;overflow-y:auto;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:14px 16px;">'+body+'</div>'+
+      (!alreadySigned ? _dealDocSignBlockHtml(c, def) : '')+
+    '</div>';
+  }
+
+  window.openDealDoc = async function(customerId, docType) {
+    var existing = document.getElementById('dealDocModal');
+    if (existing) existing.remove();
+    var c = adminCustomers.find(function(x){ return x.id === customerId; });
+    if (!c) return;
+    var def = DEAL_DOC_TYPES.find(function(d){ return d.id === docType; });
+    if (!def) return;
+    var cache = _dealDocsCache[customerId] || await _dealDocsLoad(customerId);
+    var row = cache[docType] || { status:'pending', initials:{}, signature:'', signed_by_name:'' };
+    window._dealDocDraftInitials = Object.assign({}, row.initials||{});
+    var modal = document.createElement('div');
+    modal.id = 'dealDocModal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.88);z-index:10000;display:flex;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto;';
+    modal.innerHTML = _dealDocModalHtml(c, def, row);
+    document.body.appendChild(modal);
+  };
+
+  window._dealDocSetInitial = function(key, val) {
+    window._dealDocDraftInitials = window._dealDocDraftInitials || {};
+    window._dealDocDraftInitials[key] = val;
+  };
+
+  window._dealDocMarkReviewed = async function(customerId, docType) {
+    var repId='admin', repName='Admin';
+    try { if (typeof person !== 'undefined' && person) { repId=person.id; repName=person.name||repId; } } catch(e){}
+    try {
+      var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var payload = { customer_id: customerId, doc_type: docType, status:'reviewed', reviewed_by_rep_id:repId, reviewed_by_rep_name:repName, reviewed_at:new Date().toISOString(), updated_at:new Date().toISOString() };
+      var resp = await client.from('deal_documents').upsert(payload, { onConflict:'customer_id,doc_type' });
+      if (resp.error) { alert('Could not save: '+resp.error.message); return; }
+      await _dealDocsLoad(customerId);
+      var c = adminCustomers.find(function(x){ return x.id === customerId; });
+      var slot = document.getElementById('agreementsRow_'+customerId);
+      if (slot && c) slot.outerHTML = _agreementsRow(c);
+      var m = document.getElementById('dealDocModal'); if (m) m.remove();
+      alert('Marked reviewed. Walk the customer through it, then reopen and tap Capture Signature Now when they’re ready.');
+    } catch(e) { alert('Error: '+e.message); }
+  };
+
+  window._dealDocSign = async function(customerId, docType) {
+    var def = DEAL_DOC_TYPES.find(function(d){ return d.id===docType; });
+    if (!def) return;
+    var nameEl = document.getElementById('dealDocSigName');
+    var name = nameEl ? nameEl.value.trim() : '';
+    if (!name) { alert('Type the customer’s full name to sign.'); return; }
+    if (def.initialsKeys && def.initialsKeys.length) {
+      var draft = window._dealDocDraftInitials || {};
+      var missing = def.initialsKeys.filter(function(k){ return !draft[k] || !draft[k].trim(); });
+      if (missing.length) { alert('Every line needs initials or "N/A" before signing — '+missing.length+' still blank.'); return; }
+    }
+    var repId='admin', repName='Admin';
+    try { if (typeof person !== 'undefined' && person) { repId=person.id; repName=person.name||repId; } } catch(e){}
+    try {
+      var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var payload = { customer_id: customerId, doc_type: docType, status:'signed',
+        initials: window._dealDocDraftInitials||{}, signature:name, signed_by_name:name, signed_at:new Date().toISOString(),
+        reviewed_by_rep_id:repId, reviewed_by_rep_name:repName, updated_at:new Date().toISOString() };
+      var resp = await client.from('deal_documents').upsert(payload, { onConflict:'customer_id,doc_type' });
+      if (resp.error) { alert('Could not save: '+resp.error.message); return; }
+      await _dealDocsLoad(customerId);
+      var c = adminCustomers.find(function(x){ return x.id === customerId; });
+      var slot = document.getElementById('agreementsRow_'+customerId);
+      if (slot && c) slot.outerHTML = _agreementsRow(c);
+      var m = document.getElementById('dealDocModal'); if (m) m.remove();
+      alert('Signed and saved.');
+    } catch(e) { alert('Error: '+e.message); }
+  };
+
   // "Ask Ops for Advice" — share a not-yet-sold lead's proposal (Option 1 & 2 specs)
   // with a specific Ops Partner for pre-sale technical/sales input. Stores the request
   // inside the existing customers.proposal jsonb (proposal.ops_advice) — no migration.
@@ -21208,6 +21454,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // means the page opens shorter, with Lead Category/Activity Log/Customer Info/
       // Progress & Scheduling as the first things an admin actually sees.
       _proposalToolsRow(c, isNSEdit)+
+      _agreementsRow(c)+
       _opsAdviceControl(c)+
       _opsBidControl(c)+
       '<div class="editor-section-title">Assignment</div>'+
@@ -21265,6 +21512,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     edLoadPayments();
     edLoadAccounting();
     if (c.address) loadEditorSolarPanel(c.address, 'edSolarPanel_'+c.id, c.id);
+    _dealDocsLoad(c.id).then(function(){
+      var slot = document.getElementById('agreementsRow_'+c.id);
+      if (slot) slot.outerHTML = _agreementsRow(c);
+    });
   }
 
   // ── Accounting panel: Sub Sheet costs + commissions per SOP ────────────────
@@ -25387,6 +25638,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           (function(){ var _e=l.email||((l.phone||'').replace(/\D/g,'').slice(-10)+'@setter.local'); var _ml='https://fixmy.energy/portal?email='+encodeURIComponent(_e)+'&code='+(l.phone||'').replace(/\D/g,'').slice(-10); return '<button type="button" onclick="sendMagicLink(\''+_ml+'\',\''+_e+'\')" style="width:auto;padding:8px 16px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);border-radius:100px;color:#4a9eff;font-size:0.75rem;font-weight:700;cursor:pointer;">&#128279; Magic Link</button>'; })()+
         '</div>'+
         (!config.setterMode ? _proposalToolsRow(l, isNS) : '')+
+        (!config.setterMode ? _agreementsRow(l) : '')+
         (!isNS && !l.sold_type && (l.step||1) >= 3 && (!l.invoice_status || l.invoice_status === 'none' || l.invoice_status === '') ?
           '<div style="background:rgba(141,198,63,0.07);border:2px solid rgba(141,198,63,0.4);border-radius:10px;padding:12px 14px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">'+
             '<div style="display:flex;align-items:center;gap:8px;">'+
@@ -25482,6 +25734,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       currentJobId = l.id;
       loadJobPhotos(l.id).then(function() { window.renderSalesPhotoGrid(l.id); });
       if (l.address) loadEditorSolarPanel(l.address, 'seSolarPanel_'+l.id, l.id);
+      _dealDocsLoad(l.id).then(function(){
+        var dslot = document.getElementById('agreementsRow_'+l.id);
+        if (dslot) dslot.outerHTML = _agreementsRow(l);
+      });
     };
 
     window.renderSalesPhotoGrid = function(id) {
