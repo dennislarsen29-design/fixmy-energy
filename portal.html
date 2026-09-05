@@ -5703,6 +5703,33 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       {v:'approved',l:'Approved'}
     ].map(function(o){ return '<option value="'+o.v+'"'+(status===o.v?' selected':'')+'>'+o.l+'</option>'; }).join('');
 
+    // ── Tech Photos consolidation (2026-09-05, per Dennis) ──────────────────────
+    // Previously a generic, unlabeled drag-and-drop zone — a SECOND, different-looking
+    // way to add to the same job_photos pool the Eval Wizard's structured slots already
+    // write to (confirmed: both key off job_id/customer_id, nothing is siloed from Ops).
+    // Now embeds the Eval Wizard's own slot renderer (_evSlotHtml) directly, so Ops sees
+    // the identical labeled categories (Inverter Photo, Serial Number, MSP, Meter,
+    // Utility Bill, etc.) wherever the job is opened — one experience, not two. Reuses
+    // the wizard's own module state (_evId/_evLocal/_evRow), so it must be reset and
+    // reloaded from the real lead_evaluations row here exactly like openEvalWizard does,
+    // or a stale "skipped" flag from whichever lead's wizard ran last would bleed in.
+    _evId = id; _evRec = c;
+    _evLocal = { brand:'', model:'', serial:'', platform:'', utility:'', skipped:{}, answers:{}, billAnalysis:null };
+    try {
+      _evRow = await _evLoadRow(id);
+      if (_evRow) {
+        _evLocal.brand = _evRow.inverter_brand || '';
+        _evLocal.model = _evRow.inverter_model || '';
+        _evLocal.serial = _evRow.inverter_serial || '';
+        _evLocal.platform = _evRow.monitoring_platform || '';
+        _evLocal.utility = _evRow.utility || '';
+        _evLocal.skipped = _evRow.skipped || {};
+        _evLocal.answers = _evRow.answers || {};
+        _evLocal.billAnalysis = _evRow.bill_analysis || null;
+      }
+    } catch(e) { _evRow = null; }
+    try { await loadJobPhotos(id); } catch(e) {}
+
     document.getElementById('jobList').style.display = 'none';
     document.getElementById('jobDetail').style.display = 'block';
     document.getElementById('jobDetail').innerHTML =
@@ -5729,22 +5756,40 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         (isNSJob && AURORA_ELIGIBLE.indexOf(c.solar_status) >= 0 ? window._auroraCardHtml(c) : '')+
 
         // ── FIELD PHOTOS ──
+        // Consolidated onto the Eval Wizard's own labeled slots (2026-09-05) — see the
+        // comment above _evId's initialization for why. `evalSlotsHtml` renders the same
+        // hardware/production/consumption categories the Site Evaluation used; anything
+        // that lands under a different label (customer-portal "Additional Photos", a
+        // pre-Eval-Wizard legacy upload, etc.) still shows in the collapsed grid below —
+        // nothing is dropped, just not given a duplicate primary UI.
         '<div class="job-section">'+
-          '<div class="job-section-title" style="display:flex;align-items:center;justify-content:space-between;">'+
-            '<span>&#128247; Tech Photos</span>'+
-            '<button type="button" id="quoyaSyncBtn_'+c.id+'" onclick="quoyaSyncLead(\''+c.id+'\')" '+
-              'style="font-size:0.68rem;padding:4px 10px;border:1px solid rgba(74,158,255,0.35);border-radius:20px;background:rgba(74,158,255,0.08);color:#4a9eff;cursor:pointer;white-space:nowrap;width:auto;">'+
-              '&#128260; Sync with Quoya'+
-            '</button>'+
+          '<div class="job-section-title" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;">'+
+            '<span>&#128247; Site Evaluation Photos</span>'+
+            '<div style="display:flex;gap:6px;flex-wrap:wrap;">'+
+              '<button type="button" onclick="openEvalWizard(\''+c.id+'\')" '+
+                'style="font-size:0.68rem;padding:4px 10px;border:1px solid rgba(141,198,63,0.35);border-radius:20px;background:rgba(141,198,63,0.08);color:#8DC63F;cursor:pointer;white-space:nowrap;width:auto;">'+
+                '&#8635; Open Full Eval Wizard'+
+              '</button>'+
+              '<button type="button" id="quoyaSyncBtn_'+c.id+'" onclick="quoyaSyncLead(\''+c.id+'\')" '+
+                'style="font-size:0.68rem;padding:4px 10px;border:1px solid rgba(74,158,255,0.35);border-radius:20px;background:rgba(74,158,255,0.08);color:#4a9eff;cursor:pointer;white-space:nowrap;width:auto;">'+
+                '&#128260; Sync with Quoya'+
+              '</button>'+
+            '</div>'+
           '</div>'+
-          '<div class="job-upload-area" ondragover="event.preventDefault()" ondrop="handlePhotoDrop(event)">'+
-            '<div class="job-upload-icon">&#128247;</div>'+
-            '<div class="job-upload-label">Drag &amp; drop photos here</div>'+
-            '<div class="job-upload-sub">or</div>'+
-            '<label class="job-upload-btn">Browse Photos<input type="file" multiple accept="image/*" style="display:none" onchange="handlePhotoSelect(event)"></label>'+
-          '</div>'+
-          '<div id="photoStatus" class="job-upload-status"></div>'+
-          '<div id="photoGrid" class="photo-grid"></div>'+
+          '<div id="jobEvalPhotos" style="margin-top:8px;">'+_jobEvalSlotsHtml()+'</div>'+
+          '<details style="margin-top:10px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:2px 14px;">'+
+            '<summary style="cursor:pointer;padding:9px 0;font-weight:700;color:#888;font-size:0.76rem;">&#128247; All Photos (grouped by category) &mdash; add anything outside the categories above</summary>'+
+            '<div style="padding-bottom:8px;">'+
+              '<div class="job-upload-area" ondragover="event.preventDefault()" ondrop="handlePhotoDrop(event)">'+
+                '<div class="job-upload-icon">&#128247;</div>'+
+                '<div class="job-upload-label">Drag &amp; drop photos here</div>'+
+                '<div class="job-upload-sub">or</div>'+
+                '<label class="job-upload-btn">Browse Photos<input type="file" multiple accept="image/*" style="display:none" onchange="handlePhotoSelect(event)"></label>'+
+              '</div>'+
+              '<div id="photoStatus" class="job-upload-status"></div>'+
+              '<div id="photoGrid" class="photo-grid"></div>'+
+            '</div>'+
+          '</details>'+
 
           // AI Inverter Analysis panel
           '<div id="inverterAnalysisWrap" style="margin-top:16px;">'+
@@ -5828,7 +5873,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
       '</div>';
 
-    loadJobPhotos(id);
+    // loadJobPhotos(id) already awaited above (before the HTML was built, so the slot
+    // cards reflect real data on first paint) — calling it again here would just be a
+    // redundant second fetch of the same thing.
     if (typeof loadAssessmentFile === 'function') loadAssessmentFile(id);
   }
 
@@ -7782,6 +7829,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     _evLocal.skipped[key] = !_evLocal.skipped[key];
     _evSave({ skipped: _evLocal.skipped });
     _evRender();
+    // _evRender() only repaints #evalWrap (the standalone wizard modal) — the Job-detail
+    // embedding has no loadJobPhotos call to piggyback renderPhotoGrid's hook off of here,
+    // so it needs its own direct repaint or a "Not present" tap wouldn't visibly update.
+    if (typeof _jobEvalPhotosRender === 'function') _jobEvalPhotosRender();
   };
 
   // Upload straight into a known category — the wizard always knows what it asked for,
@@ -8123,6 +8174,26 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '</div>';
     h += '</div>';
     return h;
+  }
+
+  // Job-detail embedding of the Eval Wizard's slots (2026-09-05, per Dennis — one photo
+  // experience, not two). `_jobEvalSlotsHtml()` builds the initial paint inline (called
+  // once from openJob, after _evId/_evLocal/jobPhotos are already loaded for this id);
+  // `_jobEvalPhotosRender()` repaints the same #jobEvalPhotos container afterward and is
+  // hooked into renderPhotoGrid() below so every existing evUpload/evSkipSlot/reload path
+  // keeps this in sync without those functions needing to know this view exists.
+  function _jobEvalSlotsHtml() {
+    var h = '';
+    EVAL_STEPS.forEach(function(step){
+      if (step.key === 'analysis') return;
+      step.slots.forEach(function(s){ h += _evSlotHtml(s); });
+    });
+    return h;
+  }
+  function _jobEvalPhotosRender() {
+    var wrap = document.getElementById('jobEvalPhotos');
+    if (!wrap || !_evId) return;
+    wrap.innerHTML = _jobEvalSlotsHtml();
   }
 
   function _evHardwareFieldsHtml() {
@@ -18069,6 +18140,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   }
 
   function renderPhotoGrid() {
+    // One hook point covers every existing call site (upload, skip, sync, reload) so the
+    // Job-detail Eval-slot embedding (2026-09-05) stays in sync without each of those
+    // functions needing to know it exists. No-ops if #jobEvalPhotos isn't on the page.
+    if (typeof _jobEvalPhotosRender === 'function') _jobEvalPhotosRender();
     var grid = document.getElementById('photoGrid');
     if (!grid) return;
     var photos = jobPhotos[currentJobId] || [];
