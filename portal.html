@@ -18398,7 +18398,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<div style="font-size:0.64rem;font-weight:600;text-transform:uppercase;letter-spacing:0.07em;color:#666;margin-bottom:7px;">Proposal Tools</div>'+
       '<div style="display:flex;gap:8px;flex-wrap:wrap;">'+
         (!isNS ? '<button type="button" onclick="openProposalBuilder(\''+id+'\')" style="'+pill+'">&#128196; Internal Tool</button>' : '')+
-        (!isNS && c.proposal && c.proposal.status === 'sent' ? '<button type="button" onclick="openRecordAcceptance(\''+id+'\')" title="For a deal closed in person or by phone, where the customer never touches their own magic link." style="'+pill.replace('rgba(74,158,255,0.1)','rgba(141,198,63,0.12)').replace('rgba(74,158,255,0.3)','rgba(141,198,63,0.4)').replace('#4a9eff','#8DC63F')+'">&#9989; Record Acceptance</button>' : '')+
         '<button type="button" onclick="_propOpenAurora('+auroraArgs+')" style="'+pill+'">&#128314; Aurora</button>'+
         '<button type="button" onclick="_propOpenExternal(\'https://app.solargraf.com/dashboard\',\''+jaddr+'\')" style="'+pill+'">&#128208; SolarGraf</button>'+
         '<button type="button" onclick="window.open(\'https://imgur.com/upload\',\'_blank\')" style="'+pill+'">&#128444;&#65039; Imgur</button>'+
@@ -18805,13 +18804,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   function _dealDocSignBlockHtml(c, def) {
     var repName = 'Rep';
     try { if (typeof person !== 'undefined' && person) repName = person.name || repName; } catch(e){}
+    // ⚠️ 2026-09-06, per Dennis — "we don't want sales reps being able to sign from
+    // their devices... it needs to go to customer to improve security and decrease
+    // risk of salesperson fraud." The old "Capture Signature Now" button (a rep typing
+    // the customer's name on their own device and having it recorded as the legal
+    // signature) is REMOVED, not hidden — same for the typed-name input it fed. Real
+    // signing only ever happens on the customer's own device, via their own session.
+    // The label "Soft-Seed" is also gone (per Dennis: "We don't want customer's seeing
+    // that term") — this action is just called Preview now.
     return '<div style="margin-top:16px;padding-top:14px;border-top:1px solid rgba(255,255,255,0.1);">'+
-      '<div style="font-size:0.68rem;color:#888;margin-bottom:10px;">Typed name below is captured as the customer’s signature. Walk the customer through the document above before either button.</div>'+
-      '<input id="dealDocSigName" type="text" placeholder="Customer full name" value="'+esc((c.first_name||'')+' '+(c.last_name||''))+'" style="width:100%;box-sizing:border-box;background:#0e0e0e;border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:9px 12px;color:#F3EDE3;font-size:0.82rem;margin-bottom:10px;"/>'+
-      '<div style="display:flex;gap:8px;flex-wrap:wrap;">'+
-        '<button type="button" onclick="_dealDocMarkReviewed(\''+c.id+'\',\''+def.id+'\')" style="width:auto;flex:1;min-width:170px;padding:11px;background:rgba(74,158,255,0.12);border:1px solid rgba(74,158,255,0.4);border-radius:10px;color:#4a9eff;font-size:0.76rem;font-weight:700;cursor:pointer;">&#128065; Mark Reviewed (Soft-Seed)</button>'+
-        '<button type="button" onclick="_dealDocSign(\''+c.id+'\',\''+def.id+'\')" style="width:auto;flex:1;min-width:170px;padding:11px;background:#8DC63F;border:none;border-radius:10px;color:#000;font-size:0.76rem;font-weight:800;cursor:pointer;">&#9989; Capture Signature Now</button>'+
-      '</div>'+
+      '<div style="font-size:0.68rem;color:#888;margin-bottom:10px;">Walk the customer through the document above, then mark it previewed. Signing itself only happens on the customer\'s own device.</div>'+
+      '<button type="button" onclick="_dealDocMarkReviewed(\''+c.id+'\',\''+def.id+'\')" style="width:100%;padding:11px;background:rgba(74,158,255,0.12);border:1px solid rgba(74,158,255,0.4);border-radius:10px;color:#4a9eff;font-size:0.76rem;font-weight:700;cursor:pointer;">&#128065; Preview</button>'+
       '<div style="font-size:0.6rem;color:#555;margin-top:8px;">Reviewed with '+esc(repName)+' present, on this device.</div>'+
     '</div>';
   }
@@ -18866,36 +18869,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var slot = document.getElementById('agreementsRow_'+customerId);
       if (slot && c) slot.outerHTML = _agreementsRow(c);
       var m = document.getElementById('dealDocModal'); if (m) m.remove();
-      alert('Marked reviewed. Walk the customer through it, then reopen and tap Capture Signature Now when they’re ready.');
-    } catch(e) { alert('Error: '+e.message); }
-  };
-
-  window._dealDocSign = async function(customerId, docType) {
-    var def = DEAL_DOC_TYPES.find(function(d){ return d.id===docType; });
-    if (!def) return;
-    var nameEl = document.getElementById('dealDocSigName');
-    var name = nameEl ? nameEl.value.trim() : '';
-    if (!name) { alert('Type the customer’s full name to sign.'); return; }
-    if (def.initialsKeys && def.initialsKeys.length) {
-      var draft = window._dealDocDraftInitials || {};
-      var missing = def.initialsKeys.filter(function(k){ return !draft[k] || !draft[k].trim(); });
-      if (missing.length) { alert('Every line needs initials or "N/A" before signing — '+missing.length+' still blank.'); return; }
-    }
-    var repId='admin', repName='Admin';
-    try { if (typeof person !== 'undefined' && person) { repId=person.id; repName=person.name||repId; } } catch(e){}
-    try {
-      var client = supabase.createClient(SUPA_URL, SUPA_KEY);
-      var payload = { customer_id: customerId, doc_type: docType, status:'signed',
-        initials: window._dealDocDraftInitials||{}, signature:name, signed_by_name:name, signed_at:new Date().toISOString(),
-        reviewed_by_rep_id:repId, reviewed_by_rep_name:repName, updated_at:new Date().toISOString() };
-      var resp = await client.from('deal_documents').upsert(payload, { onConflict:'customer_id,doc_type' });
-      if (resp.error) { alert('Could not save: '+resp.error.message); return; }
-      await _dealDocsLoad(customerId);
-      var c = adminCustomers.find(function(x){ return x.id === customerId; });
-      var slot = document.getElementById('agreementsRow_'+customerId);
-      if (slot && c) slot.outerHTML = _agreementsRow(c);
-      var m = document.getElementById('dealDocModal'); if (m) m.remove();
-      alert('Signed and saved.');
+      alert('Marked previewed. The customer signs this themselves, from their own device, once it\'s sent to them.');
     } catch(e) { alert('Error: '+e.message); }
   };
 
@@ -19725,11 +19699,21 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         optionsHtml+
         savingsHtml+
         aiInsightHtml+
-        '<div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:16px;">'+
+        // 2026-09-06, per Dennis — the SOP was "Internal Proposal Tool > Saved Draft >
+        // Preview (renamed Proceed) > [next step, outside this menu] Send to Customer,
+        // with a Preview button next to it there." Two footers, same modal/same live
+        // _propBuilds state, so nothing about the pricing math has to be recomputed or
+        // re-fetched when moving between them — only which footer is visible changes.
+        '<div id="propFooterBuild" style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:16px;">'+
           '<button onclick="var _m=document.getElementById(\'proposalModal\');if(_m)_m.remove();" style="padding:10px 18px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:100px;color:#aaa;cursor:pointer;font-size:0.82rem;">Cancel</button>'+
+          '<button id="propDraftBtn" onclick="sendProposal(\''+c.id+'\',false,\'draft\')" title="Persists your pricing so it survives closing this window — stays invisible to the customer until you Send." style="padding:10px 16px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);border-radius:100px;color:#ddd;cursor:pointer;font-size:0.82rem;font-weight:600;">&#128190; Save Draft</button>'+
+          '<button id="propProceedBtn" onclick="_propProceedToReview(\''+c.id+'\')" style="padding:10px 22px;background:#8DC63F;color:#000;border:none;border-radius:100px;font-weight:700;cursor:pointer;font-size:0.85rem;">&#10132; Proceed</button>'+
+        '</div>'+
+        '<div id="propFooterReview" style="display:none;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:16px;">'+
+          '<button onclick="_propBackToEdit()" style="padding:10px 16px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:100px;color:#aaa;cursor:pointer;font-size:0.82rem;">&#8592; Back to Edit</button>'+
+          '<button onclick="var _m=document.getElementById(\'proposalModal\');if(_m)_m.remove();" style="padding:10px 16px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:100px;color:#aaa;cursor:pointer;font-size:0.82rem;">Cancel</button>'+
           '<button onclick="previewProposal(\''+c.id+'\')" style="padding:10px 16px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);border-radius:100px;color:#4a9eff;cursor:pointer;font-size:0.82rem;font-weight:700;">&#128269; Preview</button>'+
           '<button onclick="copyProposalLink(\''+c.id+'\')" id="propCopyLinkBtn" style="padding:10px 16px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);border-radius:100px;color:#aaa;cursor:pointer;font-size:0.82rem;font-weight:600;">&#128203; Copy Link</button>'+
-          '<button id="propDraftBtn" onclick="sendProposal(\''+c.id+'\',false,\'draft\')" title="Persists your pricing so it survives closing this window — stays invisible to the customer until you Send." style="padding:10px 16px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);border-radius:100px;color:#ddd;cursor:pointer;font-size:0.82rem;font-weight:600;">&#128190; Save Draft</button>'+
           '<button id="propSendBtn" onclick="sendProposal(\''+c.id+'\')" style="padding:10px 22px;background:#8DC63F;color:#000;border:none;border-radius:100px;font-weight:700;cursor:pointer;font-size:0.85rem;">&#128228; Send to Customer</button>'+
           '<button id="propApprovalBtn" onclick="sendProposal(\''+c.id+'\',true)" style="display:none;padding:10px 22px;background:rgba(239,68,68,0.15);color:#ef4444;border:1px solid rgba(239,68,68,0.4);border-radius:100px;font-weight:700;cursor:pointer;font-size:0.82rem;">&#9888; Request Admin Approval</button>'+
         '</div>'+
@@ -19867,7 +19851,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (!options.length) {
       if (statusEl) { statusEl.style.color = '#ef4444'; statusEl.textContent = 'Add at least one item to build first.'; }
       if (sendBtn) { sendBtn.disabled = false; sendBtn.innerHTML = isDraft ? '&#128190; Save Draft' : '&#128228; Send to Customer'; }
-      return;
+      return false;
     }
 
     // Sort options descending by price — most expensive = Option 1
@@ -19936,7 +19920,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         if (_preProp && _preProp.status === 'accepted') {
           if (statusEl) { statusEl.style.color = '#ef4444'; statusEl.textContent = '✗ This proposal was already accepted — saving a draft would overwrite a real deal. Use a fresh proposal instead.'; }
           if (sendBtn) { sendBtn.disabled = false; sendBtn.innerHTML = '&#128190; Save Draft'; }
-          return;
+          return false;
         }
       }
       var proposal = { status: isDraft ? 'draft' : 'sent', created_at: new Date().toISOString(), options: options, accepted_option: null, financing: null, loan_term: null, approvalRequired: !!approvalRequest };
@@ -19955,14 +19939,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         // Stay open — Save Draft is a checkpoint mid-work, not a finishing action.
         if (statusEl) { statusEl.style.color = '#8DC63F'; statusEl.textContent = '✓ Draft saved — not visible to the customer yet.'; }
         if (sendBtn) { sendBtn.disabled = false; sendBtn.innerHTML = '&#128190; Save Draft'; }
-        return;
+        return true;
       }
       if (approvalRequest) {
         // Notify admin via GHL webhook instead of sending to customer
         await fetch(GHL_PROPOSAL_WEBHOOK, { method: 'POST', mode: 'no-cors', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ type: 'proposal_approval_request', customer_name: ((custRec&&custRec.first_name)||'') + ' ' + ((custRec&&custRec.last_name)||''), customer_id: id, rep_name: (typeof person !== 'undefined' ? person.name : 'Rep'), commission_note: 'Below $1,000 minimum — requires approval' }) }).catch(function(){});
         if (statusEl) statusEl.textContent = '⚠ Submitted for admin approval — not yet sent to customer.';
         if (sendBtn) { sendBtn.disabled = false; sendBtn.textContent = '⚠ Request Admin Approval'; }
-        return;
+        return true;
       }
       // ⚠️ 2026-09-02, per Dennis ("Send to Customer doesn't go anywhere because the
       // automation isn't built"): correct — until this fix, this branch only ever wrote
@@ -19994,11 +19978,37 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }) }).catch(function(){});
       if (statusEl) { statusEl.style.color = '#8DC63F'; statusEl.textContent = '✓ Sent — an SMS/email trigger fired (needs a GHL workflow to actually deliver it). Copy Link below to send it yourself as a backup.'; }
       setTimeout(function(){ if (modal && modal.parentNode) modal.remove(); }, 2600);
+      return true;
     } catch(e) {
       if (statusEl) { statusEl.style.color = '#ef4444'; statusEl.textContent = '✗ ' + e.message; }
       if (sendBtn) { sendBtn.disabled = false; sendBtn.innerHTML = isDraft ? '&#128190; Save Draft' : '&#128228; Send to Customer'; }
+      return false;
     }
   }
+
+  // 2026-09-06, per Dennis's corrected SOP — "Proceed" (renamed from the old in-builder
+  // "Preview") silently saves the current pricing as a draft first (so a rep can never
+  // advance to the send step with unsaved or invalid pricing — sendProposal's own "add at
+  // least one item" guard still applies), then swaps which footer is visible. Both footers
+  // live in the SAME modal instance, so _propBuilds/_propServiceType/etc. never have to be
+  // re-fetched or reconstructed — moving screens is just a display:none toggle.
+  window._propProceedToReview = async function(id) {
+    var proceedBtn = document.getElementById('propProceedBtn');
+    if (proceedBtn) { proceedBtn.disabled = true; proceedBtn.textContent = 'Saving…'; }
+    var ok = await sendProposal(id, false, 'draft');
+    if (proceedBtn) { proceedBtn.disabled = false; proceedBtn.innerHTML = '&#10132; Proceed'; }
+    if (!ok) return; // sendProposal already surfaced the real reason in #propSaveStatus
+    var bf = document.getElementById('propFooterBuild');
+    var rf = document.getElementById('propFooterReview');
+    if (bf) bf.style.display = 'none';
+    if (rf) rf.style.display = 'flex';
+  };
+  window._propBackToEdit = function() {
+    var bf = document.getElementById('propFooterBuild');
+    var rf = document.getElementById('propFooterReview');
+    if (rf) rf.style.display = 'none';
+    if (bf) bf.style.display = 'flex';
+  };
 
   // ── PROPOSAL MENU BUILDER HELPERS ─────────────────────────────────────────
 
@@ -21148,84 +21158,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '</div>';
     } catch(e) { alert('Error: '+e.message); }
   }
-
-  // "Record Acceptance" — 2026-09-02, per Dennis: a rep who closes a deal in person or by
-  // phone had no way to record it; Preview's own Accept button is deliberately disabled
-  // (it's a mockup of the customer's view, not a live action), and the only real Accept
-  // lives on the customer's own magic-link page. This is a distinct, honestly-labeled
-  // rep-side action — see acceptProposal's recordedBy param for how the provenance is kept
-  // separate from a genuine customer self-service accept.
-  window.openRecordAcceptance = async function(id) {
-    var existing = document.getElementById('recordAcceptModal');
-    if (existing) existing.remove();
-    var c = adminCustomers.find(function(x){ return x.id === id; });
-    if (!c) return;
-    var client = supabase.createClient(SUPA_URL, SUPA_KEY);
-    var resp = await client.from('customers').select('proposal').eq('id', id).limit(1);
-    var raw = resp.data && resp.data[0] && resp.data[0].proposal;
-    var prop = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : null;
-    if (!prop || prop.status !== 'sent' || !prop.options || !prop.options.length) {
-      alert(prop && prop.status === 'accepted'
-        ? 'This proposal has already been accepted.'
-        : 'No sent proposal on file yet — send one from the Internal Tool first.');
-      return;
-    }
-    var repId = 'admin', repName = 'Admin';
-    try { if (typeof person !== 'undefined' && person) { repId = person.id; repName = person.name || repId; } } catch(e) {}
-    var optsHtml = prop.options.map(function(opt, i) {
-      var hasParticipate = !!(opt.participate && opt.participate_price);
-      var label = 'Option ' + (i+1) + ' — ' + esc(opt.title||'');
-      if (!hasParticipate) {
-        return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.08);">'+
-          '<div><div style="font-weight:700;font-size:0.85rem;">'+label+'</div><div style="font-size:0.8rem;color:#8DC63F;">$'+parseFloat(opt.price).toLocaleString('en-US',{minimumFractionDigits:2})+' cash</div></div>'+
-          '<button onclick="_recordAcceptConfirm(\''+id+'\',\''+opt.id+'\',\'cash\',null,'+i+',\''+repId+'\',\''+esc(repName).replace(/'/g,"\\'")+'\')" style="width:auto;padding:8px 16px;background:#8DC63F;color:#000;border:none;border-radius:100px;font-weight:700;font-size:0.78rem;cursor:pointer;">Record</button>'+
-        '</div>';
-      }
-      return '<div style="padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.08);">'+
-        '<div style="font-weight:700;font-size:0.85rem;margin-bottom:6px;">'+label+' — $'+parseFloat(opt.participate_price).toLocaleString('en-US',{minimumFractionDigits:2})+' <span style="color:#666;font-weight:400;">w/ Participate</span></div>'+
-        '<div style="display:flex;gap:6px;flex-wrap:wrap;">'+
-          ['10','20','prepaid'].map(function(t){
-            // Matches selectLoanTerm's own onclick exactly: prepaid is its own financing
-            // value (no loan), 10/20 are 'participate' with an integer loan term.
-            var tLabel = t==='prepaid' ? 'Prepaid' : t+'-yr loan';
-            var fin = t==='prepaid' ? 'prepaid' : 'participate';
-            var term = t==='prepaid' ? 'null' : t;
-            return '<button onclick="_recordAcceptConfirm(\''+id+'\',\''+opt.id+'\',\''+fin+'\','+term+','+i+',\''+repId+'\',\''+esc(repName).replace(/'/g,"\\'")+'\')" style="width:auto;padding:7px 12px;background:rgba(141,198,63,0.12);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:100px;font-size:0.74rem;font-weight:700;cursor:pointer;">Record — '+tLabel+'</button>';
-          }).join('')+
-        '</div></div>';
-    }).join('');
-    var modal = document.createElement('div');
-    modal.id = 'recordAcceptModal';
-    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px;';
-    modal.innerHTML =
-      '<div style="background:#1a1c17;border:1px solid rgba(255,255,255,0.12);border-radius:14px;padding:20px 22px;max-width:460px;width:100%;">'+
-        '<div style="font-size:0.62rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#8DC63F;margin-bottom:4px;">Record Acceptance</div>'+
-        '<div style="font-weight:700;font-size:1rem;margin-bottom:4px;">'+esc((c.first_name||'')+' '+(c.last_name||''))+'</div>'+
-        '<div style="font-size:0.75rem;color:#888;margin-bottom:14px;">Use this only when the customer has verbally agreed — in person or by phone — and never touched their own magic link. Recorded as accepted by <b>'+esc(repName)+'</b>, not as the customer\'s own click.</div>'+
-        optsHtml+
-        '<button onclick="document.getElementById(\'recordAcceptModal\').remove();" style="width:100%;margin-top:14px;padding:10px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:100px;color:#aaa;cursor:pointer;font-size:0.82rem;">Cancel</button>'+
-      '</div>';
-    document.body.appendChild(modal);
-  };
-
-  window._recordAcceptConfirm = async function(custId, optionId, financing, loanTerm, optIdx, repId, repName) {
-    var c = adminCustomers.find(function(x){ return x.id === custId; });
-    var name = c ? ((c.first_name||'')+' '+(c.last_name||'')).trim() : 'this customer';
-    if (!confirm('Confirm: ' + name + ' has verbally agreed to this option. Record it as accepted by ' + repName + '?')) return;
-    try {
-      var ok = await acceptProposal(custId, optionId, financing, loanTerm, { rep_id: repId, rep_name: repName });
-      var modal = document.getElementById('recordAcceptModal');
-      if (ok && modal) {
-        modal.querySelector('div').innerHTML =
-          '<div style="text-align:center;padding:20px 0;">'+
-            '<div style="font-size:2rem;margin-bottom:10px;">&#9989;</div>'+
-            '<div style="font-weight:700;color:#8DC63F;margin-bottom:6px;">Acceptance recorded</div>'+
-            '<div style="font-size:0.8rem;color:#888;margin-bottom:16px;">Logged as accepted by '+esc(repName)+' on the customer\'s behalf.</div>'+
-            '<button onclick="document.getElementById(\'recordAcceptModal\').remove();" style="width:auto;padding:9px 20px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:100px;color:#aaa;cursor:pointer;font-size:0.82rem;">Close</button>'+
-          '</div>';
-      }
-    } catch(e) { alert('Error: ' + e.message); }
-  };
 
   window.propCustScen = function(optIdx, scenKey) {
     var saved = window._custOptSavings && window._custOptSavings[optIdx+'_'+scenKey];
