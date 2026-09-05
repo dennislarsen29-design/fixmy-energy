@@ -1500,7 +1500,21 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '</div>'+
     '</div>';
     var listHtml = '';
-    if (!c.length) { listHtml = '<div style="padding:32px;text-align:center;color:#555;">No leads in this category.</div>'; }
+    if (!c.length) {
+      // ⚠️ 2026-09-05: reported "Stephen Sandberg disappeared" — he was searched for
+      // right here, on the main Leads screen. This message was correct (no NON-archived
+      // lead matched) but read exactly like "doesn't exist" — `adminCustomers` never
+      // even loads archived rows into memory, so a search here can NEVER find one,
+      // regardless of how good the search is. Same "never let a real negative render
+      // identically to an untaken code path" rule as the rest of this file — a search
+      // that's empty because the record is archived must not look identical to a search
+      // that's empty because the record was never real. If a search term is active,
+      // kick off a live check against archived records and say so explicitly.
+      listHtml = '<div style="padding:32px;text-align:center;color:#555;">No leads in this category.'+
+        (adminSearch ? '<div id="noLeadsArchivedHint" style="margin-top:10px;"></div>' : '')+
+      '</div>';
+      if (adminSearch) _checkArchivedMatches(adminSearch);
+    }
     else { c.forEach(function(cust) { listHtml += buildLeadCard(cust); }); }
 
     // Pinned hot leads banner (from "Push to Routes" button in BB popup)
@@ -1605,18 +1619,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // archived rows, so an accidentally-archived lead/job vanishes from the whole app.
   // This modal fetches archived rows on demand and lets the admin un-archive them
   // (archived=false), which brings them straight back into the pipeline / Ops jobs.
-  window.openArchivedModal = async function() {
+  window.openArchivedModal = async function(prefillQuery) {
     var existing = document.getElementById('archivedModal');
-    if (existing) { existing.remove(); return; }
+    if (existing) { existing.remove(); if (!prefillQuery) return; }
     var modal = document.createElement('div');
     modal.id = 'archivedModal';
     modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.72);z-index:9999;display:flex;align-items:flex-start;justify-content:center;padding:24px 12px;overflow-y:auto;';
+    var pq = prefillQuery || '';
     modal.innerHTML =
       '<div style="background:#1e1e1e;border:1px solid rgba(255,255,255,0.12);border-radius:16px;padding:24px;width:100%;max-width:520px;position:relative;">'+
         '<button onclick="document.getElementById(\'archivedModal\').remove()" style="position:absolute;top:14px;right:16px;background:rgba(0,0,0,0.35);border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:#ccc;font-size:1.3rem;line-height:1;cursor:pointer;width:auto;padding:4px 12px;">&#10005;</button>'+
         '<div style="font-size:1rem;font-weight:800;margin-bottom:4px;">&#128451; Archived Leads &amp; Jobs</div>'+
         '<div style="font-size:0.75rem;color:#888;margin-bottom:12px;">Restore any record archived by mistake — it returns to the pipeline (and to its Ops partner\'s jobs).</div>'+
-        '<input id="archivedSearch" type="text" placeholder="Search by name or address…" oninput="_renderArchivedList(this.value)" style="width:100%;box-sizing:border-box;background:#0e0e0e;border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:9px 12px;color:#F3EDE3;font-size:0.82rem;margin-bottom:12px;"/>'+
+        '<input id="archivedSearch" type="text" placeholder="Search by name or address…" value="'+esc(pq)+'" oninput="_renderArchivedList(this.value)" style="width:100%;box-sizing:border-box;background:#0e0e0e;border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:9px 12px;color:#F3EDE3;font-size:0.82rem;margin-bottom:12px;"/>'+
         '<div id="archivedCount" style="font-size:0.66rem;color:#666;margin-bottom:4px;"></div>'+
         '<div id="archivedList" style="font-size:0.85rem;color:#aaa;max-height:60vh;overflow-y:auto;">Loading…</div>'+
       '</div>';
@@ -1637,7 +1652,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         .eq('archived', true).order('created_at', {ascending:false}).limit(200);
       if (error) throw error;
       window._archivedData = data || [];
-      _renderArchivedList('');
+      _renderArchivedList(pq);
     } catch(e) {
       var le = document.getElementById('archivedList'); if (le) le.innerHTML = '<div style="color:#ef4444;">Could not load archived records: '+esc(e.message||String(e))+'</div>';
     }
@@ -1667,6 +1682,32 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<button onclick="unarchiveLead(\''+c.id+'\')" style="width:auto;flex-shrink:0;padding:6px 14px;background:rgba(141,198,63,0.14);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;">&#8617; Unarchive</button>'+
       '</div>';
     }).join('');
+  };
+  // Fired from the main Leads screen whenever a search comes back empty (see
+  // renderAdminView's `!c.length` branch) — a search there can NEVER find an archived
+  // record (adminCustomers never loads them), so an empty result reads identically
+  // whether the person doesn't exist or is just filed under Archived. This tells the
+  // two apart by actually checking, instead of leaving the admin to guess.
+  window._checkArchivedMatches = async function(query) {
+    var hint = document.getElementById('noLeadsArchivedHint');
+    if (!hint) return;
+    try {
+      var sc = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var q = query.trim();
+      var resp = await sc.from('customers')
+        .select('id,first_name,last_name,address', { count: 'exact' })
+        .eq('archived', true)
+        .or('first_name.ilike.%'+q+'%,last_name.ilike.%'+q+'%,address.ilike.%'+q+'%')
+        .limit(5);
+      hint = document.getElementById('noLeadsArchivedHint'); if (!hint) return; // panel may have re-rendered mid-fetch
+      if (resp.error || !resp.data || !resp.data.length) return; // genuinely nothing, in either place — no hint needed
+      var n = resp.data.length;
+      var names = resp.data.map(function(c){ return esc(((c.first_name||'')+' '+(c.last_name||'')).trim() || c.address || 'Unnamed'); }).join(', ');
+      hint.innerHTML = '<div style="background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.3);border-radius:10px;padding:12px 14px;font-size:0.78rem;color:#ffaa00;">'+
+        '&#9888; '+n+' archived record'+(n===1?'':'s')+' match'+(n===1?'es':'')+' “'+esc(query)+'” — <b>'+names+'</b>.<br/>'+
+        '<button type="button" onclick="openArchivedModal(\''+esc(q).replace(/'/g,"\\'")+'\')" style="width:auto;margin-top:8px;padding:7px 16px;background:rgba(255,170,0,0.15);border:1px solid rgba(255,170,0,0.4);border-radius:100px;color:#ffaa00;font-size:0.74rem;font-weight:700;cursor:pointer;">View in Archived &rarr;</button>'+
+      '</div>';
+    } catch(e) { /* silent — the plain "No leads" message is still accurate, just less helpful */ }
   };
   window.unarchiveLead = async function(id) {
     var row = document.getElementById('arch-'+id);
