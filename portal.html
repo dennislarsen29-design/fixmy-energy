@@ -18878,6 +18878,236 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     } catch(e) { alert('Error: '+e.message); }
   };
 
+  // ── Customer-facing signing screen (2026-09-06) ──────────────────────────────────
+  // The rep's own Preview/Representative-signature step above happens on THEIR device.
+  // Everything below runs only inside the customer's own magic-link session
+  // (loadCustomerDashboard) and renders the real confirmed PDF with real interactive
+  // fields — no HTML reproduction, no admin/rep code path can reach this.
+  //
+  // Per-field id → who fills it / how, since `type` alone can't tell an editable
+  // "text" field (cust_name) from a read-only resolved one (company_name, etc.):
+  //   cust_name        — customer, editable, pre-filled with their own name
+  //   cust_date        — read-only, always today (the day they sign)
+  //   cust_signature   — customer types their full name here; the actual legal signature
+  //   pg3_initials     — customer, editable (initials or "N/A"), required before signing
+  //   aff1..aff12      — checkbox type, pre-checked, NOT required (customer can uncheck)
+  //   rep_name/_date/_signature — read-only, pre-filled from the rep's own Preview/sign
+  //                        step (reviewed_by_rep_name/reviewed_at) — never editable here
+  //   company_phone    — read-only, always CPUC_COMPANY_PHONE (Solar Review's own line)
+  //   company_name/_email, cslb_license_p7/_p4, license_classification_p7 — read-only,
+  //                        resolved from the assigned installer via _opsContractorInfo
+  //   his_registration_p4 — read-only, resolved from the assigned Tech's HIS license #
+  function _custDocsWrapHtml(c) {
+    if (!c) return '';
+    var applicable = DEAL_DOC_TYPES.filter(function(d){ return d.appliesWhen(c); });
+    if (!applicable.length) return '';
+    return '<div class="sect-label">Documents to Sign</div><div id="custDocsWrap" class="card"><div style="font-size:0.75rem;color:#888;">Loading…</div></div>';
+  }
+
+  async function _custDocsLoad(c) {
+    if (!c) return;
+    var wrap = document.getElementById('custDocsWrap');
+    if (!wrap) return;
+    var applicable = DEAL_DOC_TYPES.filter(function(d){ return d.appliesWhen(c); });
+    if (!applicable.length) return;
+    var docsCache = await _dealDocsLoad(c.id);
+    wrap.innerHTML = applicable.map(function(d) {
+      var row = docsCache[d.id];
+      var status = row ? row.status : 'pending';
+      var meta = status === 'signed' ? { color:'#8DC63F', label:'&#9989; Signed '+(row.signed_at ? 'on '+new Date(row.signed_at).toLocaleDateString('en-US') : '') }
+        : status === 'reviewed' ? (d.hasPdfTemplate ? { color:'#4a9eff', label:'&#9997;&#65039; Ready for your signature' } : { color:'#4a9eff', label:'Reviewed — signing coming soon' })
+        : { color:'#ffaa00', label:'&#9203; Not ready yet — check back soon' };
+      var canSign = d.hasPdfTemplate && status === 'reviewed';
+      return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 0;border-bottom:1px solid rgba(255,255,255,0.08);">'+
+        '<div><div style="font-weight:700;font-size:0.85rem;">'+d.icon+' '+esc(d.label)+'</div>'+
+          '<div style="font-size:0.72rem;color:'+meta.color+';margin-top:2px;">'+meta.label+'</div></div>'+
+        (canSign ? '<button onclick="openCustDocSign(\''+c.id+'\',\''+d.id+'\')" style="width:auto;padding:9px 18px;background:#8DC63F;border:none;border-radius:100px;color:#000;font-weight:700;font-size:0.78rem;cursor:pointer;">Sign</button>' : '')+
+      '</div>';
+    }).join('');
+  }
+
+  var _custDocState = null;
+
+  function _custDocComputeInitialValues(fields, c, docRow, opsInfo, hisNumber) {
+    var values = {};
+    (fields||[]).forEach(function(f) {
+      if (f.type === 'checkbox') { values[f.id] = true; return; } // prechecked by default, not required
+      switch (f.id) {
+        case 'pg3_initials':    values[f.id] = ''; break;
+        case 'cust_name':       values[f.id] = ((c.first_name||'')+' '+(c.last_name||'')).trim(); break;
+        case 'cust_signature':  values[f.id] = ''; break;
+        case 'cust_date':       values[f.id] = new Date().toLocaleDateString('en-US'); break;
+        case 'rep_name':
+        case 'rep_signature':   values[f.id] = (docRow && docRow.reviewed_by_rep_name) || ''; break;
+        case 'rep_date':        values[f.id] = (docRow && docRow.reviewed_at) ? new Date(docRow.reviewed_at).toLocaleDateString('en-US') : ''; break;
+        case 'company_phone':   values[f.id] = CPUC_COMPANY_PHONE; break;
+        case 'company_name':    values[f.id] = opsInfo ? opsInfo.name : ''; break;
+        case 'company_email':   values[f.id] = opsInfo ? opsInfo.email : ''; break;
+        case 'cslb_license_p7':
+        case 'cslb_license_p4': values[f.id] = opsInfo ? opsInfo.license : ''; break;
+        case 'license_classification_p7': values[f.id] = opsInfo ? opsInfo.licenseClass : ''; break;
+        case 'his_registration_p4': values[f.id] = hisNumber || ''; break;
+        default: values[f.id] = '';
+      }
+    });
+    return values;
+  }
+
+  window.openCustDocSign = async function(customerId, docType) {
+    var def = DEAL_DOC_TYPES.find(function(d){ return d.id === docType; });
+    if (!def || !def.hasPdfTemplate) { alert('This document isn\'t ready to sign yet.'); return; }
+    var pdfOk = await _loadPdfJs();
+    if (!pdfOk) { alert('Could not load the document viewer — check your connection and try again.'); return; }
+    var tpl = await _loadDocTemplate(docType, true);
+    if (!tpl || !tpl.confirmed) { alert('This document isn\'t ready to sign yet — check back soon.'); return; }
+    var cache = _dealDocsCache[customerId] || await _dealDocsLoad(customerId);
+    var row = cache[docType] || { status:'pending', initials:{}, signature:'', signed_by_name:'' };
+    if (row.status === 'pending') { alert('This document isn\'t ready for your signature yet — your rep needs to review it with you first.'); return; }
+    if (row.status === 'signed') { alert('You\'ve already signed this document.'); return; }
+    var c = (typeof currentUser !== 'undefined' && currentUser && currentUser.id === customerId) ? currentUser : null;
+    if (!c) { alert('Could not load your information. Please refresh and try again.'); return; }
+
+    var opsInfo = _opsContractorInfo(c.assigned_ops);
+    var hisNumber = '';
+    try {
+      var hisClient = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var hisResp = await hisClient.from('team_members').select('his_license_number').eq('id', c.rep_id || '').limit(1);
+      if (hisResp.data && hisResp.data[0]) hisNumber = hisResp.data[0].his_license_number || '';
+    } catch(e) {}
+
+    var overlay = document.createElement('div');
+    overlay.id = 'custDocSignOverlay';
+    overlay.style.cssText = 'position:fixed;inset:0;background:#0e0e0e;z-index:10500;overflow-y:auto;';
+    overlay.innerHTML = '<div style="max-width:900px;margin:0 auto;padding:16px 14px 110px;color:#F3EDE3;">'+
+      '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:6px;">'+
+        '<div style="font-size:1rem;font-weight:800;">'+def.icon+' '+esc(def.label)+'</div>'+
+        '<button onclick="_custDocCloseSign()" style="width:auto;background:none;border:none;color:#888;font-size:1.4rem;cursor:pointer;line-height:1;">&times;</button>'+
+      '</div>'+
+      '<div style="font-size:0.72rem;color:#888;line-height:1.6;margin-bottom:14px;">Read through each page below. Checkboxes are pre-checked to affirm each statement — uncheck any that don\'t apply to you. Type your name at the bottom to sign.</div>'+
+      '<div id="custDocPages"></div>'+
+      '<div style="position:fixed;bottom:0;left:0;right:0;background:#161616;border-top:1px solid rgba(255,255,255,0.1);padding:12px 16px;display:flex;gap:8px;z-index:10501;">'+
+        '<button onclick="_custDocCloseSign()" style="width:auto;flex:1;padding:12px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);border-radius:10px;color:#aaa;font-weight:600;font-size:0.82rem;cursor:pointer;">Cancel</button>'+
+        '<button id="custDocSubmitBtn" onclick="_custDocSubmit(\''+customerId+'\',\''+docType+'\')" style="width:auto;flex:2;padding:12px;background:#8DC63F;border:none;border-radius:10px;color:#000;font-weight:800;font-size:0.85rem;cursor:pointer;">&#9989; Sign &amp; Submit</button>'+
+      '</div>'+
+    '</div>';
+    document.body.appendChild(overlay);
+
+    _custDocState = { docType: docType, template: tpl, pageScale: {}, values: {} };
+    _custDocState.values = _custDocComputeInitialValues(tpl.fields || [], c, row, opsInfo, hisNumber);
+    try {
+      var loadingTask = window.pdfjsLib.getDocument(tpl.pdf_path);
+      var pdf = await loadingTask.promise;
+      _custDocState.pdf = pdf;
+      await _custDocRenderAllPages();
+    } catch(e) {
+      var pw = document.getElementById('custDocPages');
+      if (pw) pw.innerHTML = '<div style="color:#ef4444;padding:20px;text-align:center;">Could not load document: '+esc(e.message)+'</div>';
+    }
+  };
+
+  window._custDocCloseSign = function() {
+    var o = document.getElementById('custDocSignOverlay'); if (o) o.remove();
+    _custDocState = null;
+  };
+
+  async function _custDocRenderAllPages() {
+    var wrap = document.getElementById('custDocPages'); if (!wrap || !_custDocState) return;
+    var pdf = _custDocState.pdf;
+    var targetWidth = Math.min(820, (wrap.clientWidth || 820));
+    var h = '';
+    for (var i = 1; i <= pdf.numPages; i++) {
+      h += '<div style="position:relative;margin-bottom:14px;background:#fff;" id="custDocPageWrap_'+(i-1)+'">'+
+        '<canvas id="custDocCanvas_'+(i-1)+'"></canvas>'+
+        '<div id="custDocFieldsLayer_'+(i-1)+'" style="position:absolute;inset:0;"></div>'+
+      '</div>';
+    }
+    wrap.innerHTML = h;
+    for (var p = 1; p <= pdf.numPages; p++) { await _custDocRenderPage(p - 1, targetWidth); }
+  }
+
+  async function _custDocRenderPage(pageIdx, targetWidth) {
+    var page = await _custDocState.pdf.getPage(pageIdx + 1);
+    var baseViewport = page.getViewport({ scale: 1 });
+    var scale = targetWidth / baseViewport.width;
+    var viewport = page.getViewport({ scale: scale });
+    var canvas = document.getElementById('custDocCanvas_' + pageIdx);
+    if (!canvas) return;
+    canvas.width = viewport.width; canvas.height = viewport.height;
+    canvas.style.width = viewport.width + 'px'; canvas.style.height = viewport.height + 'px';
+    var ctx = canvas.getContext('2d');
+    await page.render({ canvasContext: ctx, viewport: viewport }).promise;
+    _custDocState.pageScale[pageIdx] = { w: viewport.width, h: viewport.height };
+    _custDocRenderFieldsForPage(pageIdx);
+  }
+
+  function _custDocRenderFieldsForPage(pageIdx) {
+    var layer = document.getElementById('custDocFieldsLayer_' + pageIdx);
+    var dims = _custDocState.pageScale[pageIdx];
+    if (!layer || !dims) return;
+    var fields = (_custDocState.template.fields || []).filter(function(f){ return f.page === pageIdx; });
+    layer.innerHTML = fields.map(function(f) {
+      var left = f.x * dims.w, top = f.y * dims.h, w = f.w * dims.w, h = f.h * dims.h;
+      var val = _custDocState.values[f.id];
+
+      if (f.type === 'checkbox') {
+        var size = Math.max(w, h, 22);
+        var checked = val !== false;
+        return '<input type="checkbox" data-fid="'+esc(f.id)+'" '+(checked?'checked':'')+' onchange="_custDocSetVal(\''+f.id+'\', this.checked)" style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+size+'px;height:'+size+'px;accent-color:#8DC63F;cursor:pointer;"/>';
+      }
+      if (f.id === 'pg3_initials') {
+        return '<input type="text" data-fid="'+esc(f.id)+'" value="'+esc(val||'')+'" placeholder="Initials / N/A" oninput="_custDocSetVal(\''+f.id+'\', this.value)" style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+Math.max(h,20)+'px;background:rgba(141,198,63,0.14);border:1px solid #8DC63F;border-radius:4px;color:#111;font-size:0.75rem;text-align:center;padding:0;box-sizing:border-box;"/>';
+      }
+      if (f.id === 'cust_name') {
+        return '<input type="text" data-fid="cust_name" value="'+esc(val||'')+'" oninput="_custDocSetVal(\'cust_name\', this.value)" style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;background:rgba(141,198,63,0.14);border:1px solid #8DC63F;border-radius:4px;color:#111;font-size:0.75rem;padding:0 4px;box-sizing:border-box;"/>';
+      }
+      if (f.id === 'cust_signature') {
+        return '<input type="text" data-fid="cust_signature" value="'+esc(val||'')+'" placeholder="Type your full name to sign" oninput="_custDocSetVal(\'cust_signature\', this.value)" style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;background:rgba(141,198,63,0.18);border:1.5px solid #8DC63F;border-radius:4px;color:#111;font-size:0.8rem;font-style:italic;padding:0 4px;box-sizing:border-box;"/>';
+      }
+      // Everything else (rep_name/_date/_signature already signed by the rep on their own
+      // device, cust_date always today, company/CSLB/HIS resolved from the assigned
+      // installer/Tech) — read-only display, never an editable input here.
+      return '<div style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;display:flex;align-items:center;font-size:0.68rem;color:#333;overflow:hidden;white-space:nowrap;">'+esc(val||'')+'</div>';
+    }).join('');
+  }
+
+  window._custDocSetVal = function(fieldId, val) {
+    if (!_custDocState) return;
+    _custDocState.values[fieldId] = val;
+  };
+
+  window._custDocSubmit = async function(customerId, docType) {
+    if (!_custDocState) return;
+    var vals = _custDocState.values;
+    var name = (vals.cust_signature || '').trim();
+    if (!name) { alert('Type your full name in the signature box to sign.'); return; }
+    var pg3 = (vals.pg3_initials || '').trim();
+    if (!pg3) { alert('Please initial (or write "N/A") on the False Claims page before signing.'); return; }
+
+    var initials = {};
+    (_custDocState.template.fields||[]).forEach(function(f) {
+      if (f.type === 'checkbox') initials[f.id] = vals[f.id] !== false;
+    });
+    initials.pg3_initials = pg3;
+
+    var btn = document.getElementById('custDocSubmitBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Signing…'; }
+    try {
+      var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var payload = { customer_id: customerId, doc_type: docType, status:'signed',
+        initials: initials, signature: name, signed_by_name: name, signed_at: new Date().toISOString(),
+        updated_at: new Date().toISOString() };
+      var resp = await client.from('deal_documents').upsert(payload, { onConflict:'customer_id,doc_type' });
+      if (resp.error) throw resp.error;
+      await _dealDocsLoad(customerId);
+      _custDocCloseSign();
+      alert('Signed! Thank you.');
+      if (typeof currentUser !== 'undefined' && currentUser) _custDocsLoad(currentUser);
+    } catch(e) {
+      if (btn) { btn.disabled = false; btn.innerHTML = '&#9989; Sign &amp; Submit'; }
+      alert('Could not save your signature: ' + e.message);
+    }
+  };
+
   // "Ask Ops for Advice" — share a not-yet-sold lead's proposal (Option 1 & 2 specs)
   // with a specific Ops Partner for pre-sale technical/sales input. Stores the request
   // inside the existing customers.proposal jsonb (proposal.ops_advice) — no migration.
@@ -24234,12 +24464,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '</div>'+
       '<div class="sect-label">Required Documents</div>'+
       '<div class="upload-grid">'+ucCard('bill','&#128196;','Most Recent Utility Bill','Upload your full PDF utility bill.')+ucCard('inverter','&#128247;','Inverter Photo','Photo of your inverter on garage wall or exterior.')+ucCard('serial','&#128290;','Serial Number','Close-up of the serial number sticker on inverter.')+ucCard('panel','&#9889;','Main Service Panel','Photo of open breaker panel with amp rating visible.')+'</div>'+
-      signPayHtml+proposalHtml+invHtml+guaranteeHtml+agHtml+findingsHtml+brHtml+
+      signPayHtml+proposalHtml+invHtml+guaranteeHtml+agHtml+_custDocsWrapHtml(c)+findingsHtml+brHtml+
       '<div id="solarWrap"></div>'+
       '<div class="cta-card"><div><strong>Questions?</strong><br><span style="font-size:0.75rem;color:#aaa;">Mon-Sat 8am-6pm</span></div><a href="tel:6197776527" class="btn-lime">&#128222; (619) 777-6527</a></div>'
     );
     loadUploadStatus(c.id);
     if(c.address) setTimeout(function(){ loadSolarData(c.address); },300);
+    setTimeout(function(){ _custDocsLoad(c); }, 300);
     setTimeout(function(){ _showPortalOnboarding(c); }, 800);
     // ⚠️ 2026-09-02, per Dennis ("clicking the link doesn't take them to Option 1"):
     // #proposalWrap has always existed on a real 'sent' proposal, but it sits several
