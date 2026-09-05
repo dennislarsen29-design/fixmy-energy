@@ -1615,35 +1615,58 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<div style="background:#1e1e1e;border:1px solid rgba(255,255,255,0.12);border-radius:16px;padding:24px;width:100%;max-width:520px;position:relative;">'+
         '<button onclick="document.getElementById(\'archivedModal\').remove()" style="position:absolute;top:14px;right:16px;background:rgba(0,0,0,0.35);border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:#ccc;font-size:1.3rem;line-height:1;cursor:pointer;width:auto;padding:4px 12px;">&#10005;</button>'+
         '<div style="font-size:1rem;font-weight:800;margin-bottom:4px;">&#128451; Archived Leads &amp; Jobs</div>'+
-        '<div style="font-size:0.75rem;color:#888;margin-bottom:16px;">Restore any record archived by mistake — it returns to the pipeline (and to its Ops partner\'s jobs).</div>'+
-        '<div id="archivedList" style="font-size:0.85rem;color:#aaa;">Loading…</div>'+
+        '<div style="font-size:0.75rem;color:#888;margin-bottom:12px;">Restore any record archived by mistake — it returns to the pipeline (and to its Ops partner\'s jobs).</div>'+
+        '<input id="archivedSearch" type="text" placeholder="Search by name or address…" oninput="_renderArchivedList(this.value)" style="width:100%;box-sizing:border-box;background:#0e0e0e;border:1px solid rgba(255,255,255,0.15);border-radius:8px;padding:9px 12px;color:#F3EDE3;font-size:0.82rem;margin-bottom:12px;"/>'+
+        '<div id="archivedCount" style="font-size:0.66rem;color:#666;margin-bottom:4px;"></div>'+
+        '<div id="archivedList" style="font-size:0.85rem;color:#aaa;max-height:60vh;overflow-y:auto;">Loading…</div>'+
       '</div>';
     document.body.appendChild(modal);
     modal.addEventListener('click', function(e){ if (e.target===modal) modal.remove(); });
     try {
       var sc = supabase.createClient(SUPA_URL, SUPA_KEY);
+      // ⚠️ 2026-09-05: reported "a record disappeared and isn't in Archived either."
+      // The record itself was untouched in the DB, genuinely archived=true, and well
+      // within this limit (115 total archived at the time) — the real gap was that this
+      // list had NO search box at all, just a flat scroll with no count shown, so one
+      // specific person buried mid-list among 100+ others read as "not there" without
+      // scrolling through all of them. `limit(200)` is still a real cap worth watching
+      // as the archived count grows — bump it if a future report turns out to be a
+      // genuine truncation instead of "didn't scroll far enough."
       var { data, error } = await sc.from('customers')
         .select('id,first_name,last_name,address,sold_type,lead_category,assigned_ops,invoice_status,created_at')
         .eq('archived', true).order('created_at', {ascending:false}).limit(200);
       if (error) throw error;
-      var listEl = document.getElementById('archivedList'); if (!listEl) return;
-      if (!data || !data.length) { listEl.innerHTML = '<div style="color:#555;padding:12px 0;">No archived records.</div>'; return; }
-      var _opsN = {'ops1':'Jon Klos','ops2':'John Espinoza','ops3':'Cosmic Solar','ops4':'Axia'};
-      listEl.innerHTML = data.map(function(c){
-        var nm = ((c.first_name||'')+' '+(c.last_name||'')).trim() || c.address || c.id;
-        var meta = [];
-        if (c.sold_type) meta.push('Job: '+c.sold_type); else meta.push('Lead');
-        if (c.assigned_ops && _opsN[c.assigned_ops]) meta.push('Ops: '+_opsN[c.assigned_ops]);
-        if (c.address) meta.push(c.address);
-        return '<div id="arch-'+c.id+'" style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 0;border-top:1px solid rgba(255,255,255,0.06);flex-wrap:wrap;">'+
-          '<div style="min-width:0;flex:1;"><div style="font-weight:700;color:#F3EDE3;font-size:0.85rem;">'+esc(nm)+'</div>'+
-          '<div style="font-size:0.68rem;color:#666;">'+esc(meta.join(' · '))+'</div></div>'+
-          '<button onclick="unarchiveLead(\''+c.id+'\')" style="width:auto;flex-shrink:0;padding:6px 14px;background:rgba(141,198,63,0.14);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;">&#8617; Unarchive</button>'+
-        '</div>';
-      }).join('');
+      window._archivedData = data || [];
+      _renderArchivedList('');
     } catch(e) {
       var le = document.getElementById('archivedList'); if (le) le.innerHTML = '<div style="color:#ef4444;">Could not load archived records: '+esc(e.message||String(e))+'</div>';
     }
+  };
+  var _archivedOpsN = {'ops1':'Jon Klos','ops2':'John Espinoza','ops3':'Cosmic Solar','ops4':'Axia'};
+  window._renderArchivedList = function(query) {
+    var listEl = document.getElementById('archivedList'); if (!listEl) return;
+    var countEl = document.getElementById('archivedCount');
+    var data = window._archivedData || [];
+    var q = (query||'').trim().toLowerCase();
+    var filtered = !q ? data : data.filter(function(c){
+      var nm = ((c.first_name||'')+' '+(c.last_name||'')).toLowerCase();
+      return nm.indexOf(q) >= 0 || (c.address||'').toLowerCase().indexOf(q) >= 0;
+    });
+    if (countEl) countEl.textContent = data.length + ' archived record'+(data.length===1?'':'s')+(q ? ' · '+filtered.length+' match'+(filtered.length===1?'':'es') : '');
+    if (!data.length) { listEl.innerHTML = '<div style="color:#555;padding:12px 0;">No archived records.</div>'; return; }
+    if (!filtered.length) { listEl.innerHTML = '<div style="color:#555;padding:12px 0;">No matches for “'+esc(query)+'”.</div>'; return; }
+    listEl.innerHTML = filtered.map(function(c){
+      var nm = ((c.first_name||'')+' '+(c.last_name||'')).trim() || c.address || c.id;
+      var meta = [];
+      if (c.sold_type) meta.push('Job: '+c.sold_type); else meta.push('Lead');
+      if (c.assigned_ops && _archivedOpsN[c.assigned_ops]) meta.push('Ops: '+_archivedOpsN[c.assigned_ops]);
+      if (c.address) meta.push(c.address);
+      return '<div id="arch-'+c.id+'" style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 0;border-top:1px solid rgba(255,255,255,0.06);flex-wrap:wrap;">'+
+        '<div style="min-width:0;flex:1;"><div style="font-weight:700;color:#F3EDE3;font-size:0.85rem;">'+esc(nm)+'</div>'+
+        '<div style="font-size:0.68rem;color:#666;">'+esc(meta.join(' · '))+'</div></div>'+
+        '<button onclick="unarchiveLead(\''+c.id+'\')" style="width:auto;flex-shrink:0;padding:6px 14px;background:rgba(141,198,63,0.14);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;">&#8617; Unarchive</button>'+
+      '</div>';
+    }).join('');
   };
   window.unarchiveLead = async function(id) {
     var row = document.getElementById('arch-'+id);
