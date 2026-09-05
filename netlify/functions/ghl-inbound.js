@@ -233,6 +233,27 @@ exports.handler = async function(event) {
     if (arrivalEnd)     patch.arrival_end = arrivalEnd;
     if (address)        patch.address = address;
     ['system_size','utility','monthly_bill'].forEach(k => { if (record[k]) patch[k] = record[k]; });
+    // ⚠️ 2026-09-05 — a real submit/confirm on an EXISTING row (the normal case once
+    // customerId tracking is working — every /book flow fires partial, then submit, then
+    // confirmed against the same row) never wrote a note, since `patch` had no `notes` key
+    // at all. partial_capture correctly flipped to false and diagnostic_date/arrival_end
+    // correctly landed, but the Activity Log kept showing ONLY the original "did not finish
+    // booking" partial note forever — a real, completed booking silently read as still-stuck,
+    // exactly the "still firing" report this caused. Best-effort append (never blocks the
+    // real save on a failed read) whenever this update represents genuine progress (!isPartial).
+    if (!isPartial) {
+      try {
+        const curResp = await fetch(SUPA_URL + '/rest/v1/customers?id=eq.' + existingId + '&select=notes', { headers: supaHeaders });
+        const curRows = await curResp.json();
+        let curNotes = [];
+        if (Array.isArray(curRows) && curRows[0] && curRows[0].notes) {
+          const parsed = typeof curRows[0].notes === 'string' ? JSON.parse(curRows[0].notes) : curRows[0].notes;
+          if (Array.isArray(parsed)) curNotes = parsed;
+        }
+        curNotes.push({ ts: new Date().toISOString(), by: 'Web Capture', text: noteText });
+        patch.notes = JSON.stringify(curNotes);
+      } catch (e) { console.warn('Could not append progress note (non-fatal):', e.message); }
+    }
     ({ resp: result, bodyText: resultBody } = await supaWrite(
       'PATCH', SUPA_URL + '/rest/v1/customers?id=eq.' + existingId, patch
     ));
