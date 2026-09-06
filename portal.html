@@ -1758,7 +1758,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
   // "Documents deployed" badge on the compact Leads-list card (2026-09-06, per Dennis).
   // A row in deal_documents only ever exists once a document has actually been reviewed
-  // (rep tapped Preview) or signed — there is no 'pending' row, the default 'pending'
+  // (rep tapped Proceed) or signed — there is no 'pending' row, the default 'pending'
   // status in code is purely what renders when NO row exists yet. So "any row exists for
   // this customer" IS "at least one document has been deployed" — no extra status filter
   // needed, though it's applied anyway as cheap insurance against that assumption ever
@@ -19115,8 +19115,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // rule exists to close). The customer's own signature/initials are still 100%
     // customer-device-only — untouched by this.
     return '<div style="margin-top:16px;padding-top:14px;border-top:1px solid rgba(255,255,255,0.1);">'+
-      '<div style="font-size:0.68rem;color:#888;margin-bottom:10px;">Walk the customer through the document above, then tap Preview — this signs the Representative block as <b>'+esc(repName)+'</b>. The customer signs their own section separately, after this, from their own device.</div>'+
-      '<button type="button" onclick="_dealDocMarkReviewed(\''+c.id+'\',\''+def.id+'\')" style="width:100%;padding:11px;background:rgba(74,158,255,0.12);border:1px solid rgba(74,158,255,0.4);border-radius:10px;color:#4a9eff;font-size:0.76rem;font-weight:700;cursor:pointer;">&#128065; Preview</button>'+
+      '<div style="font-size:0.68rem;color:#888;margin-bottom:10px;">Walk the customer through the document above, then tap Proceed — this signs the Representative block as <b>'+esc(repName)+'</b>. The customer signs their own section separately, after this, from their own device.</div>'+
+      '<button type="button" onclick="_dealDocMarkReviewed(\''+c.id+'\',\''+def.id+'\')" style="width:100%;padding:11px;background:rgba(74,158,255,0.12);border:1px solid rgba(74,158,255,0.4);border-radius:10px;color:#4a9eff;font-size:0.76rem;font-weight:700;cursor:pointer;">&#10145;&#65039; Proceed</button>'+
       '<div style="font-size:0.6rem;color:#555;margin-top:8px;">Signed as Representative by '+esc(repName)+', on this device.</div>'+
     '</div>';
   }
@@ -19137,7 +19137,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<button onclick="document.getElementById(\'dealDocModal\').remove()" style="width:auto;background:none;border:none;color:#888;font-size:1.3rem;cursor:pointer;line-height:1;">&times;</button>'+
       '</div>'+
       (needsConfig && typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE === 'admin' ?
-        '<div style="background:rgba(255,170,0,0.1);border:1px solid rgba(255,170,0,0.3);border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:0.72rem;color:#ffaa00;">&#9888;&#65039; Showing a text summary — the real PDF isn\'t confirmed yet. Tap &#9881; Fields on the Agreements row to review its layout, then this screen shows the actual uploaded PDF instead.</div>' : '')+
+        '<div style="background:rgba(255,170,0,0.1);border:1px solid rgba(255,170,0,0.3);border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:0.72rem;color:#ffaa00;">&#9888;&#65039; Showing a text summary — the real PDF isn\'t confirmed yet. Go to Administration &rarr; &#128196; Document Signer &rarr; &#9881; Fields to place and confirm its layout, then this screen shows the actual uploaded PDF instead.</div>' : '')+
       (alreadySigned ? '<div style="background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.3);border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:0.74rem;color:#8DC63F;">&#9989; Signed by <b>'+esc(row.signed_by_name||'')+'</b> on '+(row.signed_at?new Date(row.signed_at).toLocaleString():'')+'</div>' : '')+
       '<div id="dealDocBody" style="max-height:50vh;overflow-y:auto;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:14px 16px;">'+body+'</div>'+
       (!alreadySigned ? _dealDocSignBlockHtml(c, def) : '')+
@@ -19153,8 +19153,26 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // into the PDF here (read-only) — Preview below is what stamps their signature,
   // using their real session identity via _dealDocMarkReviewed, same as before.
   var _repDocState = null;
+  // Field ids resolved from the assigned installer (or the assigned Tech's HIS
+  // license) — see _custDocComputeInitialValues. Blank here means "not on file",
+  // never a rendering failure, so both the per-field overlay and the top banner
+  // below need to say so explicitly rather than showing a silently empty box —
+  // same "never let an untaken/unresolved data path render identically to a real
+  // negative" rule as the rest of this file (Regrid no_key, Tracerfy 429, etc).
+  var DEALDOC_COMPANY_FIELD_IDS = { company_name:1, company_email:1, cslb_license_p7:1, cslb_license_p4:1, license_classification_p7:1, his_registration_p4:1 };
   function _openDealDocRealPdf(c, def, row, tpl) {
     var alreadySigned = row.status === 'signed';
+    // 2026-09-06, live report ("Company information wasn't populating") — c.assigned_ops
+    // was genuinely unset on the test lead, so opsInfo correctly resolved to null and
+    // every company/CSLB field correctly rendered blank — but _repDocRenderFieldsForPage
+    // had no placeholder for that case (only rep_name/_signature/_date and cust_* had
+    // one), so a blank box looked exactly like a bug instead of "no installer assigned
+    // yet". This banner + the matching per-field placeholder below (companyPlaceholder
+    // in _repDocRenderFieldsForPage) are the fix — same info the fallback HTML-
+    // reproduction body (_dealDocBodyCpuc) already surfaced, now on the real-PDF path too.
+    var _opsInfoCheck = _opsContractorInfo(c.assigned_ops);
+    var _hasCompanyFields = (tpl.fields||[]).some(function(f){ return DEALDOC_COMPANY_FIELD_IDS[f.id]; });
+    var _opsName = (OPS_PARTNERS.find(function(o){ return o.id === c.assigned_ops; }) || {}).name || (c.assigned_ops || 'no installer assigned yet');
     var overlay = document.createElement('div');
     overlay.id = 'dealDocModal';
     overlay.style.cssText = 'position:fixed;inset:0;background:#0e0e0e;z-index:10500;overflow-y:auto;';
@@ -19165,6 +19183,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<button onclick="document.getElementById(\'dealDocModal\').remove()" style="width:auto;background:none;border:none;color:#888;font-size:1.4rem;cursor:pointer;line-height:1;">&times;</button>'+
       '</div>'+
       '<div style="font-size:0.7rem;color:#888;margin-bottom:10px;">Walk the customer through the pages below — this is the actual document, not a summary.</div>'+
+      (!_opsInfoCheck && _hasCompanyFields ? '<div style="background:rgba(255,170,0,0.1);border:1px solid rgba(255,170,0,0.3);border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:0.72rem;color:#ffaa00;">&#9888;&#65039; No CSLB contractor info on file for the assigned installer ('+esc(_opsName)+') — the Company/CSLB fields below will be blank until this lead\'s Assignment is set. Not a bug: set it in the Administration Tab, or add this partner to OPS_CONTRACTOR_INFO.</div>' : '')+
       (alreadySigned ? '<div style="background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.3);border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:0.74rem;color:#8DC63F;">&#9989; Signed by <b>'+esc(row.signed_by_name||'')+'</b> on '+(row.signed_at?new Date(row.signed_at).toLocaleString():'')+'</div>' : '')+
       '<div id="dealDocPages"><div style="color:#888;font-size:0.75rem;padding:30px;text-align:center;">Loading document&hellip;</div></div>'+
       (!alreadySigned ? _dealDocSignBlockHtml(c, def) : '')+
@@ -19238,10 +19257,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         return '<div style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+size+'px;height:'+size+'px;border:1.5px solid #8DC63F;border-radius:3px;display:flex;align-items:center;justify-content:center;color:#8DC63F;font-size:0.7rem;background:rgba(141,198,63,0.1);">&#10003;</div>';
       }
       if (!val && repPlaceholder[f.id]) {
-        return '<div style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;border:1px dashed rgba(74,158,255,0.5);background:rgba(74,158,255,0.07);display:flex;align-items:center;font-size:0.56rem;color:#4a9eff;overflow:hidden;white-space:nowrap;padding:0 3px;">you sign via Preview &darr;</div>';
+        return '<div style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;border:1px dashed rgba(74,158,255,0.5);background:rgba(74,158,255,0.07);display:flex;align-items:center;font-size:0.56rem;color:#4a9eff;overflow:hidden;white-space:nowrap;padding:0 3px;">you sign via Proceed &darr;</div>';
       }
       if (!val && custPlaceholder[f.id]) {
         return '<div style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;border:1px dashed rgba(255,170,0,0.5);background:rgba(255,170,0,0.07);display:flex;align-items:center;font-size:0.56rem;color:#ffaa00;overflow:hidden;white-space:nowrap;padding:0 3px;">customer fills in</div>';
+      }
+      // 2026-09-06 — a blank company/CSLB/HIS field (no installer assigned, or the
+      // assigned Tech has no HIS number on file) used to fall straight into the plain
+      // esc(val||'') branch below and render a totally silent empty box — indistinguishable
+      // from a real bug. Matches the top-of-modal banner in _openDealDocRealPdf.
+      if (!val && DEALDOC_COMPANY_FIELD_IDS[f.id]) {
+        return '<div style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;border:1px dashed rgba(255,170,0,0.5);background:rgba(255,170,0,0.07);display:flex;align-items:center;font-size:0.56rem;color:#ffaa00;overflow:hidden;white-space:nowrap;padding:0 3px;">&#9888; not on file</div>';
       }
       return '<div style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;display:flex;align-items:center;font-size:0.68rem;color:#333;overflow:hidden;white-space:nowrap;">'+esc(val||'')+'</div>';
     }).join('');
@@ -19285,6 +19311,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     window._dealDocDraftInitials[key] = val;
   };
 
+  // 2026-09-06, live report — tapping Proceed showed "Could not save: TypeError: Load
+  // failed", which reads like a broken feature but is WebKit's generic wording for the
+  // underlying fetch never completing (dropped signal, DNS hiccup, etc) — supabase-js
+  // returns this as resp.error rather than throwing. Nothing was left in a bad state
+  // (the modal stays open, nothing was written, tapping Proceed again just retries), but
+  // a raw "TypeError: Load failed" gives the rep nothing to act on. Same classify-don't-
+  // show-raw-error convention as _aiNoteFailText/_bbWithTimeout elsewhere in this file.
+  function _dealDocFriendlyError(msg) {
+    if (/load failed|failed to fetch|networkerror|network request failed|the internet connection/i.test(msg||'')) {
+      return 'Connection problem — check your signal and tap Proceed again. Nothing was lost.';
+    }
+    return msg;
+  }
+
   window._dealDocMarkReviewed = async function(customerId, docType) {
     var repId='admin', repName='Admin';
     try { if (typeof person !== 'undefined' && person) { repId=person.id; repName=person.name||repId; } } catch(e){}
@@ -19292,7 +19332,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var client = supabase.createClient(SUPA_URL, SUPA_KEY);
       var payload = { customer_id: customerId, doc_type: docType, status:'reviewed', reviewed_by_rep_id:repId, reviewed_by_rep_name:repName, reviewed_at:new Date().toISOString(), updated_at:new Date().toISOString() };
       var resp = await client.from('deal_documents').upsert(payload, { onConflict:'customer_id,doc_type' });
-      if (resp.error) { alert('Could not save: '+resp.error.message); return; }
+      if (resp.error) { alert('Could not save: '+_dealDocFriendlyError(resp.error.message)); return; }
       await _dealDocsLoad(customerId);
       // Fresh direct fetch rather than relying on adminCustomers — this function is also
       // reachable from the tech/sales editor, where that admin-only in-memory array is empty.
@@ -19334,7 +19374,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (slot && c) slot.outerHTML = _dealDocsStatusLineHtml(c);
       var m = document.getElementById('dealDocModal'); if (m) m.remove();
       alert('Signed as Representative (' + repName + '). The customer signs their own section separately, from their own device.');
-    } catch(e) { alert('Error: '+e.message); }
+    } catch(e) { alert('Error: '+_dealDocFriendlyError(e.message)); }
   };
 
   // ── Customer-facing signing screen (2026-09-06) ──────────────────────────────────
