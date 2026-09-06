@@ -2338,6 +2338,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<button onclick="ghlTestSend(\'document_ready\')" style="padding:8px 14px;background:rgba(155,109,232,0.1);border:1px solid rgba(155,109,232,0.3);border-radius:8px;color:#9b6de8;font-size:0.78rem;font-weight:700;cursor:pointer;">document_ready</button>'+
         '<button onclick="ghlTestSend(\'document_opened\')" style="padding:8px 14px;background:rgba(155,109,232,0.1);border:1px solid rgba(155,109,232,0.3);border-radius:8px;color:#9b6de8;font-size:0.78rem;font-weight:700;cursor:pointer;">document_opened</button>'+
         '<button onclick="ghlTestSend(\'document_signed\')" style="padding:8px 14px;background:rgba(155,109,232,0.1);border:1px solid rgba(155,109,232,0.3);border-radius:8px;color:#9b6de8;font-size:0.78rem;font-weight:700;cursor:pointer;">document_signed</button>'+
+        '<button onclick="ghlTestSend(\'all_documents_signed\')" style="padding:8px 14px;background:rgba(155,109,232,0.1);border:1px solid rgba(155,109,232,0.3);border-radius:8px;color:#9b6de8;font-size:0.78rem;font-weight:700;cursor:pointer;">all_documents_signed</button>'+
       '</div>'+
       '<div id="ghlTestResult" style="font-size:0.75rem;min-height:20px;color:#666;"></div>'+
     '</div>';
@@ -3887,7 +3888,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // so its merge-field picker has something to offer (GHL only learns field names
       // from a payload it has actually received).
       var isDocEventTrigger = trigger === 'proposal_sent' || trigger === 'document_ready' ||
-                              trigger === 'document_opened' || trigger === 'document_signed';
+                              trigger === 'document_opened' || trigger === 'document_signed' ||
+                              trigger === 'all_documents_signed';
       var targetUrl = isStatusTrigger ? '/.netlify/functions/ghl-status-update' : url;
       if (!isStatusTrigger && (!url || !url.startsWith('http'))) {
         if (res) res.innerHTML = '<span style="color:#ef4444;">Paste a GHL webhook URL first.</span>';
@@ -3906,6 +3908,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           payload.option_count = 2;
           payload.top_option_title = 'Option A — Test Proposal';
           payload.top_option_price = 12345;
+        } else if (trigger === 'all_documents_signed') {
+          payload.magic_link = testMagicLink;
         } else {
           payload.doc_type = 'cpuc_guide';
           payload.doc_label = 'CPUC Consumer Protection Guide';
@@ -18912,7 +18916,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         custRow = cResp.data && cResp.data[0];
       } catch(e2) {}
       var def = DEAL_DOC_TYPES.find(function(d){ return d.id === docType; });
-      if (custRow) {
+      // Only fire the "your document is ready" text/email once per batch, not once
+      // per document — per Dennis: one link into the portal, then auto-advance
+      // through whatever's ready. If another document for this same customer is
+      // ALREADY sitting at status:'reviewed' (they were already notified about that
+      // one), skip firing again; the customer discovers this one either via the
+      // in-session auto-advance (_custDocSubmit) or their next portal visit. A
+      // genuinely NEW batch — everything previously reviewed is now signed — still
+      // fires normally, since _docsMapNow won't show any OTHER 'reviewed' row then.
+      var _docsMapNow = _dealDocsCache[customerId] || {};
+      var _otherAlreadyReady = Object.keys(_docsMapNow).some(function(k){
+        return k !== docType && _docsMapNow[k] && _docsMapNow[k].status === 'reviewed';
+      });
+      if (custRow && !_otherAlreadyReady) {
         var _readyLink = custRow.email
           ? 'https://fixmy.energy/portal?email=' + encodeURIComponent(custRow.email) + '&code=' + encodeURIComponent(custRow.access_code || (custRow.phone||'').replace(/\D/g,''))
           : null;
@@ -19180,8 +19196,39 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           signed_by_name: name
         }) }).catch(function(){});
       }
+      // Auto-advance: one link into the portal should walk the customer through
+      // every document, not stop after each one waiting for a fresh click. If
+      // another document is already sitting at status:'reviewed' for this same
+      // customer, go straight there instead of closing out.
+      var _docsMap = _dealDocsCache[customerId] || {};
+      var _nextDoc = _signedCust ? DEAL_DOC_TYPES.find(function(d){
+        return d.id !== docType && d.hasPdfTemplate && d.appliesWhen(_signedCust) &&
+          _docsMap[d.id] && _docsMap[d.id].status === 'reviewed';
+      }) : null;
+      if (_nextDoc) {
+        _custDocCloseSign();
+        openCustDocSign(customerId, _nextDoc.id);
+        return;
+      }
+      // Nothing else ready right now — check whether every applicable real-PDF
+      // document for this customer is now signed. If so, this is the actual
+      // "you're done" moment, worth its own notification (not just "Signed!").
+      var _applicable = _signedCust ? DEAL_DOC_TYPES.filter(function(d){ return d.hasPdfTemplate && d.appliesWhen(_signedCust); }) : [];
+      var _allSigned = _applicable.length > 0 && _applicable.every(function(d){ return _docsMap[d.id] && _docsMap[d.id].status === 'signed'; });
       _custDocCloseSign();
-      alert('Signed! Thank you.');
+      if (_allSigned && _signedCust) {
+        var _doneLink = _signedCust.email
+          ? 'https://fixmy.energy/portal?email=' + encodeURIComponent(_signedCust.email) + '&code=' + encodeURIComponent(_signedCust.access_code || (_signedCust.phone||'').replace(/\D/g,''))
+          : null;
+        fetch(GHL_PROPOSAL_WEBHOOK, { method:'POST', mode:'no-cors', headers:{'Content-Type':'application/json'}, body: JSON.stringify({
+          type: 'all_documents_signed', customer_id: customerId,
+          email: _signedCust.email||'', phone: _signedCust.phone||'', full_name: ((_signedCust.first_name||'')+' '+(_signedCust.last_name||'')).trim(),
+          magic_link: _doneLink
+        }) }).catch(function(){});
+        alert('All documents signed! Thank you — you can revisit this page anytime to see them.');
+      } else {
+        alert('Signed! Thank you.');
+      }
       if (typeof currentUser !== 'undefined' && currentUser) _custDocsLoad(currentUser);
     } catch(e) {
       if (btn) { btn.disabled = false; btn.innerHTML = '&#9989; Sign &amp; Submit'; }
