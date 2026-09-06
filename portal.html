@@ -18878,20 +18878,28 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   }
 
   window.openDealDoc = async function(customerId, docType) {
-    var existing = document.getElementById('dealDocModal');
-    if (existing) existing.remove();
-    var c = adminCustomers.find(function(x){ return x.id === customerId; });
-    if (!c) return;
-    var def = DEAL_DOC_TYPES.find(function(d){ return d.id === docType; });
-    if (!def) return;
-    var cache = _dealDocsCache[customerId] || await _dealDocsLoad(customerId);
-    var row = cache[docType] || { status:'pending', initials:{}, signature:'', signed_by_name:'' };
-    window._dealDocDraftInitials = Object.assign({}, row.initials||{});
-    var modal = document.createElement('div');
-    modal.id = 'dealDocModal';
-    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.88);z-index:10000;display:flex;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto;';
-    modal.innerHTML = _dealDocModalHtml(c, def, row);
-    document.body.appendChild(modal);
+    // Same fragility class as previewProposal — a thrown error anywhere in here
+    // (building the document body, resolving contractor info, etc.) used to fail
+    // completely silently with no modal and no error. Wrapped so a real failure
+    // is always visible.
+    try {
+      var existing = document.getElementById('dealDocModal');
+      if (existing) existing.remove();
+      var c = adminCustomers.find(function(x){ return x.id === customerId; });
+      if (!c) { alert('Could not find this customer record — try closing and reopening the editor.'); return; }
+      var def = DEAL_DOC_TYPES.find(function(d){ return d.id === docType; });
+      if (!def) { alert('Unknown document type: ' + docType); return; }
+      var cache = _dealDocsCache[customerId] || await _dealDocsLoad(customerId);
+      var row = cache[docType] || { status:'pending', initials:{}, signature:'', signed_by_name:'' };
+      window._dealDocDraftInitials = Object.assign({}, row.initials||{});
+      var modal = document.createElement('div');
+      modal.id = 'dealDocModal';
+      modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.88);z-index:10000;display:flex;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto;';
+      modal.innerHTML = _dealDocModalHtml(c, def, row);
+      document.body.appendChild(modal);
+    } catch(e) {
+      alert('Could not open this document: ' + e.message);
+    }
   };
 
   window._dealDocSetInitial = function(key, val) {
@@ -18928,7 +18936,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var _otherAlreadyReady = Object.keys(_docsMapNow).some(function(k){
         return k !== docType && _docsMapNow[k] && _docsMapNow[k].status === 'reviewed';
       });
-      if (custRow && !_otherAlreadyReady) {
+      // ⚠️ Only ever fire this for a document that actually HAS a customer-facing
+      // signing screen. Reviewing a document without hasPdfTemplate (e.g. tesla_sdcp,
+      // still on the HTML-reproduction fallback) would text/email the customer a
+      // link to "sign now" and land them on a document that says "Reviewed — signing
+      // coming soon" with no Sign button at all — a real, misleading notification.
+      if (custRow && def && def.hasPdfTemplate && !_otherAlreadyReady) {
         var _readyLink = custRow.email
           ? 'https://fixmy.energy/portal?email=' + encodeURIComponent(custRow.email) + '&code=' + encodeURIComponent(custRow.access_code || (custRow.phone||'').replace(/\D/g,''))
           : null;
