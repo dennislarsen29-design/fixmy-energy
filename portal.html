@@ -18862,19 +18862,130 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     '</div>';
   }
 
-  function _dealDocModalHtml(c, def, row) {
+  function _dealDocModalHtml(c, def, row, tpl) {
     var alreadySigned = row.status === 'signed';
     var body = def.body(c, row);
+    // ⚠️ 2026-09-06 — this text-reproduction path is now ONLY the fallback for when
+    // hasPdfTemplate is true but no CONFIRMED document_templates row exists yet (or
+    // pdf.js failed to load) — see openDealDoc below, which routes to the real PDF
+    // whenever it can. An admin seeing this for cpuc_guide means the template still
+    // needs confirming in the Fields editor, not that the real-PDF engine is broken.
+    var needsConfig = def.hasPdfTemplate && (!tpl || !tpl.confirmed);
     return '<div style="background:#1a1c17;border:1px solid rgba(255,255,255,0.12);border-radius:14px;padding:20px 22px;max-width:680px;width:100%;margin-bottom:30px;">'+
       '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:14px;">'+
         '<div><div style="font-size:0.62rem;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#8DC63F;">'+def.icon+' '+esc(def.label)+'</div>'+
         '<div style="font-size:0.7rem;color:#888;margin-top:2px;">'+esc((c.first_name||'')+' '+(c.last_name||''))+' &middot; '+esc(c.address||'')+'</div></div>'+
         '<button onclick="document.getElementById(\'dealDocModal\').remove()" style="width:auto;background:none;border:none;color:#888;font-size:1.3rem;cursor:pointer;line-height:1;">&times;</button>'+
       '</div>'+
+      (needsConfig && typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE === 'admin' ?
+        '<div style="background:rgba(255,170,0,0.1);border:1px solid rgba(255,170,0,0.3);border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:0.72rem;color:#ffaa00;">&#9888;&#65039; Showing a text summary — the real PDF isn\'t confirmed yet. Tap &#9881; Fields on the Agreements row to review its layout, then this screen shows the actual uploaded PDF instead.</div>' : '')+
       (alreadySigned ? '<div style="background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.3);border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:0.74rem;color:#8DC63F;">&#9989; Signed by <b>'+esc(row.signed_by_name||'')+'</b> on '+(row.signed_at?new Date(row.signed_at).toLocaleString():'')+'</div>' : '')+
       '<div id="dealDocBody" style="max-height:50vh;overflow-y:auto;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:14px 16px;">'+body+'</div>'+
       (!alreadySigned ? _dealDocSignBlockHtml(c, def) : '')+
     '</div>';
+  }
+
+  // ── Rep-facing real-PDF review (2026-09-06, fixed live) ─────────────────────────
+  // Per Dennis: "This isn't what I need built" — the rep's own Preview/review screen
+  // was still showing the fabricated text reproduction even for cpuc_guide, which has
+  // a real, CONFIRMED document_templates row and already renders the actual PDF for
+  // the customer (openCustDocSign below). Nothing ever wired the rep's own review
+  // screen onto that same real-PDF engine — this closes that gap. The rep never types
+  // into the PDF here (read-only) — Preview below is what stamps their signature,
+  // using their real session identity via _dealDocMarkReviewed, same as before.
+  var _repDocState = null;
+  function _openDealDocRealPdf(c, def, row, tpl) {
+    var alreadySigned = row.status === 'signed';
+    var overlay = document.createElement('div');
+    overlay.id = 'dealDocModal';
+    overlay.style.cssText = 'position:fixed;inset:0;background:#0e0e0e;z-index:10500;overflow-y:auto;';
+    overlay.innerHTML = '<div style="max-width:900px;margin:0 auto;padding:16px 14px 130px;color:#F3EDE3;">'+
+      '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:6px;">'+
+        '<div><div style="font-size:1rem;font-weight:800;">'+def.icon+' '+esc(def.label)+'</div>'+
+        '<div style="font-size:0.72rem;color:#888;margin-top:2px;">'+esc((c.first_name||'')+' '+(c.last_name||''))+' &middot; '+esc(c.address||'')+'</div></div>'+
+        '<button onclick="document.getElementById(\'dealDocModal\').remove()" style="width:auto;background:none;border:none;color:#888;font-size:1.4rem;cursor:pointer;line-height:1;">&times;</button>'+
+      '</div>'+
+      '<div style="font-size:0.7rem;color:#888;margin-bottom:10px;">Walk the customer through the pages below — this is the actual document, not a summary.</div>'+
+      (alreadySigned ? '<div style="background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.3);border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:0.74rem;color:#8DC63F;">&#9989; Signed by <b>'+esc(row.signed_by_name||'')+'</b> on '+(row.signed_at?new Date(row.signed_at).toLocaleString():'')+'</div>' : '')+
+      '<div id="dealDocPages"><div style="color:#888;font-size:0.75rem;padding:30px;text-align:center;">Loading document&hellip;</div></div>'+
+      (!alreadySigned ? _dealDocSignBlockHtml(c, def) : '')+
+    '</div>';
+    document.body.appendChild(overlay);
+    _repDocRender(c, def, row, tpl);
+  }
+
+  async function _repDocRender(c, def, row, tpl) {
+    var opsInfo = _opsContractorInfo(c.assigned_ops);
+    var hisNumber = '';
+    try {
+      var hisClient = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var hisResp = await hisClient.from('team_members').select('his_license_number').eq('id', c.rep_id || '').limit(1);
+      if (hisResp.data && hisResp.data[0]) hisNumber = hisResp.data[0].his_license_number || '';
+    } catch(e) {}
+    // Reuses the SAME field-value resolution the customer's own signing screen uses
+    // (_custDocComputeInitialValues) — company/CSLB/HIS data can never drift between
+    // what the rep verifies here and what the customer later sees. rep_name/_date/
+    // _signature and every customer-only field naturally read blank at this point
+    // (nothing's been signed yet), which is exactly the placeholder state we want.
+    var values = _custDocComputeInitialValues(tpl.fields || [], c, row, opsInfo, hisNumber);
+
+    _repDocState = { pageScale: {} };
+    try {
+      var loadingTask = window.pdfjsLib.getDocument(tpl.pdf_path);
+      var pdf = await loadingTask.promise;
+      _repDocState.pdf = pdf;
+      var wrap = document.getElementById('dealDocPages');
+      if (!wrap) return;
+      var targetWidth = Math.min(820, wrap.clientWidth || 820);
+      var h = '';
+      for (var i = 1; i <= pdf.numPages; i++) {
+        h += '<div style="position:relative;margin-bottom:14px;background:#fff;" id="dealDocPageWrap_'+(i-1)+'">'+
+          '<canvas id="dealDocCanvas_'+(i-1)+'"></canvas>'+
+          '<div id="dealDocFieldsLayer_'+(i-1)+'" style="position:absolute;inset:0;"></div>'+
+        '</div>';
+      }
+      wrap.innerHTML = h;
+      for (var p = 1; p <= pdf.numPages; p++) {
+        var page = await pdf.getPage(p);
+        var baseViewport = page.getViewport({ scale: 1 });
+        var scale = targetWidth / baseViewport.width;
+        var viewport = page.getViewport({ scale: scale });
+        var canvas = document.getElementById('dealDocCanvas_' + (p - 1));
+        if (!canvas) continue;
+        canvas.width = viewport.width; canvas.height = viewport.height;
+        canvas.style.width = viewport.width + 'px'; canvas.style.height = viewport.height + 'px';
+        await page.render({ canvasContext: canvas.getContext('2d'), viewport: viewport }).promise;
+        _repDocState.pageScale[p - 1] = { w: viewport.width, h: viewport.height };
+        _repDocRenderFieldsForPage(p - 1, tpl, values);
+      }
+    } catch(e) {
+      var pw = document.getElementById('dealDocPages');
+      if (pw) pw.innerHTML = '<div style="color:#ef4444;padding:20px;text-align:center;">Could not load document: '+esc(e.message)+'</div>';
+    }
+  }
+
+  function _repDocRenderFieldsForPage(pageIdx, tpl, values) {
+    var layer = document.getElementById('dealDocFieldsLayer_' + pageIdx);
+    var dims = _repDocState.pageScale[pageIdx];
+    if (!layer || !dims) return;
+    var fields = (tpl.fields || []).filter(function(f){ return f.page === pageIdx; });
+    var repPlaceholder = { rep_name:1, rep_signature:1, rep_date:1 };
+    var custPlaceholder = { cust_name:1, cust_signature:1, pg3_initials:1 };
+    layer.innerHTML = fields.map(function(f) {
+      var left = f.x * dims.w, top = f.y * dims.h, w = f.w * dims.w, h = f.h * dims.h;
+      var val = values[f.id];
+      if (f.type === 'checkbox') {
+        var size = Math.max(w, h, 20);
+        return '<div style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+size+'px;height:'+size+'px;border:1.5px solid #8DC63F;border-radius:3px;display:flex;align-items:center;justify-content:center;color:#8DC63F;font-size:0.7rem;background:rgba(141,198,63,0.1);">&#10003;</div>';
+      }
+      if (!val && repPlaceholder[f.id]) {
+        return '<div style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;border:1px dashed rgba(74,158,255,0.5);background:rgba(74,158,255,0.07);display:flex;align-items:center;font-size:0.56rem;color:#4a9eff;overflow:hidden;white-space:nowrap;padding:0 3px;">you sign via Preview &darr;</div>';
+      }
+      if (!val && custPlaceholder[f.id]) {
+        return '<div style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;border:1px dashed rgba(255,170,0,0.5);background:rgba(255,170,0,0.07);display:flex;align-items:center;font-size:0.56rem;color:#ffaa00;overflow:hidden;white-space:nowrap;padding:0 3px;">customer fills in</div>';
+      }
+      return '<div style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;display:flex;align-items:center;font-size:0.68rem;color:#333;overflow:hidden;white-space:nowrap;">'+esc(val||'')+'</div>';
+    }).join('');
   }
 
   window.openDealDoc = async function(customerId, docType) {
@@ -18892,10 +19003,18 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var cache = _dealDocsCache[customerId] || await _dealDocsLoad(customerId);
       var row = cache[docType] || { status:'pending', initials:{}, signature:'', signed_by_name:'' };
       window._dealDocDraftInitials = Object.assign({}, row.initials||{});
+
+      var tpl = def.hasPdfTemplate ? await _loadDocTemplate(docType) : null;
+      if (tpl && tpl.confirmed) {
+        var pdfOk = await _loadPdfJs();
+        if (pdfOk) { _openDealDocRealPdf(c, def, row, tpl); return; }
+        // pdf.js failed to load (bad connection) — fall through to the text summary
+        // below rather than leaving the rep with nothing at all.
+      }
       var modal = document.createElement('div');
       modal.id = 'dealDocModal';
       modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.88);z-index:10000;display:flex;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto;';
-      modal.innerHTML = _dealDocModalHtml(c, def, row);
+      modal.innerHTML = _dealDocModalHtml(c, def, row, tpl);
       document.body.appendChild(modal);
     } catch(e) {
       alert('Could not open this document: ' + e.message);
