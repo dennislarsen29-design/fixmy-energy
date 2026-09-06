@@ -1389,6 +1389,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   function renderAdminView(view) {
     if (_adminOnlyGuard()) return;
     adminView = view;
+    if (!_deployedDocIds) { _ensureDeployedDocIds().then(function(){ if (adminView===view) renderAdminView(view); }); }
     // All unsold, non-black-box leads, split by category
     var allLeads = adminCustomers.filter(function(x){ return !x.sold_type && !x.black_box; });
     var fixmyLeads = allLeads.filter(function(x){ return x.lead_category !== 'new_solar'; });
@@ -1427,7 +1428,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<button class="portal-tab active" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button>'+
-      '<button class="portal-tab" onclick="renderTeamView()">&#128101; Team &amp; Hiring'+teamBadge+onboardBadge+'</button>'+
+      '<button class="portal-tab" onclick="renderTeamView()">&#128101; Administration'+teamBadge+onboardBadge+'</button>'+
       '<button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button>'+
       '<button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button>'+
       '<a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a>'+
@@ -1752,11 +1753,29 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return !!c.sold_type || !!(_jobsRevenueIds && _jobsRevenueIds.has(c.id));
   }
 
+  // "Documents deployed" badge on the compact Leads-list card (2026-09-06, per Dennis).
+  // A row in deal_documents only ever exists once a document has actually been reviewed
+  // (rep tapped Preview) or signed — there is no 'pending' row, the default 'pending'
+  // status in code is purely what renders when NO row exists yet. So "any row exists for
+  // this customer" IS "at least one document has been deployed" — no extra status filter
+  // needed, though it's applied anyway as cheap insurance against that assumption ever
+  // drifting. Same bulk-fetch-once-then-cache pattern as _ensureJobsRevenueIds above.
+  var _deployedDocIds = null;
+  async function _ensureDeployedDocIds() {
+    if (_deployedDocIds) return _deployedDocIds;
+    try {
+      var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var r = await pc.from('deal_documents').select('customer_id').in('status', ['reviewed','signed']);
+      _deployedDocIds = new Set((r.data||[]).map(function(x){ return x.customer_id; }));
+    } catch(e) { _deployedDocIds = new Set(); }
+    return _deployedDocIds;
+  }
+
   // ── JOBS TAB ───────────────────────────────────────────────────────────────
   function renderJobsView() {
     if (_adminOnlyGuard()) return;
     adminView = 'jobs';
-    var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab active" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button><button class="portal-tab" onclick="renderTeamView()">&#128101; Team &amp; Hiring</button><button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button><button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button><a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a></div>';
+    var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab active" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button><button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button><button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button><button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button><a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a></div>';
     if (!_jobsRevenueIds) { _ensureJobsRevenueIds().then(function(){ if (adminView==='jobs') renderJobsView(); }); }
     var allJobs = adminCustomers.filter(_isRealJob);
     var fixmyJobs = allJobs.filter(function(c){ return c.lead_category !== 'new_solar'; });
@@ -2295,27 +2314,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // Personal tab; Webhooks + Credentials + 1:1s promoted to their own pills.
   function teamSubBar(active) {
     var st = 'width:auto;margin:0;padding:6px 16px;border:none;border-radius:100px;font-size:0.75rem;font-weight:700;cursor:pointer;transition:all 0.15s;white-space:nowrap;';
-    var tabs = [['team','&#128101; Team'],['dialers','&#128266; Dialers'],['hiring','&#127919; Hiring'],['oneonones','&#129309; 1:1s'],['webhooks','&#127380; Webhooks'],['credentials','&#128273; Credentials'],['pages','&#128279; Pages']];
+    var tabs = [['team','&#128101; Team'],['dialers','&#128266; Dialers'],['hiring','&#127919; Hiring'],['oneonones','&#129309; 1:1s'],['webhooks','&#127380; Webhooks'],['pages','&#128279; Pages']];
     return '<div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;">'+tabs.map(function(t){
       var on = active === t[0];
       return '<button onclick="renderTeamView(\''+t[0]+'\')" style="'+st+'background:'+(on?'#8DC63F':'rgba(255,255,255,0.07)')+';color:'+(on?'#1A1A1A':'#888')+';">'+t[1]+'</button>';
     }).join('')+'</div>';
-  }
-  // Ops-partner one-tap portal links — lives under the Credentials sub-tab.
-  function _teamOpsLinksHtml() {
-    return '<div style="margin-top:4px;padding:16px 18px;background:rgba(141,198,63,0.05);border:1px solid rgba(141,198,63,0.2);border-radius:12px;">'+
-      '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#8DC63F;margin-bottom:10px;">&#128279; Ops Partner Portal Links</div>'+
-      '<div style="font-size:0.78rem;color:#aaa;margin-bottom:14px;">Send an ops partner their one-tap portal link — no password needed. Each partner has their own private rate sheet.</div>'+
-      OPS_PARTNERS.map(function(o){
-        var link = 'https://fixmy.energy/portal?email='+encodeURIComponent(o.email)+'&code='+encodeURIComponent(o.code);
-        return '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;">'+
-          '<span style="font-size:0.85rem;font-weight:700;color:#F3EDE3;min-width:120px;">'+o.name+'</span>'+
-          '<button onclick="navigator.clipboard.writeText(\''+link+'\');this.textContent=\'&#10003; Copied!\';var b=this;setTimeout(function(){b.innerHTML=\'Copy Link\';},2000);" style="padding:7px 14px;background:#8DC63F;border:none;border-radius:100px;color:#000;font-weight:700;cursor:pointer;font-size:0.78rem;">Copy Link</button>'+
-          '<a href="sms:?body='+encodeURIComponent('Hey '+o.name.split(' ')[0]+'! Here\'s your Solar Review portal link — one tap to log in: '+link)+'" style="padding:7px 14px;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.3);border-radius:100px;color:#8DC63F;font-weight:700;font-size:0.78rem;text-decoration:none;">Text It</a>'+
-          '<button onclick="openOpsRatesAdmin(\''+o.id+'\',\''+o.name.replace(/'/g,"\\'")+'\')" style="padding:7px 14px;background:rgba(255,170,0,0.1);border:1px solid rgba(255,170,0,0.3);border-radius:100px;color:#ffaa00;font-weight:700;cursor:pointer;font-size:0.78rem;">&#128203; Rate Sheet</button>'+
-        '</div>';
-      }).join('')+
-    '</div>';
   }
   // GHL Webhook Tester tool — lives under the Webhooks sub-tab.
   function _teamWebhookTesterHtml() {
@@ -3084,7 +3087,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (subTab === 'social') subTab = 'team';   // Socials moved to the Personal tab
     sessionStorage.setItem('teamSubView', subTab);
     adminView = 'team';
-    var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button><button class="portal-tab active" onclick="renderTeamView()">&#128101; Team &amp; Hiring</button><button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button><button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button><a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a></div>';
+    var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button><button class="portal-tab active" onclick="renderTeamView()">&#128101; Administration</button><button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button><button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button><a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a></div>';
     document.getElementById('dashBody').innerHTML = portalNav + '<p style="color:#aaa;padding:20px 0;">Loading team data...</p>';
     // Closing roles drive where every booking lands — load before rendering the roster.
     try { await window.bbLoadClosers(true); } catch(e) {}
@@ -3173,6 +3176,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
               '<input id="'+editId+'_inp" type="text" placeholder="New code..." style="width:120px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:4px 8px;color:#F3EDE3;font-size:0.72rem;outline:none;"/>'+
               '<button onclick="adminSaveCode(\''+u.id+'\',document.getElementById(\''+editId+'_inp\').value)" style="padding:4px 10px;font-size:0.7rem;font-weight:700;background:rgba(74,158,255,0.12);border:1px solid rgba(74,158,255,0.3);color:#4a9eff;border-radius:6px;cursor:pointer;">Save Code</button>'+
             '</div>'+
+            // Ops Partner magic link — sunk in from the old standalone "Credentials" sub-
+            // tab (2026-09-06, per Dennis: "It's all uniform and in one place, under Team
+            // tab"). Reuses the exact same code this card already computed above, so the
+            // login code shown in "Code:" and the one baked into this link can never drift.
+            (u.role === 'ops' ?
+              '<div style="margin-top:8px;padding:8px 10px;background:rgba(141,198,63,0.05);border:1px solid rgba(141,198,63,0.18);border-radius:8px;">'+
+                '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#8DC63F;margin-bottom:6px;">&#128279; Portal Link</div>'+
+                '<div style="display:flex;gap:6px;flex-wrap:wrap;">'+
+                  '<button onclick="navigator.clipboard.writeText(\'https://fixmy.energy/portal?email='+encodeURIComponent(u.email||'')+'&code='+encodeURIComponent(code)+'\');this.textContent=\'&#10003; Copied!\';var b=this;setTimeout(function(){b.innerHTML=\'Copy Link\';},2000);" style="padding:5px 12px;font-size:0.7rem;font-weight:700;background:#8DC63F;border:none;border-radius:6px;color:#000;cursor:pointer;">Copy Link</button>'+
+                  '<a href="sms:?body='+encodeURIComponent('Hey '+(u.name||'').split(' ')[0]+'! Here\'s your Solar Review portal link — one tap to log in: https://fixmy.energy/portal?email='+encodeURIComponent(u.email||'')+'&code='+encodeURIComponent(code))+'" style="padding:5px 12px;font-size:0.7rem;font-weight:700;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.3);border-radius:6px;color:#8DC63F;text-decoration:none;">Text It</a>'+
+                  '<button onclick="openOpsRatesAdmin(\''+u.id+'\',\''+(u.name||'').replace(/'/g,"\\'")+'\')" style="padding:5px 12px;font-size:0.7rem;font-weight:700;background:rgba(255,170,0,0.1);border:1px solid rgba(255,170,0,0.3);border-radius:6px;color:#ffaa00;cursor:pointer;">&#128203; Rate Sheet</button>'+
+                '</div>'+
+              '</div>'
+            : '')+
             agHtml+
             (needsAgreement ? (
               '<div style="margin-top:10px;padding:8px 10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;">' +
@@ -3402,11 +3419,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     } else if (subTab === 'webhooks') {
 
       h += _teamWebhookTesterHtml();
-
-    } else if (subTab === 'credentials') {
-
-      h += _teamOpsLinksHtml();
-      h += '<div style="margin-top:14px;font-size:0.72rem;color:#666;line-height:1.6;">Per-rep login codes are managed on each member card under the <strong style="color:#8DC63F;">Team</strong> tab.</div>';
 
     } else if (subTab === 'dialers') {
 
@@ -4166,7 +4178,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button>'+
-      '<button class="portal-tab" onclick="renderTeamView()">&#128101; Team &amp; Hiring</button>'+
+      '<button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button>'+
       '<button class="portal-tab active" onclick="renderScheduleView()">&#128197; Schedule</button>'+
       '<button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button>'+
       '<a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a>'+
@@ -4302,7 +4314,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button>'+
-      '<button class="portal-tab" onclick="renderTeamView()">&#128101; Team &amp; Hiring</button>'+
+      '<button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button>'+
       '<button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button>'+
       '<button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab active" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button>'+
       '<a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a>'+
@@ -4589,7 +4601,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<button class="portal-tab active" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button>'+
-      '<button class="portal-tab" onclick="renderTeamView()">&#128101; Team &amp; Hiring</button>'+
+      '<button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button>'+
       '<button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button>'+
       '<button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button>'+
       '<button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button>'+
@@ -5260,7 +5272,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button>'+
-      '<button class="portal-tab" onclick="renderTeamView()">&#128101; Team &amp; Hiring</button>'+
+      '<button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button>'+
       '<button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button>'+
       '<button class="portal-tab active" onclick="renderAgentsView()">&#129302; Agents</button>'+
       '<button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button>'+
@@ -6456,18 +6468,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
   }
 
-  // Admin lead-editor photo upload — targets the open lead, then reloads the grid.
-  // Same shared uploadPhotos pipeline the tech editor + customer portal use, so the
-  // photos show for the customer and on the Ops Advice card too.
-  window.adminUploadPhotos = function(input) {
-    var files = Array.from(input.files || []);
-    if (!files.length) return;
-    var id = (document.getElementById('edId') || {}).value;
-    if (!id) return;
-    currentJobId = id;
-    uploadPhotos(files).then(function() { loadEditorPhotos(id); }).catch(function(e){ console.error('adminUploadPhotos:', e); });
-    input.value = '';
-  };
   async function loadEditorPhotos(custId) {
     var statusEl = document.getElementById('editorPhotoStatus');
     var gridEl   = document.getElementById('editorPhotoGrid');
@@ -6582,7 +6582,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab active" onclick="renderAdminCanvassView()">&#128230; Black Box</button>'+
-      '<button class="portal-tab" onclick="renderTeamView()">&#128101; Team &amp; Hiring</button>'+
+      '<button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button>'+
       '<button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button>'+
       '<button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button>'+
       '<button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button>'+
@@ -12075,7 +12075,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab active" onclick="renderAdminCanvassView()">&#128230; Black Box</button>'+
-      '<button class="portal-tab" onclick="renderTeamView()">&#128101; Team &amp; Hiring</button>'+
+      '<button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button>'+
       '<button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button>'+
       '<button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button>'+
       '<button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button>'+
@@ -15412,7 +15412,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button>'+
-      '<button class="portal-tab" onclick="renderTeamView()">&#128101; Team &amp; Hiring</button>'+
+      '<button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button>'+
       '<button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button>'+
       '<button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button>'+
       '<button class="portal-tab active" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button>'+
@@ -17139,7 +17139,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button>'+
-      '<button class="portal-tab" onclick="renderTeamView()">&#128101; Team &amp; Hiring</button>'+
+      '<button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button>'+
       '<button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button>'+
       '<button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button>'+
       '<button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab active" onclick="renderPersonalView()">&#128100; Personal</button>'+
@@ -18128,7 +18128,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button>'+
-      '<button class="portal-tab active" onclick="renderTeamView()">&#128101; Team &amp; Hiring</button>'+
+      '<button class="portal-tab active" onclick="renderTeamView()">&#128101; Administration</button>'+
       '<button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button>'+
       '<button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button>'+
       '<button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button>'+
@@ -18423,16 +18423,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var jaddr = address.replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;');
     var auroraArgs = JSON.stringify({ address: address, firstName: c.first_name||'', lastName: c.last_name||'', email: c.email||'', customerId: id }).replace(/"/g,'&quot;');
     var pill = 'width:auto;padding:8px 14px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);border-radius:100px;color:#4a9eff;font-size:0.75rem;font-weight:700;cursor:pointer;';
-    // The evaluation comes BEFORE the proposal — it's the step that fills the proposal in.
-    // FixMy only: it's built around diagnosing an existing system, which a New Solar lead
-    // doesn't have.
-    var evalRow = !isNS
-      ? '<div style="margin-bottom:14px;">'+
-          '<div style="font-size:0.64rem;font-weight:600;text-transform:uppercase;letter-spacing:0.07em;color:#666;margin-bottom:7px;">On-Site Evaluation</div>'+
-          '<button type="button" onclick="openEvalWizard(\''+id+'\')" title="Step-by-step evaluation: hardware, production, consumption. Quoya diagnoses it and pre-fills the proposal." style="width:100%;padding:12px;background:rgba(141,198,63,0.14);border:1px solid rgba(141,198,63,0.45);border-radius:100px;color:#8DC63F;font-size:0.82rem;font-weight:800;cursor:pointer;">&#9889; Start Evaluation</button>'+
-        '</div>'
-      : '';
-    return evalRow + '<div style="margin-bottom:14px;">'+
+    return '<div style="margin-bottom:14px;">'+
       '<div style="font-size:0.64rem;font-weight:600;text-transform:uppercase;letter-spacing:0.07em;color:#666;margin-bottom:7px;">Proposal Tools</div>'+
       '<div style="display:flex;gap:8px;flex-wrap:wrap;">'+
         (!isNS ? '<button type="button" onclick="openProposalBuilder(\''+id+'\')" style="'+pill+'">&#128196; Internal Tool</button>' : '')+
@@ -18440,6 +18431,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<button type="button" onclick="_propOpenExternal(\'https://app.solargraf.com/dashboard\',\''+jaddr+'\')" style="'+pill+'">&#128208; SolarGraf</button>'+
         '<button type="button" onclick="window.open(\'https://imgur.com/upload\',\'_blank\')" style="'+pill+'">&#128444;&#65039; Imgur</button>'+
       '</div></div>';
+  }
+
+  // Extracted from _proposalToolsRow (2026-09-06, per Dennis — Start Evaluation now
+  // leads the whole lead card, the very first thing on the page). FixMy only: it's
+  // built around diagnosing an existing system, which a New Solar lead doesn't have.
+  function _startEvalButtonHtml(c, isNS){
+    if (isNS) return '';
+    var id = (c && c.id) || '';
+    return '<div style="margin-bottom:14px;">'+
+      '<button type="button" onclick="openEvalWizard(\''+id+'\')" title="Step-by-step evaluation: hardware, production, consumption. Quoya diagnoses it and pre-fills the proposal." style="width:100%;padding:14px;background:rgba(141,198,63,0.14);border:1px solid rgba(141,198,63,0.45);border-radius:100px;color:#8DC63F;font-size:0.86rem;font-weight:800;cursor:pointer;">&#9889; Start Evaluation</button>'+
+    '</div>';
   }
 
   // ── Lead-to-Agreements document engine (2026-09-05, per Dennis) ─────────────
@@ -18813,30 +18815,34 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     } catch(e) { console.warn('deal_documents load:', e); return {}; }
   }
 
-  function _agreementsRow(c) {
+  // ── Documents status line (2026-09-06, per Dennis — replaces the old _agreementsRow
+  // entirely) ──────────────────────────────────────────────────────────────────────
+  // Per Dennis: "Remove the alternative way to pull up documents to simplify the visual
+  // experience" and "put the uploading documents feature in its own tab and take it out
+  // of the individual lead cards." The old _agreementsRow rendered an Open button (a
+  // second path into a document, alongside Preview→Accept) and a ⚙ Fields button (admin
+  // template config, which has nothing to do with any one customer). Both are gone from
+  // the lead card now — Open is superseded by Preview→Accept on the customer-facing
+  // proposal (the ONE path in), and ⚙ Fields moved to the new Document Signer admin tool
+  // (see renderDocSignerView). This is read-only status, answering "is this customer
+  // done or not" at a glance, per Dennis's own answer when asked what should remain.
+  function _dealDocsStatusLineHtml(c) {
     if (!c || !c.id) return '';
     var applicable = DEAL_DOC_TYPES.filter(function(d){ return d.appliesWhen(c); });
-    if (!applicable.length) return '';
+    if (!applicable.length) return '<div id="docsStatusLine_'+c.id+'" style="font-size:0.72rem;color:#666;">No documents apply to this lead.</div>';
     var cache = _dealDocsCache[c.id] || {};
     var rows = applicable.map(function(d){
       var row = cache[d.id];
       var status = row ? row.status : 'pending';
-      var meta = status==='signed' ? {bg:'rgba(141,198,63,0.12)',color:'#8DC63F',label:'&#9989; Signed'}
-        : status==='reviewed' ? {bg:'rgba(74,158,255,0.12)',color:'#4a9eff',label:'&#128065; Reviewed'}
-        : {bg:'rgba(255,170,0,0.12)',color:'#ffaa00',label:'&#9203; Not Started'};
-      return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid rgba(255,255,255,0.06);">'+
-        '<div style="font-size:0.78rem;color:#F3EDE3;font-weight:600;">'+d.icon+' '+esc(d.label)+'</div>'+
-        '<div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">'+
-          '<span class="mini-badge" style="background:'+meta.bg+';color:'+meta.color+';font-weight:700;white-space:nowrap;">'+meta.label+'</span>'+
-          (d.hasPdfTemplate && typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE === 'admin' ?
-            '<button type="button" onclick="openDocTemplateEditor(\''+d.id+'\')" title="Review/adjust where fields sit on the real PDF" style="width:auto;padding:6px 12px;background:rgba(155,109,232,0.1);border:1px solid rgba(155,109,232,0.35);border-radius:100px;color:#9b6de8;font-size:0.68rem;font-weight:700;cursor:pointer;">&#9881; Fields</button>' : '')+
-          '<button type="button" onclick="openDealDoc(\''+c.id+'\',\''+d.id+'\')" style="width:auto;padding:6px 14px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);border-radius:100px;color:#F3EDE3;font-size:0.7rem;font-weight:700;cursor:pointer;">Open</button>'+
-        '</div></div>';
+      var meta = status==='signed' ? {color:'#8DC63F',label:'&#9989; Signed'}
+        : status==='reviewed' ? {color:'#4a9eff',label:'&#128065; Reviewed'}
+        : {color:'#ffaa00',label:'&#9203; Not Started'};
+      return '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 0;">'+
+        '<span style="font-size:0.75rem;color:#F3EDE3;">'+d.icon+' '+esc(d.label)+'</span>'+
+        '<span style="font-size:0.72rem;font-weight:700;color:'+meta.color+';">'+meta.label+'</span>'+
+      '</div>';
     }).join('');
-    return '<div id="agreementsRow_'+c.id+'" style="margin-bottom:14px;">'+
-      '<div style="font-size:0.64rem;font-weight:600;text-transform:uppercase;letter-spacing:0.07em;color:#666;margin-bottom:7px;">&#128196; Agreements</div>'+
-      '<div style="background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:2px 12px;">'+rows+'</div>'+
-    '</div>';
+    return '<div id="docsStatusLine_'+c.id+'">'+rows+'</div>';
   }
 
   function _dealDocSignBlockHtml(c, def) {
@@ -19071,8 +19077,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         }) }).catch(function(){});
       }
       var c = adminCustomers.find(function(x){ return x.id === customerId; });
-      var slot = document.getElementById('agreementsRow_'+customerId);
-      if (slot && c) slot.outerHTML = _agreementsRow(c);
+      var slot = document.getElementById('docsStatusLine_'+customerId);
+      if (slot && c) slot.outerHTML = _dealDocsStatusLineHtml(c);
       var m = document.getElementById('dealDocModal'); if (m) m.remove();
       alert('Signed as Representative (' + repName + '). The customer signs their own section separately, from their own device.');
     } catch(e) { alert('Error: '+e.message); }
@@ -19669,6 +19675,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var _agTouched = !!c.agreement_status && c.agreement_status !== 'none';
     var agBadge  = (_agSt !== 'na' && (_agSt !== 'pending' || _agTouched)) ? adminStatusBadgeHtml(_agSt, 'Agmt') : '';
     var opsBadge = (c.ops_ready&&!c.assigned_ops) ? '<span class="mini-badge" style="background:rgba(249,115,22,0.15);color:#f97316;">🔧 OPS NEEDED</span>' : '';
+    // "Docs" badge — only when a document has actually been deployed (reviewed or
+    // signed), never for a lead where nothing has started yet. Per Dennis, 2026-09-06,
+    // giving a preview at a glance without opening the lead.
+    var docBadge = (typeof _deployedDocIds !== 'undefined' && _deployedDocIds && _deployedDocIds.has(c.id))
+      ? '<span class="mini-badge" style="background:rgba(155,109,232,0.14);color:#9b6de8;font-weight:700;">&#128196; Docs</span>'
+      : '';
     // Only a genuine unfinished partial (explicit partial_capture flag) is "incomplete".
     // A completed booking that merely lacks a diagnostic_date (e.g. GHL AppointmentCreate
     // webhook not wired) must never false-flag as incomplete.
@@ -19751,7 +19763,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<div class="lead-addr">'+(c.address||'No address')+sdcpBadge+'</div>'+
         assignLine+
         techAssignHtml+
-        '<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px;align-items:center;">'+invBadge+agBadge+opsBadge+incompleteBadge+'</div></div>'+
+        '<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px;align-items:center;">'+invBadge+agBadge+docBadge+opsBadge+incompleteBadge+'</div></div>'+
       '<div class="lead-card-actions">'+
         '<button class="lead-btn lime" data-id="'+c.id+'" onclick="'+_editFn+'(this.dataset.id)">&#9998; Edit</button>'+
         (c.email ? '<button class="lead-btn ghost" onclick="sendMagicLink(\''+magic+'\',\''+esc(c.email)+'\')" style="color:#4a9eff;border-color:rgba(74,158,255,0.25);">&#128279; Link</button>' : '')+
@@ -22155,7 +22167,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             'style="'+(c.title_confirmed===true?'':'display:none;')+'padding:5px 14px;border:1px solid rgba(141,198,63,0.4);border-radius:100px;background:rgba(141,198,63,0.1);color:#8DC63F;font-size:0.72rem;font-weight:700;cursor:pointer;">&#8592; Use as Lead Name</button>'+
         '</div>'
       : '<span style="font-size:0.75rem;color:#666;">No title data yet — click <strong style="color:#4a9eff;">Run Lookup</strong> to check parcel owner.</span>';
-    var _notesLogHtml = _renderNotesLog(_parseNotes(c.notes || ''), false, { deletable: true, custId: c.id });
+    var _parsedNotesArr = _parseNotes(c.notes || '');
+    var _notesLogHtml = _renderNotesLog(_parsedNotesArr, false, { deletable: true, custId: c.id });
+    // Latest-note preview for the collapsed Activity Log summary (2026-09-06, per
+    // Dennis — collapsed by default, but with a highlight so a rep can see what was
+    // most recently placed without opening it). _parsedNotesArr is chronological
+    // (oldest first, _appendNote pushes onto the end), so the last entry is newest.
+    var _latestNote = _parsedNotesArr.length ? _parsedNotesArr[_parsedNotesArr.length-1] : null;
+    var _latestNotePreview = _latestNote
+      ? esc(_latestNote.by||'Note')+': '+esc((_latestNote.text||'').replace(/\s+/g,' ').slice(0,60))+((_latestNote.text||'').length>60?'…':'')
+      : 'No notes yet';
     slot.innerHTML = '<div style="position:sticky;top:0;z-index:10;background:#0d0d0d;border-bottom:1px solid #2a2a2a;margin-bottom:12px;"><button onclick="closeLeadEditor()" style="display:block;width:100%;padding:12px;background:transparent;border:none;color:#aaa;cursor:pointer;font-size:0.85rem;font-weight:700;letter-spacing:0.5px;">&#10005;&nbsp;&nbsp;Close</button></div>'+
     '<div class="editor-panel" id="editorPanel">'+
       '<div class="editor-header"><div style="font-weight:700;color:'+(isNSEdit?'#4a9eff':'#8DC63F')+';">Editing: '+esc(c.first_name||'')+' '+esc(c.last_name||'')+
@@ -22215,19 +22236,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '</div>'
       : '')+
 
-      '<div class="editor-section-title">Lead Category</div>'+
-      '<div class="ed-grid" style="margin-bottom:8px;">'+
-        edSelect('Business Line','edLeadCat',c.lead_category||'fixmy',[['fixmy','⚡ FixMy.Energy (Diagnostic / Battery / Monitoring)'],['new_solar','☀ Axia/QCell']])+
-      '</div>'+
-      '<div style="padding:6px 12px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;font-size:0.7rem;color:#888;margin-bottom:12px;">After saving a category change, reopen the lead to see the updated pipeline fields.</div>'+
-      '<div class="editor-section-title">Activity Log</div>'+
-      '<div id="edNotesLog" style="max-height:320px;overflow-y:auto;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;margin-bottom:10px;">'+
-        _notesLogHtml+
-      '</div>'+
-      '<div class="ed-full" style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px;">'+
-        '<textarea id="edNoteInput" class="ed-input" rows="4" style="width:100%;resize:vertical;box-sizing:border-box;" placeholder="Add a note…"></textarea>'+
-        '<button type="button" onclick="addEditorNote()" style="align-self:flex-end;padding:9px 20px;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.4);border-radius:8px;color:#8DC63F;font-size:0.8rem;font-weight:700;cursor:pointer;">+ Log Note</button>'+
-      '</div>'+
+      // ── Reordered top-to-bottom (2026-09-06, per Dennis — "the order of items on
+      // all leads is messy"): Start Evaluation → Rooftop Solar Intelligence → Customer
+      // Info → Activity Log (collapsed) → Progress & Scheduling → Administration Tab
+      // (now also holding Lead Category, Assignment, Ops Advice/Bid) → Proposal Tools →
+      // Diagnostic Assessment → Photos.
+      _startEvalButtonHtml(c, isNSEdit)+
+      '<div id="edSolarPanel_'+c.id+'" style="margin:4px 0 16px;"></div>'+
       '<div class="editor-section-title">Customer Info</div>'+
       '<div class="ed-grid">'+
         edField('First Name','edFirst',c.first_name||'','text')+edField('Last Name','edLast',c.last_name||'','text')+
@@ -22256,7 +22271,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '</div>'+
         '</div>'+
       '</div>'+
-      '<div id="edSolarPanel_'+c.id+'" style="margin:4px 0 16px;"></div>'+
       (isNSEdit ?
         '<div class="editor-section-title">Axia/QCell Pipeline Status</div>'+
         '<div class="ed-grid" style="margin-bottom:8px;">'+
@@ -22266,6 +22280,24 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       :
         ''
       )+
+      // Activity Log — collapsed by default (2026-09-06, per Dennis), with a one-line
+      // highlight of the latest note in the summary so a rep can see what was most
+      // recently placed without opening it.
+      '<details style="margin:4px 0 16px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.08);border-radius:12px;overflow:hidden;">'+
+        '<summary style="cursor:pointer;padding:12px 16px;font-weight:700;color:#F3EDE3;font-size:0.85rem;">'+
+          '<span>Activity Log</span>'+
+          '<div style="font-size:0.7rem;font-weight:400;color:#888;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+_latestNotePreview+'</div>'+
+        '</summary>'+
+        '<div style="padding:0 16px 16px;">'+
+        '<div id="edNotesLog" style="max-height:320px;overflow-y:auto;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;margin-bottom:10px;">'+
+          _notesLogHtml+
+        '</div>'+
+        '<div class="ed-full" style="display:flex;flex-direction:column;gap:8px;">'+
+          '<textarea id="edNoteInput" class="ed-input" rows="4" style="width:100%;resize:vertical;box-sizing:border-box;" placeholder="Add a note…"></textarea>'+
+          '<button type="button" onclick="addEditorNote()" style="align-self:flex-end;padding:9px 20px;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.4);border-radius:8px;color:#8DC63F;font-size:0.8rem;font-weight:700;cursor:pointer;">+ Log Note</button>'+
+        '</div>'+
+        '</div>'+
+      '</details>'+
       '<div class="editor-section-title">Progress & Scheduling</div>'+
       '<div class="ed-grid">'+
         (isNSEdit ? '' : edSelect('Progress Step','edStep',c.step||1,[[1,'1 - Evaluation Booked'],[2,'2 - Photos Uploaded'],[3,'3 - Diagnostic Booked'],[4,'4 - Analysis Done'],[5,'5 - Proposal Sent'],[6,'6 - Sold / Deposit Collected'],[7,'7 - Not Sold / Dead'],[8,'8 - Install Booked'],[9,'9 - Installed'],[10,'10 - Monitoring Online']]))+
@@ -22290,13 +22322,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         ''
       : '')+
       // ── Administration Tab (2026-09-03, per Dennis — "the lead page is complicated,
-      // messy, and redundant") ────────────────────────────────────────────────────────
-      // Was 4 separate always-open sections (Invoice, Deposit & Milestones, Agreement,
-      // Sub Sheet/Commissions) scattered through the editor. Now one collapsed-by-
-      // default <details>, so the editor reads short by default and an admin opens it
-      // only when they actually need payment/agreement detail. The summary line shows
-      // the computed Fee/Agreement badges even while collapsed, so the common case
-      // ("is this customer paid up?") needs no click at all.
+      // messy, and redundant"; expanded 2026-09-06 to also hold Lead Category,
+      // Assignment, Ops Advice/Bid, and a Documents status line — Dennis's own explicit
+      // "sink under Admin Tab" ask for each). Collapsed by default; the summary line
+      // shows the computed Fee/Agreement badges even while collapsed, so the common
+      // case ("is this customer paid up?") needs no click at all.
       '<details id="edAdminTab" style="margin:12px 0 16px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.1);border-radius:12px;overflow:hidden;">'+
         '<summary style="cursor:pointer;padding:12px 16px;font-weight:700;color:#F3EDE3;font-size:0.85rem;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">'+
           '<span>&#128203; Administration Tab</span>'+
@@ -22306,6 +22336,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '</span>'+
         '</summary>'+
         '<div style="padding:2px 16px 16px;">'+
+        '<div class="editor-section-title">Lead Category</div>'+
+        '<div class="ed-grid" style="margin-bottom:8px;">'+
+          edSelect('Business Line','edLeadCat',c.lead_category||'fixmy',[['fixmy','⚡ FixMy.Energy (Diagnostic / Battery / Monitoring)'],['new_solar','☀ Axia/QCell']])+
+        '</div>'+
+        '<div style="padding:6px 12px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;font-size:0.7rem;color:#888;margin-bottom:12px;">After saving a category change, reopen the lead to see the updated pipeline fields.</div>'+
         (!isNSEdit ?
           '<div class="editor-section-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;"><span>Diagnostic Fee Payment</span>'+adminStatusBadgeHtml(diagFeeStatus(c))+'</div>'+
           '<div class="ed-grid">'+
@@ -22341,52 +22376,51 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<div class="ed-grid">'+
           edSelect('Agreement Status','edAgSt',c.agreement_status||'none',[['none','None'],['pending','Pending'],['sent','Sent'],['signed','Signed'],['declined','Declined']])+
         '</div>'+
+        '<div class="editor-section-title">Documents</div>'+
+        '<div style="margin-bottom:6px;">'+_dealDocsStatusLineHtml(c)+'</div>'+
         '<div class="editor-section-title">Sub Sheet &amp; Commissions</div>'+
         '<div id="edAcctPanel" data-cid="'+c.id+'" data-cat="'+(c.lead_category||'fixmy')+'" data-rep="'+(c.rep_id||'')+'" data-ops="'+(c.assigned_ops||'')+'" style="margin:4px 0 10px;"></div>'+
+        '<div class="editor-section-title">Assignment</div>'+
+        '<div class="ed-grid">'+
+          edSelect('Setter / Dialer','edSetterName',c.setter_name||'none',[['none','— Unassigned —'],['Dennis Larsen','Dennis Larsen'],['Ranie','Ranie'],['Michael Smith','Michael Smith'],['Cristina Huang','Cristina Huang'],['Ronda','Ronda'],['Setter','Setter']])+
+          edSelect('Assigned Rep','edRepId',c.rep_id||'none',[['none','— Unassigned —'],['tech4','Dennis Larsen'],['tech2','Ranie'],['tech3','Michael Smith'],['tech5','Cristina Huang'],['rep1','Ronda'],['setter1','Setter']])+
+          edSelect('Ops Partner (Installer)','edAssignedOps',c.assigned_ops||'none',[['none','— Unassigned —'],['ops1','Jon Klos'],['ops2','John Espinoza'],['ops3','Cosmic Solar'],['ops4','Axia'],['dennis','Dennis (Self)']])+
+          edSelect('Ops Payout','edOpsPayout',c.ops_payout_status||'pending',[['pending','Pending'],['paid','Paid']])+
+          edSelect('Lead Source','edLeadSource',c.lead_source||'',[['','— Unknown —'],['direct_mail','Direct Mail Response'],['self_generated','Self-Generated (Black Box)'],['referral','Referral'],['inbound_web','Inbound / Web'],['orphaned_list','Orphaned Installer List']])+
+          (c.lead_source==='orphaned_list'||c.original_installer ?
+            '<div class="ed-grid">'+
+              edField('Original Installer','edOrigInstaller',c.original_installer||'','text')+
+              edField('Install Year','edInstallYear',c.install_year||'','number')+
+            '</div>' : '')+
+        '</div>'+
+        _opsAdviceControl(c)+
+        _opsBidControl(c)+
         '</div>'+
       '</details>'+
-      // Proposal Tools + Assignment moved here, underneath the Administration Tab
-      // (2026-09-03, per Dennis — "clear the leads page up even more"). Both used to
-      // sit much higher (Proposal Tools right under the header, Assignment after
-      // Diagnostic Assessment) — pushing them below the collapsed Administration Tab
-      // means the page opens shorter, with Lead Category/Activity Log/Customer Info/
-      // Progress & Scheduling as the first things an admin actually sees.
       _proposalToolsRow(c, isNSEdit)+
-      _agreementsRow(c)+
-      _opsAdviceControl(c)+
-      _opsBidControl(c)+
-      '<div class="editor-section-title">Assignment</div>'+
-      '<div class="ed-grid">'+
-        edSelect('Setter / Dialer','edSetterName',c.setter_name||'none',[['none','— Unassigned —'],['Dennis Larsen','Dennis Larsen'],['Ranie','Ranie'],['Michael Smith','Michael Smith'],['Cristina Huang','Cristina Huang'],['Ronda','Ronda'],['Setter','Setter']])+
-        edSelect('Assigned Rep','edRepId',c.rep_id||'none',[['none','— Unassigned —'],['tech4','Dennis Larsen'],['tech2','Ranie'],['tech3','Michael Smith'],['tech5','Cristina Huang'],['rep1','Ronda'],['setter1','Setter']])+
-        edSelect('Ops Partner (Installer)','edAssignedOps',c.assigned_ops||'none',[['none','— Unassigned —'],['ops1','Jon Klos'],['ops2','John Espinoza'],['ops3','Cosmic Solar'],['ops4','Axia'],['dennis','Dennis (Self)']])+
-        edSelect('Ops Payout','edOpsPayout',c.ops_payout_status||'pending',[['pending','Pending'],['paid','Paid']])+
-        edSelect('Lead Source','edLeadSource',c.lead_source||'',[['','— Unknown —'],['direct_mail','Direct Mail Response'],['self_generated','Self-Generated (Black Box)'],['referral','Referral'],['inbound_web','Inbound / Web'],['orphaned_list','Orphaned Installer List']])+
-        (c.lead_source==='orphaned_list'||c.original_installer ?
-          '<div class="ed-grid">'+
-            edField('Original Installer','edOrigInstaller',c.original_installer||'','text')+
-            edField('Install Year','edInstallYear',c.install_year||'','number')+
-          '</div>' : '')+
-      '</div>'+
       (!isNSEdit && (c.step||1) >= 3 ?
         '<div class="editor-section-title">Diagnostic Assessment (Visible to Customer)</div>'+
         '<div class="ed-full" style="margin-bottom:16px;">'+
           '<textarea id="edDiagFindings" class="ed-input" rows="4" style="width:100%;resize:vertical;box-sizing:border-box;" placeholder="Enter findings, recommendations, or notes to share with the customer...">'+(c.diagnostic_findings||'')+'</textarea>'+
         '</div>'
       : '')+
-      '<div class="editor-section-title" style="display:flex;align-items:center;justify-content:space-between;">'+
-        '<span>Customer Photos</span>'+
-        '<button type="button" id="quoyaSyncBtn_'+c.id+'" onclick="quoyaSyncLead(\''+c.id+'\')" '+
-          'style="font-size:0.68rem;padding:4px 10px;border:1px solid rgba(74,158,255,0.35);border-radius:20px;background:rgba(74,158,255,0.08);color:#4a9eff;cursor:pointer;white-space:nowrap;width:auto;">'+
-          '&#128260; Sync with Quoya'+
-        '</button>'+
-      '</div>'+
+      // Customer Photos — simplified to a pointer back into Site Evaluation (2026-09-06,
+      // per Dennis: "I want to make sure this is just a tool to get back to the Site
+      // Evaluation tab to upload those Site Evaluation photos if they weren't done
+      // before, not a different thing entirely"). The generic Add-Photos grid + Sync-
+      // with-Quoya trigger are gone from here — photos now only get uploaded through the
+      // labeled Eval Wizard slots, so there's one upload path, not two. A read-only
+      // thumbnail strip still shows what's already on file.
+      '<div class="editor-section-title">Customer Photos</div>'+
       '<div id="editorPhotoPanel" style="min-height:32px;">'+
-        '<div id="editorPhotoStatus" style="font-size:0.72rem;color:#4a9eff;padding:4px 0;"></div>'+
-        '<div id="editorPhotoGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(100px,1fr));gap:8px;margin-top:4px;"></div>'+
-        '<label style="display:inline-flex;align-items:center;gap:6px;font-size:0.8rem;font-weight:700;cursor:pointer;padding:8px 16px;background:rgba(141,198,63,0.1);color:#8DC63F;border:1px solid rgba(141,198,63,0.3);border-radius:100px;margin-top:10px;">'+
-          '&#128247; Add Photos<input type="file" multiple accept="image/*" style="display:none" onchange="adminUploadPhotos(this)"/>'+
-        '</label>'+
+        // loadEditorPhotos() early-returns if this element is missing (it drives the
+        // "Loading photos..."/error/empty-state text) — kept, just visually minimal,
+        // so the read-only thumbnail grid below still actually populates.
+        '<div id="editorPhotoStatus" style="font-size:0.7rem;color:#666;padding:2px 0 6px;"></div>'+
+        '<div id="editorPhotoGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(80px,1fr));gap:6px;margin-bottom:10px;"></div>'+
+        (!isNSEdit ?
+          '<button type="button" onclick="openEvalWizard(\''+c.id+'\')" style="width:100%;padding:10px;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.3);border-radius:100px;color:#8DC63F;font-size:0.8rem;font-weight:700;cursor:pointer;">&#9889; Continue in Site Evaluation &rarr;</button>'
+        : '')+
       '</div>'+
       '<div class="editor-footer">'+
         '<button class="lead-btn lime" style="padding:12px 28px;" onclick="saveLeadEditor()">Save &amp; Close</button>'+
@@ -22411,8 +22445,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     edLoadAccounting();
     if (c.address) loadEditorSolarPanel(c.address, 'edSolarPanel_'+c.id, c.id);
     _dealDocsLoad(c.id).then(function(){
-      var slot = document.getElementById('agreementsRow_'+c.id);
-      if (slot) slot.outerHTML = _agreementsRow(c);
+      var slot = document.getElementById('docsStatusLine_'+c.id);
+      if (slot) slot.outerHTML = _dealDocsStatusLineHtml(c);
     });
   }
 
@@ -24923,7 +24957,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (!wrap) return;
     if (cacheKey && _editorSolarCache[cacheKey]) { wrap.innerHTML = _editorSolarCache[cacheKey]; return; }
     if (!address || address === '--') { wrap.innerHTML = ''; return; }
-    wrap.innerHTML = '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:12px;"><strong style="font-size:0.75rem;color:#8DC63F;">&#127752; Rooftop Solar Intelligence</strong><p style="color:#888;font-size:0.72rem;margin-top:6px;">Analyzing rooftop&hellip;</p></div>';
+    wrap.innerHTML = '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:12px;"><strong style="font-size:0.75rem;color:#8DC63F;">&#128752; Rooftop Solar Intelligence</strong><p style="color:#888;font-size:0.72rem;margin-top:6px;">Analyzing rooftop&hellip;</p></div>';
     try {
       var geo = await fetch('https://maps.googleapis.com/maps/api/geocode/json?address='+encodeURIComponent(address)+'&key='+GKEY);
       var gd = await geo.json();
@@ -24939,7 +24973,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         stats = '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:10px;">'+solarStat(s.maxArrayPanelsCount||'--','Max Panels')+solarStat(maxKw+' kW','Max Capacity')+solarStat(sunHrs+' hrs','Peak Sun/Yr')+'</div>';
       }
       var html = '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:12px;">'+
-        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><span style="font-size:0.75rem;font-weight:700;color:#8DC63F;">&#127752; Rooftop Solar Intelligence</span><span style="font-size:0.6rem;color:#666;">Google Solar API</span></div>'+
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><span style="font-size:0.75rem;font-weight:700;color:#8DC63F;">&#128752; Rooftop Solar Intelligence</span><span style="font-size:0.6rem;color:#666;">Google Solar API</span></div>'+
         '<img src="'+sat+'" style="width:100%;border-radius:8px;max-height:180px;object-fit:cover;" onerror="this.style.display=\'none\'"/>'+stats+'</div>';
       if (cacheKey) _editorSolarCache[cacheKey] = html;
       wrap.innerHTML = html;
@@ -26537,7 +26571,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           (function(){ var _e=l.email||((l.phone||'').replace(/\D/g,'').slice(-10)+'@setter.local'); var _ml='https://fixmy.energy/portal?email='+encodeURIComponent(_e)+'&code='+(l.phone||'').replace(/\D/g,'').slice(-10); return '<button type="button" onclick="sendMagicLink(\''+_ml+'\',\''+_e+'\')" style="width:auto;padding:8px 16px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);border-radius:100px;color:#4a9eff;font-size:0.75rem;font-weight:700;cursor:pointer;">&#128279; Magic Link</button>'; })()+
         '</div>'+
         (!config.setterMode ? _proposalToolsRow(l, isNS) : '')+
-        (!config.setterMode ? _agreementsRow(l) : '')+
+        (!config.setterMode ?
+          '<div style="margin-bottom:14px;"><div style="font-size:0.64rem;font-weight:600;text-transform:uppercase;letter-spacing:0.07em;color:#666;margin-bottom:7px;">Documents</div>'+_dealDocsStatusLineHtml(l)+'</div>'
+        : '')+
         (!isNS && !l.sold_type && (l.step||1) === 3 && (!l.invoice_status || l.invoice_status === 'none' || l.invoice_status === '') ?
           '<div style="background:rgba(141,198,63,0.07);border:2px solid rgba(141,198,63,0.4);border-radius:10px;padding:12px 14px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">'+
             '<div style="display:flex;align-items:center;gap:8px;">'+
@@ -26612,18 +26648,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         : '')+
         '<div class="editor-section-title">Lead Source</div>'+
         '<select id="seLeadSource" class="ed-input" style="margin-bottom:14px;"><option value="">— Unknown —</option><option value="self_generated"'+(l.lead_source==='self_generated'?' selected':'')+'>Self-Generated (Black Box)</option><option value="referral"'+(l.lead_source==='referral'?' selected':'')+'>Referral</option><option value="inbound_web"'+(l.lead_source==='inbound_web'?' selected':'')+'>Inbound / Web</option><option value="orphaned_list"'+(l.lead_source==='orphaned_list'?' selected':'')+'>Orphaned Installer List</option></select>'+
-        '<div class="editor-section-title" style="display:flex;align-items:center;justify-content:space-between;">'+
-          '<span>Photos</span>'+
-          '<button type="button" id="quoyaSyncBtn_'+l.id+'" onclick="quoyaSyncLead(\''+l.id+'\')" '+
-            'style="font-size:0.68rem;padding:4px 10px;border:1px solid rgba(74,158,255,0.35);border-radius:20px;background:rgba(74,158,255,0.08);color:#4a9eff;cursor:pointer;white-space:nowrap;width:auto;">'+
-            '&#128260; Sync with Quoya'+
-          '</button>'+
-        '</div>'+
-        '<div id="sePhotoStatus" style="font-size:0.72rem;color:#8DC63F;min-height:18px;margin-bottom:6px;"></div>'+
+        // Simplified to a pointer back into Site Evaluation (2026-09-06, per Dennis —
+        // same change as the admin editor: photos only upload through the labeled Eval
+        // Wizard slots now, this is a read-only preview + a way back in, not a second
+        // upload path. Quoya Sync's manual trigger moved out along with it.
+        '<div class="editor-section-title">Photos</div>'+
+        '<div id="sePhotoStatus" style="font-size:0.7rem;color:#666;min-height:14px;margin-bottom:6px;"></div>'+
         '<div id="sePhotoGrid" style="margin-bottom:10px;"><div style="font-size:0.72rem;color:#888;">Loading photos…</div></div>'+
-        '<label style="display:inline-flex;align-items:center;gap:6px;font-size:0.8rem;font-weight:700;cursor:pointer;padding:8px 16px;background:rgba(141,198,63,0.1);color:#8DC63F;border:1px solid rgba(141,198,63,0.3);border-radius:100px;margin-bottom:16px;">'+
-          '&#128247; Add Photos<input type="file" multiple accept="image/*" style="display:none" onchange="salesUploadPhotos(this)">'+
-        '</label>'+
+        (!isNS ?
+          '<button type="button" onclick="openEvalWizard(\''+l.id+'\')" style="width:100%;padding:10px;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.3);border-radius:100px;color:#8DC63F;font-size:0.8rem;font-weight:700;cursor:pointer;margin-bottom:16px;">&#9889; Continue in Site Evaluation &rarr;</button>'
+        : '')+
         '<div class="editor-footer">'+
           '<button class="lead-btn lime" style="padding:12px 28px;" onclick="savesSalesEdit()">Save Changes</button>'+
           '<button class="lead-btn ghost" style="padding:12px 20px;" onclick="document.getElementById(\'editorSlot\').innerHTML=\'\'">Cancel</button>'+
@@ -26634,8 +26668,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       loadJobPhotos(l.id).then(function() { window.renderSalesPhotoGrid(l.id); });
       if (l.address) loadEditorSolarPanel(l.address, 'seSolarPanel_'+l.id, l.id);
       _dealDocsLoad(l.id).then(function(){
-        var dslot = document.getElementById('agreementsRow_'+l.id);
-        if (dslot) dslot.outerHTML = _agreementsRow(l);
+        var dslot = document.getElementById('docsStatusLine_'+l.id);
+        if (dslot) dslot.outerHTML = _dealDocsStatusLineHtml(l);
       });
     };
 
@@ -26664,19 +26698,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       });
       h += '</div>';
       grid.innerHTML = h;
-    };
-
-    window.salesUploadPhotos = function(input) {
-      var id = (document.getElementById('seId') || {}).value;
-      if (!id) return;
-      currentJobId = id;
-      var files = Array.from(input.files);
-      if (!files.length) return;
-      // uploadPhotos writes real progress/success/error into #sePhotoStatus itself —
-      // don't overwrite it here (a fabricated "✓ uploaded" used to mask real failures).
-      uploadPhotos(files).then(function() {
-        window.renderSalesPhotoGrid(id);
-      });
     };
 
     window.seSetCat = function(cat) {
