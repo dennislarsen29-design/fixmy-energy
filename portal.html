@@ -18870,6 +18870,24 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var resp = await client.from('deal_documents').upsert(payload, { onConflict:'customer_id,doc_type' });
       if (resp.error) { alert('Could not save: '+resp.error.message); return; }
       await _dealDocsLoad(customerId);
+      // Fresh direct fetch rather than relying on adminCustomers — this function is also
+      // reachable from the tech/sales editor, where that admin-only in-memory array is empty.
+      var custRow = null;
+      try {
+        var cResp = await client.from('customers').select('id,first_name,last_name,email,phone,access_code').eq('id', customerId).limit(1);
+        custRow = cResp.data && cResp.data[0];
+      } catch(e2) {}
+      var def = DEAL_DOC_TYPES.find(function(d){ return d.id === docType; });
+      if (custRow) {
+        var _readyLink = custRow.email
+          ? 'https://fixmy.energy/portal?email=' + encodeURIComponent(custRow.email) + '&code=' + encodeURIComponent(custRow.access_code || (custRow.phone||'').replace(/\D/g,''))
+          : null;
+        fetch(GHL_PROPOSAL_WEBHOOK, { method:'POST', mode:'no-cors', headers:{'Content-Type':'application/json'}, body: JSON.stringify({
+          type: 'document_ready', customer_id: customerId, doc_type: docType, doc_label: def ? def.label : docType,
+          email: custRow.email||'', phone: custRow.phone||'', full_name: ((custRow.first_name||'')+' '+(custRow.last_name||'')).trim(),
+          magic_link: _readyLink, rep_name: repName
+        }) }).catch(function(){});
+      }
       var c = adminCustomers.find(function(x){ return x.id === customerId; });
       var slot = document.getElementById('agreementsRow_'+customerId);
       if (slot && c) slot.outerHTML = _agreementsRow(c);
@@ -18966,6 +18984,26 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (row.status === 'signed') { alert('You\'ve already signed this document.'); return; }
     var c = (typeof currentUser !== 'undefined' && currentUser && currentUser.id === customerId) ? currentUser : null;
     if (!c) { alert('Could not load your information. Please refresh and try again.'); return; }
+
+    // Fire "customer opened the document" exactly once — gated on opened_at so
+    // reopening the same document mid-session (closed and tapped Sign again) doesn't
+    // spam a second notification for the same real open.
+    if (!row.opened_at) {
+      try {
+        var openClient = supabase.createClient(SUPA_URL, SUPA_KEY);
+        var openedAtIso = new Date().toISOString();
+        await openClient.from('deal_documents').upsert(
+          { customer_id: customerId, doc_type: docType, opened_at: openedAtIso, updated_at: openedAtIso },
+          { onConflict:'customer_id,doc_type' }
+        );
+        row.opened_at = openedAtIso;
+        if (_dealDocsCache[customerId] && _dealDocsCache[customerId][docType]) _dealDocsCache[customerId][docType].opened_at = openedAtIso;
+        fetch(GHL_PROPOSAL_WEBHOOK, { method:'POST', mode:'no-cors', headers:{'Content-Type':'application/json'}, body: JSON.stringify({
+          type: 'document_opened', customer_id: customerId, doc_type: docType, doc_label: def.label,
+          email: c.email||'', phone: c.phone||'', full_name: ((c.first_name||'')+' '+(c.last_name||'')).trim()
+        }) }).catch(function(){});
+      } catch(e3) {}
+    }
 
     var opsInfo = _opsContractorInfo(c.assigned_ops);
     var hisNumber = '';
@@ -19099,6 +19137,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var resp = await client.from('deal_documents').upsert(payload, { onConflict:'customer_id,doc_type' });
       if (resp.error) throw resp.error;
       await _dealDocsLoad(customerId);
+      var _signedDef = DEAL_DOC_TYPES.find(function(d){ return d.id === docType; });
+      var _signedCust = (typeof currentUser !== 'undefined' && currentUser && currentUser.id === customerId) ? currentUser : null;
+      if (_signedCust) {
+        fetch(GHL_PROPOSAL_WEBHOOK, { method:'POST', mode:'no-cors', headers:{'Content-Type':'application/json'}, body: JSON.stringify({
+          type: 'document_signed', customer_id: customerId, doc_type: docType, doc_label: _signedDef ? _signedDef.label : docType,
+          email: _signedCust.email||'', phone: _signedCust.phone||'', full_name: ((_signedCust.first_name||'')+' '+(_signedCust.last_name||'')).trim(),
+          signed_by_name: name
+        }) }).catch(function(){});
+      }
       _custDocCloseSign();
       alert('Signed! Thank you.');
       if (typeof currentUser !== 'undefined' && currentUser) _custDocsLoad(currentUser);
