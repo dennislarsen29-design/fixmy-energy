@@ -2039,6 +2039,9 @@ Corrected the SOP after Dennis described the actual flow he uses: *"1. Tech sele
 - Cleaned up the now-dead `propSendBtn`/`propApprovalBtn` visibility-toggle block in `_propRenderBuilds` (those elements no longer exist in the DOM, so the block was pure dead code after the footer removal).
 - Verified via the standard `node -e "new Function(...)"` parse-check across all 4 non-empty inline `<script>` blocks, plus a grep confirming zero remaining references to `_propProceedToReview`, `_propBackToEdit`, `propFooterReview`, `propSendBtn`, `propApprovalBtn`, or `propCopyLinkBtn` anywhere in the file.
 
+### ⚠️ "Send to Customer" restored the same day — per Dennis, "I want that button to work"
+The flagged consequence directly above (Send to Customer / Copy Link / Request Admin Approval having zero reachable callers) was reported back the same day as a real gap, not accepted as intentional. Fix: **both paths now live on the one remaining footer (`propFooterBuild`) together** — Cancel · Save Draft · Preview · Copy Link · Send to Customer (or Request Admin Approval, swapped in below the $1,000 commission minimum, same `_anyBelowMin` check as before) · Proceed. Nothing about `sendProposal`/`copyProposalLink` needed changing — they were never broken, only unreachable — so this was purely restoring the buttons and their `_propRenderBuilds` visibility-toggle block. The two flows are now genuinely independent and both always available: a rep presenting in person uses Preview → Proceed (into the CPUC document); a rep sending remotely uses Send to Customer (fires `proposal_sent`, the GHL branch built earlier this session). Verified via the standard parse-check plus confirming `propSendBtn`/`propApprovalBtn`/`propCopyLinkBtn` each have exactly one render-side definition and one runtime `getElementById` reader.
+
 ## Common Patterns
 ```js
 // Null guard for conditionally-rendered fields (prevents TypeError on NS leads)
