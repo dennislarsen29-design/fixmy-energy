@@ -128,7 +128,16 @@ const TOOL = {
           notes_for_rep: { type: 'string', description: 'Anything the rep must set manually — squares, panel counts, prices.' }
         }
       },
-      missing_data: { type: 'array', items: { type: 'string' }, description: 'Photos or documents that would sharpen this. Not blocking.' }
+      missing_data: { type: 'array', items: { type: 'string' }, description: 'Photos or documents that would sharpen this. Not blocking.' },
+      field_updates: {
+        type: 'object',
+        description: 'Customer record fields you can confidently read off the photos/hardware — never guess or estimate. Omit any field you cannot determine with real evidence in front of you.',
+        properties: {
+          system_size_kw: { type: 'number', description: 'Total system size in kW DC. Only if computable from a real panel count × wattage or an inverter/array nameplate rating actually visible in a photo.' },
+          utility: { type: 'string', description: 'The utility company name exactly as printed on a utility bill photo, e.g. "SDG&E". Only if a legible bill photo is present.' },
+          nem_version: { type: 'string', description: 'e.g. "NEM 1.0", "NEM 2.0", "NEM 3.0 / Net Billing". Only if stated or unambiguous on the bill.' }
+        }
+      }
     },
     required: ['confident']
   }
@@ -147,6 +156,7 @@ Rules:
 6. Prices in the catalog are DEALER COST, not retail. Never state a price to the homeowner and never put one in talking_points.
 7. A string inverter usually fails PARTIALLY — one MPPT or string down means 40-65% output, not 25%. Derive array_output_pct from measured production versus expected whenever production data is present; only fall back to an estimate if it is not.
 8. A Powerwall 3 has its own 11.5kW solar inverter with 6 MPPTs. When an inverter is dead, existing strings can land directly on the PW3, so no standalone replacement inverter is needed. This is the default cost-reduction play on inverter-failure jobs — check whether it applies before recommending a plain inverter swap.
+9. Fill field_updates (system_size_kw / utility / nem_version) whenever you can read the real value off a photo in front of you — a nameplate rating, a panel count you can actually count, a utility bill's printed company name or rate schedule. Leave a field out entirely rather than estimate it; a wrong value silently overwriting the customer record is worse than a blank one a rep fills in by hand.
 
 Call report_evaluation exactly once.`;
 

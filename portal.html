@@ -8086,6 +8086,39 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     _evPollAnalysis(_evRow.id, 0);
   };
 
+  // Quoya Assist during Site Evaluation — fills System Size/Utility/NEM Version straight
+  // from what it read off the hardware/bill photos (2026-09-06, per Dennis: "should fill
+  // in missing information: ie System Size, Utility name, NEM Version, etc."). This is
+  // the Eval Wizard's own analysis pipeline (report_evaluation's new field_updates —
+  // see eval-analysis-core.js), not the live-call transcription Quoya Assist used
+  // elsewhere in the portal; it just carries the same display name per the 2026-08-25
+  // rebrand. Same "never clobber what's already there" rule as every other Quoya
+  // auto-fill in this file — only ever writes a field that's currently blank on the
+  // customer record, and only when Claude actually returned a value for it (never
+  // invents one; see eval-analysis-core.js's own "leave it out rather than estimate").
+  async function _evApplyFieldUpdates(row) {
+    try {
+      var fu = row && row.analysis && row.analysis.field_updates;
+      if (!fu || !_evRec || !_evRec.id) return;
+      var updates = {};
+      if (fu.system_size_kw && !_evRec.system_size) updates.system_size = String(fu.system_size_kw);
+      if (fu.utility && !_evRec.utility) updates.utility = fu.utility;
+      if (fu.nem_version && !_evRec.nem_status) updates.nem_status = fu.nem_version;
+      if (!Object.keys(updates).length) return;
+      var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var resp = await client.from('customers').update(updates).eq('id', _evRec.id);
+      if (resp.error) { console.warn('[eval] field_updates write failed', resp.error); return; }
+      Object.assign(_evRec, updates);
+      // Keep the in-memory roster in sync too, so the lead editor shows the filled value
+      // immediately if reopened without a fresh fetch — same pattern as every other
+      // Quoya write-back in this file.
+      if (typeof adminCustomers !== 'undefined' && adminCustomers) {
+        var ac = adminCustomers.find(function(x){ return x.id === _evRec.id; });
+        if (ac) Object.assign(ac, updates);
+      }
+    } catch(e) { console.warn('[eval] field_updates apply failed', e); }
+  }
+
   // Background job budget is 15 min; this only needs to cover the realistic case (vision
   // + web search, usually well under a minute). 40 tries * 3s = 2 min of polling before
   // giving up client-side — the job itself keeps running either way, so reopening the
@@ -8105,6 +8138,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
       if (row && row.status === 'ready') {
         _evRow = row; _evRow._err = null;
+        _evApplyFieldUpdates(row); // fire-and-forget — never blocks the wizard render
         _evAnalyzing = false; _evRender(); return;
       }
       if (row && row.status === 'needs_input') {
