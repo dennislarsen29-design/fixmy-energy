@@ -574,6 +574,31 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
   var GHL_WEBHOOK               = 'https://services.leadconnectorhq.com/hooks/gXWwbOVymY0iRfj7c1It/webhook-trigger/032a0503-c92f-4711-89c0-0a4659e8e4ff';
   var GHL_PROPOSAL_WEBHOOK      = 'https://services.leadconnectorhq.com/hooks/gXWwbOVymY0iRfj7c1It/webhook-trigger/2635439a-73e0-4d18-8826-2dc9ba5248a8'; // "Solar Review - Customer Agreement Notifications" — trigger URL changed 2026-09-06 (previously 06829b78-...) when the Inbound Webhook node was recreated
+  // Fires a fire-and-forget POST to a GHL Inbound Webhook trigger. Deliberately
+  // NOT JSON, even though every payload below is a flat object. `mode:'no-cors'`
+  // is required for these calls — GHL's webhook endpoints send no CORS headers,
+  // so a plain 'cors' fetch would make every real success look like a thrown
+  // network error — but per the Fetch spec, 'no-cors' mode silently DROPS any
+  // Content-Type it doesn't recognize as safelisted before the request ever
+  // leaves the browser. `application/json` is not on that safelist, so the
+  // explicit header this code used to set never actually reached GHL — the
+  // browser sent the JSON text mislabeled as `text/plain;charset=UTF-8`
+  // instead. `application/x-www-form-urlencoded` IS safelisted and IS honored
+  // under no-cors, so building the body with URLSearchParams gets fetch() to
+  // set that Content-Type correctly and automatically. Verified directly
+  // against a local echo server (2026-09-07): the old JSON+no-cors combo
+  // really does arrive with Content-Type: text/plain, confirmed on the wire,
+  // not just per spec — this is very likely why GHL's own Execution Logs
+  // showed zero hits for a workflow whose trigger URL was otherwise confirmed
+  // live and correct.
+  function _ghlWebhookFire(url, payload) {
+    var params = new URLSearchParams();
+    Object.keys(payload).forEach(function(k) {
+      var v = payload[k];
+      params.append(k, (v === null || v === undefined) ? '' : String(v));
+    });
+    return fetch(url, { method: 'POST', mode: 'no-cors', body: params });
+  }
   var GHL_DIAG_AGREEMENT_WEBHOOK = 'https://services.leadconnectorhq.com/hooks/gXWwbOVymY0iRfj7c1It/webhook-trigger/f17004a5-5956-4d13-b7f0-a11098bac586';
   var GHL_DIAG_INVOICE_WEBHOOK   = null; // placeholder — set to webhook URL when Stripe invoice flow is ready
   var GHL_DIAG_SCHEDULE_WEBHOOK  = null; // set when GHL diagnostic scheduling workflow is ready
@@ -19731,11 +19756,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           ? 'https://fixmy.energy/portal?email=' + encodeURIComponent(custRow.email) + '&code=' + encodeURIComponent(custRow.access_code || (custRow.phone||'').replace(/\D/g,''))
           : null;
         try {
-          await fetch(GHL_PROPOSAL_WEBHOOK, { method:'POST', mode:'no-cors', headers:{'Content-Type':'application/json'}, body: JSON.stringify({
+          await _ghlWebhookFire(GHL_PROPOSAL_WEBHOOK, {
             type: 'document_ready', customer_id: customerId, doc_type: docType, doc_label: def ? def.label : docType,
             email: custRow.email||'', phone: custRow.phone||'', full_name: ((custRow.first_name||'')+' '+(custRow.last_name||'')).trim(),
             magic_link: _readyLink, rep_name: repName
-          }) });
+          });
           _notifyState = 'sent';
         } catch(eNotify) { _notifyState = 'failed'; }
       }
@@ -19865,10 +19890,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         );
         row.opened_at = openedAtIso;
         if (_dealDocsCache[customerId] && _dealDocsCache[customerId][docType]) _dealDocsCache[customerId][docType].opened_at = openedAtIso;
-        fetch(GHL_PROPOSAL_WEBHOOK, { method:'POST', mode:'no-cors', headers:{'Content-Type':'application/json'}, body: JSON.stringify({
+        _ghlWebhookFire(GHL_PROPOSAL_WEBHOOK, {
           type: 'document_opened', customer_id: customerId, doc_type: docType, doc_label: def.label,
           email: c.email||'', phone: c.phone||'', full_name: ((c.first_name||'')+' '+(c.last_name||'')).trim()
-        }) }).catch(function(){});
+        }).catch(function(){});
       } catch(e3) {}
     }
 
@@ -20049,11 +20074,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var _signedDef = DEAL_DOC_TYPES.find(function(d){ return d.id === docType; });
       var _signedCust = (typeof currentUser !== 'undefined' && currentUser && currentUser.id === customerId) ? currentUser : null;
       if (_signedCust) {
-        fetch(GHL_PROPOSAL_WEBHOOK, { method:'POST', mode:'no-cors', headers:{'Content-Type':'application/json'}, body: JSON.stringify({
+        _ghlWebhookFire(GHL_PROPOSAL_WEBHOOK, {
           type: 'document_signed', customer_id: customerId, doc_type: docType, doc_label: _signedDef ? _signedDef.label : docType,
           email: _signedCust.email||'', phone: _signedCust.phone||'', full_name: ((_signedCust.first_name||'')+' '+(_signedCust.last_name||'')).trim(),
           signed_by_name: name
-        }) }).catch(function(){});
+        }).catch(function(){});
       }
       // Auto-advance: one link into the portal should walk the customer through
       // every document, not stop after each one waiting for a fresh click. If
@@ -20079,11 +20104,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var _doneLink = _signedCust.email
           ? 'https://fixmy.energy/portal?email=' + encodeURIComponent(_signedCust.email) + '&code=' + encodeURIComponent(_signedCust.access_code || (_signedCust.phone||'').replace(/\D/g,''))
           : null;
-        fetch(GHL_PROPOSAL_WEBHOOK, { method:'POST', mode:'no-cors', headers:{'Content-Type':'application/json'}, body: JSON.stringify({
+        _ghlWebhookFire(GHL_PROPOSAL_WEBHOOK, {
           type: 'all_documents_signed', customer_id: customerId,
           email: _signedCust.email||'', phone: _signedCust.phone||'', full_name: ((_signedCust.first_name||'')+' '+(_signedCust.last_name||'')).trim(),
           magic_link: _doneLink
-        }) }).catch(function(){});
+        }).catch(function(){});
         alert('All documents signed! Thank you — you can revisit this page anytime to see them.');
       } else {
         alert('Signed! Thank you.');
@@ -21173,7 +21198,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }
       if (approvalRequest) {
         // Notify admin via GHL webhook instead of sending to customer
-        await fetch(GHL_PROPOSAL_WEBHOOK, { method: 'POST', mode: 'no-cors', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ type: 'proposal_approval_request', customer_name: ((custRec&&custRec.first_name)||'') + ' ' + ((custRec&&custRec.last_name)||''), customer_id: id, rep_name: (typeof person !== 'undefined' ? person.name : 'Rep'), commission_note: 'Below $1,000 minimum — requires approval' }) }).catch(function(){});
+        await _ghlWebhookFire(GHL_PROPOSAL_WEBHOOK, { type: 'proposal_approval_request', customer_name: ((custRec&&custRec.first_name)||'') + ' ' + ((custRec&&custRec.last_name)||''), customer_id: id, rep_name: (typeof person !== 'undefined' ? person.name : 'Rep'), commission_note: 'Below $1,000 minimum — requires approval' }).catch(function(){});
         if (statusEl) statusEl.textContent = '⚠ Submitted for admin approval — not yet sent to customer.';
         if (sendBtn) { sendBtn.disabled = false; sendBtn.textContent = '⚠ Request Admin Approval'; }
         return true;
@@ -21194,7 +21219,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         ? 'https://fixmy.energy/portal?email=' + encodeURIComponent(custRec.email) + '&code=' + encodeURIComponent(custRec.access_code || (custRec.phone||'').replace(/\D/g,''))
         : null;
       var _topSendOpt = options[0] || {};
-      fetch(GHL_PROPOSAL_WEBHOOK, { method: 'POST', mode: 'no-cors', headers: {'Content-Type':'application/json'}, body: JSON.stringify({
+      _ghlWebhookFire(GHL_PROPOSAL_WEBHOOK, {
         type: 'proposal_sent',
         email: (custRec && custRec.email) || '',
         phone: (custRec && custRec.phone) || '',
@@ -21205,7 +21230,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         option_count: options.length,
         top_option_title: _topSendOpt.title || '',
         top_option_price: _topSendOpt.participate_price || _topSendOpt.price || 0
-      }) }).catch(function(){});
+      }).catch(function(){});
       if (statusEl) { statusEl.style.color = '#8DC63F'; statusEl.textContent = '✓ Sent — an SMS/email trigger fired (needs a GHL workflow to actually deliver it). Copy Link below to send it yourself as a backup.'; }
       setTimeout(function(){ if (modal && modal.parentNode) modal.remove(); }, 2600);
       return true;
@@ -22392,15 +22417,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         : (financing==='wheelhouse_sdcp') ? Math.max(0, (opt.participate_price||opt.price) - (opt.sdcp_rebate||0))
         : opt.price;
       await client.from('customers').update({ proposal: prop }).eq('id', custId);
-      fetch(GHL_PROPOSAL_WEBHOOK, { method:'POST', mode:'no-cors', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({
+      _ghlWebhookFire(GHL_PROPOSAL_WEBHOOK, {
           type: 'proposal_accepted',
           email: data.email||'', full_name: ((data.first_name||'')+' '+(data.last_name||'')).trim(),
           phone: data.phone||'', proposal_option: optionId, proposal_label: opt.title,
           proposal_amount: price, financing: financing||'cash', loan_term: loanTerm||null,
           milestone_deposit: opt.milestones.deposit, milestone_remaining: opt.milestones.remaining||null, milestone_permit: opt.milestones.permit||null, milestone_inspection: opt.milestones.inspection||null,
           accepted_via: prop.accepted_via, recorded_by_rep: recordedBy ? (recordedBy.rep_name||'') : null
-        })
       }).catch(function(e){ console.warn('GHL proposal:', e); });
       var idx2 = adminCustomers.findIndex(function(x){ return x.id===custId; });
       if (idx2 > -1) adminCustomers[idx2].proposal = prop;
