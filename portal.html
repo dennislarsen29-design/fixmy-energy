@@ -19409,14 +19409,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var blockId = 'dealDocSignBlock_' + c.id + '_' + def.id;
     var openArgs = '\''+sigKey+'\',{kind:\'rep\',customerId:\''+c.id+'\',docType:\''+def.id+'\'}';
     return '<div id="'+blockId+'" style="margin-top:16px;padding-top:14px;border-top:1px solid rgba(255,255,255,0.1);">'+
-      '<div style="font-size:0.68rem;color:#888;margin-bottom:10px;">Walk the customer through the document above, then sign and tap Proceed — this signs the Representative block as <b>'+esc(repName)+'</b>. The customer signs their own section separately, after this, from their own device.</div>'+
+      '<div style="font-size:0.68rem;color:#888;margin-bottom:10px;">Walk the customer through the document above, then sign and tap Proceed to Customer\'s Signature — this signs the Representative block as <b>'+esc(repName)+'</b> and lets the customer know their part is ready. They sign their own section separately, after this, from their own device.</div>'+
       '<div style="margin-bottom:12px;">'+
         (hasSig
           ? '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">'+_sigPreviewHtml(sigKey)+'<button type="button" onclick="_sigOpen('+openArgs+')" style="width:auto;padding:7px 12px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);border-radius:100px;color:#aaa;font-size:0.7rem;cursor:pointer;">Change</button></div>'
           : '<button type="button" onclick="_sigOpen('+openArgs+')" style="width:100%;padding:11px;background:rgba(141,198,63,0.12);border:1px solid rgba(141,198,63,0.4);border-radius:10px;color:#8DC63F;font-size:0.78rem;font-weight:700;cursor:pointer;">&#9997;&#65039; Add Your Signature</button>'
         )+
       '</div>'+
-      '<button type="button" onclick="_dealDocMarkReviewed(\''+c.id+'\',\''+def.id+'\')" '+(hasSig?'':'disabled ')+'style="width:100%;padding:11px;background:'+(hasSig?'rgba(74,158,255,0.12)':'rgba(255,255,255,0.04)')+';border:1px solid '+(hasSig?'rgba(74,158,255,0.4)':'rgba(255,255,255,0.08)')+';border-radius:10px;color:'+(hasSig?'#4a9eff':'#555')+';font-size:0.76rem;font-weight:700;cursor:'+(hasSig?'pointer':'not-allowed')+';">&#10145;&#65039; Proceed</button>'+
+      '<button type="button" onclick="_dealDocMarkReviewed(\''+c.id+'\',\''+def.id+'\')" '+(hasSig?'':'disabled ')+'style="width:100%;padding:11px;background:'+(hasSig?'rgba(74,158,255,0.12)':'rgba(255,255,255,0.04)')+';border:1px solid '+(hasSig?'rgba(74,158,255,0.4)':'rgba(255,255,255,0.08)')+';border-radius:10px;color:'+(hasSig?'#4a9eff':'#555')+';font-size:0.76rem;font-weight:700;cursor:'+(hasSig?'pointer':'not-allowed')+';">&#10145;&#65039; Proceed to Customer\'s Signature</button>'+
       '<div style="font-size:0.6rem;color:#555;margin-top:8px;">Signed as Representative by '+esc(repName)+', on this device.</div>'+
     '</div>';
   }
@@ -19713,21 +19713,45 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // still on the HTML-reproduction fallback) would text/email the customer a
       // link to "sign now" and land them on a document that says "Reviewed — signing
       // coming soon" with no Sign button at all — a real, misleading notification.
-      if (custRow && def && def.hasPdfTemplate && !_otherAlreadyReady) {
+      //
+      // ⚠️ This is deliberately AWAITED and its outcome surfaced to the rep, not fired
+      // silently — a `mode:'no-cors'` fetch can never confirm GHL actually delivered
+      // an SMS/email (the response is opaque either way), but awaiting it DOES tell us
+      // whether the request even reached the network (a thrown error here means the
+      // browser couldn't contact GHL at all, e.g. offline). Never claim "sent" when the
+      // fetch never left the device — same "never let an untaken code path render
+      // identically to a real negative" rule used throughout this codebase.
+      var _notifyState = 'skipped', _notifySkipReason = '';
+      if (!custRow) { _notifySkipReason = 'could not re-fetch the customer record'; }
+      else if (!def || !def.hasPdfTemplate) { _notifySkipReason = 'this document has no customer-facing signing screen yet'; }
+      else if (_otherAlreadyReady) { _notifySkipReason = 'another document is already waiting on the customer — they were already notified'; }
+      else if (!custRow.email && !custRow.phone) { _notifySkipReason = 'this lead has no email or phone on file to notify'; }
+      else {
         var _readyLink = custRow.email
           ? 'https://fixmy.energy/portal?email=' + encodeURIComponent(custRow.email) + '&code=' + encodeURIComponent(custRow.access_code || (custRow.phone||'').replace(/\D/g,''))
           : null;
-        fetch(GHL_PROPOSAL_WEBHOOK, { method:'POST', mode:'no-cors', headers:{'Content-Type':'application/json'}, body: JSON.stringify({
-          type: 'document_ready', customer_id: customerId, doc_type: docType, doc_label: def ? def.label : docType,
-          email: custRow.email||'', phone: custRow.phone||'', full_name: ((custRow.first_name||'')+' '+(custRow.last_name||'')).trim(),
-          magic_link: _readyLink, rep_name: repName
-        }) }).catch(function(){});
+        try {
+          await fetch(GHL_PROPOSAL_WEBHOOK, { method:'POST', mode:'no-cors', headers:{'Content-Type':'application/json'}, body: JSON.stringify({
+            type: 'document_ready', customer_id: customerId, doc_type: docType, doc_label: def ? def.label : docType,
+            email: custRow.email||'', phone: custRow.phone||'', full_name: ((custRow.first_name||'')+' '+(custRow.last_name||'')).trim(),
+            magic_link: _readyLink, rep_name: repName
+          }) });
+          _notifyState = 'sent';
+        } catch(eNotify) { _notifyState = 'failed'; }
       }
       var c = adminCustomers.find(function(x){ return x.id === customerId; });
       var slot = document.getElementById('docsStatusLine_'+customerId);
       if (slot && c) slot.outerHTML = _dealDocsStatusLineHtml(c);
       var m = document.getElementById('dealDocModal'); if (m) m.remove();
-      alert('Signed as Representative (' + repName + '). The customer signs their own section separately, from their own device.');
+      var _notifyMsg;
+      if (_notifyState === 'sent') {
+        _notifyMsg = 'A "ready to sign" notification was sent to ' + [custRow.phone, custRow.email].filter(Boolean).join(' / ') + '. That only confirms the trigger reached GHL, not that the text/email actually arrived — if they say they never got it, check GHL → Automations → "Solar Review - Customer Agreement Notifications" → Execution History for a document_ready run on this contact.';
+      } else if (_notifyState === 'failed') {
+        _notifyMsg = 'Could not reach the notification service from this device — the customer was NOT notified. Check your connection and try again, or text/email them the portal link directly.';
+      } else {
+        _notifyMsg = 'No customer notification was sent (' + _notifySkipReason + ').';
+      }
+      alert('Signed as Representative (' + repName + '). ' + _notifyMsg + ' The customer signs their own section separately, from their own device.');
     } catch(e) { alert('Error: '+_dealDocFriendlyError(e.message)); }
   };
 
