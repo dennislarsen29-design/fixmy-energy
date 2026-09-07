@@ -19138,6 +19138,169 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return '<div id="docsStatusLine_'+c.id+'">'+rows+'</div>';
   }
 
+  // ── Live signature capture (2026-09-06, per Dennis — "I want live signatures /
+  // customer choosing signature field to duplicate a DocuSign feature") ─────────────
+  // Replaces the auto-filled cursive text with a real signing action, for BOTH the
+  // rep (their own Proceed step) and the customer (their own signing screen) — one
+  // shared component, since the capture UX is identical for both, only the context
+  // (who's signing, which document) differs. Two ways to sign, signer's choice:
+  //   'pick' — type your name, choose one of 4 pre-rendered cursive styles
+  //   'draw' — draw with finger/mouse on a real signature pad (canvas)
+  // Result shape, stored in deal_documents.data (jsonb, pre-existing/unused column —
+  // no migration needed): {type:'typed', text, fontFamily} or {type:'drawn', dataUrl}.
+  var SIG_FONTS = [
+    { label: 'Elegant', family: "'Brush Script MT','Segoe Script',cursive" },
+    { label: 'Flowing', family: "'Lucida Handwriting','Apple Chancery',cursive" },
+    { label: 'Bold', family: "'Segoe Print','Comic Sans MS',cursive" },
+    { label: 'Formal', family: "'Bradley Hand','Herculanum',cursive" }
+  ];
+  var _sigState = {}; // key ('rep_<cid>_<doc>' or 'cust_<cid>_<doc>') -> capture state
+
+  function _sigDefaultName(context) {
+    try {
+      if (context.kind === 'rep' && typeof person !== 'undefined' && person) return person.name || '';
+      if (context.kind === 'cust' && typeof _custDocState !== 'undefined' && _custDocState && _custDocState.values) return _custDocState.values.cust_name || '';
+    } catch(e) {}
+    return '';
+  }
+
+  window._sigOpen = function(key, context) {
+    var existing = _sigState[key];
+    _sigState[key] = existing || { mode:'pick', text: _sigDefaultName(context), fontIdx:0, hasDrawn:false, result: existing ? existing.result : null };
+    _sigState[key].context = context;
+    var overlay = document.createElement('div');
+    overlay.id = 'sigModalOverlay';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:11000;display:flex;align-items:center;justify-content:center;padding:16px;overflow-y:auto;';
+    overlay.innerHTML = '<div id="sigModalBody" style="background:#1a1c17;border-radius:14px;padding:20px;max-width:520px;width:100%;color:#F3EDE3;"></div>';
+    document.body.appendChild(overlay);
+    _sigRenderModalBody(key);
+  };
+
+  function _sigRenderModalBody(key) {
+    var st = _sigState[key];
+    var body = document.getElementById('sigModalBody');
+    if (!body || !st) return;
+    var h = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">'+
+      '<div style="font-size:0.95rem;font-weight:800;">&#9997;&#65039; Sign</div>'+
+      '<button type="button" onclick="_sigCancel()" style="width:auto;background:none;border:none;color:#888;font-size:1.3rem;cursor:pointer;line-height:1;">&times;</button>'+
+    '</div>'+
+    '<div style="display:flex;gap:8px;margin-bottom:14px;">'+
+      '<button type="button" onclick="_sigSwitchMode(\''+key+'\',\'pick\')" style="flex:1;padding:9px;border-radius:8px;border:1px solid '+(st.mode==='pick'?'#8DC63F':'rgba(255,255,255,0.15)')+';background:'+(st.mode==='pick'?'rgba(141,198,63,0.14)':'transparent')+';color:'+(st.mode==='pick'?'#8DC63F':'#aaa')+';font-size:0.76rem;font-weight:700;cursor:pointer;">Type &amp; Choose Style</button>'+
+      '<button type="button" onclick="_sigSwitchMode(\''+key+'\',\'draw\')" style="flex:1;padding:9px;border-radius:8px;border:1px solid '+(st.mode==='draw'?'#8DC63F':'rgba(255,255,255,0.15)')+';background:'+(st.mode==='draw'?'rgba(141,198,63,0.14)':'transparent')+';color:'+(st.mode==='draw'?'#8DC63F':'#aaa')+';font-size:0.76rem;font-weight:700;cursor:pointer;">Draw</button>'+
+    '</div>';
+
+    if (st.mode === 'pick') {
+      h += '<input type="text" id="sigTextInput" value="'+esc(st.text||'')+'" oninput="_sigSetText(\''+key+'\',this.value)" placeholder="Type your full name" style="width:100%;padding:10px 12px;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#F3EDE3;font-size:0.85rem;box-sizing:border-box;margin-bottom:14px;outline:none;"/>'+
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">'+
+        SIG_FONTS.map(function(f, i) {
+          var active = st.fontIdx === i;
+          return '<button type="button" onclick="_sigPickFont(\''+key+'\','+i+')" style="padding:14px 8px;border-radius:8px;border:2px solid '+(active?'#8DC63F':'rgba(255,255,255,0.15)')+';background:#fff;cursor:pointer;text-align:center;">'+
+            '<div id="sigFontPreview_'+i+'" style="font-family:'+f.family+';font-size:1.3rem;color:#1a3a6b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+esc(st.text||'Your Name')+'</div>'+
+            '<div style="font-size:0.6rem;color:#888;margin-top:4px;">'+f.label+(active?' &#10003;':'')+'</div>'+
+          '</button>';
+        }).join('')+
+        '</div>';
+    } else {
+      h += '<div style="font-size:0.68rem;color:#888;margin-bottom:8px;">Draw with your finger or mouse below.</div>'+
+        '<canvas id="sigCanvas" width="460" height="160" style="width:100%;height:160px;background:#fff;border-radius:8px;border:1px solid rgba(255,255,255,0.15);touch-action:none;display:block;"></canvas>'+
+        '<button type="button" onclick="_sigClearDraw(\''+key+'\')" style="width:auto;margin-top:8px;padding:6px 14px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);border-radius:100px;color:#aaa;font-size:0.7rem;cursor:pointer;">Clear</button>';
+    }
+
+    h += '<div style="display:flex;gap:8px;margin-top:18px;">'+
+      '<button type="button" onclick="_sigCancel()" style="flex:1;padding:11px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);border-radius:10px;color:#aaa;font-weight:700;font-size:0.8rem;cursor:pointer;">Cancel</button>'+
+      '<button type="button" onclick="_sigConfirm(\''+key+'\')" style="flex:1;padding:11px;background:#8DC63F;border:none;border-radius:10px;color:#000;font-weight:800;font-size:0.8rem;cursor:pointer;">Use This Signature</button>'+
+    '</div>';
+
+    body.innerHTML = h;
+    if (st.mode === 'draw') _sigWireCanvas(key);
+  }
+
+  window._sigSetText = function(key, val) {
+    if (!_sigState[key]) return;
+    _sigState[key].text = val;
+    // Update just the 4 font previews' text directly rather than re-rendering the
+    // whole modal — a full re-render on every keystroke would steal input focus.
+    for (var i = 0; i < SIG_FONTS.length; i++) {
+      var el = document.getElementById('sigFontPreview_'+i);
+      if (el) el.textContent = val || 'Your Name';
+    }
+  };
+
+  window._sigPickFont = function(key, idx) {
+    if (!_sigState[key]) return;
+    _sigState[key].fontIdx = idx;
+    _sigRenderModalBody(key);
+  };
+
+  window._sigSwitchMode = function(key, mode) {
+    if (!_sigState[key]) return;
+    _sigState[key].mode = mode;
+    _sigRenderModalBody(key);
+  };
+
+  function _sigWireCanvas(key) {
+    var canvas = document.getElementById('sigCanvas');
+    var st = _sigState[key];
+    if (!canvas || !st) return;
+    var ctx = canvas.getContext('2d');
+    ctx.strokeStyle = '#1a3a6b'; ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    var drawing = false, last = null;
+    function pos(e) {
+      var rect = canvas.getBoundingClientRect();
+      return { x: (e.clientX - rect.left) * (canvas.width / rect.width), y: (e.clientY - rect.top) * (canvas.height / rect.height) };
+    }
+    canvas.addEventListener('pointerdown', function(e){ e.preventDefault(); drawing = true; last = pos(e); });
+    canvas.addEventListener('pointermove', function(e){
+      if (!drawing) return;
+      e.preventDefault();
+      var p = pos(e);
+      ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke();
+      last = p; st.hasDrawn = true;
+    });
+    ['pointerup','pointerleave','pointercancel'].forEach(function(ev){ canvas.addEventListener(ev, function(){ drawing = false; last = null; }); });
+  }
+
+  window._sigClearDraw = function(key) {
+    var canvas = document.getElementById('sigCanvas');
+    if (canvas) canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+    if (_sigState[key]) _sigState[key].hasDrawn = false;
+  };
+
+  window._sigConfirm = function(key) {
+    var st = _sigState[key];
+    if (!st) return;
+    var result;
+    if (st.mode === 'pick') {
+      var text = (st.text||'').trim();
+      if (!text) { alert('Type your name to generate a signature style.'); return; }
+      result = { type:'typed', text: text, fontFamily: SIG_FONTS[st.fontIdx].family };
+    } else {
+      var canvas = document.getElementById('sigCanvas');
+      if (!st.hasDrawn || !canvas) { alert('Draw your signature before continuing.'); return; }
+      result = { type:'drawn', dataUrl: canvas.toDataURL('image/png') };
+    }
+    st.result = result;
+    var overlay = document.getElementById('sigModalOverlay'); if (overlay) overlay.remove();
+    // Dispatch to whichever surface opened this — each re-renders only its own
+    // preview area, never the whole page.
+    if (st.context && st.context.kind === 'rep') _dealDocRepSigCaptured(key);
+    else if (st.context && st.context.kind === 'cust') _custDocSigCaptured(key);
+  };
+
+  window._sigCancel = function() {
+    var overlay = document.getElementById('sigModalOverlay'); if (overlay) overlay.remove();
+  };
+
+  // Compact rendered preview of a captured signature — used both inside the modal's
+  // own confirm state (n/a here) and on the calling screen once captured.
+  function _sigPreviewHtml(key) {
+    var st = _sigState[key];
+    var result = st && st.result;
+    if (!result) return '';
+    if (result.type === 'drawn') return '<img src="'+result.dataUrl+'" style="max-height:44px;background:#fff;border-radius:6px;padding:3px 8px;"/>';
+    return '<div style="font-family:'+result.fontFamily+';font-size:1.2rem;color:#1a3a6b;background:#fff;border-radius:6px;padding:5px 10px;display:inline-block;">'+esc(result.text)+'</div>';
+  }
+
   function _dealDocSignBlockHtml(c, def) {
     var repName = 'Rep';
     try { if (typeof person !== 'undefined' && person) repName = person.name || repName; } catch(e){}
@@ -19154,12 +19317,42 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // type anything into (that would reopen exactly the impersonation risk this whole
     // rule exists to close). The customer's own signature/initials are still 100%
     // customer-device-only — untouched by this.
-    return '<div style="margin-top:16px;padding-top:14px;border-top:1px solid rgba(255,255,255,0.1);">'+
-      '<div style="font-size:0.68rem;color:#888;margin-bottom:10px;">Walk the customer through the document above, then tap Proceed — this signs the Representative block as <b>'+esc(repName)+'</b>. The customer signs their own section separately, after this, from their own device.</div>'+
-      '<button type="button" onclick="_dealDocMarkReviewed(\''+c.id+'\',\''+def.id+'\')" style="width:100%;padding:11px;background:rgba(74,158,255,0.12);border:1px solid rgba(74,158,255,0.4);border-radius:10px;color:#4a9eff;font-size:0.76rem;font-weight:700;cursor:pointer;">&#10145;&#65039; Proceed</button>'+
+    // ⚠️ 2026-09-06, per Dennis, same day — "I want live signatures... to duplicate a
+    // DocuSign feature," including on the rep's own side ("There's not a live signature
+    // feature on rep level"). The auto-filled cursive text from earlier the same day is
+    // gone — Proceed now REQUIRES the rep to actually sign first (draw or pick a style),
+    // same real signing action a DocuSign signer takes, just tied to their own logged-in
+    // identity rather than a free-text name (which is what keeps this from reopening the
+    // impersonation risk the no-rep-signing rule exists to close).
+    var sigKey = 'rep_' + c.id + '_' + def.id;
+    var hasSig = _sigState[sigKey] && _sigState[sigKey].result;
+    var blockId = 'dealDocSignBlock_' + c.id + '_' + def.id;
+    var openArgs = '\''+sigKey+'\',{kind:\'rep\',customerId:\''+c.id+'\',docType:\''+def.id+'\'}';
+    return '<div id="'+blockId+'" style="margin-top:16px;padding-top:14px;border-top:1px solid rgba(255,255,255,0.1);">'+
+      '<div style="font-size:0.68rem;color:#888;margin-bottom:10px;">Walk the customer through the document above, then sign and tap Proceed — this signs the Representative block as <b>'+esc(repName)+'</b>. The customer signs their own section separately, after this, from their own device.</div>'+
+      '<div style="margin-bottom:12px;">'+
+        (hasSig
+          ? '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">'+_sigPreviewHtml(sigKey)+'<button type="button" onclick="_sigOpen('+openArgs+')" style="width:auto;padding:7px 12px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);border-radius:100px;color:#aaa;font-size:0.7rem;cursor:pointer;">Change</button></div>'
+          : '<button type="button" onclick="_sigOpen('+openArgs+')" style="width:100%;padding:11px;background:rgba(141,198,63,0.12);border:1px solid rgba(141,198,63,0.4);border-radius:10px;color:#8DC63F;font-size:0.78rem;font-weight:700;cursor:pointer;">&#9997;&#65039; Add Your Signature</button>'
+        )+
+      '</div>'+
+      '<button type="button" onclick="_dealDocMarkReviewed(\''+c.id+'\',\''+def.id+'\')" '+(hasSig?'':'disabled ')+'style="width:100%;padding:11px;background:'+(hasSig?'rgba(74,158,255,0.12)':'rgba(255,255,255,0.04)')+';border:1px solid '+(hasSig?'rgba(74,158,255,0.4)':'rgba(255,255,255,0.08)')+';border-radius:10px;color:'+(hasSig?'#4a9eff':'#555')+';font-size:0.76rem;font-weight:700;cursor:'+(hasSig?'pointer':'not-allowed')+';">&#10145;&#65039; Proceed</button>'+
       '<div style="font-size:0.6rem;color:#555;margin-top:8px;">Signed as Representative by '+esc(repName)+', on this device.</div>'+
     '</div>';
   }
+
+  // Re-renders just the sign block in place once a rep's signature is captured —
+  // never a full modal/page re-render, which would restart the customer walkthrough.
+  window._dealDocRepSigCaptured = function(key) {
+    var st = _sigState[key];
+    if (!st || !st.context) return;
+    var blockId = 'dealDocSignBlock_' + st.context.customerId + '_' + st.context.docType;
+    var el = document.getElementById(blockId);
+    if (!el) return;
+    var def = DEAL_DOC_TYPES.find(function(d){ return d.id === st.context.docType; });
+    if (!def) return;
+    el.outerHTML = _dealDocSignBlockHtml({ id: st.context.customerId }, def);
+  };
 
   function _dealDocModalHtml(c, def, row, tpl) {
     var alreadySigned = row.status === 'signed';
@@ -19309,14 +19502,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (!val && DEALDOC_COMPANY_FIELD_IDS[f.id]) {
         return '<div style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;border:1px dashed rgba(255,170,0,0.5);background:rgba(255,170,0,0.07);display:flex;align-items:center;font-size:0.56rem;color:#ffaa00;overflow:hidden;white-space:nowrap;padding:0 3px;">&#9888; not on file</div>';
       }
-      // 2026-09-06, live report — "the signature field isn't working." It wasn't blank
-      // (the value was correctly resolving to the rep's own name), it just rendered as
-      // plain black text identical in every way to the printed-name field right above
-      // it, so a filled-in signature was visually indistinguishable from a duplicate
-      // name field. A real signature-styled font is the fix, not a data fix — same
-      // script/cursive treatment the customer's own cust_signature input already uses.
+      // 2026-09-06 — val is now the rich {type,...} object from the live signature
+      // capture UI (draw or type-and-pick-style), not a plain string. 'drawn' renders
+      // the actual ink as an image; 'typed' renders in the chosen cursive font — either
+      // way this reads as a real signature, not a duplicate of the printed-name field.
       if (f.type === 'signature' && val) {
-        return '<div style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;display:flex;align-items:center;font-family:\'Brush Script MT\',\'Segoe Script\',cursive;font-style:italic;font-size:1.15rem;color:#1a3a6b;overflow:hidden;white-space:nowrap;">'+esc(val)+'</div>';
+        if (val.type === 'drawn' && val.dataUrl) {
+          return '<div style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;display:flex;align-items:center;"><img src="'+val.dataUrl+'" style="max-width:100%;max-height:100%;"/></div>';
+        }
+        return '<div style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;display:flex;align-items:center;font-family:'+(val.fontFamily||"'Brush Script MT','Segoe Script',cursive")+';font-style:italic;font-size:1.15rem;color:#1a3a6b;overflow:hidden;white-space:nowrap;">'+esc(val.text||'')+'</div>';
       }
       return '<div style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;display:flex;align-items:center;font-size:0.68rem;color:#333;overflow:hidden;white-space:nowrap;">'+esc(val||'')+'</div>';
     }).join('');
@@ -19377,9 +19571,18 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   window._dealDocMarkReviewed = async function(customerId, docType) {
     var repId='admin', repName='Admin';
     try { if (typeof person !== 'undefined' && person) { repId=person.id; repName=person.name||repId; } } catch(e){}
+    // Defense-in-depth — the Proceed button is already visually disabled until a
+    // signature is captured, but this is the real gate: no signature, no write.
+    var sigKey = 'rep_' + customerId + '_' + docType;
+    var repSig = _sigState[sigKey] && _sigState[sigKey].result;
+    if (!repSig) { alert('Add your signature before tapping Proceed.'); return; }
     try {
       var client = supabase.createClient(SUPA_URL, SUPA_KEY);
-      var payload = { customer_id: customerId, doc_type: docType, status:'reviewed', reviewed_by_rep_id:repId, reviewed_by_rep_name:repName, reviewed_at:new Date().toISOString(), updated_at:new Date().toISOString() };
+      // Merge onto whatever data.* already exists (e.g. a customer_signature written
+      // by an earlier session) — upsert replaces the whole jsonb column, so writing
+      // {rep_signature:...} alone would silently wipe out anything already there.
+      var existingData = (_dealDocsCache[customerId] && _dealDocsCache[customerId][docType] && _dealDocsCache[customerId][docType].data) || {};
+      var payload = { customer_id: customerId, doc_type: docType, status:'reviewed', reviewed_by_rep_id:repId, reviewed_by_rep_name:repName, reviewed_at:new Date().toISOString(), updated_at:new Date().toISOString(), data: Object.assign({}, existingData, { rep_signature: repSig }) };
       var resp = await client.from('deal_documents').upsert(payload, { onConflict:'customer_id,doc_type' });
       if (resp.error) { alert('Could not save: '+_dealDocFriendlyError(resp.error.message)); return; }
       await _dealDocsLoad(customerId);
@@ -19483,10 +19686,18 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       switch (f.id) {
         case 'pg3_initials':    values[f.id] = ''; break;
         case 'cust_name':       values[f.id] = ((c.first_name||'')+' '+(c.last_name||'')).trim(); break;
-        case 'cust_signature':  values[f.id] = ''; break;
+        // 2026-09-06 — both signature fields now resolve to the rich {type,...} object
+        // captured via the live signature UI (draw or type-and-pick-style), stored in
+        // deal_documents.data, rather than a plain auto-filled name string. null/absent
+        // means "not signed yet" either way — the render functions' !val checks still
+        // work correctly against that. Reused for BOTH the customer's own signing
+        // screen (where cust_signature starts null until they actually sign) and any
+        // read-only view of an already-completed signature (e.g. the rep viewing a
+        // customer who already signed, or vice versa).
+        case 'cust_signature':  values[f.id] = (docRow && docRow.data && docRow.data.customer_signature) || null; break;
         case 'cust_date':       values[f.id] = new Date().toLocaleDateString('en-US'); break;
-        case 'rep_name':
-        case 'rep_signature':   values[f.id] = (docRow && docRow.reviewed_by_rep_name) || ''; break;
+        case 'rep_name':        values[f.id] = (docRow && docRow.reviewed_by_rep_name) || ''; break;
+        case 'rep_signature':   values[f.id] = (docRow && docRow.data && docRow.data.rep_signature) || null; break;
         case 'rep_date':        values[f.id] = (docRow && docRow.reviewed_at) ? new Date(docRow.reviewed_at).toLocaleDateString('en-US') : ''; break;
         case 'company_phone':   values[f.id] = CPUC_COMPANY_PHONE; break;
         case 'company_name':    values[f.id] = opsInfo ? opsInfo.name : ''; break;
@@ -19551,7 +19762,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<div style="font-size:1rem;font-weight:800;">'+def.icon+' '+esc(def.label)+'</div>'+
         '<button onclick="_custDocCloseSign()" style="width:auto;background:none;border:none;color:#888;font-size:1.4rem;cursor:pointer;line-height:1;">&times;</button>'+
       '</div>'+
-      '<div style="font-size:0.72rem;color:#888;line-height:1.6;margin-bottom:14px;">Read through each page below. Checkboxes are pre-checked to affirm each statement — uncheck any that don\'t apply to you. Type your name at the bottom to sign.</div>'+
+      '<div style="font-size:0.72rem;color:#888;line-height:1.6;margin-bottom:14px;">Read through each page below. Checkboxes are pre-checked to affirm each statement — uncheck any that don\'t apply to you. Tap the signature box at the bottom to sign — draw it or type your name and pick a style.</div>'+
       '<div id="custDocPages"></div>'+
       '<div style="position:fixed;bottom:0;left:0;right:0;background:#161616;border-top:1px solid rgba(255,255,255,0.1);padding:12px 16px;display:flex;gap:8px;z-index:10501;">'+
         '<button onclick="_custDocCloseSign()" style="width:auto;flex:1;padding:12px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);border-radius:10px;color:#aaa;font-weight:600;font-size:0.82rem;cursor:pointer;">Cancel</button>'+
@@ -19560,7 +19771,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     '</div>';
     document.body.appendChild(overlay);
 
-    _custDocState = { docType: docType, template: tpl, pageScale: {}, values: {} };
+    _custDocState = { customerId: customerId, docType: docType, template: tpl, pageScale: {}, values: {} };
     _custDocState.values = _custDocComputeInitialValues(tpl.fields || [], c, row, opsInfo, hisNumber);
     try {
       var loadingTask = window.pdfjsLib.getDocument(tpl.pdf_path);
@@ -19628,20 +19839,44 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (f.id === 'cust_name') {
         return '<input type="text" data-fid="cust_name" value="'+esc(val||'')+'" oninput="_custDocSetVal(\'cust_name\', this.value)" style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;background:rgba(141,198,63,0.14);border:1px solid #8DC63F;border-radius:4px;color:#111;font-size:0.75rem;padding:0 4px;box-sizing:border-box;"/>';
       }
+      // 2026-09-06 — a plain typed-name text input, replaced with a real tap-to-sign
+      // action (draw or type-and-pick-style), same live signature UI the rep now uses
+      // on their own Proceed screen. Tapping opens the shared _sigOpen modal; on
+      // confirm, _custDocSigCaptured re-renders just this field with the result.
       if (f.id === 'cust_signature') {
-        return '<input type="text" data-fid="cust_signature" value="'+esc(val||'')+'" placeholder="Type your full name to sign" oninput="_custDocSetVal(\'cust_signature\', this.value)" style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;background:rgba(141,198,63,0.18);border:1.5px solid #8DC63F;border-radius:4px;color:#111;font-size:0.8rem;font-style:italic;padding:0 4px;box-sizing:border-box;"/>';
+        var sigKey = 'cust_' + _custDocState.customerId + '_' + _custDocState.docType;
+        var hasVal = val && typeof val === 'object';
+        var inner = hasVal
+          ? (val.type === 'drawn'
+              ? '<img src="'+val.dataUrl+'" style="max-width:100%;max-height:100%;"/>'
+              : '<span style="font-family:'+(val.fontFamily||"'Brush Script MT',cursive")+';font-size:1rem;color:#1a3a6b;">'+esc(val.text||'')+'</span>')
+          : '<span style="font-size:0.66rem;color:#8DC63F;font-weight:700;">&#9997;&#65039; Tap to sign</span>';
+        return '<button type="button" data-fid="cust_signature" onclick="_sigOpen(\''+sigKey+'\',{kind:\'cust\',customerId:\''+_custDocState.customerId+'\',docType:\''+_custDocState.docType+'\'})" style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;background:rgba(141,198,63,0.16);border:1.5px dashed #8DC63F;border-radius:4px;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0 4px;box-sizing:border-box;overflow:hidden;">'+inner+'</button>';
       }
       // Everything else (rep_name/_date/_signature already signed by the rep on their own
       // device, cust_date always today, company/CSLB/HIS resolved from the assigned
       // installer/Tech) — read-only display, never an editable input here.
-      // Same signature-styling fix as the rep's own screen (_repDocRenderFieldsForPage) —
-      // rep_signature must not read as a plain duplicate of rep_name once it has a value.
+      // val is the rich {type,...} signature object here too — same rendering as the
+      // rep's own screen (_repDocRenderFieldsForPage), so an already-completed
+      // signature reads identically wherever it's viewed read-only.
       if (f.type === 'signature' && val) {
-        return '<div style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;display:flex;align-items:center;font-family:\'Brush Script MT\',\'Segoe Script\',cursive;font-style:italic;font-size:1.15rem;color:#1a3a6b;overflow:hidden;white-space:nowrap;">'+esc(val)+'</div>';
+        if (val.type === 'drawn' && val.dataUrl) {
+          return '<div style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;display:flex;align-items:center;"><img src="'+val.dataUrl+'" style="max-width:100%;max-height:100%;"/></div>';
+        }
+        return '<div style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;display:flex;align-items:center;font-family:'+(val.fontFamily||"'Brush Script MT','Segoe Script',cursive")+';font-style:italic;font-size:1.15rem;color:#1a3a6b;overflow:hidden;white-space:nowrap;">'+esc(val.text||'')+'</div>';
       }
       return '<div style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;display:flex;align-items:center;font-size:0.68rem;color:#333;overflow:hidden;white-space:nowrap;">'+esc(val||'')+'</div>';
     }).join('');
   }
+
+  // Re-renders just the cust_signature field once captured — never the whole page.
+  window._custDocSigCaptured = function(key) {
+    var st = _sigState[key];
+    if (!st || !st.context || !_custDocState) return;
+    _custDocState.values['cust_signature'] = st.result;
+    var f = (_custDocState.template.fields||[]).find(function(x){ return x.id === 'cust_signature'; });
+    if (f) _custDocRenderFieldsForPage(f.page);
+  };
 
   window._custDocSetVal = function(fieldId, val) {
     if (!_custDocState) return;
@@ -19651,8 +19886,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   window._custDocSubmit = async function(customerId, docType) {
     if (!_custDocState) return;
     var vals = _custDocState.values;
-    var name = (vals.cust_signature || '').trim();
-    if (!name) { alert('Type your full name in the signature box to sign.'); return; }
+    // 2026-09-06 — cust_signature is now the rich {type,...} object from the live
+    // signature UI (draw or type-and-pick-style), not a typed-name string — checking
+    // it's a real object is the actual "did they sign" gate now. Printed name (identity)
+    // and signature (the mark itself) are deliberately separate fields on this document,
+    // same as a real DocuSign flow — cust_name already collects the former.
+    var sig = vals.cust_signature;
+    if (!sig || typeof sig !== 'object') { alert('Tap the signature box and sign before submitting.'); return; }
+    var name = (vals.cust_name || '').trim();
+    if (!name) { alert('Type your printed name before signing.'); return; }
     var pg3 = (vals.pg3_initials || '').trim();
     if (!pg3) { alert('Please initial (or write "N/A") on the False Claims page before signing.'); return; }
 
@@ -19666,9 +19908,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (btn) { btn.disabled = true; btn.textContent = 'Signing…'; }
     try {
       var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+      // Merge onto whatever data.* already exists (e.g. rep_signature, written when
+      // the rep signed earlier) — upsert replaces the whole jsonb column outright.
+      var existingData = (_dealDocsCache[customerId] && _dealDocsCache[customerId][docType] && _dealDocsCache[customerId][docType].data) || {};
+      var sigDisplayText = sig.type === 'typed' ? sig.text : name;
       var payload = { customer_id: customerId, doc_type: docType, status:'signed',
-        initials: initials, signature: name, signed_by_name: name, signed_at: new Date().toISOString(),
-        updated_at: new Date().toISOString() };
+        initials: initials, signature: sigDisplayText, signed_by_name: name, signed_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(), data: Object.assign({}, existingData, { customer_signature: sig }) };
       var resp = await client.from('deal_documents').upsert(payload, { onConflict:'customer_id,doc_type' });
       if (resp.error) throw resp.error;
       await _dealDocsLoad(customerId);
