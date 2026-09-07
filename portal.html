@@ -19301,6 +19301,86 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return '<div style="font-family:'+result.fontFamily+';font-size:1.2rem;color:#1a3a6b;background:#fff;border-radius:6px;padding:5px 10px;display:inline-block;">'+esc(result.text)+'</div>';
   }
 
+  // ── Guided signing navigation (2026-09-06, per Dennis — "Start button at the
+  // top... so no device misses it" + "directs the user right to the first, and next
+  // field") ──────────────────────────────────────────────────────────────────────
+  // Shared by both surfaces via a `prefix` — 'dealDoc' (rep's own review screen,
+  // element ids dealDocPageWrap_N/dealDocFieldsLayer_N, state in _repDocState.tpl)
+  // and 'custDoc' (customer's signing screen, custDocPageWrap_N/custDocFieldsLayer_N,
+  // state in _custDocState.template) — same page/layer id scheme on both, only the
+  // property holding the template differs.
+  //
+  // Only the fields that start genuinely BLANK and need real action are in this
+  // list — not every field on the page. rep_name/_date are auto-filled from session
+  // identity (nothing to navigate to); checkboxes are pre-checked/optional (a
+  // deliberate design decision documented elsewhere in this file, not omitted here
+  // by accident); cust_name is pre-filled from the customer's own record. That
+  // leaves exactly the fields a signer would otherwise have to hunt for by scrolling.
+  var DOC_ACTIONABLE_FIELDS = {
+    rep: ['rep_signature'],
+    cust: ['pg3_initials', 'cust_signature']
+  };
+
+  function _docTemplateFor(prefix) {
+    var st = prefix === 'dealDoc' ? _repDocState : _custDocState;
+    if (!st) return null;
+    return st.tpl || st.template || null;
+  }
+
+  window._docStartGuide = function(prefix, kind) {
+    var ids = DOC_ACTIONABLE_FIELDS[kind] || [];
+    for (var i = 0; i < ids.length; i++) {
+      if (_docScrollToField(prefix, ids[i])) return;
+    }
+  };
+
+  // Called after a field is completed (a signature captured, initials confirmed) to
+  // jump straight to whatever's next — the whole point being nobody has to manually
+  // scroll to find the next thing to do. When nothing's left, lands on the actual
+  // Proceed/Sign & Submit control so the very last step is just as obvious.
+  window._docGuideNext = function(prefix, kind, justCompletedId) {
+    var ids = DOC_ACTIONABLE_FIELDS[kind] || [];
+    var startIdx = justCompletedId ? (ids.indexOf(justCompletedId) + 1) : 0;
+    for (var i = startIdx; i < ids.length; i++) {
+      if (_docScrollToField(prefix, ids[i])) return;
+    }
+    var finalBtn = prefix === 'dealDoc'
+      ? document.querySelector('#dealDocModal button[onclick^="_dealDocMarkReviewed"]')
+      : document.getElementById('custDocSubmitBtn');
+    if (finalBtn) { finalBtn.scrollIntoView({ behavior:'smooth', block:'center' }); _docPulse(finalBtn); }
+  };
+
+  function _docScrollToField(prefix, fieldId) {
+    var tpl = _docTemplateFor(prefix);
+    if (!tpl) return false;
+    var f = (tpl.fields||[]).find(function(x){ return x.id === fieldId; });
+    if (!f) return false;
+    var wrapEl = document.getElementById(prefix + 'PageWrap_' + f.page);
+    if (!wrapEl) return false;
+    wrapEl.scrollIntoView({ behavior:'smooth', block:'center' });
+    // The field itself (found by data-fid, present on every rendered field element
+    // in both render functions) gets a brief highlight once scrolling settles —
+    // this is what makes "the first/next field" actually obvious, not just "somewhere
+    // on this page".
+    setTimeout(function() {
+      var target = wrapEl.querySelector('[data-fid="'+fieldId+'"]');
+      if (target) _docPulse(target);
+    }, 450);
+    return true;
+  }
+
+  function _docPulse(el) {
+    var origShadow = el.style.boxShadow;
+    var origRadius = el.style.borderRadius;
+    if (!origRadius) el.style.borderRadius = '4px';
+    var n = 0;
+    (function flash() {
+      el.style.boxShadow = (n % 2 === 0) ? '0 0 0 4px rgba(141,198,63,0.65)' : '0 0 0 0px rgba(141,198,63,0)';
+      n++;
+      if (n < 5) setTimeout(flash, 280); else el.style.boxShadow = origShadow;
+    })();
+  }
+
   function _dealDocSignBlockHtml(c, def) {
     var repName = 'Rep';
     try { if (typeof person !== 'undefined' && person) repName = person.name || repName; } catch(e){}
@@ -19348,10 +19428,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (!st || !st.context) return;
     var blockId = 'dealDocSignBlock_' + st.context.customerId + '_' + st.context.docType;
     var el = document.getElementById(blockId);
-    if (!el) return;
     var def = DEAL_DOC_TYPES.find(function(d){ return d.id === st.context.docType; });
-    if (!def) return;
-    el.outerHTML = _dealDocSignBlockHtml({ id: st.context.customerId }, def);
+    if (el && def) el.outerHTML = _dealDocSignBlockHtml({ id: st.context.customerId }, def);
+    // ⚠️ 2026-09-06, live report — "signature needs to be embedded into the page in
+    // the right location, not floating at the bottom." The line above only ever
+    // refreshed the small preview in the sign-block footer — the actual
+    // Representative Signature line ON THE REAL PDF PAGE kept showing the blue
+    // "you sign via Proceed" placeholder, since nothing ever re-rendered that field's
+    // real position after capture. Do that here too, using the same tpl/values this
+    // page's initial render already computed (now stored on _repDocState for exactly
+    // this purpose) with the freshly captured signature spliced in.
+    if (_repDocState && _repDocState.tpl && _repDocState.values) {
+      _repDocState.values.rep_signature = st.result;
+      var f = (_repDocState.tpl.fields||[]).find(function(x){ return x.id === 'rep_signature'; });
+      if (f) _repDocRenderFieldsForPage(f.page, _repDocState.tpl, _repDocState.values);
+    }
+    _docGuideNext('dealDoc', 'rep');
   };
 
   function _dealDocModalHtml(c, def, row, tpl) {
@@ -19418,6 +19510,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<div style="font-size:0.7rem;color:#888;margin-bottom:10px;">Walk the customer through the pages below — this is the actual document, not a summary.</div>'+
       (!_opsInfoCheck && _hasCompanyFields ? '<div style="background:rgba(255,170,0,0.1);border:1px solid rgba(255,170,0,0.3);border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:0.72rem;color:#ffaa00;">&#9888;&#65039; No CSLB contractor info on file for the assigned installer ('+esc(_opsName)+') — the Company/CSLB fields below will be blank until this lead\'s Assignment is set. Not a bug: set it in the Administration Tab, or add this partner to OPS_CONTRACTOR_INFO.</div>' : '')+
       (alreadySigned ? '<div style="background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.3);border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:0.74rem;color:#8DC63F;">&#9989; Signed by <b>'+esc(row.signed_by_name||'')+'</b> on '+(row.signed_at?new Date(row.signed_at).toLocaleString():'')+'</div>' : '')+
+      // 2026-09-06, per Dennis — "Start button at the top... so no device misses it" +
+      // "directs the user right to the first, and next field." A 7+ page document
+      // buried the one thing a rep actually needs (the signature) at the very bottom,
+      // requiring a long manual scroll to even find it. This jumps straight there.
+      (!alreadySigned ? '<button type="button" onclick="_docStartGuide(\'dealDoc\',\'rep\')" style="width:100%;padding:13px;background:#8DC63F;border:none;border-radius:10px;color:#0d1f08;font-weight:800;font-size:0.82rem;cursor:pointer;margin-bottom:14px;">&#9654; Start Signing</button>' : '')+
       '<div id="dealDocPages"><div style="color:#888;font-size:0.75rem;padding:30px;text-align:center;">Loading document&hellip;</div></div>'+
       (!alreadySigned ? _dealDocSignBlockHtml(c, def) : '')+
     '</div>';
@@ -19440,7 +19537,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // (nothing's been signed yet), which is exactly the placeholder state we want.
     var values = _custDocComputeInitialValues(tpl.fields || [], c, row, opsInfo, hisNumber);
 
-    _repDocState = { pageScale: {} };
+    // tpl/values stored here (not just local vars) so _dealDocRepSigCaptured can
+    // re-render the rep_signature field IN PLACE on the real PDF page after a
+    // signature is captured — the field's onscreen value must actually update, not
+    // just the small preview thumbnail in the sign-block footer below the document.
+    _repDocState = { pageScale: {}, tpl: tpl, values: values };
     try {
       var loadingTask = window.pdfjsLib.getDocument(tpl.pdf_path);
       var pdf = await loadingTask.promise;
@@ -19485,22 +19586,23 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     layer.innerHTML = fields.map(function(f) {
       var left = f.x * dims.w, top = f.y * dims.h, w = f.w * dims.w, h = f.h * dims.h;
       var val = values[f.id];
+      var fid = ' data-fid="'+esc(f.id)+'"';
       if (f.type === 'checkbox') {
         var size = Math.max(w, h, 20);
-        return '<div style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+size+'px;height:'+size+'px;border:1.5px solid #8DC63F;border-radius:3px;display:flex;align-items:center;justify-content:center;color:#8DC63F;font-size:0.7rem;background:rgba(141,198,63,0.1);">&#10003;</div>';
+        return '<div'+fid+' style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+size+'px;height:'+size+'px;border:1.5px solid #8DC63F;border-radius:3px;display:flex;align-items:center;justify-content:center;color:#8DC63F;font-size:0.7rem;background:rgba(141,198,63,0.1);">&#10003;</div>';
       }
       if (!val && repPlaceholder[f.id]) {
-        return '<div style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;border:1px dashed rgba(74,158,255,0.5);background:rgba(74,158,255,0.07);display:flex;align-items:center;font-size:0.56rem;color:#4a9eff;overflow:hidden;white-space:nowrap;padding:0 3px;">you sign via Proceed &darr;</div>';
+        return '<div'+fid+' style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;border:1px dashed rgba(74,158,255,0.5);background:rgba(74,158,255,0.07);display:flex;align-items:center;font-size:0.56rem;color:#4a9eff;overflow:hidden;white-space:nowrap;padding:0 3px;">you sign via Proceed &darr;</div>';
       }
       if (!val && custPlaceholder[f.id]) {
-        return '<div style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;border:1px dashed rgba(255,170,0,0.5);background:rgba(255,170,0,0.07);display:flex;align-items:center;font-size:0.56rem;color:#ffaa00;overflow:hidden;white-space:nowrap;padding:0 3px;">customer fills in</div>';
+        return '<div'+fid+' style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;border:1px dashed rgba(255,170,0,0.5);background:rgba(255,170,0,0.07);display:flex;align-items:center;font-size:0.56rem;color:#ffaa00;overflow:hidden;white-space:nowrap;padding:0 3px;">customer fills in</div>';
       }
       // 2026-09-06 — a blank company/CSLB/HIS field (no installer assigned, or the
       // assigned Tech has no HIS number on file) used to fall straight into the plain
       // esc(val||'') branch below and render a totally silent empty box — indistinguishable
       // from a real bug. Matches the top-of-modal banner in _openDealDocRealPdf.
       if (!val && DEALDOC_COMPANY_FIELD_IDS[f.id]) {
-        return '<div style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;border:1px dashed rgba(255,170,0,0.5);background:rgba(255,170,0,0.07);display:flex;align-items:center;font-size:0.56rem;color:#ffaa00;overflow:hidden;white-space:nowrap;padding:0 3px;">&#9888; not on file</div>';
+        return '<div'+fid+' style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;border:1px dashed rgba(255,170,0,0.5);background:rgba(255,170,0,0.07);display:flex;align-items:center;font-size:0.56rem;color:#ffaa00;overflow:hidden;white-space:nowrap;padding:0 3px;">&#9888; not on file</div>';
       }
       // 2026-09-06 — val is now the rich {type,...} object from the live signature
       // capture UI (draw or type-and-pick-style), not a plain string. 'drawn' renders
@@ -19508,11 +19610,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // way this reads as a real signature, not a duplicate of the printed-name field.
       if (f.type === 'signature' && val) {
         if (val.type === 'drawn' && val.dataUrl) {
-          return '<div style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;display:flex;align-items:center;"><img src="'+val.dataUrl+'" style="max-width:100%;max-height:100%;"/></div>';
+          return '<div'+fid+' style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;display:flex;align-items:center;"><img src="'+val.dataUrl+'" style="max-width:100%;max-height:100%;"/></div>';
         }
-        return '<div style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;display:flex;align-items:center;font-family:'+(val.fontFamily||"'Brush Script MT','Segoe Script',cursive")+';font-style:italic;font-size:1.15rem;color:#1a3a6b;overflow:hidden;white-space:nowrap;">'+esc(val.text||'')+'</div>';
+        return '<div'+fid+' style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;display:flex;align-items:center;font-family:'+(val.fontFamily||"'Brush Script MT','Segoe Script',cursive")+';font-style:italic;font-size:1.15rem;color:#1a3a6b;overflow:hidden;white-space:nowrap;">'+esc(val.text||'')+'</div>';
       }
-      return '<div style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;display:flex;align-items:center;font-size:0.68rem;color:#333;overflow:hidden;white-space:nowrap;">'+esc(val||'')+'</div>';
+      return '<div'+fid+' style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;display:flex;align-items:center;font-size:0.68rem;color:#333;overflow:hidden;white-space:nowrap;">'+esc(val||'')+'</div>';
     }).join('');
   }
 
@@ -19762,7 +19864,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<div style="font-size:1rem;font-weight:800;">'+def.icon+' '+esc(def.label)+'</div>'+
         '<button onclick="_custDocCloseSign()" style="width:auto;background:none;border:none;color:#888;font-size:1.4rem;cursor:pointer;line-height:1;">&times;</button>'+
       '</div>'+
-      '<div style="font-size:0.72rem;color:#888;line-height:1.6;margin-bottom:14px;">Read through each page below. Checkboxes are pre-checked to affirm each statement — uncheck any that don\'t apply to you. Tap the signature box at the bottom to sign — draw it or type your name and pick a style.</div>'+
+      '<div style="font-size:0.72rem;color:#888;line-height:1.6;margin-bottom:14px;">Read through each page below. Checkboxes are pre-checked to affirm each statement — uncheck any that don\'t apply to you.</div>'+
+      '<button type="button" onclick="_docStartGuide(\'custDoc\',\'cust\')" style="width:100%;padding:13px;background:#8DC63F;border:none;border-radius:10px;color:#0d1f08;font-weight:800;font-size:0.82rem;cursor:pointer;margin-bottom:14px;">&#9654; Start Signing</button>'+
       '<div id="custDocPages"></div>'+
       '<div style="position:fixed;bottom:0;left:0;right:0;background:#161616;border-top:1px solid rgba(255,255,255,0.1);padding:12px 16px;display:flex;gap:8px;z-index:10501;">'+
         '<button onclick="_custDocCloseSign()" style="width:auto;flex:1;padding:12px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);border-radius:10px;color:#aaa;font-weight:600;font-size:0.82rem;cursor:pointer;">Cancel</button>'+
@@ -19834,7 +19937,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         return '<input type="checkbox" data-fid="'+esc(f.id)+'" '+(checked?'checked':'')+' onchange="_custDocSetVal(\''+f.id+'\', this.checked)" style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+size+'px;height:'+size+'px;accent-color:#8DC63F;cursor:pointer;"/>';
       }
       if (f.id === 'pg3_initials') {
-        return '<input type="text" data-fid="'+esc(f.id)+'" value="'+esc(val||'')+'" placeholder="Initials / N/A" oninput="_custDocSetVal(\''+f.id+'\', this.value)" style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+Math.max(h,20)+'px;background:rgba(141,198,63,0.14);border:1px solid #8DC63F;border-radius:4px;color:#111;font-size:0.75rem;text-align:center;padding:0;box-sizing:border-box;"/>';
+        return '<input type="text" data-fid="'+esc(f.id)+'" value="'+esc(val||'')+'" placeholder="Initials / N/A" oninput="_custDocSetVal(\''+f.id+'\', this.value)" onblur="if(this.value.trim())_docGuideNext(\'custDoc\',\'cust\',\'pg3_initials\')" style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+Math.max(h,20)+'px;background:rgba(141,198,63,0.14);border:1px solid #8DC63F;border-radius:4px;color:#111;font-size:0.75rem;text-align:center;padding:0;box-sizing:border-box;"/>';
       }
       if (f.id === 'cust_name') {
         return '<input type="text" data-fid="cust_name" value="'+esc(val||'')+'" oninput="_custDocSetVal(\'cust_name\', this.value)" style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;background:rgba(141,198,63,0.14);border:1px solid #8DC63F;border-radius:4px;color:#111;font-size:0.75rem;padding:0 4px;box-sizing:border-box;"/>';
@@ -19876,6 +19979,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     _custDocState.values['cust_signature'] = st.result;
     var f = (_custDocState.template.fields||[]).find(function(x){ return x.id === 'cust_signature'; });
     if (f) _custDocRenderFieldsForPage(f.page);
+    _docGuideNext('custDoc', 'cust', 'cust_signature');
   };
 
   window._custDocSetVal = function(fieldId, val) {
