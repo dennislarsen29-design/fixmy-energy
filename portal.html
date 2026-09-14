@@ -1884,9 +1884,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       });
     }
     var commDashSlot = '<div id="jobsCommDash">'+_jobsCommDashHtml(adminJobCat)+'</div>';
+    var leaderboardSlot = '<div id="leaderboardSlot">'+_leaderboardHtml()+'</div>';
     document.getElementById('dashBody').innerHTML = portalNav+
       '<div class="admin-header-row"><h2 style="font-size:1.1rem;font-weight:700;">Jobs</h2><span style="font-size:0.72rem;color:#555;">'+allJobs.length+' total</span></div>'+
-      catTabs+commDashSlot+'<div id="editorSlot"></div><div id="jobList">'+listHtml+'</div><div id="jobDetail" style="display:none;"></div>';
+      catTabs+commDashSlot+leaderboardSlot+'<div id="editorSlot"></div><div id="jobList">'+listHtml+'</div><div id="jobDetail" style="display:none;"></div>';
     var catIds = jobs.map(function(c){ return c.id; });
     var loadFn = adminJobCat === 'new_solar' ? _loadAxiaJobCommissions : _loadFixmyJobCommissions;
     var lineFn = adminJobCat === 'new_solar' ? _axiaCommLineHtml : _jobCommLineHtml;
@@ -2029,7 +2030,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (!info) return '';
     var when = _payDateShort(info.date);
     return '<div style="display:flex;align-items:center;gap:6px;margin-top:6px;padding:5px 10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:100px;font-size:0.66rem;color:#999;">'+
-      '<span style="width:6px;height:6px;border-radius:50%;flex-shrink:0;background:'+(info.tentative?'#ffaa00':'#8DC63F')+';"></span>'+
+      '<span style="width:6px;height:6px;border-radius:50%;flex-shrink:0;background:'+(info.tentative?'#ffb648':'#8DC63F')+';"></span>'+
       (info.tentative ? 'Est. install ~'+_payDateShort(info.estInstallDate)+' &middot; est. pay ~'+when : 'Pay date '+when)+
     '</div>';
   }
@@ -2095,29 +2096,93 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   //   Net Commission   = Gross Commission × that person's split %
   //   Company Margin   = Gross Commission − sum of every Net Commission — ADMIN ONLY,
   //                      never rendered by _commLineHtmlForRep under any circumstance.
+  // ── Visual language (2026-09-14, per Dennis — "roll with all suggestions, example
+  // one Sequifi") — the redesign pass approved via the Payout Redesign mockup: a
+  // hero dollar figure leads every card instead of a sentence, a colored left stripe
+  // carries status at a glance, the Revenue/Redline math moves behind a "See the
+  // math" toggle, and one color (gold) means one thing everywhere it appears: money
+  // owed to a person. Company Margin gets its own distinct color (violet) so it's
+  // never confused with someone's actual payout. No new font — this app has never
+  // loaded a webfont, so figures use the system monospace stack already used for
+  // the build-tag chip, not a new dependency.
+  var COMM_MONO = "ui-monospace,'SF Mono',Consolas,monospace";
+  var COMM_COLOR_GOLD = '#f0b429';       // the one "money owed to you" color, everywhere
+  var COMM_COLOR_MARGIN = '#a789d9';     // Company Margin — admin-only, deliberately NOT gold
+  var COMM_COLOR_REDLINE = '#e8735a';
+  var COMM_COLOR_EARNED = '#8DC63F';     // brand green, unchanged
+  var COMM_COLOR_POTENTIAL = '#ffb648';
   function _revCostLineHtml(d) {
     var m = function(n){ return '$'+(n||0).toLocaleString(undefined,{maximumFractionDigits:0}); };
     var gross = Math.max(0, (d.revenue||0) - (d.costs||0));
-    return '<div style="font-size:0.68rem;color:#777;">Revenue '+m(d.revenue)+' &minus; Redline '+m(d.costs)+' = Gross Commission '+m(gross)+'</div>';
+    return '<div style="font-size:0.7rem;color:#888;">Revenue <b style="color:#ccc;font-family:'+COMM_MONO+';">'+m(d.revenue)+'</b> &minus; Redline <b style="color:'+COMM_COLOR_REDLINE+';font-family:'+COMM_MONO+';">'+m(d.costs)+'</b> = Gross Commission <b style="color:#ddd;font-family:'+COMM_MONO+';">'+m(gross)+'</b></div>';
   }
+  // Proportional bar splitting Gross Commission into Net Commission(s) (gold) vs
+  // Company Margin (violet) — the "waterfall as a bar, not a sentence" idea. Lives
+  // inside the "See the math" panel, admin-only, right under the Revenue/Redline line.
+  function _waterfallBarHtml(d) {
+    var m = function(n){ return '$'+(n||0).toLocaleString(undefined,{maximumFractionDigits:0}); };
+    var gross = Math.max(0, (d.revenue||0) - (d.costs||0));
+    if (gross <= 0) return '';
+    var netTotal = (d.repId ? (d.closerAmt||0) : 0) + (d.hasSetter ? (d.setterAmt||0) : 0);
+    var netPct = Math.max(0, Math.min(100, Math.round((netTotal/gross)*100)));
+    var margPct = 100 - netPct;
+    return '<div style="display:flex;height:22px;border-radius:7px;overflow:hidden;margin-top:8px;">'+
+      (netPct>0?'<div style="width:'+netPct+'%;background:'+COMM_COLOR_GOLD+';display:flex;align-items:center;justify-content:center;font-size:0.6rem;font-weight:700;color:#1a1200;white-space:nowrap;overflow:hidden;">'+m(netTotal)+'</div>':'')+
+      (margPct>0?'<div style="width:'+margPct+'%;background:'+COMM_COLOR_MARGIN+';display:flex;align-items:center;justify-content:center;font-size:0.6rem;font-weight:700;color:#211a33;white-space:nowrap;overflow:hidden;">'+m(d.companyAmt)+'</div>':'')+
+    '</div>'+
+    '<div style="display:flex;gap:12px;margin-top:6px;flex-wrap:wrap;">'+
+      '<span style="font-size:0.64rem;color:#999;"><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:'+COMM_COLOR_GOLD+';margin-right:4px;"></span>Net Commission</span>'+
+      '<span style="font-size:0.64rem;color:#999;"><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:'+COMM_COLOR_MARGIN+';margin-right:4px;"></span>Company Margin</span>'+
+    '</div>';
+  }
+  window.toggleCommMath = function(id) {
+    var panel = document.getElementById(id), arrow = document.getElementById(id+'_arrow');
+    if (!panel) return;
+    var willOpen = panel.style.display === 'none' || !panel.style.display;
+    panel.style.display = willOpen ? 'block' : 'none';
+    if (arrow) arrow.innerHTML = willOpen ? '&#9652;' : '&#9662;';
+  };
   // Plain-language reason for a split — no percentages, matching Dennis's explicit
   // "amount + plain-language reason only" call for what a rep/tech gets to see.
   function _splitReason(d, who) {
     if (!d.hasSetter) return 'same-person set &amp; close';
     return who === 'closer' ? 'closer split' : 'setter split';
   }
-  // Admin-facing line: full waterfall + every party's Net Commission + Company
-  // Margin (admin only) + the pay-date bubble.
-  function _commLineHtml(d, statusBadgeHtml) {
+  // Admin-facing line: a colored status stripe, a hero Net Commission figure (or two,
+  // when there's a distinct closer AND setter) in gold, then the Revenue/Redline/
+  // Gross Commission math + proportional bar + Company Margin behind a "See the
+  // math" toggle — collapsed by default so the dollar people care about leads.
+  function _commLineHtml(d, statusBadgeHtml, cid) {
     if (!d) return '';
     var m = function(n){ return '$'+(n||0).toLocaleString(undefined,{maximumFractionDigits:0}); };
-    var parts = [];
-    if (d.repId) parts.push((d.hasSetter?'Closer ':'Net Commission ')+m(d.closerAmt)+' ('+_splitReason(d,'closer')+')'+(d.closerLocked?(d.closerPaid?' &#10003;paid':' sold'):' est.'));
-    if (d.hasSetter) parts.push('Setter '+m(d.setterAmt)+' ('+_splitReason(d,'setter')+')'+(d.setterLocked?(d.setterPaid?' &#10003;paid':' sold'):' est.'));
-    return _revCostLineHtml(d)+
-      '<div style="margin-top:2px;font-size:0.68rem;color:#999;">'+statusBadgeHtml+' &middot; '+parts.join(' &middot; ')+'</div>'+
-      '<div style="margin-top:4px;padding:6px 10px;background:rgba(242,181,68,0.08);border:1px solid rgba(242,181,68,0.25);border-radius:8px;font-size:0.68rem;color:#f2b544;font-weight:700;">Company Margin <span style="opacity:0.6;font-weight:600;text-transform:uppercase;font-size:0.6rem;">admin only</span>: '+m(d.companyAmt)+'</div>'+
-      _payBubbleHtml(d);
+    var stripeColor = d.earned ? COMM_COLOR_EARNED : COMM_COLOR_POTENTIAL;
+    var heroHtml;
+    if (d.repId && !d.hasSetter) {
+      heroHtml = '<div style="font-family:'+COMM_MONO+';font-size:1.35rem;font-weight:800;color:'+COMM_COLOR_GOLD+';">'+m(d.closerAmt)+'</div>'+
+        '<div style="font-size:0.7rem;color:#888;margin-top:1px;">Net Commission &middot; '+_splitReason(d,'closer')+(d.closerLocked?(d.closerPaid?' &middot; &#10003;paid':' &middot; sold'):' &middot; est.')+'</div>';
+    } else {
+      var rows = [];
+      if (d.repId) rows.push('<div style="margin-bottom:5px;"><span style="font-family:'+COMM_MONO+';font-size:1.05rem;font-weight:800;color:'+COMM_COLOR_GOLD+';">'+m(d.closerAmt)+'</span> <span style="font-size:0.68rem;color:#888;">closer &middot; '+_splitReason(d,'closer')+(d.closerLocked?(d.closerPaid?' &#10003;paid':' sold'):' est.')+'</span></div>');
+      if (d.hasSetter) rows.push('<div><span style="font-family:'+COMM_MONO+';font-size:1.05rem;font-weight:800;color:'+COMM_COLOR_GOLD+';">'+m(d.setterAmt)+'</span> <span style="font-size:0.68rem;color:#888;">setter &middot; '+_splitReason(d,'setter')+(d.setterLocked?(d.setterPaid?' &#10003;paid':' sold'):' est.')+'</span></div>');
+      heroHtml = rows.join('');
+    }
+    var mathId = 'commMath_'+String(cid||Math.random()).replace(/[^a-zA-Z0-9_-]/g,'');
+    return '<div style="display:flex;margin-top:10px;border-radius:10px;overflow:hidden;border:1px solid rgba(255,255,255,0.08);">'+
+      '<div style="width:4px;flex-shrink:0;background:'+stripeColor+';"></div>'+
+      '<div style="flex:1;padding:10px 12px;background:rgba(255,255,255,0.02);min-width:0;">'+
+        heroHtml+
+        '<div style="margin-top:6px;font-size:0.68rem;color:#999;">'+statusBadgeHtml+'</div>'+
+        _payBubbleHtml(d)+
+        '<button onclick="toggleCommMath(\''+mathId+'\')" style="width:100%;margin-top:9px;background:none;border:none;border-top:1px dashed rgba(255,255,255,0.1);padding-top:8px;color:#666;font-size:0.66rem;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:space-between;">'+
+          '<span>&#128202; See the math</span><span id="'+mathId+'_arrow">&#9662;</span>'+
+        '</button>'+
+        '<div id="'+mathId+'" style="display:none;margin-top:8px;">'+
+          _revCostLineHtml(d)+
+          _waterfallBarHtml(d)+
+          '<div style="margin-top:8px;padding:6px 10px;background:rgba(167,137,217,0.1);border:1px solid rgba(167,137,217,0.3);border-radius:8px;font-size:0.68rem;color:'+COMM_COLOR_MARGIN+';font-weight:700;">Company Margin <span style="opacity:0.65;font-weight:600;text-transform:uppercase;font-size:0.6rem;">admin only</span>: '+m(d.companyAmt)+'</div>'+
+        '</div>'+
+      '</div>'+
+    '</div>';
   }
   // ONE place that decides "is this person on this deal, and for how much" — used by
   // both the rep-facing card line below and the new rep Payroll view, so they can
@@ -2128,23 +2193,33 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (d.hasSetter && d.setterName && (person.name||'').trim().toLowerCase() === d.setterName.toLowerCase()) return { amount: d.setterAmt, reason: _splitReason(d,'setter') };
     return null;
   }
-  // Rep-facing line: ONLY this person's own Net Commission + a plain reason + status
-  // + pay date. Never Revenue, Redline, Gross Commission, a percentage, or the
-  // company's margin — a setter never sees the closer's cut or vice versa either.
+  // Rep-facing line: a status stripe + ONE hero gold figure (their own Net
+  // Commission only) + a plain reason + pay date. Never Revenue, Redline, Gross
+  // Commission, a percentage, or the company's margin, and no "see the math" toggle
+  // at all — a setter never sees the closer's cut or vice versa either.
   function _commLineHtmlForRep(d, person, statusBadgeHtml) {
     var mine = _myShareOf(d, person);
     if (!mine) return '';
     var m = function(n){ return '$'+(n||0).toLocaleString(undefined,{maximumFractionDigits:0}); };
-    return '<div style="margin-top:8px;padding:8px 12px;background:rgba(155,109,232,0.06);border:1px solid rgba(155,109,232,0.2);border-radius:8px;font-size:0.75rem;">'+statusBadgeHtml+' &middot; Net Commission: <b style="color:#fff;">'+m(mine.amount)+'</b><div style="font-size:0.68rem;color:#888;margin-top:1px;">'+mine.reason+'</div></div>'+_payBubbleHtml(d);
+    var stripeColor = d.earned ? COMM_COLOR_EARNED : COMM_COLOR_POTENTIAL;
+    return '<div style="display:flex;margin-top:10px;border-radius:10px;overflow:hidden;border:1px solid rgba(255,255,255,0.08);">'+
+      '<div style="width:4px;flex-shrink:0;background:'+stripeColor+';"></div>'+
+      '<div style="flex:1;padding:10px 12px;background:rgba(255,255,255,0.02);">'+
+        '<div style="font-family:'+COMM_MONO+';font-size:1.35rem;font-weight:800;color:'+COMM_COLOR_GOLD+';">'+m(mine.amount)+'</div>'+
+        '<div style="font-size:0.7rem;color:#888;margin-top:1px;">Net Commission &middot; '+mine.reason+'</div>'+
+        '<div style="margin-top:6px;font-size:0.68rem;color:#999;">'+statusBadgeHtml+'</div>'+
+        _payBubbleHtml(d)+
+      '</div>'+
+    '</div>';
   }
   // 2026-08-30, per Dennis: "Jobs card is a quick view of commission potential (before
   // install) and Commissions Earned (after Install)" — exact wording, not the old bare
   // POTENTIAL/EARNED labels. Same earned gate as always (step >= 9, Installed).
-  function _fixmyBadge(d) { return d.earned ? '<span style="color:#8DC63F;font-weight:700;">Commissions Earned</span>' : '<span style="color:#ffaa00;font-weight:700;">Commission Potential</span>'; }
+  function _fixmyBadge(d) { return d.earned ? '<span style="color:'+COMM_COLOR_EARNED+';font-weight:700;">Commissions Earned</span>' : '<span style="color:'+COMM_COLOR_POTENTIAL+';font-weight:700;">Commission Potential</span>'; }
   function _jobCommLineHtml(cid) {
     var d = _fixmyCommCache[cid];
     if (!d) return '';
-    return _commLineHtml(d, _fixmyBadge(d));
+    return _commLineHtml(d, _fixmyBadge(d), cid);
   }
   function _jobCommLineHtmlForRep(cid, person) {
     var d = _fixmyCommCache[cid];
@@ -2261,16 +2336,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     } catch(e) { /* leave uncached — callers must handle a missing entry gracefully */ }
   }
   function _axiaBadge(d) {
-    var earnedTag = d.earned ? '<span style="color:#8DC63F;font-weight:700;">Earned</span>' : '<span style="color:#ffaa00;font-weight:700;">Potential</span>';
+    var earnedTag = d.earned ? '<span style="color:'+COMM_COLOR_EARNED+';font-weight:700;">Earned</span>' : '<span style="color:'+COMM_COLOR_POTENTIAL+';font-weight:700;">Potential</span>';
     var allLocked = d.closerLocked && (!d.hasSetter || d.setterLocked);
-    var status = allLocked ? '<span style="color:#8DC63F;font-weight:700;">LOCKED</span>' : '<span style="color:#ffaa00;font-weight:700;">ESTIMATE</span>';
+    var status = allLocked ? '<span style="color:'+COMM_COLOR_EARNED+';font-weight:700;">LOCKED</span>' : '<span style="color:'+COMM_COLOR_POTENTIAL+';font-weight:700;">ESTIMATE</span>';
     var src = '<span style="color:'+(d.isBlackBox?'#f97316':'#4a9eff')+';font-weight:700;">'+(d.isBlackBox?'COMPANY LEAD &middot; '+Math.round(d.poolPct*100)+'%':'SELF-GEN &middot; '+Math.round(d.poolPct*100)+'%')+'</span>';
     return earnedTag+' &middot; '+status+' &middot; '+src;
   }
   function _axiaCommLineHtml(cid) {
     var d = _axiaCommCache[cid];
     if (!d) return '';
-    return _commLineHtml(d, _axiaBadge(d));
+    return _commLineHtml(d, _axiaBadge(d), cid);
   }
   function _axiaCommLineHtmlForRep(cid, person) {
     var d = _axiaCommCache[cid];
@@ -2460,9 +2535,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<div style="font-size:0.6rem;color:#666;margin-bottom:8px;">Scoped to '+(cat==='new_solar'?'Axia/QCell':'FixMy')+' jobs created in this range &middot; '+count+' job'+(count===1?'':'s')+(cat==='new_solar'?' &middot; Revenue = Gross Commission owed by Axia/QCell (Redline is already netted into the per-watt price), Net Commissions are Setter/Tech pay owed out.':' &middot; Revenue = collected payments, Redline = Sub Sheet job costs.')+'</div>'+
       '<div style="display:flex;gap:10px;flex-wrap:wrap;">'+
         tile('Revenue', rev, '#4a9eff')+
-        tile('Redline', cost, '#f97316')+
-        tile('Gross Commission', net, '#b28aef')+
-        tile('Company Margin', marg, '#f2b544')+
+        tile('Redline', cost, COMM_COLOR_REDLINE)+
+        tile('Gross Commission', net, COMM_COLOR_GOLD)+
+        tile('Company Margin', marg, COMM_COLOR_MARGIN)+
       '</div>'+
       pendHtml+
       (missing ? '<div style="font-size:0.62rem;color:#555;margin-top:6px;">'+missing+' job'+(missing===1?'':'s')+' still loading&hellip;</div>' : '')+
@@ -2495,6 +2570,116 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var el = document.getElementById('jobComm_'+id);
       if (el) el.innerHTML = cat==='new_solar' ? _axiaCommLineHtml(id) : _jobCommLineHtml(id);
     });
+  }
+
+  // ── Leaderboard (2026-09-14, per Dennis — "roll with all suggestions") — the one
+  // genuinely new screen from the Payout Redesign mockup, not just a relabeling. A
+  // well-worn solar-sales pattern (Sequifi calls it out by name as a built-in
+  // feature) this app had none of. Ranked by Net Commission this calendar month,
+  // FixMy + Axia/QCell combined, potential + earned together — this is meant to
+  // reflect current activity, not just money already fully paid out.
+  var _leaderboardOpen = false;
+  var _leaderboardLoading = false;
+  var _leaderboardCache = null; // { rows: [{name, total}] }
+  function _leaderboardHtml() {
+    var head = '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:'+(_leaderboardOpen?'10px':'0')+';margin-top:10px;">'+
+      '<button onclick="window._leaderboardToggle()" style="width:auto;background:none;border:none;color:'+COMM_COLOR_GOLD+';font-size:0.8rem;font-weight:800;cursor:pointer;padding:0;display:flex;align-items:center;gap:6px;">'+(_leaderboardOpen?'&#9660;':'&#9654;')+' &#127942; Leaderboard'+'</button>'+
+      '</div>';
+    if (!_leaderboardOpen) return '<div style="margin-bottom:14px;">'+head+'</div>';
+    if (_leaderboardLoading || !_leaderboardCache) return '<div style="margin-bottom:14px;">'+head+'<div style="font-size:0.72rem;color:#666;">Loading&hellip;</div></div>';
+    var rows = _leaderboardCache.rows;
+    var m = function(n){ return '$'+(n||0).toLocaleString(undefined,{maximumFractionDigits:0}); };
+    if (!rows.length) return '<div style="margin-bottom:14px;">'+head+'<div style="font-size:0.75rem;color:#666;">No commission activity yet this month.</div></div>';
+    var maxTotal = rows[0].total || 1;
+    var body = rows.slice(0, 8).map(function(r, i) {
+      var first = i === 0;
+      var pct = Math.max(4, Math.round((r.total / maxTotal) * 100));
+      return '<div style="display:flex;align-items:center;gap:10px;padding:9px 12px;background:rgba(255,255,255,0.02);border:1px solid '+(first?'rgba(240,180,41,0.35)':'rgba(255,255,255,0.06)')+';border-radius:10px;margin-bottom:7px;">'+
+        '<div style="font-family:'+COMM_MONO+';font-size:0.85rem;font-weight:700;color:'+(first?COMM_COLOR_GOLD:'#666')+';width:16px;flex-shrink:0;">'+(i+1)+'</div>'+
+        '<div style="flex:1;min-width:0;"><div style="font-size:0.8rem;font-weight:700;color:#eee;">'+esc(r.name)+'</div>'+
+          '<div style="height:5px;background:rgba(255,255,255,0.06);border-radius:100px;margin-top:4px;overflow:hidden;"><div style="height:100%;width:'+pct+'%;background:'+(first?COMM_COLOR_GOLD:'#8DC63F')+';border-radius:100px;"></div></div></div>'+
+        '<div style="font-family:'+COMM_MONO+';font-weight:700;color:#ddd;font-size:0.82rem;flex-shrink:0;">'+m(r.total)+'</div>'+
+      '</div>';
+    }).join('');
+    return '<div style="margin-bottom:14px;">'+head+
+      '<div style="font-size:0.6rem;color:#666;margin-bottom:8px;">Net Commission this month &middot; FixMy + Axia/QCell combined &middot; potential + earned</div>'+
+      body+
+    '</div>';
+  }
+  window._leaderboardToggle = function() {
+    _leaderboardOpen = !_leaderboardOpen;
+    var slot = document.getElementById('leaderboardSlot');
+    if (slot) slot.innerHTML = _leaderboardHtml();
+    if (_leaderboardOpen && !_leaderboardCache) _loadLeaderboardData();
+  };
+  async function _loadLeaderboardData() {
+    _leaderboardLoading = true;
+    var slot = document.getElementById('leaderboardSlot');
+    if (slot) slot.innerHTML = _leaderboardHtml();
+    try {
+      var monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+      var jobsThisMonth = (adminCustomers||[]).filter(function(c){ return _isRealJob(c) && c.created_at && new Date(c.created_at) >= monthStart; });
+      var fixmyIds = jobsThisMonth.filter(function(c){ return c.lead_category !== 'new_solar'; }).map(function(c){ return c.id; });
+      var nsIds = jobsThisMonth.filter(function(c){ return c.lead_category === 'new_solar'; }).map(function(c){ return c.id; });
+      await Promise.all([
+        fixmyIds.length ? _loadFixmyJobCommissions(fixmyIds) : Promise.resolve(),
+        nsIds.length ? _loadAxiaJobCommissions(nsIds) : Promise.resolve()
+      ]);
+      var totals = {};
+      function add(name, amt) { if (!name || !amt) return; totals[name] = (totals[name]||0) + amt; }
+      fixmyIds.forEach(function(id){
+        var d = _fixmyCommCache[id]; if (!d) return;
+        if (d.repId) add(repName(d.repId), d.closerAmt);
+        if (d.hasSetter && d.setterName) add(d.setterName, d.setterAmt);
+      });
+      nsIds.forEach(function(id){
+        var d = _axiaCommCache[id]; if (!d) return;
+        if (d.repId) add(repName(d.repId), d.closerAmt);
+        if (d.hasSetter && d.setterName) add(d.setterName, d.setterAmt);
+      });
+      var rows = Object.keys(totals).map(function(name){ return { name: name, total: totals[name] }; }).sort(function(a,b){ return b.total - a.total; });
+      _leaderboardCache = { rows: rows };
+    } catch(e) { _leaderboardCache = { rows: [] }; }
+    _leaderboardLoading = false;
+    var slot2 = document.getElementById('leaderboardSlot');
+    if (slot2) slot2.innerHTML = _leaderboardHtml();
+  }
+
+  // ── Payout trend sparkline (2026-09-14) — the rep Payroll hero card's "last 6
+  // weeks paid" strip. Real data: `commissions` rows actually marked paid, matched
+  // to this person by payee id OR payee_name (a setter commission's payee can be a
+  // raw name string rather than a rep_id — see edRecordFixmySplit).
+  var _payrollSparklineCache = {}; // person.id -> [w1..w6] oldest→newest
+  async function _loadPayrollSparkline(person) {
+    if (_payrollSparklineCache[person.id]) return _payrollSparklineCache[person.id];
+    try {
+      var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var since = new Date(); since.setDate(since.getDate() - 42);
+      var { data } = await pc.from('commissions').select('amount,payee,payee_name,paid_at').eq('status', 'paid').gte('paid_at', since.toISOString());
+      var mine = (data || []).filter(function(x) {
+        return x.payee === person.id || ((x.payee_name || '').trim().toLowerCase() === (person.name || '').trim().toLowerCase());
+      });
+      var weeks = [];
+      for (var i = 5; i >= 0; i--) {
+        var wkEnd = new Date(); wkEnd.setDate(wkEnd.getDate() - i * 7);
+        var wkStart = new Date(wkEnd); wkStart.setDate(wkStart.getDate() - 7);
+        var total = mine.filter(function(x) { var d = new Date(x.paid_at); return d > wkStart && d <= wkEnd; })
+          .reduce(function(t, x) { return t + (parseFloat(x.amount) || 0); }, 0);
+        weeks.push(total);
+      }
+      _payrollSparklineCache[person.id] = weeks;
+      return weeks;
+    } catch (e) { return null; }
+  }
+  function _payrollSparklineHtml(weeks) {
+    if (!weeks || !weeks.some(function(w){ return w > 0; })) return '';
+    var max = Math.max.apply(null, weeks) || 1;
+    var bars = weeks.map(function(w, i) {
+      var pct = Math.max(6, Math.round((w / max) * 100));
+      var isLast = i === weeks.length - 1;
+      return '<div style="flex:1;height:26px;display:flex;align-items:flex-end;"><div style="width:100%;height:'+pct+'%;background:'+(isLast?COMM_COLOR_GOLD:'rgba(240,180,41,0.35)')+';border-radius:2px 2px 0 0;"></div></div>';
+    }).join('');
+    return '<div style="display:flex;gap:3px;margin-top:14px;">'+bars+'</div><div style="font-size:0.62rem;color:#666;margin-top:5px;">Last 6 weeks paid</div>';
   }
 
   // ── TEAM TAB ───────────────────────────────────────────────────────────────
@@ -26869,26 +27054,71 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         function _payrollSort(a,b){ return (a.payInfo?a.payInfo.date.getTime():0) - (b.payInfo?b.payInfo.date.getTime():0); }
         earnedRows.sort(_payrollSort); upcomingRows.sort(_payrollSort);
         function moneyR(n){ return '$'+(n||0).toLocaleString(undefined,{maximumFractionDigits:2}); }
+        // Same stripe + hero-gold-figure treatment as the redesigned job card, so the
+        // two screens read as one system (2026-09-14, per Dennis's "roll with all
+        // suggestions" — the Payout Redesign mockup).
+        function _payrollRowHtml(r, tentative) {
+          var stripeColor = tentative ? COMM_COLOR_POTENTIAL : COMM_COLOR_EARNED;
+          return '<div style="display:flex;border-radius:10px;overflow:hidden;border:1px solid rgba(255,255,255,0.08);margin-bottom:8px;">'+
+            '<div style="width:4px;flex-shrink:0;background:'+stripeColor+';"></div>'+
+            '<div style="flex:1;padding:10px 13px;background:rgba(255,255,255,0.02);">'+
+              '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;"><span style="font-size:0.85rem;font-weight:700;">'+esc(r.name)+'</span><span style="font-family:'+COMM_MONO+';font-size:0.95rem;font-weight:800;color:'+COMM_COLOR_GOLD+';">'+moneyR(r.amount)+(tentative?' est.':'')+'</span></div>'+
+              '<div style="font-size:0.7rem;color:#888;margin-top:2px;">'+r.reason+'</div>'+
+              (r.payInfo ? '<div style="font-size:0.68rem;color:#666;margin-top:4px;">'+(tentative?'Est. pay ~':'Pay date: ')+_payDateShort(r.payInfo.date)+'</div>' : '')+
+            '</div>'+
+          '</div>';
+        }
 
-        h += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#8DC63F;margin-bottom:8px;">&#10003; Earned &mdash; pay Friday</div>';
+        // ── Hero "Next Payout" card + 3-week calendar strip (idea 1 + 4 from the
+        // mockup) — groups every row (earned + upcoming alike) by its own pay-Friday,
+        // so the hero always reflects the nearest real payday, whether that's a firm
+        // Earned total or a tentative estimate.
+        var allPayRows = earnedRows.concat(upcomingRows).filter(function(r){ return r.payInfo; });
+        var byFriday = {};
+        allPayRows.forEach(function(r){
+          var key = r.payInfo.date.toISOString().slice(0,10);
+          (byFriday[key] = byFriday[key] || { date: r.payInfo.date, total: 0, tentative: false }).total += r.amount;
+          if (r.payInfo.tentative) byFriday[key].tentative = true;
+        });
+        var fridayKeys = Object.keys(byFriday).sort();
+        var todayMid = new Date(); todayMid.setHours(0,0,0,0);
+        var upcomingKeys = fridayKeys.filter(function(k){ return byFriday[k].date >= todayMid; });
+        var heroKey = upcomingKeys[0] || fridayKeys[fridayKeys.length-1] || null;
+        var hero = heroKey ? byFriday[heroKey] : null;
+
+        if (hero) {
+          var daysAway = Math.round((hero.date - todayMid) / 86400000);
+          var whenLabel = daysAway === 0 ? 'today' : daysAway === 1 ? 'tomorrow' : daysAway > 0 ? ('in ' + daysAway + ' days') : (Math.abs(daysAway) + ' day' + (Math.abs(daysAway)===1?'':'s') + ' ago');
+          var weekPct = Math.max(4, Math.min(100, Math.round(((7 - Math.max(0, Math.min(7, daysAway))) / 7) * 100)));
+          h += '<div style="background:linear-gradient(180deg, rgba(240,180,41,0.1), rgba(240,180,41,0.02) 60%), rgba(255,255,255,0.03);border:1px solid rgba(240,180,41,0.3);border-radius:16px;padding:16px 16px 14px;margin-bottom:18px;">';
+          h += '<div style="font-size:0.68rem;font-weight:700;color:'+COMM_COLOR_GOLD+';text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px;">&#128176; Next Payout</div>';
+          h += '<div style="font-family:'+COMM_MONO+';font-size:2.1rem;font-weight:800;color:#fff;line-height:1;">'+moneyR(hero.total)+'</div>';
+          h += '<div style="font-size:0.8rem;color:#999;margin-top:6px;">'+(hero.tentative?'Estimated &middot; ':'')+'Lands <b style="color:#fff;">'+_payDateShort(hero.date)+'</b> &middot; '+whenLabel+'</div>';
+          h += '<div style="margin-top:12px;height:5px;background:rgba(255,255,255,0.08);border-radius:100px;overflow:hidden;"><div style="height:100%;width:'+weekPct+'%;background:linear-gradient(90deg,'+COMM_COLOR_GOLD+',#ffd166);border-radius:100px;"></div></div>';
+          h += '<div style="display:flex;gap:8px;margin-top:14px;">';
+          for (var wk = 0; wk < 3; wk++) {
+            var wkFriday = new Date(hero.date); wkFriday.setDate(wkFriday.getDate() + wk*7);
+            var wkKey = wkFriday.toISOString().slice(0,10);
+            var wkTotal = (byFriday[wkKey]||{}).total || 0;
+            var isNow = wk === 0;
+            h += '<div style="flex:1;background:'+(isNow?'rgba(240,180,41,0.1)':'rgba(255,255,255,0.03)')+';border:1px solid '+(isNow?'rgba(240,180,41,0.35)':'rgba(255,255,255,0.08)')+';border-radius:10px;padding:8px 5px;text-align:center;">'+
+              '<div style="font-size:0.6rem;color:#666;font-weight:700;text-transform:uppercase;">'+(wk===0?'This wk':wk===1?'Next wk':'Wk after')+'</div>'+
+              '<div style="font-size:0.66rem;color:#999;margin-top:2px;">'+_payDateShort(wkFriday).replace(/^\w+,\s*/,'')+'</div>'+
+              '<div style="font-family:'+COMM_MONO+';font-size:0.78rem;font-weight:700;color:'+(isNow?COMM_COLOR_GOLD:'#ddd')+';margin-top:3px;">'+moneyR(wkTotal)+'</div>'+
+            '</div>';
+          }
+          h += '</div>';
+          h += '<div id="payrollSparkline_'+person.id+'"></div>';
+          h += '</div>';
+        }
+
+        h += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:'+COMM_COLOR_EARNED+';margin-bottom:8px;">&#10003; Earned</div>';
         if (!earnedRows.length) h += '<div style="font-size:0.75rem;color:#666;margin-bottom:16px;">Nothing earned yet.</div>';
-        earnedRows.forEach(function(r){
-          h += '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:10px 13px;margin-bottom:8px;">'+
-            '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;"><span style="font-size:0.85rem;font-weight:700;">'+esc(r.name)+'</span><span style="font-size:0.9rem;font-weight:800;color:#8DC63F;">'+moneyR(r.amount)+'</span></div>'+
-            '<div style="font-size:0.7rem;color:#888;margin-top:2px;">'+r.reason+'</div>'+
-            (r.payInfo ? '<div style="font-size:0.68rem;color:#666;margin-top:4px;">Pay date: '+_payDateShort(r.payInfo.date)+'</div>' : '')+
-          '</div>';
-        });
+        earnedRows.forEach(function(r){ h += _payrollRowHtml(r, false); });
 
-        h += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#ffaa00;margin:18px 0 8px;">&#8987; Estimated upcoming</div>';
+        h += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:'+COMM_COLOR_POTENTIAL+';margin:18px 0 8px;">&#8987; Estimated upcoming</div>';
         if (!upcomingRows.length) h += '<div style="font-size:0.75rem;color:#666;">Nothing sold-but-not-yet-Installed right now.</div>';
-        upcomingRows.forEach(function(r){
-          h += '<div style="background:rgba(255,170,0,0.06);border:1px dashed rgba(255,170,0,0.3);border-radius:10px;padding:10px 13px;margin-bottom:8px;">'+
-            '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;"><span style="font-size:0.85rem;font-weight:700;">'+esc(r.name)+'</span><span style="font-size:0.9rem;font-weight:800;color:#ffaa00;">'+moneyR(r.amount)+' est.</span></div>'+
-            '<div style="font-size:0.7rem;color:#888;margin-top:2px;">'+r.reason+'</div>'+
-            (r.payInfo ? '<div style="font-size:0.68rem;color:#666;margin-top:4px;">Est. pay ~'+_payDateShort(r.payInfo.date)+'</div>' : '')+
-          '</div>';
-        });
+        upcomingRows.forEach(function(r){ h += _payrollRowHtml(r, true); });
       }
 
       // ── Field jobs view (assigned_ops tab — showFieldJobs disabled for techs) ──
@@ -27585,6 +27815,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             _pMissingN.length ? _loadAxiaJobCommissions(_pMissingN) : Promise.resolve()
           ]).then(function(){ if (salesView === 'payroll') renderSales(); });
         }
+        // Sparkline patches its own placeholder div once fetched — no full re-render
+        // needed, same pattern as the per-job commission placeholders elsewhere.
+        _loadPayrollSparkline(person).then(function(weeks){
+          var el = document.getElementById('payrollSparkline_'+person.id);
+          if (el) el.innerHTML = _payrollSparklineHtml(weeks);
+        });
       }
     }
 
