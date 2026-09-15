@@ -1,4 +1,4 @@
--- Axia/QCell PPW commission inputs — TPO provider selector (2026-09-03, per Dennis).
+-- Axia/QCells PPW commission inputs — TPO provider selector (2026-09-03, per Dennis).
 -- ns_is_tpo (boolean, added 2026-08-29b) only distinguishes TPO vs Cash/Loan; it can't
 -- tell WHICH TPO provider was used, and each provider carries its own standard
 -- Redline/Domestic-Content-Bonus rate (EnFin $2.20/$0.45, Lightreach $2.20/$0.25,
