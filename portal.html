@@ -2504,6 +2504,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   var _jobsCommRange = 'month';
   var _jobsCommOpen = { fixmy:false, new_solar:false };
   var _jobsCommLoading = { fixmy:false, new_solar:false };
+  // 'tiles' (roll-up totals) | 'report' — a spreadsheet-style, one-row-per-job list
+  // with Gross Commission / Tech's Commission / Setter's Commission each their own
+  // column, added 2026-09-15 per Dennis ("a list that reads like a Financial Report
+  // via an excel format... Same data being collected just an alternative view").
+  // Same D/Week/Month/Quarter/Year/Total range as the tile view — it's the identical
+  // underlying data, just read as rows instead of summed into 3-4 numbers.
+  var _jobsCommViewMode = { fixmy:'tiles', new_solar:'tiles' };
   function _jobsCommRangeStart(range) {
     var now = new Date();
     if (range === 'day') { var d0 = new Date(now); d0.setHours(0,0,0,0); return d0; }
@@ -2546,7 +2553,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var on = _jobsCommRange===r[0];
       return '<button onclick="window._jobsCommSetRange(\''+cat+'\',\''+r[0]+'\')" style="width:auto;padding:5px 13px;border-radius:100px;font-size:0.7rem;font-weight:700;cursor:pointer;border:1px solid '+(on?color+'80':'rgba(255,255,255,0.1)')+';background:'+(on?color+'22':'rgba(255,255,255,0.04)')+';color:'+(on?color:'#888')+';">'+r[1]+'</button>';
     }).join('')+'</div>';
-    if (_jobsCommLoading[cat]) return '<div style="margin-bottom:14px;">'+head+rangeBar+'<div style="font-size:0.72rem;color:#666;">Loading&hellip;</div></div>';
+    var viewMode = _jobsCommViewMode[cat] || 'tiles';
+    var viewToggle = '<div style="display:flex;gap:6px;margin-bottom:10px;">'+['tiles','report'].map(function(vm){
+      var on = viewMode===vm;
+      var lbl = vm==='tiles' ? '&#128202; Tiles' : '&#128203; Report View';
+      return '<button onclick="window._jobsCommSetViewMode(\''+cat+'\',\''+vm+'\')" style="width:auto;padding:5px 13px;border-radius:100px;font-size:0.68rem;font-weight:700;cursor:pointer;border:1px solid '+(on?color+'80':'rgba(255,255,255,0.1)')+';background:'+(on?color+'22':'rgba(255,255,255,0.04)')+';color:'+(on?color:'#888')+';">'+lbl+'</button>';
+    }).join('')+'</div>';
+    if (_jobsCommLoading[cat]) return '<div style="margin-bottom:14px;">'+head+rangeBar+viewToggle+'<div style="font-size:0.72rem;color:#666;">Loading&hellip;</div></div>';
     var scoped = _jobsScopedForCat(cat);
     var cache = cat==='new_solar' ? _axiaCommCache : _fixmyCommCache;
     var rev=0, cost=0, net=0, marg=0, count=0, missing=0, pendSetter=0, pendTech=0, pendOps=0;
@@ -2601,13 +2614,105 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         tile('Gross Commission', net, COMM_COLOR_GOLD)+
         tile('Company Margin', marg, COMM_COLOR_MARGIN);
     }
-    return '<div style="margin-bottom:14px;">'+head+rangeBar+
+    var bodyHtml = viewMode==='report'
+      ? _jobsCommReportHtml(cat, scoped, cache, color)
+      : '<div style="display:flex;gap:10px;flex-wrap:wrap;">'+tilesHtml+'</div>'+pendHtml;
+    return '<div style="margin-bottom:14px;">'+head+rangeBar+viewToggle+
       '<div style="font-size:0.6rem;color:#666;margin-bottom:8px;">'+captionHtml+'</div>'+
-      '<div style="display:flex;gap:10px;flex-wrap:wrap;">'+tilesHtml+'</div>'+
-      pendHtml+
+      bodyHtml+
       (missing ? '<div style="font-size:0.62rem;color:#555;margin-top:6px;">'+missing+' job'+(missing===1?'':'s')+' still loading&hellip;</div>' : '')+
     '</div>';
   }
+  window._jobsCommSetViewMode = function(cat, mode) {
+    _jobsCommViewMode[cat] = mode;
+    var slot = document.getElementById('jobsCommDash');
+    if (slot) slot.innerHTML = _jobsCommDashHtml(cat);
+  };
+  // One row per job — Customer / Sold Date / Status / Gross Commission / Tech's
+  // Commission (amount, name, paid status) / Setter's Commission (same) / Company
+  // Margin. Built from the exact same `scoped`/`cache` the tile roll-up already
+  // computed from (never a second, independently-fetched data source), so a report
+  // row and the tile total it belongs to can never quietly disagree.
+  function _jobsCommReportRows(scoped, cache) {
+    var rows = [];
+    scoped.forEach(function(c){
+      var d = cache[c.id];
+      if (!d) return;
+      rows.push({
+        id: c.id,
+        name: ((c.first_name||'')+' '+(c.last_name||'')).trim() || c.address || String(c.id).slice(0,8),
+        soldAt: d.soldAt || c.sold_at || c.created_at || null,
+        earned: !!d.earned,
+        gross: _grossCommissionOf(d),
+        techAmt: d.repId ? (d.closerAmt||0) : 0,
+        techName: d.repId ? (REP_NAMES[d.repId]||d.repId) : '',
+        techPaid: !d.repId ? '' : (d.closerLocked ? (d.closerPaid?'Paid':'Sold') : 'Estimated'),
+        setterAmt: d.hasSetter ? (d.setterAmt||0) : 0,
+        setterName: d.hasSetter ? (d.setterName||'') : '',
+        setterPaid: !d.hasSetter ? '' : (d.setterLocked ? (d.setterPaid?'Paid':'Sold') : 'Estimated'),
+        margin: d.companyAmt||0
+      });
+    });
+    rows.sort(function(a,b){ return new Date(b.soldAt||0) - new Date(a.soldAt||0); });
+    return rows;
+  }
+  function _jobsCommReportDate(iso) {
+    if (!iso) return '—';
+    var dt = new Date(iso);
+    if (isNaN(dt.getTime())) return '—';
+    return (dt.getMonth()+1)+'/'+dt.getDate()+'/'+String(dt.getFullYear()).slice(2);
+  }
+  function _jobsCommReportHtml(cat, scoped, cache, color) {
+    var rows = _jobsCommReportRows(scoped, cache);
+    var m = function(n){ return '$'+(n||0).toLocaleString(undefined,{maximumFractionDigits:0}); };
+    if (!rows.length) return '<div style="font-size:0.72rem;color:#666;padding:10px 0;">No jobs in this range yet.</div>';
+    var th = function(label){ return '<th style="text-align:left;padding:6px 10px;font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#888;white-space:nowrap;border-bottom:1px solid rgba(255,255,255,0.1);">'+label+'</th>'; };
+    var td = function(html, rightAlign){ return '<td style="padding:6px 10px;font-size:0.74rem;color:#ddd;white-space:nowrap;border-bottom:1px solid rgba(255,255,255,0.05);'+(rightAlign?'text-align:right;':'')+'">'+html+'</td>'; };
+    var head = '<tr>'+th('Customer')+th('Sold')+th('Status')+th('Gross Commission')+th("Tech&#39;s Commission")+th('Tech')+th('Tech Status')+th("Setter&#39;s Commission")+th('Setter')+th('Setter Status')+th('Company Margin')+'</tr>';
+    var body = rows.map(function(r){
+      return '<tr>'+
+        td(esc(r.name))+
+        td(_jobsCommReportDate(r.soldAt))+
+        td('<span style="color:'+(r.earned?COMM_COLOR_EARNED:COMM_COLOR_POTENTIAL)+';font-weight:700;">'+(r.earned?'Earned':'Potential')+'</span>')+
+        td('<b style="color:#ddd;font-family:'+COMM_MONO+';">'+m(r.gross)+'</b>', true)+
+        td(r.techAmt?'<b style="color:'+COMM_COLOR_GOLD+';font-family:'+COMM_MONO+';">'+m(r.techAmt)+'</b>':'—', true)+
+        td(esc(r.techName)||'—')+
+        td(r.techPaid||'—')+
+        td(r.setterAmt?'<b style="color:'+COMM_COLOR_GOLD+';font-family:'+COMM_MONO+';">'+m(r.setterAmt)+'</b>':'—', true)+
+        td(esc(r.setterName)||'—')+
+        td(r.setterPaid||'—')+
+        td('<b style="color:'+COMM_COLOR_MARGIN+';font-family:'+COMM_MONO+';">'+m(r.margin)+'</b>', true)+
+      '</tr>';
+    }).join('');
+    var totals = rows.reduce(function(a,r){ a.gross+=r.gross; a.tech+=r.techAmt; a.setter+=r.setterAmt; a.margin+=r.margin; return a; }, {gross:0,tech:0,setter:0,margin:0});
+    var footRow = '<tr>'+td('<b>Total &middot; '+rows.length+' job'+(rows.length===1?'':'s')+'</b>')+td('')+td('')+
+      td('<b style="color:#ddd;font-family:'+COMM_MONO+';">'+m(totals.gross)+'</b>', true)+
+      td('<b style="color:'+COMM_COLOR_GOLD+';font-family:'+COMM_MONO+';">'+m(totals.tech)+'</b>', true)+td('')+td('')+
+      td('<b style="color:'+COMM_COLOR_GOLD+';font-family:'+COMM_MONO+';">'+m(totals.setter)+'</b>', true)+td('')+td('')+
+      td('<b style="color:'+COMM_COLOR_MARGIN+';font-family:'+COMM_MONO+';">'+m(totals.margin)+'</b>', true)+
+    '</tr>';
+    return '<div style="display:flex;justify-content:flex-end;margin-bottom:6px;">'+
+      '<button onclick="window._jobsCommExportReport(\''+cat+'\')" style="width:auto;padding:5px 14px;border-radius:100px;font-size:0.68rem;font-weight:700;cursor:pointer;border:1px solid rgba(141,198,63,0.35);background:rgba(141,198,63,0.1);color:#8DC63F;">&#8681; Export CSV (Excel)</button>'+
+    '</div>'+
+    '<div style="overflow-x:auto;border:1px solid rgba(255,255,255,0.08);border-radius:8px;">'+
+      '<table style="border-collapse:collapse;width:100%;">'+
+        '<thead>'+head+'</thead>'+
+        '<tbody>'+body+'</tbody>'+
+        '<tfoot style="background:rgba(255,255,255,0.03);">'+footRow+'</tfoot>'+
+      '</table>'+
+    '</div>';
+  }
+  window._jobsCommExportReport = function(cat) {
+    var scoped = _jobsScopedForCat(cat);
+    var cache = cat==='new_solar' ? _axiaCommCache : _fixmyCommCache;
+    var rows = _jobsCommReportRows(scoped, cache);
+    var header = ['Customer','Sold Date','Status','Gross Commission','Tech\'s Commission','Tech','Tech Status','Setter\'s Commission','Setter','Setter Status','Company Margin'];
+    var csvRows = rows.map(function(r){
+      return [r.name, _jobsCommReportDate(r.soldAt), r.earned?'Earned':'Potential', r.gross, r.techAmt||'', r.techName||'', r.techPaid||'', r.setterAmt||'', r.setterName||'', r.setterPaid||'', r.margin];
+    });
+    var rangeLbl = (JOBS_COMM_RANGES.find(function(x){ return x[0]===_jobsCommRange; })||['','all'])[1];
+    window.finExportCSV((cat==='new_solar'?'axia_qcells':'fixmy')+'_commission_report_'+rangeLbl.toLowerCase(), header, csvRows);
+  };
   window._jobsCommToggle = function(cat) {
     _jobsCommOpen[cat] = !_jobsCommOpen[cat];
     var slot = document.getElementById('jobsCommDash');
