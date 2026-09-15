@@ -2114,17 +2114,47 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   var COMM_COLOR_REDLINE = '#e8735a';
   var COMM_COLOR_EARNED = '#8DC63F';     // brand green, unchanged
   var COMM_COLOR_POTENTIAL = '#ffb648';
+  // A commission-cache entry is Axia/QCells' if it carries the PPW formula's own
+  // fields (basePpw/redline/dcBonus/netPpw) — _fixmyCommCache entries never set
+  // these, so this is a reliable pipeline discriminator without threading a
+  // separate flag through every call site.
+  function _isAxiaComm(d) { return typeof d.basePpw === 'number'; }
+  // ONE place both _revCostLineHtml and _waterfallBarHtml get "the real Gross
+  // Commission" from, so they can never compute two different numbers for the
+  // same job. FixMy: Revenue collected − Sub Sheet Redline. Axia/QCells: the PPW
+  // formula already produces Gross Commission as `d.revenue` directly (Net PPW ×
+  // Watts) — subtracting d.costs (the rep payout pool, not a per-job cost) here
+  // would double-count the split and was the root of the 2026-09-15 bug where the
+  // waterfall bar and the "Revenue − Redline" line both silently showed Company
+  // Margin's own number back as if it were Gross Commission.
+  function _grossCommissionOf(d) {
+    if (_isAxiaComm(d)) return Math.max(0, d.revenue||0);
+    return Math.max(0, (d.revenue||0) - (d.costs||0));
+  }
   function _revCostLineHtml(d) {
     var m = function(n){ return '$'+(n||0).toLocaleString(undefined,{maximumFractionDigits:0}); };
-    var gross = Math.max(0, (d.revenue||0) - (d.costs||0));
-    return '<div style="font-size:0.7rem;color:#888;">Revenue <b style="color:#ccc;font-family:'+COMM_MONO+';">'+m(d.revenue)+'</b> &minus; Redline <b style="color:'+COMM_COLOR_REDLINE+';font-family:'+COMM_MONO+';">'+m(d.costs)+'</b> = Gross Commission <b style="color:#ddd;font-family:'+COMM_MONO+';">'+m(gross)+'</b></div>';
+    if (_isAxiaComm(d)) {
+      // Axia/QCells — the real PPW/Redline formula (2026-08-29, AUTHORITATIVE),
+      // never FixMy's Revenue-minus-Redline sentence, which means nothing on this
+      // pipeline (there is no "Revenue collected" or Sub Sheet job cost here).
+      var ppw = function(n){ return '$'+(n||0).toFixed(2); };
+      var watts = d.watts||0;
+      return '<div style="font-size:0.7rem;color:#888;line-height:1.8;">'+
+        '<div>Base PPW <b style="color:#ccc;font-family:'+COMM_MONO+';">'+ppw(d.basePpw)+'</b></div>'+
+        '<div>Redline <b style="color:'+COMM_COLOR_REDLINE+';font-family:'+COMM_MONO+';">'+ppw(d.redline)+'</b></div>'+
+        '<div>DC Bonus <b style="color:'+COMM_COLOR_EARNED+';font-family:'+COMM_MONO+';">'+ppw(d.dcBonus)+'</b></div>'+
+        '<div style="margin-top:4px;padding-top:4px;border-top:1px dashed rgba(255,255,255,0.08);">Net PPW ('+ppw(d.basePpw)+' &minus; '+ppw(d.redline)+' + '+ppw(d.dcBonus)+') = <b style="color:#ddd;font-family:'+COMM_MONO+';">'+ppw(d.netPpw)+'</b></div>'+
+      '</div>'+
+      '<div style="font-size:0.7rem;color:#888;margin-top:6px;">Net PPW <b style="color:#ddd;font-family:'+COMM_MONO+';">'+ppw(d.netPpw)+'</b> &times; System Size <b style="color:#ccc;font-family:'+COMM_MONO+';">'+watts.toLocaleString()+'W</b> = Gross Commission <b style="color:#ddd;font-family:'+COMM_MONO+';">'+m(_grossCommissionOf(d))+'</b></div>';
+    }
+    return '<div style="font-size:0.7rem;color:#888;">Revenue <b style="color:#ccc;font-family:'+COMM_MONO+';">'+m(d.revenue)+'</b> &minus; Redline <b style="color:'+COMM_COLOR_REDLINE+';font-family:'+COMM_MONO+';">'+m(d.costs)+'</b> = Gross Commission <b style="color:#ddd;font-family:'+COMM_MONO+';">'+m(_grossCommissionOf(d))+'</b></div>';
   }
   // Proportional bar splitting Gross Commission into Net Commission(s) (gold) vs
   // Company Margin (violet) — the "waterfall as a bar, not a sentence" idea. Lives
   // inside the "See the math" panel, admin-only, right under the Revenue/Redline line.
   function _waterfallBarHtml(d) {
     var m = function(n){ return '$'+(n||0).toLocaleString(undefined,{maximumFractionDigits:0}); };
-    var gross = Math.max(0, (d.revenue||0) - (d.costs||0));
+    var gross = _grossCommissionOf(d);
     if (gross <= 0) return '';
     var netTotal = (d.repId ? (d.closerAmt||0) : 0) + (d.hasSetter ? (d.setterAmt||0) : 0);
     var netPct = Math.max(0, Math.min(100, Math.round((netTotal/gross)*100)));
@@ -2525,7 +2555,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (!d) { missing++; return; }
       count++;
       rev += (d.revenue||0); cost += (d.costs||0);
-      net += Math.max(0, (d.revenue||0) - (d.costs||0));
+      net += _grossCommissionOf(d);
       marg += (d.companyAmt||0);
       if (d.repId && !d.closerPaid) pendTech += d.closerAmt;
       if (d.hasSetter && !d.setterPaid) pendSetter += d.setterAmt;
@@ -2551,14 +2581,29 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '<div style="font-size:0.6rem;color:'+r[2]+';font-weight:700;">'+r[0]+'</div>'+
           '<div style="font-size:0.85rem;font-weight:700;color:#ddd;">'+m(r[1])+'</div></div>';
       }).join('')+'</div></div>';
-    return '<div style="margin-bottom:14px;">'+head+rangeBar+
-      '<div style="font-size:0.6rem;color:#666;margin-bottom:8px;">Scoped to '+(cat==='new_solar'?'Axia/QCells':'FixMy')+' jobs sold in this range &middot; '+count+' job'+(count===1?'':'s')+(cat==='new_solar'?' &middot; Revenue = Gross Commission owed by Axia/QCells (Redline is already netted into the per-watt price), Net Commissions are Setter/Tech pay owed out.':' &middot; Revenue = collected payments, Redline = Sub Sheet job costs.')+'</div>'+
-      '<div style="display:flex;gap:10px;flex-wrap:wrap;">'+
-        tile('Revenue', rev, '#4a9eff')+
+    // Axia/QCells has no "Revenue collected" or "Redline job cost" concept — those
+    // are FixMy-only terms (2026-09-15 fix, same root cause as _grossCommissionOf
+    // above: Redline/DC Bonus are already netted into the per-watt price before
+    // Gross Commission is ever computed, so a separate Redline tile here would be
+    // showing the rep payout pool mislabeled as a cost). Axia gets its own honest
+    // 3-tile set instead of FixMy's 4, rather than a caption trying to explain away
+    // mismatched labels.
+    var tilesHtml, captionHtml;
+    if (cat==='new_solar') {
+      captionHtml = 'Scoped to Axia/QCells jobs sold in this range &middot; '+count+' job'+(count===1?'':'s')+' &middot; Gross Commission = Net PPW &times; System Size (Redline &amp; DC Bonus already netted into the per-watt price).';
+      tilesHtml = tile('Gross Commission', net, COMM_COLOR_GOLD)+
+        tile('Payout Pool (Setter/Tech)', cost, '#4a9eff')+
+        tile('Company Margin', marg, COMM_COLOR_MARGIN);
+    } else {
+      captionHtml = 'Scoped to FixMy jobs sold in this range &middot; '+count+' job'+(count===1?'':'s')+' &middot; Revenue = collected payments, Redline = Sub Sheet job costs.';
+      tilesHtml = tile('Revenue', rev, '#4a9eff')+
         tile('Redline', cost, COMM_COLOR_REDLINE)+
         tile('Gross Commission', net, COMM_COLOR_GOLD)+
-        tile('Company Margin', marg, COMM_COLOR_MARGIN)+
-      '</div>'+
+        tile('Company Margin', marg, COMM_COLOR_MARGIN);
+    }
+    return '<div style="margin-bottom:14px;">'+head+rangeBar+
+      '<div style="font-size:0.6rem;color:#666;margin-bottom:8px;">'+captionHtml+'</div>'+
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;">'+tilesHtml+'</div>'+
       pendHtml+
       (missing ? '<div style="font-size:0.62rem;color:#555;margin-top:6px;">'+missing+' job'+(missing===1?'':'s')+' still loading&hellip;</div>' : '')+
     '</div>';
