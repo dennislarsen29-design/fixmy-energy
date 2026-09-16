@@ -1851,6 +1851,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             '<div class="job-status-pill" style="background:'+nsRec.color+'22;color:'+nsRec.color+';border:1px solid '+nsRec.color+'44;">'+nsRec.label+'</div></div>'+
             '<div class="job-addr">'+(c.address||'No address')+'</div>'+
             (c.monthly_bill?'<div class="job-meta">$'+c.monthly_bill+'/mo'+(c.utility?' &middot; '+c.utility:'')+'</div>':'')+
+            _installDateBlockHtml(c)+
             '<div id="jobComm_'+c.id+'">'+_axiaCommLineHtml(c.id)+'</div>'+
           '</div>';
         } else {
@@ -1881,6 +1882,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
               (c.assigned_ops&&c.milestone2_status==='paid'&&c.milestone3_amount&&c.milestone3_status!=='paid'?'<button onclick="event.stopPropagation();markOpsMilestonePaid(\''+c.id+'\',\'M3\')" style="font-size:0.72rem;padding:5px 14px;border-radius:100px;background:rgba(249,115,22,0.1);color:#f97316;border:1px solid rgba(249,115,22,0.3);cursor:pointer;font-weight:700;">&#9889; M3 Paid</button>':'')+
               (c.step===8?'<button onclick="event.stopPropagation();markJobInstalled(\''+c.id+'\')" style="font-size:0.72rem;padding:5px 14px;border-radius:100px;background:rgba(141,198,63,0.1);color:#8DC63F;border:1px solid rgba(141,198,63,0.3);cursor:pointer;font-weight:700;">&#9989; Mark Installed</button>':'')+
             '</div>'+
+            _installDateBlockHtml(c)+
             '<div id="jobComm_'+c.id+'">'+_jobCommLineHtml(c.id)+'</div>'+
           '</div>';
         }
@@ -1967,11 +1969,21 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // (customers.sold_at) + a typical duration for that job type.
   //
   // The duration is meant to self-correct, not stay a guess forever: it's the live
-  // median of (installed_at||ns_pto_at) − sold_at across real completed jobs of
-  // that type, once there are enough of them (>=3) to trust over the seed. Seeds
-  // (Dennis, 2026-09-13/14): battery retrofit and Axia/QCells both 5 weeks;
+  // median of (install_date||installed_at||ns_pto_at) − sold_at across real completed
+  // jobs of that type, once there are enough of them (>=3) to trust over the seed.
+  // Seeds (Dennis, 2026-09-13/14): battery retrofit and Axia/QCells both 5 weeks;
   // diagnostic/monitoring — no real duration given, 10 days is a placeholder for a
   // job that's usually just scheduling one Cosmic visit — correct if wrong.
+  // ⚠️ 2026-09-17, per Dennis ("a simple way for the Installation dates to go into
+  // the portal manually... actively track install timelines"): `install_date` is now
+  // a real, directly-editable field on every job card (see _installDateBlockHtml
+  // below) instead of only being set as a byproduct of the appointment-date field on
+  // an admin save. It's preferred here over the auto-stamped `installed_at`/
+  // `ns_pto_at` (which just record "the moment someone clicked Mark
+  // Installed"/PTO — often days after the real install) whenever a human has actually
+  // entered it, since that's the true install date. installed_at/ns_pto_at stay the
+  // ONLY source for the "earned" pay-date math elsewhere in this file (payroll is
+  // untouched by this) — this cache is solely the operational duration estimate.
   var INSTALL_DURATION_SEED_DAYS = { battery_retrofit: 35, new_solar: 35, diagnostic: 10, monitoring: 10 };
   var _installDurationCache = {}; // key ('battery_retrofit'|'new_solar'|'diagnostic'|'monitoring') -> {days, source, sampleSize}
   var _installDurationFetchedAt = 0;
@@ -1980,12 +1992,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (Date.now() - _installDurationFetchedAt < INSTALL_DURATION_TTL_MS && _installDurationFetchedAt) return;
     try {
       var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
-      var { data } = await pc.from('customers').select('sold_type,lead_category,sold_at,installed_at,ns_pto_at').not('sold_at', 'is', null);
+      var { data } = await pc.from('customers').select('sold_type,lead_category,sold_at,install_date,installed_at,ns_pto_at').not('sold_at', 'is', null);
       var bySoldType = {};
       (data || []).forEach(function(r) {
         var isNS = r.lead_category === 'new_solar';
         var key = isNS ? 'new_solar' : (r.sold_type || 'diagnostic');
-        var doneAt = isNS ? r.ns_pto_at : r.installed_at;
+        var doneAt = r.install_date || (isNS ? r.ns_pto_at : r.installed_at);
         if (!doneAt) return;
         var days = (new Date(doneAt) - new Date(r.sold_at)) / 86400000;
         if (!(days >= 0) || days > 365) return; // guard against bad/impossible data, never let it skew the median
@@ -2004,6 +2016,90 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   function _installDurationFor(key) {
     return _installDurationCache[key] || { days: INSTALL_DURATION_SEED_DAYS[key] || 21, source: 'seed', sampleSize: 0 };
   }
+  // ── Admin Dashboard broadcast — "Battery Retrofit Sale to Install: 28 days" ──
+  // (2026-09-17, per Dennis, same request as the manual install-date field below).
+  // Renders the live-or-seed duration for whichever job type(s) belong to the Jobs
+  // tab category currently open — reuses the exact same cache the pay-date estimate
+  // bubble reads from, so the two numbers can never disagree.
+  var INSTALL_DURATION_LABELS = { battery_retrofit: 'Battery Retrofit', diagnostic: 'Diagnostic / RMA', monitoring: 'Monitoring', new_solar: 'Axia/QCells' };
+  function _installTimelineStripHtml(cat) {
+    var keys = cat === 'new_solar' ? ['new_solar'] : ['battery_retrofit', 'diagnostic'];
+    var parts = keys.map(function(k) {
+      var d = _installDurationFor(k);
+      var lbl = INSTALL_DURATION_LABELS[k] || k;
+      var tag = d.source === 'live' ? (' &middot; ' + d.sampleSize + ' job' + (d.sampleSize === 1 ? '' : 's')) : ' &middot; est.';
+      return '<span style="font-size:0.68rem;padding:4px 10px;border-radius:20px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);color:#ccc;">' + lbl + ': <b style="color:#fff;">' + d.days + 'd</b>' + tag + '</span>';
+    }).join('');
+    return '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;">' +
+      '<span style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;">&#128197; Avg. Sale &rarr; Install</span>' +
+      parts +
+    '</div>';
+  }
+  // ── Manual Install Date — a real, directly-editable field on every job card
+  // (2026-09-17, per Dennis: "a simple way for the Installation dates to go into
+  // the portal manually... actively track install timelines and properly
+  // proactively broadcast those dates in the job cards"). `customers.install_date`
+  // already existed but was only ever written as a byproduct of the appointment-date
+  // field once an admin-edited FixMy lead's step reached 7+ — never a standalone
+  // entry point, and the tech/sales editor never touched it at all (see the
+  // 2026-08-25 "Earned gates on step, never install_date" note elsewhere in this
+  // file — that gap is exactly why this needs a real, reliable field rather than
+  // trusting the derived one). One plain <input type="date">, on both pipelines,
+  // both the admin Jobs card and the rep's own Jobs card — whoever is closest to the
+  // real schedule (admin coordinating with Cosmic/Axia, or a Tech on site) can set or
+  // correct it in one tap, no editor to open. Computed synchronously off fields
+  // already on the customer record (install_date/sold_at/step/solar_status) — no
+  // async fetch, unlike the commission line above it, so it renders immediately.
+  function _installTimelineStatus(c) {
+    if (!c.install_date) return null;
+    var inst = new Date(c.install_date); if (isNaN(inst.getTime())) return null;
+    var today = new Date(); today.setHours(0, 0, 0, 0);
+    var instDay = new Date(inst); instDay.setHours(0, 0, 0, 0);
+    var diffDays = Math.round((instDay - today) / 86400000);
+    var isNSJob = c.lead_category === 'new_solar';
+    var earned = isNSJob ? c.solar_status === 'ns_pto' : (c.step || 1) >= 9;
+    var elapsedFromSale = null;
+    if (c.sold_at) { var soldDay = new Date(c.sold_at); soldDay.setHours(0, 0, 0, 0); elapsedFromSale = Math.round((instDay - soldDay) / 86400000); }
+    var shortDate = inst.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    if (earned) return { text: '&#9989; Installed ' + shortDate + (elapsedFromSale != null ? ' &middot; ' + elapsedFromSale + 'd after sale' : ''), color: COMM_COLOR_EARNED };
+    if (diffDays < 0) return { text: '&#9888; Install date passed ' + shortDate + ' &middot; ' + Math.abs(diffDays) + 'd overdue', color: COMM_COLOR_REDLINE };
+    if (diffDays === 0) return { text: '&#128197; Install scheduled today', color: COMM_COLOR_POTENTIAL };
+    return { text: '&#128197; Install scheduled ' + shortDate + ' &middot; in ' + diffDays + 'd', color: '#4a9eff' };
+  }
+  function _installDateBlockHtml(c) {
+    var status = _installTimelineStatus(c);
+    var val = c.install_date ? String(c.install_date).slice(0, 10) : '';
+    return '<div style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;" onclick="event.stopPropagation();">' +
+      '<label style="font-size:0.62rem;font-weight:700;color:#888;white-space:nowrap;">&#128197; Install Date</label>' +
+      '<input type="date" value="' + val + '" onchange="window._saveInstallDate(\'' + c.id + '\', this.value)" style="width:auto;padding:4px 8px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.04);color:#ddd;font-size:0.72rem;"/>' +
+      (status ? '<span style="font-size:0.68rem;color:' + status.color + ';font-weight:700;">' + status.text + '</span>' : '') +
+    '</div>';
+  }
+  // Writes straight to Supabase (a scheduling field, same trust level as every other
+  // direct customers.update() a rep already makes elsewhere in this file), updates
+  // both in-memory record arrays (adminCustomers is aliased to allRecords in a rep
+  // session — see loadSalesDashboard — so one update covers both contexts), and
+  // re-renders whichever view is actually open so the new status text shows
+  // immediately instead of waiting for the next natural reload.
+  window._saveInstallDate = async function(id, val) {
+    try {
+      var cl = supabase.createClient(SUPA_URL, SUPA_KEY);
+      // Noon, not midnight — a bare YYYY-MM-DD parsed as UTC midnight rolls back to
+      // the prior day once rendered in a western-US timezone (toLocaleDateString
+      // above), which would show the wrong install date on every card.
+      var iso = val ? new Date(val + 'T12:00:00').toISOString() : null;
+      var resp = await cl.from('customers').update({ install_date: iso }).eq('id', id);
+      if (resp.error) { alert('Could not save install date: ' + resp.error.message); return; }
+      // adminCustomers IS the rep session's own `allRecords` array (aliased in
+      // loadSalesDashboard specifically so a single update reaches both contexts —
+      // myFixmyJobs/myNSJobs are filter()'d views over the same object references,
+      // never copies), so one mutation here is visible everywhere, admin or rep.
+      var idx = (adminCustomers || []).findIndex(function(x) { return x.id === id; });
+      if (idx > -1) adminCustomers[idx].install_date = iso;
+      if (typeof adminView !== 'undefined' && adminView === 'jobs') renderJobsView();
+      else if (typeof salesView !== 'undefined' && salesView === 'jobs' && typeof renderSales === 'function') renderSales();
+    } catch (e) { alert('Could not save install date: ' + e.message); }
+  };
   // Friday of the week AFTER the week `d` falls in. Week = Mon-Sun (Sunday is day 7
   // of ITS week, not day 1 of the next — same convention as the Dialers Hours gauge
   // elsewhere in this file). Matches Dennis's own example exactly: earned any day
@@ -2618,6 +2714,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       ? _jobsCommReportHtml(cat, scoped, cache, color)
       : '<div style="display:flex;gap:10px;flex-wrap:wrap;">'+tilesHtml+'</div>'+pendHtml;
     return '<div style="margin-bottom:14px;">'+head+rangeBar+viewToggle+
+      _installTimelineStripHtml(cat)+
       '<div style="font-size:0.6rem;color:#666;margin-bottom:8px;">'+captionHtml+'</div>'+
       bodyHtml+
       (missing ? '<div style="font-size:0.62rem;color:#555;margin-top:6px;">'+missing+' job'+(missing===1?'':'s')+' still loading&hellip;</div>' : '')+
@@ -27269,6 +27366,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
               '</div>';
               h += '<div style="background:'+nsJRec.color+'22;border-radius:6px;padding:4px 10px;font-size:0.72rem;font-weight:700;color:'+nsJRec.color+';border:1px solid '+nsJRec.color+'44;">'+nsJRec.label+'</div>';
               h += '</div>';
+              h += _installDateBlockHtml(j);
               h += '<div id="repJobComm_'+j.id+'">'+_axiaCommLineHtmlForRep(j.id, person)+'</div>';
               h += '</div>';
             } else {
@@ -27298,6 +27396,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
               h += '</div>';
               h += '</div>';
               if (propBadge) h += '<div style="margin-top:6px;">'+propBadge+'</div>';
+              h += _installDateBlockHtml(j);
               h += '<div id="repJobComm_'+j.id+'">'+_jobCommLineHtmlForRep(j.id, person)+'</div>';
               h += opsHtml+'</div>';
             }
