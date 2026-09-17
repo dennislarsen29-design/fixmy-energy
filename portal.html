@@ -6293,6 +6293,74 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         }
       } catch(e) { /* table not migrated yet — the panel above still works without it */ }
 
+      // Real CRM-side attribution — actual leads/bookings/sold jobs/revenue by
+      // channel, sourced entirely from this app's own customers/payments tables
+      // (utm_source/utm_medium/gclid/fbclid, captured at lead-creation time — see
+      // "Meta Ads Setup" in CLAUDE.md). This answers "how many real customers came
+      // from each channel", which the GA4 table above cannot — GA4 only knows
+      // sessions and its own key-event counts, not whether a lead actually booked,
+      // sold, or paid. No ad-spend numbers here — that needs a real Meta/Google Ads
+      // API connection, which does not exist in this codebase; this is revenue-side
+      // attribution only, using data this app already fully owns.
+      var chanHtml = '';
+      try {
+        var chanSince = new Date(Date.now() - 90*86400000).toISOString();
+        var { data: leads } = await sc.from('customers')
+          .select('id,created_at,sold_type,diagnostic_date,utm_source,utm_medium,fbclid,gclid,lead_source')
+          .gte('created_at', chanSince)
+          .or('archived.is.null,archived.eq.false');
+        if (leads && leads.length) {
+          function channelOf(c) {
+            var src = (c.utm_source||'').toLowerCase();
+            if (c.fbclid || /facebook|meta|\bfb\b/.test(src)) return 'Meta (Facebook/Instagram)';
+            if (c.gclid || /google|adwords/.test(src)) return 'Google Ads';
+            if (src) return src.charAt(0).toUpperCase()+src.slice(1);
+            if (c.lead_source === 'direct_mail') return 'Direct Mail';
+            if (c.lead_source === 'referral') return 'Referral';
+            return 'Organic / Direct';
+          }
+          var buckets = {};
+          leads.forEach(function(c){
+            var ch = channelOf(c);
+            if (!buckets[ch]) buckets[ch] = { leads:0, booked:0, sold:0, ids:[] };
+            buckets[ch].leads++;
+            if (c.diagnostic_date || c.sold_type) buckets[ch].booked++;
+            if (c.sold_type) buckets[ch].sold++;
+            buckets[ch].ids.push(c.id);
+          });
+          var allChanIds = leads.map(function(c){ return c.id; });
+          var { data: chanPays } = await sc.from('payments').select('customer_id,amount,category').in('customer_id', allChanIds);
+          var revByC = {};
+          (chanPays||[]).forEach(function(p){
+            if ((p.category||'revenue') !== 'revenue') return;
+            revByC[p.customer_id] = (revByC[p.customer_id]||0) + (parseFloat(p.amount)||0);
+          });
+          var chanRows = Object.keys(buckets).map(function(ch){
+            var b = buckets[ch];
+            b.revenue = b.ids.reduce(function(t,id){ return t + (revByC[id]||0); }, 0);
+            return Object.assign({ channel: ch }, b);
+          }).sort(function(a,b){ return b.leads - a.leads; });
+          var isPaidChan = function(ch){ return ch.indexOf('Meta')===0 || ch.indexOf('Google Ads')===0; };
+          chanHtml = '<div style="margin-top:14px;border-top:1px solid rgba(255,255,255,0.08);padding-top:12px;">'+
+            '<div style="font-size:0.65rem;font-weight:700;color:#777;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:2px;">Leads, bookings &amp; revenue by channel · 90 days</div>'+
+            '<div style="font-size:0.62rem;color:#555;margin-bottom:6px;">Real CRM outcomes, not GA4 sessions — no ad-spend numbers (needs a separate Ads API connection)</div>'+
+            '<div style="display:flex;gap:8px;padding:4px 0 4px;border-bottom:1px solid rgba(255,255,255,0.08);font-size:0.62rem;color:#555;text-transform:uppercase;">'+
+              '<span style="flex:1;">Channel</span><span style="width:44px;text-align:right;">Leads</span><span style="width:52px;text-align:right;">Booked</span><span style="width:40px;text-align:right;">Sold</span><span style="width:70px;text-align:right;">Revenue</span>'+
+            '</div>'+
+            chanRows.map(function(r){
+              return '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.05);font-size:0.76rem;">'+
+                (isPaidChan(r.channel) ? '<span style="font-size:0.58rem;font-weight:700;padding:1px 6px;border-radius:100px;background:rgba(34,197,94,0.12);color:#22c55e;flex-shrink:0;">$ AD</span>' : '<span style="width:36px;flex-shrink:0;"></span>')+
+                '<span style="flex:1;color:#ccc;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+esc(r.channel)+'</span>'+
+                '<span style="color:#666;width:44px;text-align:right;">'+r.leads+'</span>'+
+                '<span style="color:#999;width:52px;text-align:right;">'+r.booked+'</span>'+
+                '<span style="color:#e879f9;font-weight:700;width:40px;text-align:right;">'+r.sold+'</span>'+
+                '<span style="color:#8DC63F;font-weight:700;width:70px;text-align:right;">'+(r.revenue>0?'$'+r.revenue.toFixed(0):'—')+'</span>'+
+              '</div>';
+            }).join('')+
+          '</div>';
+        }
+      } catch(e) { /* customers/payments query failed — the panels above still render without this */ }
+
       el.innerHTML =
         '<div style="background:rgba(232,121,249,0.04);border:1px solid rgba(232,121,249,0.18);border-radius:12px;padding:14px 16px;margin-bottom:16px;">'+
           '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">'+
@@ -6305,6 +6373,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '<div style="display:flex;gap:8px;flex-wrap:wrap;">'+cards+'</div>'+
           qHtml+
           campHtml+
+          chanHtml+
         '</div>';
     } catch(e) {
       el.innerHTML = '';
