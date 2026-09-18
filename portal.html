@@ -1202,6 +1202,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // Fire-and-forget — any Document Signer custom uploads should be in DEAL_DOC_TYPES
     // well before a rep ever opens a lead editor or the Documents tab this session.
     _loadCustomDealDocTypes();
+    // Fire-and-forget — so a setter's own election is already cached before an admin
+    // opens a Jobs card or the accounting panel (both re-load it fresh at the money-
+    // locking moment anyway, this just avoids the estimate flashing stale first).
+    window.bbLoadSetterCompPlans();
     // Race query against a 12-second timeout so "Loading..." never hangs forever
     var _timeout = new Promise(function(_, rej){ setTimeout(function(){ rej(new Error('timeout')); }, 12000); });
     var resp;
@@ -1975,6 +1979,61 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return { closerPct: poolPct/2, setterPct: poolPct/2 };
   }
 
+  // ── Setter Comp Plan election (2026-09-18, per Dennis, confirmed via clarifying
+  // questions) — a Setter can choose, once, between two pay structures. Applies ONLY
+  // to Battery Retrofit and Axia/QCells, and only in the distinct-setter scenario (a
+  // Tech closes what this person set) — plain FixMy diagnostic/RMA/service-fee stays
+  // on the standard 40%-pool 20/20 split untouched, and same-person-sets-and-closes
+  // is untouched (there's no separate "setter" comp in that case).
+  //   standard_20          — flat 20% of Gross Commission (replaces the old
+  //                          pool-derived 20%/25%/35% setter share on these two lines)
+  //   reduced_10_plus_200  — 10% of Gross Commission + a flat $200 per sale
+  // Per Dennis: the CLOSER's amount never moves because of a setter's election — it
+  // stays exactly what poolPct/2 would have given them regardless. Solar Review
+  // absorbs whatever the setter's own plan differs from the old half-pool number;
+  // company margin is simply the residual (Gross − closer − setter), same as every
+  // other line in this file. Ronda's own flat-5%-additive Axia rule is completely
+  // untouched and always takes priority — this plan never applies to her.
+  var SETTER_COMP_PLAN_STANDARD = 'standard_20';
+  var SETTER_COMP_PLAN_REDUCED  = 'reduced_10_plus_200';
+  var SETTER_COMP_PLAN_LABELS = {
+    standard_20: '20% Net Commission',
+    reduced_10_plus_200: '10% Net Commission + $200/sale'
+  };
+  var _setterCompPlans = null; // {nameLower: plan} once loaded, via bbLoadSetterCompPlans()
+  // Same shape/rationale as bbLoadClosers() above — a small, cheap, universally-callable
+  // cache so both the admin and the rep/tech portal (which never populates
+  // adminTeamMembers) can resolve ANY setter's own election by name, not just the
+  // logged-in person's.
+  window.bbLoadSetterCompPlans = async function(force) {
+    if (_setterCompPlans && !force) return _setterCompPlans;
+    try {
+      var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var r = await c.from('team_members').select('name,setter_comp_plan');
+      var byName = {};
+      (r.data||[]).forEach(function(m){ if (m.name && m.setter_comp_plan) byName[m.name.trim().toLowerCase()] = m.setter_comp_plan; });
+      _setterCompPlans = byName;
+    } catch(e) { _setterCompPlans = _setterCompPlans || {}; }
+    return _setterCompPlans;
+  };
+  function _setterCompPlanFor(name) {
+    var n = (name||'').trim().toLowerCase();
+    if (!n || !_setterCompPlans) return null;
+    return _setterCompPlans[n] || null;
+  }
+  // Returns the setter's OWN dollar amount under their election, or null when no
+  // override applies (Ronda, no election made yet, or this job isn't eligible) — a
+  // null return means "fall straight through to the existing poolPct/2 math
+  // unchanged", so a lead with no election behaves exactly as it always has.
+  function _setterCompOverride(setterName, gross, eligible) {
+    if (!eligible || !setterName || _isRonda(setterName)) return null;
+    var plan = _setterCompPlanFor(setterName);
+    if (!plan) return null;
+    if (plan === SETTER_COMP_PLAN_REDUCED) return Math.round((gross*0.10 + 200) * 100) / 100;
+    if (plan === SETTER_COMP_PLAN_STANDARD) return Math.round(gross*0.20 * 100) / 100;
+    return null;
+  }
+
   // ── Estimated install date / pay date (2026-09-14, per Dennis — AUTHORITATIVE) ──
   // "Gross Commission = Revenue − Redline. Net Commission = Gross Commission × Rep's
   // Split. The difference is the company's margin — admin only." Approved via a
@@ -2161,6 +2220,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var need = (ids||[]).filter(function(id){ return id && !_fixmyCommCache[id]; });
     if (!need.length) return;
     try {
+      await window.bbLoadSetterCompPlans();
       var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
       var [costsRes, paysRes, commRes] = await Promise.all([
         pc.from('job_costs').select('customer_id,amount').in('customer_id', need),
@@ -2189,6 +2249,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var closerPct = _splitPcts.closerPct;
         var closerEst = c.rep_id ? Math.round(net*closerPct*100)/100 : 0;
         var setterEst = hasSetter ? Math.round(net*_splitPcts.setterPct*100)/100 : 0;
+        // Setter Comp Plan election (2026-09-18) — Battery Retrofit only on this line;
+        // the closer's own estimate above never changes because of it.
+        var _setterPlanApplied = null;
+        if (hasSetter && c.sold_type === 'battery_retrofit') {
+          var _ovr = _setterCompOverride(setterName, net, true);
+          if (_ovr !== null) { setterEst = _ovr; _setterPlanApplied = _setterCompPlanFor(setterName); }
+        }
         var comms = commByC[id]||[];
         var closerRow = comms.find(function(x){ return x.kind==='rep_commission'; });
         var setterRow = comms.find(function(x){ return x.kind==='setter_commission'; });
@@ -2200,6 +2267,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           closerLocked: !!closerRow, setterLocked: !!setterRow,
           closerPaid: !!(closerRow && closerRow.status==='paid'), setterPaid: !!(setterRow && setterRow.status==='paid'),
           setterName: setterName, hasSetter: hasSetter, repId: c.rep_id||'',
+          setterCompPlan: (!setterRow && _setterPlanApplied) ? _setterPlanApplied : null,
           earned: (c.step||1) >= 9, net: net,
           revenue: collected, costs: costSum,
           soldAt: c.sold_at||null, earnedAt: c.installed_at||null, durationKey: c.sold_type||'diagnostic'
@@ -2297,6 +2365,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // "amount + plain-language reason only" call for what a rep/tech gets to see.
   function _splitReason(d, who) {
     if (!d.hasSetter) return 'same-person set &amp; close';
+    if (who === 'setter' && d.setterCompPlan) return SETTER_COMP_PLAN_LABELS[d.setterCompPlan] || 'setter plan';
     return who === 'closer' ? 'closer split' : 'setter split';
   }
   // Admin-facing line: a colored status stripe, a hero Net Commission figure (or two,
@@ -2437,12 +2506,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var setterPct = _splitPcts.setterPct;
     var closerAmt = c.rep_id ? Math.round(gross*closerPct*100)/100 : 0;
     var setterAmt = hasSetter ? Math.round(gross*setterPct*100)/100 : 0;
+    // Setter Comp Plan election (2026-09-18) — Axia/QCells is always an eligible line;
+    // the closer's own amount above never changes because of it (Solar Review absorbs
+    // the difference). Ronda is excluded inside _setterCompOverride itself, so her
+    // additive rule above is never touched by this.
+    var _nsSetterPlanApplied = null;
+    if (hasSetter) {
+      var _nsOvr = _setterCompOverride(setterName, gross, true);
+      if (_nsOvr !== null) { setterAmt = _nsOvr; _nsSetterPlanApplied = _setterCompPlanFor(setterName); }
+    }
     var companyAmt = Math.max(0, gross - closerAmt - setterAmt);
     return {
       basePpw:basePpw, redline:redline, dcBonus:dcBonus, netRedline:netRedline, netPpw:netPpw, watts:watts,
       isBlackBox:isBlackBox, poolPct:poolPct, closerPct:closerPct, setterPct:setterPct,
       setterName:setterName, hasSetter:hasSetter, closerNm:closerNm, repId:c.rep_id||'',
       closerAmt:closerAmt, setterAmt:setterAmt, companyAmt:companyAmt,
+      setterCompPlan: _nsSetterPlanApplied,
       revenue: gross, costs: Math.round((closerAmt+setterAmt)*100)/100,
       hasInputs: basePpw>0 && watts>0,
       // Earned = reached Permission to Operate — the same finish line the admin
@@ -2459,6 +2538,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var need = (ids||[]).filter(function(id){ return id && !_axiaCommCache[id]; });
     if (!need.length) return;
     try {
+      await window.bbLoadSetterCompPlans();
       var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
       var commRes = await pc.from('commissions').select('customer_id,kind,amount,status').in('customer_id', need).eq('line','new_solar');
       var commByC = {};
@@ -2477,6 +2557,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         _axiaCommCache[id] = Object.assign({}, calc, {
           closerAmt: closerAmt, setterAmt: setterAmt, companyAmt: companyAmt,
           costs: Math.round((closerAmt+setterAmt)*100)/100,
+          // A locked row already has its real, historical amount — don't relabel it
+          // with whatever plan the setter is CURRENTLY on if that's changed since.
+          setterCompPlan: (!setterRow && calc.setterCompPlan) ? calc.setterCompPlan : null,
           closerLocked: !!closerRow, setterLocked: !!setterRow, companyLocked: !!companyRow,
           closerPaid: !!(closerRow && closerRow.status==='paid'), setterPaid: !!(setterRow && setterRow.status==='paid'),
           companyPaid: !!(companyRow && companyRow.status==='paid'),
@@ -2509,6 +2592,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   window.edRecordAxiaSplit = async function(cid) {
     var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
     var rec = (adminCustomers||[]).find(function(x){ return x.id === cid; }) || {};
+    // Fresh setter-election data before computing the real, locked-in split — this is
+    // the actual money-locking action, so it must never use a stale/empty cache.
+    await window.bbLoadSetterCompPlans(true);
     var calc = _nsCalcCommission(rec);
     if (!calc.hasInputs) { alert('Enter Base PPW and set System Size (kW) on the lead first — Gross Commission is $0 without them.'); return; }
     try {
@@ -4008,6 +4094,26 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
               ) +
               '</div>'
             ) : '') +
+            // Setter Comp Plan (2026-09-18, per Dennis) — same population that hits the
+            // election gate in loadSalesDashboard (everyone except Ronda, whose own flat-
+            // 5%-additive Axia rule this never touches). Admin-editable here so Dennis has
+            // full visibility/control without needing SQL, same convention as HIS License.
+            (needsAgreement && !_isRonda(u.id) && !_isRonda(u.name) ? (
+              '<div style="margin-top:10px;padding:8px 10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;">' +
+              '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#888;margin-bottom:6px;">Setter Comp Plan</div>' +
+              '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
+                (u.setter_comp_plan ?
+                  '<span style="font-size:0.72rem;font-weight:700;color:#8DC63F;">'+(SETTER_COMP_PLAN_LABELS[u.setter_comp_plan]||u.setter_comp_plan)+'</span>' :
+                  '<span style="font-size:0.72rem;color:#fb923c;">&#8226; Not chosen yet</span>') +
+                '<select id="comp_'+u.id+'" style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:3px 6px;color:#F3EDE3;font-size:0.68rem;outline:none;">' +
+                  '<option value="">Choose...</option>' +
+                  '<option value="'+SETTER_COMP_PLAN_STANDARD+'"'+(u.setter_comp_plan===SETTER_COMP_PLAN_STANDARD?' selected':'')+'>20% Net Commission</option>' +
+                  '<option value="'+SETTER_COMP_PLAN_REDUCED+'"'+(u.setter_comp_plan===SETTER_COMP_PLAN_REDUCED?' selected':'')+'>10% + $200/sale</option>' +
+                '</select>' +
+                '<button onclick="adminSetSetterCompPlan(\''+u.id+'\',document.getElementById(\'comp_'+u.id+'\').value)" style="font-size:0.62rem;padding:3px 10px;background:rgba(74,158,255,0.12);border:1px solid rgba(74,158,255,0.3);color:#4a9eff;border-radius:100px;cursor:pointer;">Save</button>' +
+              '</div>' +
+              '</div>'
+            ) : '') +
             (needsAgreement ? (
               '<div style="margin-top:12px;padding:10px 12px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);border-radius:8px;">' +
               '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#8DC63F;margin-bottom:7px;">Solar Review Onboarding</div>' +
@@ -4501,6 +4607,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         if (idx>-1) { adminTeamMembers[idx].his_issue_date = updates.his_issue_date; adminTeamMembers[idx].his_expiration_date = updates.his_expiration_date; }
         renderTeamView();
       } catch(e) { alert('Could not save license dates: ' + e.message); }
+    };
+
+    window.adminSetSetterCompPlan = async function(memberId, planId) {
+      if (!planId) { alert('Choose a plan first.'); return; }
+      try {
+        var cpC = supabase.createClient(SUPA_URL, SUPA_KEY);
+        var {error: cpE} = await cpC.from('team_members').update({ setter_comp_plan: planId }).eq('id', memberId);
+        if (cpE) throw new Error(cpE.message);
+        var idx = adminTeamMembers.findIndex(function(m){return m.id===memberId;});
+        if (idx>-1) adminTeamMembers[idx].setter_comp_plan = planId;
+        _setterCompPlans = null; // force a fresh read next time any commission math runs
+        renderTeamView();
+      } catch(e) { alert('Could not save comp plan: ' + e.message); }
     };
 
     window.adminMarkOnboarding = async function(repId, field, value) {
@@ -23988,7 +24107,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var [costsRes, commRes, paysRes] = await Promise.all([
         isFixmy ? pc.from('job_costs').select('*').eq('customer_id', cid).order('created_at') : Promise.resolve({data:[]}),
         pc.from('commissions').select('*').eq('customer_id', cid).order('created_at'),
-        isFixmy ? pc.from('payments').select('amount,category').eq('customer_id', cid) : Promise.resolve({data:[]})
+        isFixmy ? pc.from('payments').select('amount,category').eq('customer_id', cid) : Promise.resolve({data:[]}),
+        window.bbLoadSetterCompPlans() // so the live split preview reflects a setter's real election
       ]);
       if (costsRes.error) throw costsRes.error;
       if (commRes.error) throw commRes.error;
@@ -24243,10 +24363,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var collected = (paysRes.data||[]).reduce(function(t,x){ return t + (((x.category||'revenue')==='revenue') ? (parseFloat(x.amount)||0) : 0); }, 0);
         netPos = Math.max(0, collected - costSum);
       }
+      // Fresh setter-election data before computing the real, locked-in split — this is
+      // the actual money-locking action, so it must never use a stale/empty cache.
+      await window.bbLoadSetterCompPlans(true);
       var commRes = await pc.from('commissions').select('kind').eq('customer_id', cid);
       var _splitPcts = _repSplitPcts(rep, setterName, hasSetter, 0.40);
       var closerAmt = !rep ? 0 : Math.round(netPos * _splitPcts.closerPct * 100)/100;
       var setterAmt = hasSetter ? Math.round(netPos * _splitPcts.setterPct * 100)/100 : 0;
+      // Setter Comp Plan election (2026-09-18) — Battery Retrofit only; the closer's own
+      // amount above never changes because of it.
+      if (isBr && hasSetter) {
+        var _ovrFm = _setterCompOverride(setterName, netPos, true);
+        if (_ovrFm !== null) setterAmt = _ovrFm;
+      }
       var have = {}; (commRes.data||[]).forEach(function(x){ have[x.kind] = true; });
       var rows = [];
       if (!have.rep_commission && closerAmt > 0) rows.push({ customer_id:cid, line:'fixmy', kind:'rep_commission', payee:rep, payee_name:closerNm, amount:closerAmt, status:'sold' });
@@ -27015,6 +27144,38 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return h;
   }
 
+  // ── Setter Comp Plan election (2026-09-18, per Dennis) — a required one-time screen
+  // right after signing the Rep Agreement. Applies only to the Battery Retrofit / Axia-
+  // QCells "distinct setter" scenario; see _setterCompOverride's own comment above for
+  // the full math. Ronda's own flat-5%-additive Axia rule is untouched, so she is never
+  // shown this — it would be a meaningless choice for her.
+  function buildSetterCompPlanHTML() {
+    var cardStyle = 'flex:1;min-width:220px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:18px;';
+    var h = '<div style="max-width:640px;margin:0 auto;padding:10px 4px;">' +
+      '<div style="text-align:center;margin-bottom:18px;">' +
+        '<div style="font-size:1.4rem;">&#128181;</div>' +
+        '<div style="font-size:1.05rem;font-weight:800;margin-top:4px;">Choose Your Setter Comp Plan</div>' +
+        '<div style="font-size:0.78rem;color:#999;margin-top:6px;line-height:1.5;">This only applies when a Tech closes a Battery Retrofit or Axia/QCells deal you set — pick whichever pay structure works best for you.</div>' +
+      '</div>' +
+      '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px;">' +
+        '<div style="' + cardStyle + '">' +
+          '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#8DC63F;margin-bottom:8px;">Option A</div>' +
+          '<div style="font-size:1.15rem;font-weight:800;margin-bottom:6px;">20%</div>' +
+          '<div style="font-size:0.78rem;color:#ccc;margin-bottom:14px;">of Net Commission on every Battery Retrofit / Axia-QCells deal you set that a Tech closes.</div>' +
+          '<button onclick="selectSetterCompPlan(\'' + SETTER_COMP_PLAN_STANDARD + '\')" style="width:100%;padding:11px;background:#8DC63F;color:#1A1A1A;border:none;border-radius:10px;font-size:0.82rem;font-weight:800;cursor:pointer;">Choose 20%</button>' +
+        '</div>' +
+        '<div style="' + cardStyle + '">' +
+          '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#4a9eff;margin-bottom:8px;">Option B</div>' +
+          '<div style="font-size:1.15rem;font-weight:800;margin-bottom:6px;">10% + $200</div>' +
+          '<div style="font-size:0.78rem;color:#ccc;margin-bottom:14px;">10% of Net Commission plus a flat $200 on every Battery Retrofit / Axia-QCells deal you set that a Tech closes.</div>' +
+          '<button onclick="selectSetterCompPlan(\'' + SETTER_COMP_PLAN_REDUCED + '\')" style="width:100%;padding:11px;background:rgba(74,158,255,0.15);border:1px solid #4a9eff;color:#4a9eff;border-radius:10px;font-size:0.82rem;font-weight:800;cursor:pointer;">Choose 10% + $200</button>' +
+        '</div>' +
+      '</div>' +
+      '<div style="font-size:0.68rem;color:#666;text-align:center;">This does not change anything on a deal you set AND close yourself, or on plain FixMy diagnostic/RMA/service-fee jobs. Ask your admin if you want to switch plans later.</div>' +
+    '</div>';
+    return h;
+  }
+
   // ── UNIFIED SALES / TECH DASHBOARD ────────────────────────────────────────
   async function loadSalesDashboard(person, config) {
     config = config || {};
@@ -27145,6 +27306,25 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         loadSalesDashboard(person, config);
       };
       document.getElementById('dashBody').innerHTML = buildRepAgreementHTML();
+      return;
+    }
+
+    // ── Setter Comp Plan election gate — required, one-time, right after the agreement
+    // gate above. Skipped entirely for Ronda: her own flat-5%-additive Axia rule is
+    // untouched by this plan, so presenting her a choice that's never actually applied
+    // would just be confusing friction. Everyone else lands here until they pick.
+    if (!_isRonda(person.id) && !_isRonda(person.name) && !person.setter_comp_plan) {
+      window.selectSetterCompPlan = async function(planId) {
+        try {
+          var spc = supabase.createClient(SUPA_URL, SUPA_KEY);
+          var { error } = await spc.from('team_members').update({ setter_comp_plan: planId }).eq('id', person.id);
+          if (error) { alert('Could not save your selection: ' + error.message); return; }
+        } catch(e) { alert('Could not save your selection: ' + (e.message||e)); return; }
+        person.setter_comp_plan = planId;
+        _setterCompPlans = null; // force a fresh read next time any commission math runs
+        loadSalesDashboard(person, config);
+      };
+      document.getElementById('dashBody').innerHTML = buildSetterCompPlanHTML();
       return;
     }
 

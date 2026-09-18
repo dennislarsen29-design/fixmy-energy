@@ -1,0 +1,13 @@
+-- 2026-09-18, per Dennis — new Setter comp plan election.
+-- Setters can choose, once, between two pay structures that apply ONLY to Battery
+-- Retrofit and Axia/QCells deals where a distinct Tech closes what they set:
+--   'standard_20'          -- flat 20% of Gross Commission (replaces the old
+--                             pool-derived 20%/25%/35% setter share on these two lines)
+--   'reduced_10_plus_200'  -- 10% of Gross Commission + a flat $200 per sale
+-- The election is presented as a required one-time screen in portal.html's
+-- loadSalesDashboard, right after the rep signs the Rep Agreement. NULL means "not
+-- yet elected" — every existing setter lands there on their next login since this
+-- column starts empty for everyone. Plain FixMy diagnostic/RMA/service-fee jobs are
+-- untouched (still the standard 40%-pool 20/20 split); Ronda's own flat-5%-additive
+-- Axia rule is untouched and always takes priority over this column.
+alter table team_members add column if not exists setter_comp_plan text;
