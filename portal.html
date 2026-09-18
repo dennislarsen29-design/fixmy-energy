@@ -574,30 +574,45 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
   var GHL_WEBHOOK               = 'https://services.leadconnectorhq.com/hooks/gXWwbOVymY0iRfj7c1It/webhook-trigger/032a0503-c92f-4711-89c0-0a4659e8e4ff';
   var GHL_PROPOSAL_WEBHOOK      = 'https://services.leadconnectorhq.com/hooks/gXWwbOVymY0iRfj7c1It/webhook-trigger/2635439a-73e0-4d18-8826-2dc9ba5248a8'; // "Solar Review - Customer Agreement Notifications" — trigger URL changed 2026-09-06 (previously 06829b78-...) when the Inbound Webhook node was recreated
-  // Fires a fire-and-forget POST to a GHL Inbound Webhook trigger. Deliberately
-  // NOT JSON, even though every payload below is a flat object. `mode:'no-cors'`
-  // is required for these calls — GHL's webhook endpoints send no CORS headers,
-  // so a plain 'cors' fetch would make every real success look like a thrown
-  // network error — but per the Fetch spec, 'no-cors' mode silently DROPS any
-  // Content-Type it doesn't recognize as safelisted before the request ever
-  // leaves the browser. `application/json` is not on that safelist, so the
-  // explicit header this code used to set never actually reached GHL — the
-  // browser sent the JSON text mislabeled as `text/plain;charset=UTF-8`
-  // instead. `application/x-www-form-urlencoded` IS safelisted and IS honored
-  // under no-cors, so building the body with URLSearchParams gets fetch() to
-  // set that Content-Type correctly and automatically. Verified directly
-  // against a local echo server (2026-09-07): the old JSON+no-cors combo
-  // really does arrive with Content-Type: text/plain, confirmed on the wire,
-  // not just per spec — this is very likely why GHL's own Execution Logs
-  // showed zero hits for a workflow whose trigger URL was otherwise confirmed
-  // live and correct.
+  // History of this function, in order, since it explains why it looks the way
+  // it does: (1) originally a direct browser fetch with mode:'no-cors' (required
+  // — GHL sends no CORS headers, so a plain 'cors' fetch throws on every real
+  // success) plus an explicit Content-Type: application/json header — except
+  // 'no-cors' mode silently DROPS any header it doesn't recognize as CORS-
+  // safelisted before the request leaves the browser, and application/json is
+  // not on that list, so the JSON body actually arrived mislabeled as
+  // text/plain;charset=UTF-8 (verified on the wire against a local echo server,
+  // 2026-09-07) — very likely why GHL's Execution Logs showed zero hits for a
+  // trigger URL that was otherwise confirmed live and correct. (2) Fixed
+  // 2026-09-07 by switching the body to URLSearchParams —
+  // application/x-www-form-urlencoded IS safelisted under no-cors, so fetch()
+  // sets it correctly and automatically — which DID get executions flowing
+  // (GHL's own Execution Logs started showing "Added to Workflow"). (3) But
+  // confirmed live 2026-09-18 that this traded one problem for another: GHL's
+  // Inbound Webhook trigger appears to only parse a JSON body into named
+  // {{trigger.x}} merge fields — the workflow triggers fine on a form-encoded
+  // body, but its Create Contact step then reports every single mapped field
+  // empty, with no distinction between which the payload actually carried.
+  // Routes through netlify/functions/ghl-webhook-relay.js rather than firing at GHL
+  // directly from the browser. A direct browser fetch has to use mode:'no-cors'
+  // (GHL sends no CORS headers back), which silently strips Content-Type:
+  // application/json — the 2026-09-07 fix switched to a form-encoded body to fix
+  // that mislabeling, but GHL's Inbound Webhook trigger appears to only parse a
+  // JSON body into named {{trigger.x}} merge fields (confirmed live 2026-09-18:
+  // the workflow DOES trigger on a form-encoded body, but Create Contact then
+  // reports every mapped field empty). The relay sends GHL a real, correctly
+  // Content-Type'd JSON body server-side — no browser header restriction applies
+  // — and, unlike a no-cors fetch (always an opaque, unreadable response even on
+  // failure), returns GHL's real HTTP status/body so a caller can actually tell
+  // whether GHL accepted the event, not just whether the request left the device.
+  // `url` is accepted for call-site compatibility but ignored — the relay only
+  // ever forwards to its own hardcoded GHL_PROPOSAL_WEBHOOK destination.
   function _ghlWebhookFire(url, payload) {
-    var params = new URLSearchParams();
-    Object.keys(payload).forEach(function(k) {
-      var v = payload[k];
-      params.append(k, (v === null || v === undefined) ? '' : String(v));
-    });
-    return fetch(url, { method: 'POST', mode: 'no-cors', body: params });
+    return fetch('/.netlify/functions/ghl-webhook-relay', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }).then(function(r) { return r.json().catch(function(){ return {ok:false}; }); });
   }
   var GHL_DIAG_AGREEMENT_WEBHOOK = 'https://services.leadconnectorhq.com/hooks/gXWwbOVymY0iRfj7c1It/webhook-trigger/f17004a5-5956-4d13-b7f0-a11098bac586';
   var GHL_DIAG_INVOICE_WEBHOOK   = null; // placeholder — set to webhook URL when Stripe invoice flow is ready
@@ -20623,14 +20638,18 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           ? 'https://fixmy.energy/portal?email=' + encodeURIComponent(custRow.email) + '&code=' + encodeURIComponent(custRow.access_code || (custRow.phone||'').replace(/\D/g,''))
           : null;
         try {
-          await _ghlWebhookFire(GHL_PROPOSAL_WEBHOOK, {
+          var _relayResult = await _ghlWebhookFire(GHL_PROPOSAL_WEBHOOK, {
             type: 'document_ready', customer_id: customerId, doc_type: docType, doc_label: def ? def.label : docType,
             email: custRow.email||'', phone: custRow.phone||'',
             first_name: custRow.first_name||'', last_name: custRow.last_name||'',
             full_name: ((custRow.first_name||'')+' '+(custRow.last_name||'')).trim(),
             magic_link: _readyLink, rep_name: repName
           });
-          _notifyState = 'sent';
+          // The relay reports GHL's REAL response now (not the opaque no-cors
+          // stand-in this used to be) — only report "sent" when GHL actually
+          // returned a 2xx, never just "the request left the device."
+          if (_relayResult && _relayResult.ok) { _notifyState = 'sent'; }
+          else { _notifyState = 'failed'; _notifySkipReason = 'GHL responded with status ' + (_relayResult && _relayResult.ghl_status) + ' — check the workflow'; }
         } catch(eNotify) { _notifyState = 'failed'; }
       }
       var c = adminCustomers.find(function(x){ return x.id === customerId; });
@@ -20641,7 +20660,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (_notifyState === 'sent') {
         _notifyMsg = 'A "ready to sign" notification was sent to ' + [custRow.phone, custRow.email].filter(Boolean).join(' / ') + '. That only confirms the trigger reached GHL, not that the text/email actually arrived — if they say they never got it, check GHL → Automations → "Solar Review - Customer Agreement Notifications" → Execution History for a document_ready run on this contact.';
       } else if (_notifyState === 'failed') {
-        _notifyMsg = 'Could not reach the notification service from this device — the customer was NOT notified. Check your connection and try again, or text/email them the portal link directly.';
+        _notifyMsg = _notifySkipReason
+          ? ('The customer was NOT notified — ' + _notifySkipReason + '.')
+          : 'Could not reach the notification service from this device — the customer was NOT notified. Check your connection and try again, or text/email them the portal link directly.';
       } else {
         _notifyMsg = 'No customer notification was sent (' + _notifySkipReason + ').';
       }
