@@ -13,6 +13,7 @@
 
 const SUPA_URL  = process.env.SUPABASE_URL || 'https://kbtobyoumvbcxfbugsid.supabase.co';
 const SUPA_REST = SUPA_URL + '/rest/v1';
+const { promotePaidLeadToDiagnostic } = require('./lib/promote-paid-lead.js');
 
 const cors = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' };
 
@@ -103,6 +104,10 @@ exports.handler = async function(event) {
         method: 'PATCH', headers: { ...H, Prefer: 'return=minimal' },
         body: JSON.stringify({ invoice_status: status })
       });
+      // Paid FixMy lead = Diagnostic Job — mirror the portal's auto-conversion
+      // server-side so a payment that never passes through the lead editor
+      // (this webhook) still surfaces the job on the assigned Ops portal.
+      if (status === 'paid') await promotePaidLeadToDiagnostic(SUPA_REST, H, cust.id, row.paid_at);
     }
     console.log('ghl-payment-sync:', inserted ? 'recorded' : 'duplicate-skipped', '$' + amount, 'for', cust.first_name, cust.last_name, '→', status || 'no-status-change');
   } else {

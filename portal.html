@@ -7322,6 +7322,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     'Sub Panel Sticker Photo',
     'Inverter Photo',
     'Serial Number',
+    'Error Codes',
     'Meter Photo',
     'Production Screenshot',
     'Solar Array',
@@ -8743,7 +8744,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   };
 
   // The flow. `required` gates the Next button; `optional` slots never block.
+  // ⚠️ 2026-09-18, per Dennis — EVAL_STEPS is now the SUPERSET of every possible step;
+  // `_evSteps()` below picks the active path from the two triage answers:
+  //   has_solar 'no'            → triage only (the lead belongs on Axia/QCells, CTA inside)
+  //   has_solar 'yes' + issue 'no'  → hardware(light) → consumption → upgrade
+  //                                   (no Production step, no slow full Quoya diagnosis —
+  //                                   "move right through to upgrades" with the fast bill
+  //                                   read sizing the build)
+  //   has_solar 'yes' + issue 'yes' → hardware → power cycle → production → consumption →
+  //                                   full Quoya analysis (unchanged flow + the on-site fix)
   var EVAL_STEPS = [
+    {
+      key: 'triage', title: 'Site Check', icon: '&#128269;',
+      blurb: '', slots: []
+    },
     {
       key: 'hardware', title: 'Hardware', icon: '&#128295;',
       blurb: 'What is on the wall. Start with anything the customer already sent — you only fill the gaps.',
@@ -8763,6 +8777,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       ]
     },
     {
+      key: 'powercycle', title: 'Power Cycle', icon: '&#128268;',
+      blurb: 'The system is down &mdash; try to bring it back right now. Capture the error codes FIRST, then walk the restart. Either way the visit delivers more than a booked follow-up.',
+      slots: [
+        { label: 'Error Codes', key: 'errcodes', icon: '&#9888;', required: true, multi: true,
+          hint: 'Every error code / fault screen on the inverter display, BEFORE you power anything off — they disappear on restart and they are the diagnosis.' }
+      ]
+    },
+    {
       key: 'production', title: 'Production', icon: '&#128200;',
       blurb: 'What the system is actually making. Skip the whole step if there is no monitoring — it is not required.',
       optional: true,
@@ -8779,8 +8801,34 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           hint: 'PDF is best. A photo of the paper bill works if that is all there is.' }
       ]
     },
+    { key: 'upgrade',  title: 'Upgrade Path', icon: '&#9889;',   blurb: '', slots: [] },
     { key: 'analysis', title: 'Quoya\'s Read', icon: '&#129302;', blurb: '', slots: [] }
   ];
+
+  // The active path for THIS evaluation, picked from the triage answers. Always returns
+  // at least [triage]; hardware is cloned with serial/meter demoted to optional on the
+  // healthy path (those two exist for warranty/diagnosis work that isn't happening).
+  function _evSteps() {
+    var byKey = {};
+    EVAL_STEPS.forEach(function(s){ byKey[s.key] = s; });
+    var ans = (_evLocal && _evLocal.answers) || {};
+    var steps = [byKey.triage];
+    if (ans.has_solar !== 'yes') return steps; // 'no' → Axia CTA inside triage; unanswered → gated there
+    if (ans.system_issue === 'no') {
+      var hwLight = Object.assign({}, byKey.hardware, {
+        blurb: 'What the upgrade connects to. Serial and meter are optional here — there is no warranty claim to chase on a healthy system.',
+        slots: byKey.hardware.slots.map(function(s){
+          return (s.key === 'serial' || s.key === 'meter') ? Object.assign({}, s, { required: false }) : s;
+        })
+      });
+      steps.push(hwLight, byKey.consumption, byKey.upgrade);
+      return steps;
+    }
+    steps.push(byKey.hardware);
+    if (ans.system_issue === 'yes') steps.push(byKey.powercycle);
+    steps.push(byKey.production, byKey.consumption, byKey.analysis);
+    return steps;
+  }
 
   var _evId = null, _evRec = null, _evStepIdx = 0, _evRow = null;
   var _evBusy = false, _evAnalyzing = false, _evPollTimer = null, _evBillAnalyzing = false;
@@ -8794,6 +8842,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return _evHas(slot.label).length > 0 || !!_evLocal.skipped[slot.key];
   }
   function _evStepDone(step) {
+    if (step.key === 'triage') {
+      var a = _evLocal.answers || {};
+      return a.has_solar === 'yes' && (a.system_issue === 'yes' || a.system_issue === 'no');
+    }
+    if (step.key === 'powercycle' && !(_evLocal.answers || {}).pc_outcome) return false;
     if (step.key === 'hardware') {
       if (!_evLocal.brand) return false;
     }
@@ -8855,7 +8908,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       _evLocal.skipped  = _evRow.skipped || {};
       _evLocal.answers  = _evRow.answers || {};
       _evLocal.billAnalysis = _evRow.bill_analysis || null;
-      if (_evRow.analysis) _evStepIdx = EVAL_STEPS.length - 1;
+      // Resume where they left off — answers are restored above, so _evSteps() already
+      // reflects the triage path this evaluation is actually on.
+      if (_evRow.analysis) {
+        _evStepIdx = _evSteps().length - 1;
+      } else if (_evRow.step) {
+        var _ri = _evSteps().findIndex(function(s){ return s.key === _evRow.step; });
+        if (_ri > 0) _evStepIdx = _ri;
+      }
     }
     try { await loadJobPhotos(id); } catch(e) {}
     _evRender();
@@ -8869,19 +8929,23 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   };
 
   window.evGoStep = function(i) {
-    if (i < 0 || i >= EVAL_STEPS.length) return;
+    if (i < 0 || i >= _evSteps().length) return;
     _evStepIdx = i;
     _evRender();
     var w = document.getElementById('evalWrap'); if (w) w.scrollTop = 0;
   };
 
   window.evNext = function() {
-    var step = EVAL_STEPS[_evStepIdx];
-    if (!step.optional && !_evStepDone(step)) return;
-    _evSave({ step: (EVAL_STEPS[_evStepIdx + 1] || step).key });
+    var steps = _evSteps();
+    var step = steps[_evStepIdx];
+    if (!step || (!step.optional && !_evStepDone(step))) return;
+    var next = steps[_evStepIdx + 1];
+    if (!next) return;
+    _evSave({ step: next.key });
     // Landing on the analysis step with nothing computed yet kicks it off, so the rep
-    // never has to know there was a button.
-    if (EVAL_STEPS[_evStepIdx + 1] && EVAL_STEPS[_evStepIdx + 1].key === 'analysis') {
+    // never has to know there was a button. (The healthy path's Upgrade step needs no
+    // equivalent — the fast bill read already fired the moment the bill uploaded.)
+    if (next.key === 'analysis') {
       evGoStep(_evStepIdx + 1);
       if (!(_evRow && _evRow.analysis) && !_evAnalyzing) window.evRunAnalysis();
       return;
@@ -9183,7 +9247,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   function _evRender() {
     var wrap = document.getElementById('evalWrap');
     if (!wrap || !_evRec) return;
-    var step = EVAL_STEPS[_evStepIdx];
+    var steps = _evSteps();
+    // A triage answer changing mid-flow can shorten the path underneath the current
+    // index — clamp rather than render undefined.
+    if (_evStepIdx >= steps.length) _evStepIdx = steps.length - 1;
+    var step = steps[_evStepIdx];
     var name = ((_evRec.first_name || '') + ' ' + (_evRec.last_name || '')).trim() || _evRec.title_owner || _evRec.address || 'Lead';
 
     var h = '<div style="max-width:620px;margin:0 auto;padding:14px 14px 80px;color:#F3EDE3;">';
@@ -9198,24 +9266,28 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
     // Progress rail
     h += '<div style="display:flex;gap:5px;margin-bottom:6px;">';
-    EVAL_STEPS.forEach(function(s, i) {
-      var done = i < _evStepIdx || (i !== EVAL_STEPS.length - 1 && _evStepDone(s));
+    steps.forEach(function(s, i) {
+      var done = i < _evStepIdx || (i !== steps.length - 1 && _evStepDone(s));
       var here = i === _evStepIdx;
       h += '<button onclick="evGoStep(' + i + ')" title="' + s.title + '" style="width:auto;margin:0;flex:1;height:6px;border:none;border-radius:100px;cursor:pointer;padding:0;background:'
         + (here ? '#8DC63F' : done ? 'rgba(141,198,63,0.45)' : 'rgba(255,255,255,0.12)') + ';"></button>';
     });
     h += '</div>';
     h += '<div style="display:flex;justify-content:space-between;font-size:0.62rem;color:#666;margin-bottom:16px;">'
-      + '<span>Step ' + (_evStepIdx + 1) + ' of ' + EVAL_STEPS.length + '</span>'
+      + '<span>Step ' + (_evStepIdx + 1) + ' of ' + steps.length + '</span>'
       + '<span>' + step.icon + ' ' + step.title + '</span></div>';
 
     if (step.key === 'analysis') {
       h += _evAnalysisHtml();
+    } else if (step.key === 'upgrade') {
+      h += _evUpgradeHtml();
     } else {
       h += '<div style="font-size:1.05rem;font-weight:800;margin-bottom:4px;">' + step.icon + ' ' + step.title + '</div>';
       h += '<div style="font-size:0.76rem;color:#999;line-height:1.5;margin-bottom:16px;">' + step.blurb + '</div>';
 
+      if (step.key === 'triage')      h += _evTriageHtml();
       if (step.key === 'hardware')    h += _evHardwareFieldsHtml();
+      if (step.key === 'powercycle')  h += _evPowerCycleHtml();
       if (step.key === 'production')  h += _evProductionHelpHtml();
       if (step.key === 'consumption') h += _evUtilityHelpHtml();
 
@@ -9223,19 +9295,34 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       step.slots.forEach(function(s){ h += _evSlotHtml(s); });
       if (step.key === 'consumption') h += _evBillAnalysisHtml();
 
-      // Footer nav
+      // Footer nav. On triage with "no solar" answered, the Move-to-Axia CTA inside
+      // _evTriageHtml IS the exit — a Next button there would imply a FixMy eval
+      // continues, which is exactly what shouldn't happen.
+      var hideNext = step.key === 'triage' && (_evLocal.answers || {}).has_solar === 'no';
       var ready = step.optional || _evStepDone(step);
       h += '<div style="display:flex;gap:8px;margin-top:20px;">';
       if (_evStepIdx > 0) {
         h += '<button onclick="evGoStep(' + (_evStepIdx - 1) + ')" style="width:auto;margin:0;flex:0 0 auto;padding:13px 20px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.14);color:#aaa;border-radius:100px;font-size:0.82rem;font-weight:700;cursor:pointer;">&#8592; Back</button>';
       }
-      h += '<button onclick="evNext()"' + (ready ? '' : ' disabled') + ' style="flex:1;margin:0;padding:13px;border:none;border-radius:100px;font-size:0.86rem;font-weight:800;cursor:' + (ready ? 'pointer' : 'not-allowed') + ';background:' + (ready ? '#8DC63F' : 'rgba(255,255,255,0.08)') + ';color:' + (ready ? '#1A1A1A' : '#555') + ';">'
-        + (EVAL_STEPS[_evStepIdx + 1] && EVAL_STEPS[_evStepIdx + 1].key === 'analysis' ? '&#129302; Run Quoya Analysis' : 'Next &#8594;') + '</button>';
+      if (!hideNext) {
+        var nextStep = steps[_evStepIdx + 1];
+        var nextLabel = 'Next &#8594;';
+        if (nextStep && nextStep.key === 'analysis') nextLabel = '&#129302; Run Quoya Analysis';
+        if (nextStep && nextStep.key === 'upgrade')  nextLabel = '&#9889; See Upgrade Path';
+        h += '<button onclick="evNext()"' + (ready ? '' : ' disabled') + ' style="flex:1;margin:0;padding:13px;border:none;border-radius:100px;font-size:0.86rem;font-weight:800;cursor:' + (ready ? 'pointer' : 'not-allowed') + ';background:' + (ready ? '#8DC63F' : 'rgba(255,255,255,0.08)') + ';color:' + (ready ? '#1A1A1A' : '#555') + ';">'
+          + nextLabel + '</button>';
+      }
       h += '</div>';
-      if (!ready) {
+      if (!ready && !hideNext) {
         var missing = step.slots.filter(function(s){ return s.required && !_evSlotDone(s); }).map(function(s){ return s.label; });
         if (step.key === 'hardware' && !_evLocal.brand) missing.unshift('inverter brand');
         if (step.key === 'consumption' && !_evLocal.utility) missing.unshift('which utility');
+        if (step.key === 'triage') {
+          var ta = _evLocal.answers || {};
+          if (!ta.has_solar) missing.unshift('does the home have solar?');
+          else if (ta.has_solar === 'yes' && !ta.system_issue) missing.unshift('is there an issue right now?');
+        }
+        if (step.key === 'powercycle' && !(_evLocal.answers || {}).pc_outcome) missing.push('how the power cycle ended');
         h += '<div style="font-size:0.7rem;color:#f59e0b;text-align:center;margin-top:8px;">Still needed: ' + missing.join(', ') + '</div>';
       }
       if (step.optional) {
@@ -9305,6 +9392,213 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (!wrap || !_evId) return;
     wrap.innerHTML = _jobEvalSlotsHtml();
   }
+
+  // ── Triage (Site Check) — the two questions that pick the path (2026-09-18, per
+  // Dennis: "Add question: does the homeowner already have solar? If yes proceed as
+  // normal. If no, move lead to Axia/QCells… If no [issue], eliminate the slow
+  // responses of a full analysis from Quoya"). Answers persist in the evaluation row's
+  // existing `answers` jsonb (no migration) and flow into the analysis payload, so
+  // Quoya also sees them.
+  function _evYesNoPills(qid, yesLabel, noLabel) {
+    var ans = (_evLocal.answers || {})[qid];
+    function pill(val, label) {
+      var on = ans === val;
+      return '<button onclick="evAnswer(\'' + qid + '\',\'' + val + '\')" style="width:auto;margin:0;flex:1;padding:12px 14px;border-radius:100px;font-size:0.82rem;font-weight:700;cursor:pointer;'
+        + (on ? 'background:rgba(141,198,63,0.18);border:1px solid rgba(141,198,63,0.55);color:#8DC63F;'
+              : 'background:transparent;border:1px solid rgba(255,255,255,0.16);color:#999;') + '">' + label + '</button>';
+    }
+    return '<div style="display:flex;gap:8px;">' + pill('yes', yesLabel) + pill('no', noLabel) + '</div>';
+  }
+  function _evTriageHtml() {
+    var a = _evLocal.answers || {};
+    var h = '';
+    h += '<div style="background:rgba(255,255,255,0.035);border:1px solid rgba(255,255,255,0.1);border-radius:14px;padding:14px;margin-bottom:10px;">';
+    h += '<div style="font-size:0.88rem;font-weight:700;margin-bottom:9px;">1. Does the homeowner already have solar?</div>';
+    h += _evYesNoPills('has_solar', '&#10003; Yes &mdash; solar on the roof', 'No solar yet');
+    h += '</div>';
+
+    if (a.has_solar === 'no') {
+      h += '<div style="background:rgba(255,170,0,0.07);border:1px solid rgba(255,170,0,0.35);border-radius:14px;padding:15px;margin-bottom:10px;">';
+      h += '<div style="font-size:0.86rem;font-weight:800;color:#ffaa00;margin-bottom:5px;">&#9728;&#65039; No existing system &mdash; this is a new-solar lead</div>';
+      h += '<div style="font-size:0.76rem;color:#ccc;line-height:1.55;margin-bottom:12px;">There is nothing to diagnose. Move this lead to the Axia/QCells pipeline so it gets worked as a new install instead of a FixMy evaluation.</div>';
+      h += '<button onclick="evMoveToAxia()" style="width:100%;margin:0;padding:13px;background:#ffaa00;border:none;color:#1A1A1A;border-radius:100px;font-size:0.86rem;font-weight:800;cursor:pointer;">&#10132; Move to Axia/QCells</button>';
+      h += '</div>';
+      return h;
+    }
+
+    if (a.has_solar === 'yes') {
+      h += '<div style="background:rgba(255,255,255,0.035);border:1px solid rgba(255,255,255,0.1);border-radius:14px;padding:14px;margin-bottom:10px;">';
+      h += '<div style="font-size:0.88rem;font-weight:700;margin-bottom:3px;">2. Is there an issue with the system right now?</div>';
+      h += '<div style="font-size:0.7rem;color:#888;line-height:1.45;margin-bottom:9px;">Downed system, outage, or clear signs of production problems.</div>';
+      h += _evYesNoPills('system_issue', '&#9888; Yes &mdash; something\'s wrong', '&#10003; No &mdash; working fine');
+      h += '</div>';
+      if (a.system_issue === 'no') {
+        h += '<div style="font-size:0.74rem;color:#8DC63F;line-height:1.55;background:rgba(141,198,63,0.07);border:1px solid rgba(141,198,63,0.3);border-radius:12px;padding:11px 13px;">&#9889; Healthy system &mdash; we skip the full diagnosis and go straight to the upgrade path (Powerwall 3 retrofit / additional panels), sized from their usage data. Faster for you, faster for them.</div>';
+      }
+      if (a.system_issue === 'yes') {
+        h += '<div style="font-size:0.74rem;color:#f87171;line-height:1.55;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.28);border-radius:12px;padding:11px 13px;">&#128268; We\'ll capture the failure and walk a power cycle on site &mdash; sometimes that brings it back before you leave the driveway.</div>';
+      }
+    }
+    return h;
+  }
+
+  // Move a no-solar lead to the Axia/QCells (new_solar) pipeline. Write is verified
+  // (.select — a zero-row "success" counts as failure, same rule as everywhere else in
+  // this file) and refused for a sold job: recategorizing real sold money silently is
+  // never a wizard's call.
+  window.evMoveToAxia = async function() {
+    if (!_evRec || !_evId) return;
+    if (_evRec.sold_type) {
+      alert('This lead is already a sold job (' + _evRec.sold_type + ') — moving it between pipelines is an admin decision, not something to change from the eval. Ask Dennis.');
+      return;
+    }
+    var nm = ((_evRec.first_name || '') + ' ' + (_evRec.last_name || '')).trim() || 'this lead';
+    if (!confirm('Move ' + nm + ' to the Axia/QCells pipeline? It leaves the FixMy eval flow and shows up under Axia/QCells instead.')) return;
+    var updates = { lead_category: 'new_solar', solar_status: _evRec.solar_status || 'ns_eval_booked' };
+    try {
+      var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var resp = await c.from('customers').update(updates).eq('id', _evId).select('id');
+      if (resp.error || !(resp.data || []).length) {
+        alert('Could not move the lead: ' + (resp.error ? resp.error.message : 'no matching record — reload and try again.'));
+        return;
+      }
+    } catch (e) { alert('Could not move the lead: ' + e.message); return; }
+    Object.assign(_evRec, updates);
+    try {
+      var ac = (adminCustomers || []).find(function(x){ return x.id === _evId; });
+      if (ac) Object.assign(ac, updates);
+    } catch (e) {}
+    try { bbLogActivity(_evId, 'note', null, 'Moved to Axia/QCells from the Site Evaluation — homeowner has no existing solar.'); } catch (e) {}
+    var id = _evId;
+    window.closeEvalWizard();
+    alert('Moved to Axia/QCells. It now shows under the Axia/QCells pipeline.');
+    try { if (CURRENT_ROLE === 'admin' && typeof renderAdminView === 'function') renderAdminView(adminView); else if (typeof window.salesRefresh === 'function') window.salesRefresh(); } catch (e) {}
+  };
+
+  // ── Power Cycle — the on-site restart procedure for a downed system (2026-09-18,
+  // per Dennis: "help make that visit more than just pushing a paper clip"). His exact
+  // step order. Checklist ticks + the outcome persist in `answers` (pc_1..pc_8,
+  // pc_outcome), so they ride into Quoya's analysis payload automatically.
+  var EV_PC_STEPS = [
+    { t: 'Photograph every error code FIRST', d: 'Use the Error Codes slot below — fault screens vanish on restart, and they ARE the diagnosis. Do this before touching anything.' },
+    { t: 'Turn OFF the solar breaker in the main panel', d: 'The breaker labeled Solar / PV / Inverter in the MSP.' },
+    { t: 'Turn OFF the inverter — usually in TWO places', d: 'The power/AC switch on the unit AND the DC disconnect (often a rotary switch on the underside). SolarEdge: red ON/OFF/P toggle on the bottom &rarr; OFF (0). SMA: rotary DC disconnect below the unit &rarr; OFF.' },
+    { t: 'Turn OFF the Quick Disconnect ("disco")', d: 'The gray disconnect box near the meter or inverter — pull the handle to OFF.' },
+    { t: 'Wait ~5 minutes', d: 'Capacitors need to drain fully. A too-fast restart just reboots into the same fault.' },
+    { t: 'Turn the disco back ON', d: '' },
+    { t: 'Turn the breaker back ON', d: '' },
+    { t: 'Turn the inverter back ON — both places', d: 'Then watch the display. Startup can take 5–15 minutes to resume production. SMA: tap the enclosure to wake and cycle the display screens. SolarEdge: flip the red toggle back to ON (1) — don\'t hold it on P, that\'s pairing — and wait for the green LED.' }
+  ];
+  window.evPcToggle = function(i) {
+    var k = 'pc_' + i;
+    _evLocal.answers[k] = !_evLocal.answers[k];
+    _evSave({ answers: _evLocal.answers });
+    _evRender();
+  };
+  function _evPowerCycleHtml() {
+    var a = _evLocal.answers || {};
+    var h = '';
+    h += '<div style="background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.25);border-radius:12px;padding:11px 13px;margin-bottom:12px;font-size:0.72rem;color:#f0b3b3;line-height:1.5;">&#9888; <b>Switches and breakers only.</b> Never open a panel cover or wiring compartment. Anything burnt, melted, or buzzing &mdash; stop, photograph it, and leave it off.</div>';
+    EV_PC_STEPS.forEach(function(s, i) {
+      var on = !!a['pc_' + i];
+      h += '<div onclick="evPcToggle(' + i + ')" style="display:flex;gap:10px;align-items:flex-start;background:rgba(255,255,255,0.035);border:1px solid ' + (on ? 'rgba(141,198,63,0.4)' : 'rgba(255,255,255,0.1)') + ';border-radius:12px;padding:11px 13px;margin-bottom:7px;cursor:pointer;' + (on ? 'opacity:0.75;' : '') + '">';
+      h += '<div style="flex-shrink:0;width:22px;height:22px;border-radius:6px;border:1.5px solid ' + (on ? '#8DC63F' : 'rgba(255,255,255,0.3)') + ';background:' + (on ? 'rgba(141,198,63,0.2)' : 'transparent') + ';display:flex;align-items:center;justify-content:center;font-size:0.8rem;color:#8DC63F;font-weight:800;">' + (on ? '&#10003;' : (i + 1)) + '</div>';
+      h += '<div style="flex:1;min-width:0;"><div style="font-size:0.8rem;font-weight:700;' + (on ? 'text-decoration:line-through;color:#999;' : '') + '">' + s.t + '</div>'
+        + (s.d ? '<div style="font-size:0.68rem;color:#888;line-height:1.5;margin-top:2px;">' + s.d + '</div>' : '') + '</div>';
+      h += '</div>';
+    });
+    h += '<div style="background:rgba(255,255,255,0.035);border:1px solid ' + (a.pc_outcome ? 'rgba(141,198,63,0.4)' : 'rgba(245,158,11,0.35)') + ';border-radius:14px;padding:13px;margin:12px 0 4px;">';
+    h += '<div style="font-size:0.84rem;font-weight:700;margin-bottom:9px;">Did the system come back online?</div>';
+    h += '<div style="display:flex;gap:6px;flex-wrap:wrap;">';
+    [['restored', '&#10003; Back online'], ['partial', '&#9888; Partially'], ['still_down', '&#10007; Still down']].forEach(function(o) {
+      var on = a.pc_outcome === o[0];
+      h += '<button onclick="evAnswer(\'pc_outcome\',\'' + o[0] + '\')" style="width:auto;margin:0;padding:10px 14px;border-radius:100px;font-size:0.78rem;font-weight:700;cursor:pointer;'
+        + (on ? 'background:rgba(141,198,63,0.18);border:1px solid rgba(141,198,63,0.55);color:#8DC63F;'
+              : 'background:transparent;border:1px solid rgba(255,255,255,0.16);color:#999;') + '">' + o[1] + '</button>';
+    });
+    h += '</div>';
+    if (a.pc_outcome === 'restored') {
+      h += '<div style="font-size:0.7rem;color:#8DC63F;line-height:1.5;margin-top:9px;">&#127881; Nice — tell them what you just saved them. Still finish the eval: a system that faulted once usually faults again, and Quoya reads the error codes to figure out why.</div>';
+    }
+    if (a.pc_outcome === 'still_down' || a.pc_outcome === 'partial') {
+      h += '<div style="font-size:0.7rem;color:#f59e0b;line-height:1.5;margin-top:9px;">Finish the eval — the error-code photos plus Quoya\'s read are exactly what turns this visit into a repair plan.</div>';
+    }
+    h += '</div>';
+    return h;
+  }
+
+  // ── Upgrade Path — the healthy-system fast lane (2026-09-18, per Dennis: "eliminate
+  // the slow responses of a full analysis from Quoya. Move right through to upgrades,
+  // Tesla PW3 Retro, or additional panels (with a Quoya analysis using the usage data
+  // to help determine a build size)"). The "Quoya analysis" here IS the fast bill read
+  // (eval-bill-analysis, seconds) that already auto-fired when the bill uploaded — the
+  // sizing below is deterministic math over those numbers, deliberately NOT another
+  // multi-minute vision+search pass, which was the whole complaint. Labeled a starting
+  // point, never a quote — same honesty rule as every estimate in this file.
+  function _evUpgradeSizing() {
+    var ba = (_evLocal.billAnalysis && !_evLocal.billAnalysis._err) ? _evLocal.billAnalysis : null;
+    var billMo = parseFloat(_evRec && _evRec.monthly_bill) || (ba && ba.monthly_amount_paid) || 0;
+    var fromBill = !!(ba && ba.annual_kwh);
+    var annualKwh = fromBill ? ba.annual_kwh : (billMo ? Math.round(billMo * 12 / 0.453) : 0);
+    var daily = annualKwh ? annualKwh / 365 : 0;
+    // Evening share a battery can actually shift ≈ 60% of daily use (same clamp
+    // _propCalcBaseProduction uses); 13.5 kWh per PW3.
+    var pw3 = daily ? Math.min(3, Math.max(1, Math.ceil((daily * 0.6) / 13.5))) : 1;
+    var existingKw = parseFloat(_evRec && _evRec.system_size) || null;
+    var neededKw = annualKwh ? annualKwh / 1600 : null; // 1 kW ≈ 1,600 kWh/yr, the codebase's standing production rule
+    var shortKw = (existingKw != null && neededKw != null) ? Math.max(0, neededKw - existingKw) : null;
+    return { fromBill: fromBill, annualKwh: annualKwh, daily: daily, pw3: pw3, existingKw: existingKw, neededKw: neededKw, shortKw: shortKw, rate: (ba && ba.avg_rate_per_kwh) || null };
+  }
+  function _evUpgradeHtml() {
+    var s = _evUpgradeSizing();
+    var h = '';
+    h += '<div style="font-size:1.05rem;font-weight:800;margin-bottom:4px;">&#9889; Upgrade Path</div>';
+    h += '<div style="font-size:0.76rem;color:#999;line-height:1.5;margin-bottom:14px;">No active issue &mdash; the play is an upgrade, sized from what this home actually uses.</div>';
+
+    if (!s.annualKwh) {
+      h += '<div style="background:rgba(255,170,0,0.07);border:1px solid rgba(255,170,0,0.3);border-radius:14px;padding:14px;margin-bottom:11px;font-size:0.78rem;color:#ffd28a;line-height:1.55;">No usage data yet &mdash; go back and upload the utility bill (Quoya reads it in seconds), or enter a monthly bill amount on the lead. The builder still opens without it; the sizing just can\'t be pre-computed.</div>';
+    } else {
+      h += '<div style="background:rgba(155,109,232,0.06);border:1px solid rgba(155,109,232,0.28);border-radius:14px;padding:14px;margin-bottom:11px;">';
+      h += '<div style="font-size:0.66rem;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;color:#c4a3f0;margin-bottom:6px;">&#129302; Usage &mdash; ' + (s.fromBill ? 'from the uploaded bill (Quoya\'s Bill Analysis)' : 'estimated from the monthly bill — no bill read on file') + '</div>';
+      h += '<div style="font-size:0.92rem;font-weight:800;">' + Math.round(s.annualKwh).toLocaleString() + ' kWh/yr <span style="font-weight:600;color:#999;font-size:0.76rem;">&middot; ~' + s.daily.toFixed(1) + ' kWh/day' + (s.rate ? ' &middot; $' + Number(s.rate).toFixed(2) + '/kWh' : '') + '</span></div>';
+      h += '</div>';
+
+      h += '<div style="background:rgba(141,198,63,0.07);border:1px solid rgba(141,198,63,0.32);border-radius:14px;padding:14px;margin-bottom:11px;">';
+      h += '<div style="font-size:0.66rem;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;color:#8DC63F;margin-bottom:6px;">&#128267; Tesla Powerwall 3 Retrofit</div>';
+      h += '<div style="font-size:0.9rem;font-weight:800;margin-bottom:4px;">Starting point: ' + s.pw3 + ' unit' + (s.pw3 > 1 ? 's' : '') + '</div>';
+      h += '<div style="font-size:0.74rem;color:#ccc;line-height:1.55;">Sized to shift the evening share (~60%) of ' + s.daily.toFixed(1) + ' kWh/day into battery hours at 13.5 kWh per unit.</div>';
+      h += '</div>';
+
+      h += '<div style="background:rgba(74,158,255,0.06);border:1px solid rgba(74,158,255,0.22);border-radius:14px;padding:14px;margin-bottom:11px;">';
+      h += '<div style="font-size:0.66rem;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;color:#4a9eff;margin-bottom:6px;">&#9728;&#65039; Additional Panels</div>';
+      if (s.shortKw == null) {
+        h += '<div style="font-size:0.74rem;color:#ccc;line-height:1.55;">Needs the existing System Size (kW) on the lead to size this &mdash; Quoya fills it from the eval when it can, or type it in the lead editor.</div>';
+      } else if (s.shortKw > 0.5) {
+        h += '<div style="font-size:0.9rem;font-weight:800;margin-bottom:4px;">&asymp; ' + s.shortKw.toFixed(1) + ' kW short of annual usage</div>';
+        h += '<div style="font-size:0.74rem;color:#ccc;line-height:1.55;">' + s.existingKw.toFixed(1) + ' kW on the roof vs. ~' + s.neededKw.toFixed(1) + ' kW to cover usage &mdash; roughly ' + Math.ceil(s.shortKw * 1000 / 420) + ' more 420W panels.</div>';
+      } else {
+        h += '<div style="font-size:0.74rem;color:#ccc;line-height:1.55;">The existing ' + s.existingKw.toFixed(1) + ' kW roughly covers their usage &mdash; battery/backup is the stronger play here, not more panels.</div>';
+      }
+      h += '</div>';
+    }
+
+    h += '<div style="font-size:0.68rem;color:#777;line-height:1.5;margin-bottom:14px;text-align:center;">A starting point computed from usage data &mdash; not a quote. Pricing happens in the proposal builder.</div>';
+    h += '<button onclick="evBuildUpgradeProposal(' + s.pw3 + ')" style="width:100%;margin:0;padding:14px;background:#8DC63F;border:none;color:#1A1A1A;border-radius:100px;font-size:0.9rem;font-weight:800;cursor:pointer;">&#128295; Build the Proposal &#8594;</button>';
+    h += '<div style="text-align:center;margin-top:12px;"><button onclick="evAnswer(\'system_issue\',\'yes\');evGoStep(1)" style="width:auto;margin:0;background:none;border:none;color:#666;font-size:0.72rem;cursor:pointer;text-decoration:underline;">Seeing a problem after all? Switch to the full Quoya diagnosis</button></div>';
+    return h;
+  }
+  window.evBuildUpgradeProposal = function(pw3) {
+    window._propPrefill = {
+      optionKeys: [],
+      pw3: parseInt(pw3, 10) || 0,
+      restoreArray: false,
+      arrayOutputPct: null,
+      note: 'the retail price — sized from usage data on the upgrade path (no active system issue)'
+    };
+    var id = _evId;
+    window.closeEvalWizard();
+    if (typeof openProposalBuilder === 'function') openProposalBuilder(id);
+  };
 
   function _evHardwareFieldsHtml() {
     var h = '<div style="background:rgba(74,158,255,0.05);border:1px solid rgba(74,158,255,0.2);border-radius:14px;padding:13px;margin-bottom:14px;">';
@@ -26746,6 +27040,21 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       .then(function(r){ _pvBuildTag = _pvTagFromHeaders(r); })
       .catch(function(){});
   }
+  // ⚠️ Refresh must be a CACHE-BUSTED NAVIGATION, never a plain location.reload()
+  // (fixed 2026-09-18, per Dennis — "it's not working to just refresh. The users are
+  // having to clear website history and data"). iOS Safari can serve the same stale
+  // cached HTML on reload() even under no-cache headers — but a URL with a fresh
+  // ?v=<timestamp> query is a DIFFERENT cache key, so there is no stale entry for it
+  // and the browser has no choice but to fetch the new deploy. location.replace keeps
+  // the busted URL out of history so Back can't land on the stale copy either.
+  // Existing query params (magic-link email/code, etc.) are preserved.
+  window._pvHardRefresh = function() {
+    try {
+      var u = new URL(location.href);
+      u.searchParams.set('v', String(Date.now()));
+      location.replace(u.toString());
+    } catch(e) { location.reload(); }
+  };
   function _pvShowUpdateBanner() {
     if (_pvUpdateBannerShown || document.getElementById('pvUpdateBanner')) return;
     _pvUpdateBannerShown = true;
@@ -26753,12 +27062,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     b.id = 'pvUpdateBanner';
     b.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:99998;background:#8DC63F;color:#1A1A1A;padding:12px 16px;display:flex;align-items:center;justify-content:center;gap:14px;flex-wrap:wrap;font-size:0.85rem;font-weight:700;box-shadow:0 -2px 12px rgba(0,0,0,0.25);';
     b.innerHTML = '<span>&#10024; A new version of this app is ready.</span>'+
-      '<button onclick="location.reload()" style="width:auto;padding:7px 16px;background:#1A1A1A;color:#8DC63F;border:none;border-radius:100px;font-weight:800;font-size:0.8rem;cursor:pointer;">&#8635; Refresh Now</button>'+
+      '<button onclick="_pvHardRefresh()" style="width:auto;padding:7px 16px;background:#1A1A1A;color:#8DC63F;border:none;border-radius:100px;font-weight:800;font-size:0.8rem;cursor:pointer;">&#8635; Refresh Now</button>'+
       '<button onclick="document.getElementById(\'pvUpdateBanner\').remove()" style="width:auto;background:none;border:none;color:#1A1A1A;opacity:0.7;font-size:0.8rem;cursor:pointer;text-decoration:underline;">Later</button>';
     document.body.appendChild(b);
   }
+  var _pvLastCheckAt = 0;
   function _pvCheckForUpdate() {
     if (!_pvBuildTag) return; // haven't captured a baseline yet — nothing to compare
+    var now = Date.now();
+    if (now - _pvLastCheckAt < 20 * 1000) return; // throttle — visibility + interval can stack
+    _pvLastCheckAt = now;
     fetch(location.pathname, { method: 'HEAD', cache: 'no-store' })
       .then(function(r){
         var tag = _pvTagFromHeaders(r);
@@ -26767,9 +27080,23 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       .catch(function(){ /* offline or blocked — try again next interval */ });
   }
   window.addEventListener('load', function(){
+    // Clean a _pvHardRefresh cache-buster back out of the address bar so bookmarks,
+    // Home Screen saves, and the HEAD checks above all stay on the canonical URL.
+    try {
+      if (new URLSearchParams(location.search).has('v')) {
+        var cu = new URL(location.href);
+        cu.searchParams.delete('v');
+        history.replaceState(null, '', cu.toString());
+      }
+    } catch(e) {}
     _pvCaptureBuildTag();
-    setInterval(_pvCheckForUpdate, 5 * 60 * 1000); // every 5 min — deploys aren't that frequent, and this is a pure background check
+    setInterval(_pvCheckForUpdate, 5 * 60 * 1000); // background heartbeat — the visibility hooks below do the responsive work
   });
+  // iPads live suspended in Safari for hours — the interval timer doesn't fire while
+  // backgrounded, and a bfcache restore (pageshow persisted) doesn't even re-run load.
+  // Check the moment the app is actually back in front of someone.
+  document.addEventListener('visibilitychange', function(){ if (!document.hidden) _pvCheckForUpdate(); });
+  window.addEventListener('pageshow', function(e){ if (e.persisted) _pvCheckForUpdate(); });
 
   // ── AUTO LOGIN ─────────────────────────────────────────────────────────────
   window.addEventListener('load', async function() {

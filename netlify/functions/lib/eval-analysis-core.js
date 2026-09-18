@@ -10,6 +10,9 @@ const MODEL = 'claude-opus-5';
 // Photo labels that are worth spending vision tokens on, most diagnostic first. A full
 // evaluation can carry 20+ images; sending all of them is slow and mostly redundant.
 const VISION_PRIORITY = [
+  // Error Codes first — fault screens photographed before a power cycle ARE the
+  // diagnosis on a downed system (2026-09-18 power-cycle procedure).
+  'Error Codes',
   'Inverter Photo', 'Serial Number', 'Production Screenshot', 'Utility Bill',
   'Meter Photo', 'MSP Step Back Photo', 'MSP Sticker Photo', 'Panel Placard',
   'Battery Placement Wall Photo', 'Solar Array', 'Front of House'

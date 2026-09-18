@@ -17,6 +17,7 @@
 const SUPA_URL  = process.env.SUPABASE_URL || 'https://kbtobyoumvbcxfbugsid.supabase.co';
 const SUPA_REST = SUPA_URL + '/rest/v1';
 const GHL_LOCATION_ID = process.env.GHL_LOCATION_ID || 'gXWwbOVymY0iRfj7c1It';
+const { promotePaidLeadToDiagnostic } = require('./lib/promote-paid-lead.js');
 
 function last10(raw) {
   const d = String(raw || '').replace(/\D/g, '');
@@ -184,6 +185,10 @@ exports.handler = async function(event) {
         });
         stats.statusUpdates++;
         console.log('ghl-payments-reconcile:', c.name, '→', status, '($' + paidSum + (target ? ' of $' + target : '') + ')');
+        // Paid FixMy lead = Diagnostic Job — mirror the portal's auto-conversion
+        // server-side (Becky Phan, 2026-09-18: paid via this sweep, stayed a
+        // lead, invisible on the assigned Ops portal).
+        if (status === 'paid') await promotePaidLeadToDiagnostic(SUPA_REST, H, c.id, null);
       }
     } catch(e) { stats.errors.push('status recompute: ' + e.message); }
   }
