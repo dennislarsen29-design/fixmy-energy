@@ -1,0 +1,11 @@
+-- Quoya Troubleshoot — intelligent on-site error-code diagnosis (2026-09-18, per
+-- Dennis: "I would also like this feature to be intelligent. To use its own search
+-- and troubleshooting capabilities to help fix real issues.")
+--
+-- One jsonb column on the existing per-lead evaluation row, same pattern as
+-- bill_analysis (20260827): { status: 'analyzing'|'ready'|'failed', result: {...},
+-- error, at }. Written by netlify/functions/eval-troubleshoot-background.js, polled
+-- by the Eval Wizard's Power Cycle step.
+--
+-- ✅ Applied 2026-09-18 via Supabase MCP.
+alter table lead_evaluations add column if not exists troubleshoot jsonb;

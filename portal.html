@@ -8865,6 +8865,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
   var _evId = null, _evRec = null, _evStepIdx = 0, _evRow = null;
   var _evBusy = false, _evAnalyzing = false, _evPollTimer = null, _evBillAnalyzing = false;
+  var _evTsRunning = false, _evTsTimer = null; // Quoya Troubleshoot (power-cycle step)
   var _evLocal = { brand: '', model: '', serial: '', platform: '', utility: '', skipped: {}, answers: {}, billAnalysis: null };
 
   function _evPhotos() { return (jobPhotos[_evId] || []); }
@@ -8951,6 +8952,21 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }
     }
     try { await loadJobPhotos(id); } catch(e) {}
+    // A Quoya Troubleshoot run kicked off before the wizard was closed keeps running
+    // server-side — resume polling it if it's still fresh, so reopening shows the
+    // result instead of a permanently-spinning card. Anything older than the background
+    // budget is a dead run; render it as retryable rather than "still working".
+    try {
+      var _ts = _evRow && _evRow.troubleshoot;
+      if (_ts && _ts.status === 'analyzing') {
+        if (_ts.at && (Date.now() - new Date(_ts.at).getTime()) < 15 * 60 * 1000) {
+          _evTsRunning = true;
+          _evPollTroubleshoot(_evRow.id, 0);
+        } else {
+          _evRow.troubleshoot = { status: 'failed', error: 'The last run never finished.', at: _ts.at };
+        }
+      }
+    } catch(e) {}
     _evRender();
   };
 
@@ -8958,7 +8974,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var s = document.getElementById('editorSlot');
     if (s) s.innerHTML = '';
     if (_evPollTimer) { clearTimeout(_evPollTimer); _evPollTimer = null; }
-    _evId = null; _evRec = null; _evRow = null; _evAnalyzing = false;
+    if (_evTsTimer) { clearTimeout(_evTsTimer); _evTsTimer = null; }
+    _evId = null; _evRec = null; _evRow = null; _evAnalyzing = false; _evTsRunning = false;
   };
 
   window.evGoStep = function(i) {
@@ -9327,6 +9344,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       h += '<div id="evStatus" style="font-size:0.72rem;min-height:16px;margin-bottom:8px;color:#8DC63F;"></div>';
       step.slots.forEach(function(s){ h += _evSlotHtml(s); });
       if (step.key === 'consumption') h += _evBillAnalysisHtml();
+      // Troubleshoot card sits BELOW the Error Codes slot — its button needs those
+      // photos, so the upload comes first in reading order.
+      if (step.key === 'powercycle') h += _evTroubleshootHtml();
 
       // Footer nav. On triage with "no solar" answered, the Move-to-Axia CTA inside
       // _evTriageHtml IS the exit — a Next button there would imply a FixMy eval
@@ -9512,16 +9532,55 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // per Dennis: "help make that visit more than just pushing a paper clip"). His exact
   // step order. Checklist ticks + the outcome persist in `answers` (pc_1..pc_8,
   // pc_outcome), so they ride into Quoya's analysis payload automatically.
+  //
+  // Visuals (2026-09-18, per Dennis — "google the photos and use those photos"): each
+  // step can carry `vis` entries. type 'svg' = our own committed instructional diagram
+  // (assets/eval/*.svg — fully controlled, shows the exact switch); type 'photo' = a
+  // real equipment photo hotlinked from Wikimedia Commons via the official
+  // Special:FilePath mechanism (Commons explicitly permits hotlinking; both files below
+  // are CC BY-SA 4.0, credited in the caption + linked to the source page). ⚠️ The dev
+  // sandbox's network policy blocks wikimedia.org outright, so the photo URLs could not
+  // be fetched/verified from where this was built — the renderer's onerror collapses a
+  // broken image silently back to the text-only step, and the SVGs carry the actual
+  // instruction either way. Verify on a real device.
+  var EV_PC_VIS_SE = { type: 'svg', src: '/assets/eval/pc-solaredge-switch.svg', cap: 'SolarEdge — red toggle + DC disconnect' };
+  var EV_PC_VIS_SMA = { type: 'svg', src: '/assets/eval/pc-sma-disconnect.svg', cap: 'SMA — rotary disconnect + tap-to-wake' };
+  var EV_PC_VIS_SE_PHOTO = { type: 'photo', src: 'https://commons.wikimedia.org/wiki/Special:FilePath/SolarEdge-Inverter.jpg?width=480',
+    cap: 'A real SolarEdge inverter', page: 'https://commons.wikimedia.org/wiki/File:SolarEdge-Inverter.jpg', credit: 'Wikimedia Commons · CC BY-SA 4.0' };
+  var EV_PC_VIS_SMA_PHOTO = { type: 'photo', src: 'https://commons.wikimedia.org/wiki/Special:FilePath/Inverter_SMA_Sunny_Boy_Display-01ASD.jpg?width=480',
+    cap: 'A real SMA Sunny Boy display', page: 'https://commons.wikimedia.org/wiki/File:Inverter_SMA_Sunny_Boy_Display-01ASD.jpg', credit: 'Asurnipal, Wikimedia Commons · CC BY-SA 4.0' };
   var EV_PC_STEPS = [
     { t: 'Photograph every error code FIRST', d: 'Use the Error Codes slot below — fault screens vanish on restart, and they ARE the diagnosis. Do this before touching anything.' },
-    { t: 'Turn OFF the solar breaker in the main panel', d: 'The breaker labeled Solar / PV / Inverter in the MSP.' },
-    { t: 'Turn OFF the inverter — usually in TWO places', d: 'The power/AC switch on the unit AND the DC disconnect (often a rotary switch on the underside). SolarEdge: red ON/OFF/P toggle on the bottom &rarr; OFF (0). SMA: rotary DC disconnect below the unit &rarr; OFF.' },
-    { t: 'Turn OFF the Quick Disconnect ("disco")', d: 'The gray disconnect box near the meter or inverter — pull the handle to OFF.' },
-    { t: 'Wait ~5 minutes', d: 'Capacitors need to drain fully. A too-fast restart just reboots into the same fault.' },
+    { t: 'Turn OFF the solar breaker in the main panel', d: 'The breaker labeled Solar / PV / Inverter in the MSP.',
+      vis: [{ type: 'svg', src: '/assets/eval/pc-breaker.svg', cap: 'Finding the solar breaker' }] },
+    { t: 'Turn OFF the inverter — usually in TWO places', d: 'The power/AC switch on the unit AND the DC disconnect (often a rotary switch on the underside). SolarEdge: red ON/OFF/P toggle on the bottom &rarr; OFF (0). SMA: rotary DC disconnect below the unit &rarr; OFF.',
+      vis: [EV_PC_VIS_SE, EV_PC_VIS_SMA, EV_PC_VIS_SE_PHOTO] },
+    { t: 'Turn OFF the Quick Disconnect ("disco")', d: 'The gray disconnect box near the meter or inverter — pull the handle to OFF.',
+      vis: [{ type: 'svg', src: '/assets/eval/pc-disco.svg', cap: 'The disco box' }] },
+    { t: 'Wait ~5 minutes', d: 'Capacitors need to drain fully. A too-fast restart just reboots into the same fault. Good moment to run Quoya Troubleshoot below on the error-code photos.' },
     { t: 'Turn the disco back ON', d: '' },
     { t: 'Turn the breaker back ON', d: '' },
-    { t: 'Turn the inverter back ON — both places', d: 'Then watch the display. Startup can take 5–15 minutes to resume production. SMA: tap the enclosure to wake and cycle the display screens. SolarEdge: flip the red toggle back to ON (1) — don\'t hold it on P, that\'s pairing — and wait for the green LED.' }
+    { t: 'Turn the inverter back ON — both places', d: 'Then watch the display. Startup can take 5–15 minutes to resume production. SMA: tap the enclosure to wake and cycle the display screens. SolarEdge: flip the red toggle back to ON (1) — don\'t hold it on P, that\'s pairing — and wait for the green LED.',
+      vis: [EV_PC_VIS_SMA_PHOTO, EV_PC_VIS_SMA] }
   ];
+  // Thumbnails under a checklist step. The whole step row toggles the tick on click, so
+  // everything here stops propagation — tapping a picture to look closer must never
+  // also tick/untick the step. Broken/unreachable images (or a renamed Commons file)
+  // hide themselves via onerror instead of showing a broken-image glyph.
+  function _evPcVisHtml(vis) {
+    if (!vis || !vis.length) return '';
+    var h = '<div onclick="event.stopPropagation()" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:9px;cursor:default;">';
+    vis.forEach(function(v) {
+      h += '<a href="' + v.src + '" target="_blank" rel="noopener" style="display:block;width:138px;text-decoration:none;">'
+        + '<img src="' + v.src + '" alt="' + (v.cap || '') + '" loading="lazy" onerror="this.parentNode.style.display=\'none\'" '
+        + 'style="width:138px;height:94px;object-fit:cover;border-radius:8px;border:1px solid rgba(255,255,255,0.14);background:#111;display:block;">'
+        + '<div style="font-size:0.58rem;color:#888;line-height:1.35;margin-top:3px;">' + (v.cap || '')
+        + (v.credit ? ' &middot; <a href="' + v.page + '" target="_blank" rel="noopener" style="color:#777;">' + v.credit + '</a>' : '')
+        + '</div></a>';
+    });
+    h += '</div>';
+    return h;
+  }
   window.evPcToggle = function(i) {
     var k = 'pc_' + i;
     _evLocal.answers[k] = !_evLocal.answers[k];
@@ -9537,7 +9596,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       h += '<div onclick="evPcToggle(' + i + ')" style="display:flex;gap:10px;align-items:flex-start;background:rgba(255,255,255,0.035);border:1px solid ' + (on ? 'rgba(141,198,63,0.4)' : 'rgba(255,255,255,0.1)') + ';border-radius:12px;padding:11px 13px;margin-bottom:7px;cursor:pointer;' + (on ? 'opacity:0.75;' : '') + '">';
       h += '<div style="flex-shrink:0;width:22px;height:22px;border-radius:6px;border:1.5px solid ' + (on ? '#8DC63F' : 'rgba(255,255,255,0.3)') + ';background:' + (on ? 'rgba(141,198,63,0.2)' : 'transparent') + ';display:flex;align-items:center;justify-content:center;font-size:0.8rem;color:#8DC63F;font-weight:800;">' + (on ? '&#10003;' : (i + 1)) + '</div>';
       h += '<div style="flex:1;min-width:0;"><div style="font-size:0.8rem;font-weight:700;' + (on ? 'text-decoration:line-through;color:#999;' : '') + '">' + s.t + '</div>'
-        + (s.d ? '<div style="font-size:0.68rem;color:#888;line-height:1.5;margin-top:2px;">' + s.d + '</div>' : '') + '</div>';
+        + (s.d ? '<div style="font-size:0.68rem;color:#888;line-height:1.5;margin-top:2px;">' + s.d + '</div>' : '')
+        + (on ? '' : _evPcVisHtml(s.vis)) + '</div>';
       h += '</div>';
     });
     h += '<div style="background:rgba(255,255,255,0.035);border:1px solid ' + (a.pc_outcome ? 'rgba(141,198,63,0.4)' : 'rgba(245,158,11,0.35)') + ';border-radius:14px;padding:13px;margin:12px 0 4px;">';
@@ -9556,6 +9616,179 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (a.pc_outcome === 'still_down' || a.pc_outcome === 'partial') {
       h += '<div style="font-size:0.7rem;color:#f59e0b;line-height:1.5;margin-top:9px;">Finish the eval — the error-code photos plus Quoya\'s read are exactly what turns this visit into a repair plan.</div>';
     }
+    h += '</div>';
+    return h;
+  }
+
+  // ── Quoya Troubleshoot (2026-09-18, per Dennis — "I would also like this feature to
+  // be intelligent. To use its own search and troubleshooting capabilities to help fix
+  // real issues."). A focused, separate call from the full eval analysis: reads the
+  // error-code photos (vision), web-searches the EXACT model + code for manufacturer
+  // docs / known failure modes / warranty terms, and returns switch-level-safe next
+  // steps for the rep standing at the inverter. Background function + row polling —
+  // same proven pattern as evRunAnalysis/_evPollAnalysis. Result persists in
+  // lead_evaluations.troubleshoot (migration 20260918c), so it survives closing the
+  // wizard and shows up again on reopen.
+  window.evRunTroubleshoot = async function() {
+    if (_evTsRunning || !_evId) return;
+    if (!_evRow || !_evRow.id) {
+      alert('The evaluation table isn\'t set up on this environment yet — tell Dennis.');
+      return;
+    }
+    if (!_evHas('Error Codes').length && !_evLocal.brand) {
+      alert('Photograph the error codes first (the slot below), or at least set the inverter brand on the Hardware step — Quoya needs something to work from.');
+      return;
+    }
+    _evTsRunning = true;
+    var now = new Date().toISOString();
+    _evRow.troubleshoot = { status: 'analyzing', at: now };
+    _evSave({ troubleshoot: _evRow.troubleshoot });
+    _evRender();
+    try {
+      var r = await fetch('/.netlify/functions/eval-troubleshoot-background', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          evalId: _evRow.id,
+          photos: _evPhotos().map(function(p){ return { url: p.url, label: p.label || p.Label || '' }; }),
+          hardware: { brand: _evLocal.brand, model: _evLocal.model, serial: _evLocal.serial },
+          answers: _evLocal.answers,
+          lead: {
+            address: _evRec.address || '', system_size: _evRec.system_size || '',
+            install_year: _evRec.install_year || '', original_installer: _evRec.original_installer || ''
+          }
+        })
+      });
+      if (!r.ok && r.status !== 202) {
+        var t = await r.text().catch(function(){ return ''; });
+        throw new Error(t || ('HTTP ' + r.status));
+      }
+    } catch(e) {
+      _evRow.troubleshoot = { status: 'failed', error: 'Couldn\'t start — check your connection and try again.', at: now };
+      _evTsRunning = false;
+      _evRender();
+      return;
+    }
+    _evPollTroubleshoot(_evRow.id, 0);
+  };
+
+  // Web-search rounds make this slower than the bill read — poll for up to 4 minutes
+  // client-side; the job keeps running server-side either way and the reopen-resume in
+  // openEvalWizard picks a late finish up.
+  var EV_TS_POLL_MS = 3000, EV_TS_POLL_MAX = 80;
+  function _evPollTroubleshoot(rowId, tries) {
+    if (_evTsTimer) { clearTimeout(_evTsTimer); _evTsTimer = null; }
+    if (!_evId || !_evRow || _evRow.id !== rowId) return;
+    _evTsTimer = setTimeout(async function() {
+      var row = null;
+      try {
+        var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+        var res = await c.from('lead_evaluations').select('troubleshoot').eq('id', rowId).limit(1);
+        row = (res.data && res.data[0]) || null;
+      } catch(e) {}
+      if (!_evId || !_evRow || _evRow.id !== rowId) return;
+      var ts = row && row.troubleshoot;
+      if (ts && (ts.status === 'ready' || ts.status === 'failed')) {
+        _evRow.troubleshoot = ts;
+        _evTsRunning = false; _evRender(); return;
+      }
+      if (tries + 1 >= EV_TS_POLL_MAX) {
+        _evRow.troubleshoot = Object.assign({}, _evRow.troubleshoot, { _slow: true });
+        _evTsRunning = false; _evRender(); return;
+      }
+      _evPollTroubleshoot(rowId, tries + 1);
+    }, EV_TS_POLL_MS);
+  }
+
+  function _evTroubleshootHtml() {
+    var ts = (_evRow && _evRow.troubleshoot) || null;
+    var codePhotos = _evHas('Error Codes').length;
+    var canRun = !!(codePhotos || _evLocal.brand);
+    var h = '<div style="background:rgba(155,109,232,0.06);border:1px solid rgba(155,109,232,0.3);border-radius:14px;padding:14px;margin:14px 0 4px;">';
+    h += '<div style="font-size:0.9rem;font-weight:800;margin-bottom:3px;">&#129302; Quoya Troubleshoot</div>';
+    h += '<div style="font-size:0.7rem;color:#999;line-height:1.5;margin-bottom:10px;">Quoya reads the error-code photos, searches this exact model\'s documentation and known failure modes, and gives you real next steps — right here, while you\'re at the equipment. Perfect thing to run during the 5-minute wait.</div>';
+
+    if (ts && ts.status === 'analyzing') {
+      h += '<div style="text-align:center;padding:14px 6px;">'
+        + '<div style="font-size:1.6rem;margin-bottom:8px;">&#129302;</div>'
+        + '<div style="font-size:0.8rem;font-weight:700;color:#c4a3f0;margin-bottom:4px;">Quoya is on it&hellip;</div>'
+        + '<div style="font-size:0.7rem;color:#888;line-height:1.55;">Reading the codes and searching this exact model\'s documentation and known failures. Usually under 2 minutes &mdash; keep working the checklist.</div></div>';
+      if (ts._slow) h += '<div style="font-size:0.68rem;color:#f59e0b;text-align:center;margin-top:2px;">Taking longer than usual &mdash; it\'s still working server-side. Close and reopen the eval in a couple of minutes to pick up the result.</div>';
+      h += '</div>';
+      return h;
+    }
+
+    if (ts && ts.status === 'failed') {
+      h += '<div style="font-size:0.74rem;color:#f0b3b3;line-height:1.5;margin-bottom:9px;">'
+        + ((CURRENT_ROLE === 'admin' && ts.error) ? esc(String(ts.error)) : 'Quoya couldn\'t run the troubleshoot right now. Your photos are all saved — try again.')
+        + '</div>';
+      h += '<button onclick="evRunTroubleshoot()" style="width:100%;padding:12px;background:#9b6de8;border:none;color:#fff;border-radius:100px;font-size:0.82rem;font-weight:800;cursor:pointer;">&#8635; Try again</button>';
+      h += '</div>';
+      return h;
+    }
+
+    if (ts && ts.status === 'ready' && ts.result) {
+      var r = ts.result;
+      var sev = { critical: ['#ef4444', 'rgba(239,68,68,0.12)'], fault: ['#f97316', 'rgba(249,115,22,0.12)'], warning: ['#f59e0b', 'rgba(245,158,11,0.12)'], info: ['#9aa0a6', 'rgba(255,255,255,0.06)'] };
+      if ((r.codes || []).length) {
+        h += '<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:11px;">';
+        r.codes.forEach(function(cd) {
+          var s = sev[cd.severity] || sev.info;
+          h += '<div style="background:' + s[1] + ';border:1px solid ' + s[0] + '44;border-radius:10px;padding:8px 11px;">'
+            + '<span style="font-size:0.76rem;font-weight:800;color:' + s[0] + ';">' + esc(cd.code || '') + '</span>'
+            + '<span style="font-size:0.7rem;color:#ccc;margin-left:8px;">' + esc(cd.meaning || '') + '</span></div>';
+        });
+        h += '</div>';
+      }
+      if (r.photo_retake) {
+        h += '<div style="background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.3);border-radius:10px;padding:9px 11px;font-size:0.72rem;color:#f5c168;line-height:1.5;margin-bottom:10px;">&#128247; ' + esc(r.photo_retake) + '</div>';
+      }
+      if (r.diagnosis) {
+        h += '<div style="font-size:0.72rem;font-weight:800;color:#c4a3f0;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px;">Most likely cause</div>';
+        h += '<div style="font-size:0.78rem;line-height:1.55;color:#ddd;margin-bottom:11px;">' + esc(r.diagnosis) + '</div>';
+      }
+      if ((r.on_site_steps || []).length) {
+        h += '<div style="font-size:0.72rem;font-weight:800;color:#c4a3f0;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:5px;">Do this now</div>';
+        r.on_site_steps.forEach(function(st, i) {
+          h += '<div style="display:flex;gap:9px;margin-bottom:6px;"><div style="flex-shrink:0;width:19px;height:19px;border-radius:50%;background:rgba(155,109,232,0.18);color:#c4a3f0;font-size:0.68rem;font-weight:800;display:flex;align-items:center;justify-content:center;">' + (i + 1) + '</div>'
+            + '<div style="flex:1;font-size:0.76rem;line-height:1.5;color:#ddd;">' + esc(st.step || '')
+            + (st.detail ? '<div style="font-size:0.66rem;color:#888;margin-top:1px;">' + esc(st.detail) + '</div>' : '') + '</div></div>';
+        });
+      }
+      var RES = {
+        power_cycle_likely_fixes: ['#8DC63F', 'Power cycle likely clears this'],
+        on_site_fixable: ['#8DC63F', 'Fixable on site'],
+        needs_licensed_electrician: ['#f59e0b', 'Needs a licensed electrician'],
+        needs_parts: ['#f59e0b', 'Needs parts'],
+        warranty_claim: ['#38bdf8', 'Likely a warranty claim'],
+        needs_more_info: ['#9aa0a6', 'Needs more info']
+      };
+      var rb = RES[r.resolution] || RES.needs_more_info;
+      h += '<div style="display:inline-block;background:' + rb[0] + '22;border:1px solid ' + rb[0] + '66;color:' + rb[0] + ';border-radius:100px;padding:5px 13px;font-size:0.72rem;font-weight:800;margin:6px 0 10px;">' + rb[1] + '</div>';
+      if (r.warranty_note) {
+        h += '<div style="font-size:0.7rem;color:#9fd0ff;line-height:1.5;margin-bottom:9px;">&#128737; ' + esc(r.warranty_note) + '</div>';
+      }
+      if (r.homeowner_talking_point) {
+        h += '<div style="background:rgba(141,198,63,0.07);border:1px solid rgba(141,198,63,0.25);border-radius:10px;padding:9px 11px;margin-bottom:10px;">'
+          + '<div style="font-size:0.64rem;font-weight:800;color:#8DC63F;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:2px;">Say to the homeowner</div>'
+          + '<div style="font-size:0.74rem;color:#cfe6a8;line-height:1.5;">&ldquo;' + esc(r.homeowner_talking_point) + '&rdquo;</div></div>';
+      }
+      if ((r.sources || []).length) {
+        h += '<div style="font-size:0.62rem;color:#777;line-height:1.6;">Sources: ';
+        h += r.sources.map(function(s) {
+          return s.url ? '<a href="' + esc(s.url) + '" target="_blank" rel="noopener" style="color:#888;">' + esc(s.title || s.url) + '</a>' : esc(s.title || '');
+        }).join(' &middot; ');
+        h += '</div>';
+      }
+      h += '<button onclick="evRunTroubleshoot()" style="width:100%;margin-top:10px;padding:11px;background:rgba(155,109,232,0.12);border:1px solid rgba(155,109,232,0.35);color:#c4a3f0;border-radius:100px;font-size:0.76rem;font-weight:700;cursor:pointer;">&#8635; Re-run (after new photos or a restart)</button>';
+      h += '</div>';
+      return h;
+    }
+
+    // Not yet run
+    h += '<button onclick="evRunTroubleshoot()"' + (canRun ? '' : ' disabled')
+      + ' style="width:100%;padding:13px;border:none;border-radius:100px;font-size:0.84rem;font-weight:800;cursor:' + (canRun ? 'pointer' : 'not-allowed') + ';background:' + (canRun ? '#9b6de8' : 'rgba(255,255,255,0.08)') + ';color:' + (canRun ? '#fff' : '#555') + ';">&#128295; Identify these codes &amp; find the fix</button>';
+    if (!canRun) h += '<div style="font-size:0.66rem;color:#f59e0b;text-align:center;margin-top:6px;">Photograph the error codes below first (or set the inverter brand on the Hardware step).</div>';
+    else if (!codePhotos) h += '<div style="font-size:0.66rem;color:#f59e0b;text-align:center;margin-top:6px;">No error-code photos yet — Quoya can work from the brand/model, but the codes themselves are the diagnosis. Shoot them below if you can.</div>';
     h += '</div>';
     return h;
   }
