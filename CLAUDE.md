@@ -174,6 +174,30 @@ The admin lead editor auto-saves 1.5s after any input (`edPanel` 'input' listene
 ## Google Maps API Key
 Stored in portal.html as `GKEY` (client-side key, restrict to domain in Google Cloud Console → Credentials → HTTP referrers).
 
+## Email & Domain — fixmy.energy (2026-09-18, per Dennis — AUTHORITATIVE, do not re-ask)
+- **Registrar: Namecheap.** **Site hosting: Netlify.** These are separate; whichever one the **nameservers** point to is the only place DNS records take effect. ⚠️ If nameservers point at Netlify (`dns1.p0X.nsone.net`), anything entered in Namecheap's Advanced DNS tab is **silently ignored** — Namecheap isn't authoritative and gives no error. Nameserver state was **not confirmed** as of 2026-09-18.
+- **`info@fixmy.energy` is hosted on Google Workspace and STAYS on Google** (per Dennis, 2026-09-18: *"I don't want to change info@fixmy.energy (that's hosted w/Google) let's keep it that way (for now)"*). Do not propose migrating it, and do not touch the root MX records without checking this first — repointing MX kills this working mailbox.
+- **`fixmy.energy`'s MX records point to Google.** Confirmed 2026-09-18 from bounce headers, not assumed: `mx.google.com` issued the rejection, `dkim=pass header.i=@fixmy.energy` (Google is DKIM-signing for the domain), and the bounce quoted Google's own `NoSuchUser` page. Google is authoritative for receiving all `@fixmy.energy` mail.
+- **`dennis@fixmy.energy` and `cristina@fixmy.energy` DO NOT EXIST as mailboxes** (as of 2026-09-18). Both bounce identically with Google's *"The email account that you tried to reach does not exist"* — 16 seconds apart, same root cause on both, so it is not a typo or a per-address quirk. **This is a missing-mailbox problem, not a DNS problem** — the DNS is fine.
+- **Namecheap Private Email was purchased for these two addresses and receives nothing.** It is not wired into mail flow at all and never will be while Google holds the MX. Either cancel it (check Namecheap's refund window) or implement split delivery (below).
+- ⚠️ **THE STANDING CONSTRAINT, so this isn't re-litigated: MX records are per-DOMAIN, not per-mailbox.** There is exactly one set of MX records for `fixmy.energy`. No DNS configuration can route `dennis@` to Namecheap while `info@` goes to Google. Any plan that assumes per-address MX routing is impossible — the only two real options are:
+  - **(A) Split delivery** — Google stays the front door and relays specific addresses onward: Admin → Apps → Google Workspace → Gmail → **Hosts** (add `mx1.privateemail.com`:25), then **Default routing** rules matching each envelope recipient → Change route → that host. Requires the SPF records **merged into ONE** record (`v=spf1 include:_spf.google.com include:spf.privateemail.com ~all`) — two separate `v=spf1` TXT records make BOTH fail. Fragile: Namecheap may refuse relayed mail for a domain whose MX doesn't point at it, and forwarding can break DKIM alignment.
+  - **(B) Put both addresses in Google Workspace** alongside `info@` — a free **alias** on `info@` (Users → info → Add alternate email, up to 30, no cost) or a real user seat (~$7–8/mo, needed for Cristina since she requires her own login). No DNS changes, nothing to break. **This was the recommendation.**
+- ⚠️ **Never add a second `v=spf1` TXT record.** The domain already sends through both Google and Resend. A second SPF record invalidates both and would break the portal's own outbound mail (rep welcome emails, agent digests) as collateral damage. Always merge includes into the single existing record.
+- ⚠️ **Namecheap's Advanced DNS → "Mail Settings" dropdown can WIPE existing MX/TXT records** when switched. Screenshot the zone before touching it.
+- **What the portal actually does with email** (verified by grep, 2026-09-18): every Resend send goes **from** `info@fixmy.energy` (`rep-onboard.js`, `agent-report-digest.js`). **Nothing anywhere sends TO `dennis@` or `cristina@`** — the daily AI agent digest goes to `AGENT_REPORT_EMAIL` (defaults to `dennislarsen29@gmail.com`). Those two addresses appear in code only as `mailto:` links on public pages and in "contact us" alert strings. If Dennis wants portal mail at `dennis@fixmy.energy`, that is a one-line `AGENT_REPORT_EMAIL` env-var change in Netlify, nothing more.
+- ⚠️ **The dev sandbox cannot verify ANY of this live** — `dig` is not installed, and the egress proxy blocks `dns.google`, `nslookup.io` and every other DNS/lookup service (confirmed 2026-09-18). The Netlify MCP exposes no DNS-zone operations either (`get-project` returns no zone data). **Diagnosis here has to come from bounce-message headers**, which is exactly how the above was established — ask for the bounce, read `mx.google.com` / the quoted remote response / the `dkim=` results, and it names the real cause. Same standing caveat as every other external-service entry in this file.
+
+### ⚠️ Open, unfixed: `dennis@fixmy.energy`'s PORTAL login code is non-deterministic
+Separate from mail — found during the same 2026-09-18 pass, not yet fixed pending Dennis's call on which code should win. `handleLogin` queries `team_members` first and falls back to the hardcoded `TECHS` array **only if that query fails**, so the required code changes depending on whether Supabase is reachable:
+
+| Address | `team_members.code` (DB, authoritative) | Hardcoded `TECHS` fallback in portal.html |
+|---|---|---|
+| `cristina@fixmy.energy` | `cristina2026` | `cristina2026` ✅ match |
+| `dennis@fixmy.energy` | `dennis2026` | `Solar123!` ⚠️ **mismatch** |
+
+`portal_credentials` (the per-rep override table that beats both) is **empty**, so the DB value is what actually applies today. Fix is one line in either place once Dennis says which code to keep — but both must end up the same, or the login silently depends on network conditions.
+
 ## GHL Integration
 - Location ID: `gXWwbOVymY0iRfj7c1It`
 - **Two distinct calendars/appointment types — do not conflate (fixed 2026-06-16, was previously bugged):**
