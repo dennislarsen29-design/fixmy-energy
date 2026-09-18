@@ -488,6 +488,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // for everyone. This needs no migration and works the moment it deploys.
   var CLOSER_STATE_KEY  = 'closers';
   var DEFAULT_CLOSER_ID = 'tech4';            // Dennis Larsen — the fallback closer
+  // Dennis's own commission never needs an external payout — it lands in the same
+  // company account it would be "paid" from, so any commissions row where he's the
+  // payee is auto-marked paid at creation time instead of sitting unpaid until a
+  // manual payroll tick (2026-09-15, per Dennis: "Automark Dennis's as it's going to
+  // land in the same account"). The split math itself is completely untouched — this
+  // only changes the row's lifecycle status, never an amount or a percentage.
+  function _stampAutoPaidIfDennis(row) {
+    if (row && row.payee === DEFAULT_CLOSER_ID) { row.status = 'paid'; row.paid_at = new Date().toISOString(); }
+    return row;
+  }
   // Day-one fallback, used ONLY until an admin saves the list from the Team tab. Both
   // spellings of Cristina/Christina are here deliberately: TECHS says "Cristina Huang"
   // and a name typed into the dialer prompt may not match either exactly.
@@ -1513,7 +1523,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button>'+
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Administration'+teamBadge+onboardBadge+'</button>'+
       '<button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button>'+
-      '<button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="finGoTab(\'payroll\')">&#128181; Payroll</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button>'+
+      '<button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderTeamView(\'payroll\')">&#128181; Payroll</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button>'+
       '<a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a>'+
     '</div>';
 
@@ -1858,12 +1868,24 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   function renderJobsView() {
     if (_adminOnlyGuard()) return;
     adminView = 'jobs';
-    var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab active" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button><button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button><button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button><button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="finGoTab(\'payroll\')">&#128181; Payroll</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button><a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a></div>';
+    var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab active" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button><button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button><button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button><button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderTeamView(\'payroll\')">&#128181; Payroll</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button><a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a></div>';
     if (!_jobsRevenueIds) { _ensureJobsRevenueIds().then(function(){ if (adminView==='jobs') renderJobsView(); }); }
     var allJobs = adminCustomers.filter(_isRealJob);
     var fixmyJobs = allJobs.filter(function(c){ return c.lead_category !== 'new_solar'; });
     var nsJobs    = allJobs.filter(function(c){ return c.lead_category === 'new_solar'; });
     var jobs = adminJobCat === 'new_solar' ? nsJobs : fixmyJobs;
+    // Default sort: most recently updated first (2026-09-XX, per Dennis — "reorganize
+    // the jobs to last updated as default sorting"). Explicit, not left to whatever
+    // order adminCustomers happens to already be in — an in-place edit to a job
+    // (accounting panel, a step change, a commission lock-in) mutates the in-memory
+    // record's fields but never re-sorts the array, so array position alone can't be
+    // trusted to reflect true recency once any edit has happened this session. Falls
+    // back to created_at for a record whose updated_at somehow never got stamped.
+    jobs = jobs.slice().sort(function(a, b) {
+      var ta = new Date(a.updated_at || a.created_at || 0).getTime();
+      var tb = new Date(b.updated_at || b.created_at || 0).getTime();
+      return tb - ta;
+    });
 
     var catTabStyle = 'padding:7px 18px;border:none;border-radius:100px;font-size:0.78rem;font-weight:700;cursor:pointer;transition:all 0.15s;';
     var catTabs = '<div style="display:flex;gap:8px;margin-bottom:14px;">'+
@@ -2401,17 +2423,23 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (d.hasSetter) rows.push('<div><span style="font-family:'+COMM_MONO+';font-size:1.05rem;font-weight:800;color:'+COMM_COLOR_GOLD+';">'+m(d.setterAmt)+'</span> <span style="font-size:0.68rem;color:#888;">setter &middot; '+_splitReason(d,'setter')+(d.setterLocked?(d.setterPaid?' &#10003;paid':' sold'):' est.')+'</span></div>');
       heroHtml = rows.join('');
     }
-    var mathId = 'commMath_'+String(cid||Math.random()).replace(/[^a-zA-Z0-9_-]/g,'');
+    // Admin's Jobs-page card shows the FULL breakdown always visible — no "See the
+    // math" click required (2026-09-XX, per Dennis: "I want to see the total
+    // commissions (before splits), Setter (if applicable), Tech (if applicable)...
+    // full breakdown for Admin so that I can know the math is correctly calculated
+    // at glance view"). This is the ONLY caller of _commLineHtml (both admin Jobs
+    // card renderers, _jobCommLineHtml/_axiaCommLineHtml) — the rep-facing card
+    // (_commLineHtmlForRep, "I like this POV view for reps") is a completely
+    // separate function and is untouched: still just the rep's own share, no
+    // Gross Commission, no Company Margin, no math block at all.
     return '<div style="display:flex;margin-top:10px;border-radius:10px;overflow:hidden;border:1px solid rgba(255,255,255,0.08);">'+
       '<div style="width:4px;flex-shrink:0;background:'+stripeColor+';"></div>'+
       '<div style="flex:1;padding:10px 12px;background:rgba(255,255,255,0.02);min-width:0;">'+
         heroHtml+
         '<div style="margin-top:6px;font-size:0.68rem;color:#999;">'+statusBadgeHtml+'</div>'+
         _payBubbleHtml(d)+
-        '<button onclick="event.stopPropagation();toggleCommMath(\''+mathId+'\')" style="width:100%;margin-top:9px;background:none;border:none;border-top:1px dashed rgba(255,255,255,0.1);padding-top:8px;color:#666;font-size:0.66rem;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:space-between;">'+
-          '<span>&#128202; See the math</span><span id="'+mathId+'_arrow">&#9662;</span>'+
-        '</button>'+
-        '<div id="'+mathId+'" style="display:none;margin-top:8px;">'+
+        '<div style="margin-top:9px;padding-top:8px;border-top:1px dashed rgba(255,255,255,0.1);">'+
+          '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#666;margin-bottom:5px;">&#128202; Full Math (Admin)</div>'+
           _revCostLineHtml(d)+
           _waterfallBarHtml(d)+
           '<div style="margin-top:8px;padding:6px 10px;background:rgba(167,137,217,0.1);border:1px solid rgba(167,137,217,0.3);border-radius:8px;font-size:0.68rem;color:'+COMM_COLOR_MARGIN+';font-weight:700;">Company Margin <span style="opacity:0.65;font-weight:600;text-transform:uppercase;font-size:0.6rem;">admin only</span>: '+m(d.companyAmt)+'</div>'+
@@ -2616,10 +2644,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var commRes = await pc.from('commissions').select('kind').eq('customer_id', cid).eq('line','new_solar');
       var have = {}; (commRes.data||[]).forEach(function(x){ have[x.kind] = true; });
       var rows = [];
-      if (!have.rep_commission && calc.repId && calc.closerAmt > 0) rows.push({ customer_id:cid, line:'new_solar', kind:'rep_commission', payee:calc.repId, payee_name:calc.closerNm, amount:calc.closerAmt, status:'sold' });
+      if (!have.rep_commission && calc.repId && calc.closerAmt > 0) rows.push(_stampAutoPaidIfDennis({ customer_id:cid, line:'new_solar', kind:'rep_commission', payee:calc.repId, payee_name:calc.closerNm, amount:calc.closerAmt, status:'sold' }));
       if (calc.hasSetter && !have.setter_commission && calc.setterAmt > 0) {
         var sid = _repIdByName(calc.setterName);
-        rows.push({ customer_id:cid, line:'new_solar', kind:'setter_commission', payee: sid || calc.setterName, payee_name: calc.setterName, amount: calc.setterAmt, status:'sold' });
+        rows.push(_stampAutoPaidIfDennis({ customer_id:cid, line:'new_solar', kind:'setter_commission', payee: sid || calc.setterName, payee_name: calc.setterName, amount: calc.setterAmt, status:'sold' }));
       }
       if (!have.override && calc.companyAmt > 0) rows.push({ customer_id:cid, line:'new_solar', kind:'override', payee:'solar_review_corp', payee_name:'Solar Review Corp', amount: calc.companyAmt, status:'sold' });
       if (!rows.length) { alert('Nothing to record — already locked in, or no commissionable amount yet.'); return; }
@@ -3077,7 +3105,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // Personal tab; Webhooks + Credentials + 1:1s promoted to their own pills.
   function teamSubBar(active) {
     var st = 'width:auto;margin:0;padding:6px 16px;border:none;border-radius:100px;font-size:0.75rem;font-weight:700;cursor:pointer;transition:all 0.15s;white-space:nowrap;';
-    var tabs = [['team','&#128101; Team'],['dialers','&#128266; Dialers'],['hiring','&#127919; Hiring'],['oneonones','&#129309; 1:1s'],['webhooks','&#127380; Webhooks'],['documents','&#128196; Document Signer'],['pages','&#128279; Pages']];
+    var tabs = [['team','&#128101; Team'],['payroll','&#128181; Payroll'],['dialers','&#128266; Dialers'],['hiring','&#127919; Hiring'],['oneonones','&#129309; 1:1s'],['webhooks','&#127380; Webhooks'],['documents','&#128196; Document Signer'],['pages','&#128279; Pages']];
     return '<div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;">'+tabs.map(function(t){
       var on = active === t[0];
       return '<button onclick="renderTeamView(\''+t[0]+'\')" style="'+st+'background:'+(on?'#8DC63F':'rgba(255,255,255,0.07)')+';color:'+(on?'#1A1A1A':'#888')+';">'+t[1]+'</button>';
@@ -3977,7 +4005,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (subTab === 'social') subTab = 'team';   // Socials moved to the Personal tab
     sessionStorage.setItem('teamSubView', subTab);
     adminView = 'team';
-    var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button><button class="portal-tab active" onclick="renderTeamView()">&#128101; Administration</button><button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button><button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="finGoTab(\'payroll\')">&#128181; Payroll</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button><a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a></div>';
+    var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button><button class="portal-tab active" onclick="renderTeamView()">&#128101; Administration</button><button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button><button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderTeamView(\'payroll\')">&#128181; Payroll</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button><a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a></div>';
     document.getElementById('dashBody').innerHTML = portalNav + '<p style="color:#aaa;padding:20px 0;">Loading team data...</p>';
     // Closing roles drive where every booking lands — load before rendering the roster.
     try { await window.bbLoadClosers(true); } catch(e) {}
@@ -4325,6 +4353,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '</div></div>';
       });
     }
+
+    } else if (subTab === 'payroll') {
+
+      h += await _teamPayrollHtml();
 
     } else if (subTab === 'webhooks') {
 
@@ -5109,7 +5141,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button>'+
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button>'+
       '<button class="portal-tab active" onclick="renderScheduleView()">&#128197; Schedule</button>'+
-      '<button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="finGoTab(\'payroll\')">&#128181; Payroll</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button>'+
+      '<button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderTeamView(\'payroll\')">&#128181; Payroll</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button>'+
       '<a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a>'+
     '</div>';
 
@@ -5245,7 +5277,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button>'+
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button>'+
       '<button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button>'+
-      '<button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab active" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="finGoTab(\'payroll\')">&#128181; Payroll</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button>'+
+      '<button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab active" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderTeamView(\'payroll\')">&#128181; Payroll</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button>'+
       '<a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a>'+
     '</div>';
 
@@ -5533,7 +5565,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button>'+
       '<button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button>'+
       '<button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button>'+
-      '<button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="finGoTab(\'payroll\')">&#128181; Payroll</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button>'+
+      '<button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderTeamView(\'payroll\')">&#128181; Payroll</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button>'+
       '<a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a>'+
     '</div>';
 
@@ -6204,7 +6236,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button>'+
       '<button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button>'+
       '<button class="portal-tab active" onclick="renderAgentsView()">&#129302; Agents</button>'+
-      '<button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="finGoTab(\'payroll\')">&#128181; Payroll</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button>'+
+      '<button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderTeamView(\'payroll\')">&#128181; Payroll</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button>'+
       '<a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a>'+
     '</div>';
 
@@ -7586,7 +7618,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button>'+
       '<button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button>'+
       '<button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button>'+
-      '<button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="finGoTab(\'payroll\')">&#128181; Payroll</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button>'+
+      '<button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderTeamView(\'payroll\')">&#128181; Payroll</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button>'+
       '<a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a>'+
     '</div>';
 
@@ -13113,7 +13145,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button>'+
       '<button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button>'+
       '<button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button>'+
-      '<button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="finGoTab(\'payroll\')">&#128181; Payroll</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button>'+
+      '<button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderTeamView(\'payroll\')">&#128181; Payroll</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button>'+
       '<a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a>'+
     '</div>' : '';
     var h = portalNav + '<div style="padding:4px 0 16px;">';
@@ -16190,9 +16222,28 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
   // ── Finance View — Commission Ledger + Ops Payouts ─────────────────────────
   // ── Payroll — commissions & reimbursements per the 2026-07-07 SOPs ────────
-  async function renderPayrollView(portalNav, subTabRow) {
-    var body = document.getElementById('dashBody');
-    body.innerHTML = portalNav + '<div style="padding:4px 0 24px;">' + subTabRow + '<div style="text-align:center;padding:20px;color:#555;font-size:0.8rem;">Loading payroll&hellip;</div></div>';
+  // ── Payroll (Administration → Payroll sub-tab, 2026-09-15, per Dennis: "There
+  // are two sources for the same feature: Commissions and Payroll... Don't need
+  // both. Keep Payroll and adopt the advantages of Commissions into it. Sink
+  // Payroll tab into Administration under its own sub tab.") — replaces BOTH the
+  // old Finance→Commissions sub-tab (finRenderCommissions, retired) and the old
+  // Finance→Payroll sub-tab (renderPayrollView, retired). Keeps Payroll's real
+  // organizing function — grouped by pay Friday, real LOCKED commissions only,
+  // never a Potential/estimated one — and adopts Commissions' visual language
+  // (.fin-tile/.fin-card/.fin-btn, the "Paid to reps" tile Payroll never had, CSV
+  // export) on top of it. Pure-HTML-returning like _teamDialersHtml/_team1on1sHtml
+  // — the caller (renderTeamView) already prepends portalNav + teamSubBar.
+  // New this pass: a "See the math" toggle per line (reusing the exact
+  // _revCostLineHtml/_waterfallBarHtml/toggleCommMath the Jobs-tab dashboard
+  // already built, so the math can never read differently in two places — "so I
+  // can verify it's accurate before paying out"), and Dennis's own commission —
+  // always auto-paid at creation since it lands in the same company account
+  // rather than needing an external payout (_stampAutoPaidIfDennis) — broken out
+  // into its own section, never mixed into "the company commission splits" the
+  // other reps' rows show. Still the exact same split math for everyone — no
+  // formula changes.
+  async function _teamPayrollHtml() {
+    finEnsureCss();
     var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
     var comms = [];
     try {
@@ -16200,37 +16251,97 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (error) throw error;
       comms = data || [];
     } catch(e) {
-      body.innerHTML = portalNav + '<div style="padding:4px 0 24px;">' + subTabRow +
-        '<div style="padding:14px 16px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.2);border-radius:12px;font-size:0.78rem;color:#ef9b9b;">Accounting tables not found — run <code>20260707_accounting.sql</code> in the Supabase SQL Editor, then reload.</div></div>';
-      return;
+      return '<div class="fin-wrap"><div style="padding:14px 16px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.2);border-radius:12px;font-size:0.78rem;color:#ef9b9b;">Accounting tables not found — run <code>20260707_accounting.sql</code> in the Supabase SQL Editor, then reload.</div></div>';
     }
-    function custName(id){ var r = (adminCustomers||[]).find(function(x){return x.id===id;}); return r ? (((r.first_name||'')+' '+(r.last_name||'')).trim() || r.address || '—') : '—'; }
     function money(n){ return '$'+(parseFloat(n)||0).toLocaleString(undefined,{maximumFractionDigits:2}); }
     var lineLbl = { fixmy:'FixMy', top_tier:'Top Tier', new_solar:'Axia/QCells' };
 
-    var owedReps = comms.filter(function(x){ return x.status==='sold' && x.payee!=='solar_review_corp'; });
-    var owedSRC  = comms.filter(function(x){ return x.status==='sold' && x.payee==='solar_review_corp'; });
-    var paidRecent = comms.filter(function(x){ return x.status==='paid'; }).slice(0, 40);
+    // "See the math" needs the same per-job commission cache the Jobs-tab
+    // dashboard uses (_fixmyCommCache / _axiaCommCache) — load it fresh for every
+    // distinct job referenced by this fetch, closer + setter rows alike (the
+    // cache is keyed by customer id, not payee, so one load covers both splits).
+    var fixmyIds = [], axiaIds = [];
+    comms.forEach(function(x){
+      if (x.kind!=='rep_commission' && x.kind!=='setter_commission') return;
+      if (x.line==='fixmy') fixmyIds.push(x.customer_id);
+      else if (x.line==='new_solar') axiaIds.push(x.customer_id);
+    });
+    await Promise.all([ _loadFixmyJobCommissions(fixmyIds), _loadAxiaJobCommissions(axiaIds) ]);
+    function _cacheFor(x) {
+      if (x.kind!=='rep_commission' && x.kind!=='setter_commission') return null;
+      if (x.line==='fixmy') return _fixmyCommCache[x.customer_id];
+      if (x.line==='new_solar') return _axiaCommCache[x.customer_id];
+      return null; // Top Tier is manual-entry only — no formula to show
+    }
+    function _payrollLineHtml(x) {
+      var d = _cacheFor(x);
+      var mathId = 'pmath_' + x.id;
+      var r = '<div style="display:flex;gap:8px;align-items:center;font-size:0.72rem;color:#aaa;padding:5px 0;border-top:1px solid rgba(255,255,255,0.05);flex-wrap:wrap;">'+
+        '<span style="color:#777;">'+(lineLbl[x.line]||x.line)+'</span>'+
+        '<span style="color:#ccc;">'+esc(finCustName(x.customer_id))+'</span>'+
+        '<span style="color:#888;">'+(x.kind==='travel_reimbursement'?'travel':x.kind==='setter_commission'?'setter split':'commission')+'</span>'+
+        '<span style="color:#ddd;font-weight:700;">'+money(x.amount)+'</span>'+
+        (d ? '<button class="no-print" onclick="toggleCommMath(\''+mathId+'\')" style="padding:2px 9px;background:rgba(74,158,255,0.08);border:1px solid rgba(74,158,255,0.3);border-radius:100px;color:#4a9eff;font-size:0.6rem;font-weight:700;cursor:pointer;">See the math <span id="'+mathId+'_arrow">&#9662;</span></button>' : '')+
+        (x.status==='paid'
+          ? '<span style="font-size:0.6rem;font-weight:700;color:#8DC63F;padding:2px 9px;border:1px solid rgba(141,198,63,0.4);border-radius:100px;text-transform:uppercase;">paid</span>'
+          : '<button class="no-print" onclick="edToggleCommission(\''+x.id+'\',\'sold\')" style="padding:3px 11px;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.35);border-radius:100px;color:#8DC63F;font-size:0.64rem;font-weight:700;cursor:pointer;">Mark Paid</button>')+
+      '</div>';
+      if (d) r += '<div id="'+mathId+'" style="display:none;padding:8px 10px;margin:2px 0 8px;background:rgba(255,255,255,0.02);border:1px dashed rgba(255,255,255,0.1);border-radius:8px;">'+_revCostLineHtml(d)+_waterfallBarHtml(d)+'</div>';
+      return r;
+    }
 
-    var h = portalNav + '<div style="padding:4px 0 24px;">' + subTabRow;
+    // Dennis's own commission is separated out entirely — see _stampAutoPaidIfDennis.
+    var dennisRows = comms.filter(function(x){ return x.payee === DEFAULT_CLOSER_ID; });
+    var repComms   = comms.filter(function(x){ return x.payee !== DEFAULT_CLOSER_ID; });
+
+    var owedReps    = repComms.filter(function(x){ return x.status==='sold'  && x.payee!=='solar_review_corp'; });
+    var paidRepsOnly= repComms.filter(function(x){ return x.status==='paid' && x.payee!=='solar_review_corp'; });
+    var owedSRC     = repComms.filter(function(x){ return x.status==='sold'  && x.payee==='solar_review_corp'; });
+    var paidRecent  = repComms.filter(function(x){ return x.status==='paid'; }).slice(0, 40); // reps' paid + SRC received
+    var dennisTotal = dennisRows.reduce(function(t,x){ return t+(parseFloat(x.amount)||0); },0);
+
+    finCsvStash.payroll = { name:'solar_review_payroll', header:['Date','Payee','Line','Kind','Customer','Amount','Status'],
+      rows: comms.map(function(x){ return [String(x.paid_at||x.sold_at).slice(0,10), x.payee_name||repName(x.payee)||x.payee, lineLbl[x.line]||x.line, x.kind, finCustName(x.customer_id), (parseFloat(x.amount)||0).toFixed(2), x.status]; }) };
+
+    var h = '<div class="fin-wrap">';
 
     var totalOwedReps = owedReps.reduce(function(t,x){ return t+(parseFloat(x.amount)||0); },0);
+    var totalPaidReps = paidRepsOnly.reduce(function(t,x){ return t+(parseFloat(x.amount)||0); },0);
     var totalOwedSRC  = owedSRC.reduce(function(t,x){ return t+(parseFloat(x.amount)||0); },0);
-    h += '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;">';
-    h += '<div style="background:rgba(155,109,232,0.08);border:1px solid rgba(155,109,232,0.3);border-radius:12px;padding:12px 18px;"><div style="font-size:1.3rem;font-weight:800;color:#9b6de8;">'+money(totalOwedReps)+'</div><div style="font-size:0.62rem;color:#888;text-transform:uppercase;letter-spacing:0.05em;">Owed to reps</div></div>';
-    h += '<div style="background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.3);border-radius:12px;padding:12px 18px;"><div style="font-size:1.3rem;font-weight:800;color:#8DC63F;">'+money(totalOwedSRC)+'</div><div style="font-size:0.62rem;color:#888;text-transform:uppercase;letter-spacing:0.05em;">Override income due to Solar Review Corp</div></div>';
+    h += '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:16px;">';
+    h += '<div class="fin-tile" style="flex:0 1 auto;"><div class="v" style="color:#ffaa00;">'+money(totalOwedReps)+'</div><div class="l">Owed to reps</div></div>';
+    h += '<div class="fin-tile" style="flex:0 1 auto;"><div class="v" style="color:#8DC63F;">'+money(totalPaidReps)+'</div><div class="l">Paid to reps</div></div>';
+    h += '<div class="fin-tile" style="flex:0 1 auto;"><div class="v" style="color:#4a9eff;">'+money(dennisTotal)+'</div><div class="l">Dennis&#39;s Commission &middot; auto-paid</div></div>';
+    h += '<div class="fin-tile" style="flex:0 1 auto;"><div class="v" style="color:#9b6de8;">'+money(totalOwedSRC)+'</div><div class="l">Override income due to SRC</div></div>';
+    h += '<button class="fin-btn no-print" style="margin-left:auto;" onclick="finExportStashed(\'payroll\')">&#8681; Export CSV</button>';
     h += '</div>';
 
     // Grouped by pay-Friday first (2026-09-14, per Dennis — "make it very easy to
     // payout commissions weekly"), payee within each group. Admin's Payroll POV is
     // "what each setter/tech is getting paid based on Installed jobs" — real, locked
     // commissions only, never a Potential/estimated one, so a job's REAL earned date
-    // (customer's installed_at/ns_pto_at) decides the pay Friday, falling back to the
-    // commission row's own sold_at only for a legacy row with no earned date on file.
+    // (customer's installed_at/ns_pto_at, mirrored on the already-loaded
+    // _fixmyCommCache/_axiaCommCache entry as earnedAt) decides the pay Friday.
+    // ⚠️ 2026-09-16, per Dennis — fixed a real bug: a "Lock in as Sold → Payroll"
+    // click stamps commissions.sold_at the moment it's clicked, which can be WEEKS
+    // before the job actually reaches Installed/PTO. The old fallback here treated
+    // a missing earned date as "use sold_at instead," which silently bucketed a
+    // freshly-locked, not-yet-installed job (Shirin Handjani — locked in per the
+    // 2026-09-06 worked example, never advanced past ns_eval_booked) into "This
+    // Friday" as if her closer/setter were about to be paid. A row with no real
+    // earned date yet now gets NO pay-Friday at all — it sits in its own "awaiting
+    // install/PTO" holding section below instead of a fabricated near-term date.
     function _commEarnedAtFor(x) {
-      var c = (adminCustomers||[]).find(function(r){ return r.id === x.customer_id; });
-      var earnedAt = c ? (c.lead_category === 'new_solar' ? c.ns_pto_at : c.installed_at) : null;
-      return earnedAt ? new Date(earnedAt) : new Date(x.sold_at);
+      // Top Tier has no install/PTO concept at all — sold IS earned there, same as
+      // before. FixMy/Axia MUST have a real cache hit with a real earned date; a
+      // missing cache entry (a failed _loadFixmyJobCommissions/_loadAxiaJobCommissions
+      // round trip, not just "not earned yet") must NEVER silently fall back to
+      // sold_at here — that fallback is exactly what reproduced the reported bug
+      // (Shirin Handjani's fresh "Lock in" click always leaves sold_at populated,
+      // so treating a cache miss the same as Top Tier would quietly resurrect it).
+      if (x.line !== 'fixmy' && x.line !== 'new_solar') return new Date(x.sold_at);
+      var d = _cacheFor(x);
+      return (d && d.earned && d.earnedAt) ? new Date(d.earnedAt) : null;
     }
     function _fridayLabel(d) {
       var today = new Date(); today.setHours(0,0,0,0);
@@ -16241,19 +16352,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       return null;
     }
     h += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#9b6de8;margin-bottom:8px;">&#129297; Unpaid — by pay Friday</div>';
-    if (!owedReps.length) h += '<div style="font-size:0.75rem;color:#666;margin-bottom:14px;">Nothing unpaid. Commissions appear here when locked in from a job (FixMy) or entered on Top Tier / Axia/QCells leads.</div>';
     var byFriday = {};
+    var owedRepsPending = [];
     owedReps.forEach(function(x){
-      var fri = _payFridayAfter(_commEarnedAtFor(x));
+      var earnedAt = _commEarnedAtFor(x);
+      if (!earnedAt) { owedRepsPending.push(x); return; }
+      var fri = _payFridayAfter(earnedAt);
       var key = fri.toISOString().slice(0,10);
       (byFriday[key] = byFriday[key] || { date: fri, rows: [] }).rows.push(x);
     });
+    if (!Object.keys(byFriday).length) h += '<div style="font-size:0.75rem;color:#666;margin-bottom:14px;">Nothing due yet. A commission appears here once its job actually reaches Installed (FixMy) or Permission to Operate (Axia/QCells).</div>';
     Object.keys(byFriday).sort().forEach(function(key){
       var grp = byFriday[key];
       var groupTotal = grp.rows.reduce(function(t,x){ return t+(parseFloat(x.amount)||0); },0);
       var overdue = grp.date < new Date(new Date().setHours(0,0,0,0));
       var lbl = _fridayLabel(grp.date);
-      h += '<div style="background:rgba(255,255,255,0.02);border:1px solid '+(overdue?'rgba(239,68,68,0.3)':'rgba(255,255,255,0.07)')+';border-radius:12px;margin-bottom:12px;overflow:hidden;">';
+      h += '<div class="fin-card" style="padding:0;overflow:hidden;'+(overdue?'border-color:rgba(239,68,68,0.35);':'')+'">';
       h += '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:rgba(255,255,255,0.03);">';
       h += '<div><span style="font-size:0.85rem;font-weight:800;color:'+(overdue?'#ef4444':'#eee')+';">'+(lbl||_payDateShort(grp.date))+'</span><span style="display:block;font-size:0.65rem;color:#666;">'+grp.date.toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'})+'</span></div>';
       h += '<span style="font-size:0.9rem;font-weight:800;color:#9b6de8;">'+money(groupTotal)+'</span>';
@@ -16273,53 +16387,76 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '<span style="font-size:0.8rem;font-weight:700;color:#ddd;">'+esc(rows[0].payee_name||repName(p))+' <span style="color:#9b6de8;font-weight:800;">'+money(sub)+'</span></span>';
         h += '<label style="display:flex;align-items:center;gap:5px;font-size:0.68rem;font-weight:700;color:#8DC63F;cursor:pointer;white-space:nowrap;"><input type="checkbox" data-name="'+esc(rows[0].payee_name||repName(p))+'" onclick="if(this.checked){this.disabled=true;payrollMarkPersonWeekPaid(this,\''+rows.map(function(x){return x.id;}).join(',')+'\');}" style="cursor:pointer;width:15px;height:15px;"> Paid</label>';
         h += '</div>';
-        rows.forEach(function(x){
-          h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.72rem;color:#aaa;padding:3px 0;flex-wrap:wrap;">';
-          h += '<span style="color:#777;">'+(lineLbl[x.line]||x.line)+'</span>';
-          h += '<span style="color:#ccc;">'+esc(custName(x.customer_id))+'</span>';
-          h += '<span style="color:#888;">'+(x.kind==='travel_reimbursement'?'travel':'commission')+'</span>';
-          h += '<span style="color:#ddd;font-weight:700;">'+money(x.amount)+'</span>';
-          h += '<button onclick="edToggleCommission(\''+x.id+'\',\'sold\')" style="margin-left:auto;padding:3px 11px;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.35);border-radius:100px;color:#8DC63F;font-size:0.64rem;font-weight:700;cursor:pointer;">Mark Paid</button>';
-          h += '</div>';
-        });
+        rows.forEach(function(x){ h += _payrollLineHtml(x); });
         h += '</div>';
       });
       h += '<div style="padding:9px 14px;border-top:1px solid rgba(255,255,255,0.08);">';
-      h += '<button onclick="finMarkPayrollGroupPaid(\''+grp.rows.map(function(x){return x.id;}).join(',')+'\')" style="width:auto;padding:6px 14px;background:rgba(141,198,63,0.12);border:1px solid rgba(141,198,63,0.4);border-radius:100px;color:#8DC63F;font-size:0.68rem;font-weight:700;cursor:pointer;">&#10003; Mark all paid for '+(lbl||'this week')+'</button>';
+      h += '<button class="fin-btn no-print" onclick="finMarkPayrollGroupPaid(\''+grp.rows.map(function(x){return x.id;}).join(',')+'\')">&#10003; Mark all paid for '+(lbl||'this week')+'</button>';
       h += '</div></div>';
     });
 
+    // Locked in as sold, but the job hasn't actually reached Installed/PTO yet — see
+    // the 2026-09-16 fix note above. Still owed, still math-checkable, just deliberately
+    // NOT given a pay-Friday (and left out of the whole-week "Mark all paid" buttons
+    // above) so it can never read as an imminent payday before the job is real.
+    if (owedRepsPending.length) {
+      h += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#fb923c;margin:18px 0 8px;">&#9203; Sold — awaiting install / PTO (not yet payable)</div>';
+      h += '<div class="fin-card">';
+      h += '<div style="font-size:0.72rem;color:#888;margin-bottom:4px;">Locked in, but the job hasn\'t reached Installed (FixMy) or Permission to Operate (Axia/QCells) yet — no pay-Friday is assigned until it has.</div>';
+      owedRepsPending.forEach(function(x){ h += _payrollLineHtml(x); });
+      h += '</div>';
+    }
+
+    // Dennis's own commission — always auto-paid at creation (_stampAutoPaidIfDennis),
+    // so it never enters the "Unpaid — by pay Friday" section above. Kept visible and
+    // math-checkable here rather than mixed into "the company commission splits" the
+    // other reps' rows show — same split math, just his own separate section.
+    h += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#4a9eff;margin:18px 0 8px;">&#128188; Dennis&#39;s Commission &mdash; auto-paid</div>';
+    if (!dennisRows.length) {
+      h += '<div style="font-size:0.75rem;color:#666;margin-bottom:14px;">Nothing recorded yet.</div>';
+    } else {
+      h += '<div class="fin-card">';
+      h += '<div style="font-size:0.72rem;color:#888;margin-bottom:4px;">Lands in the same company account rather than a separate payout, so it\'s marked paid the instant it\'s recorded — the identical split math every other rep\'s commission uses, never changed.</div>';
+      dennisRows.sort(function(a,b){ return String(b.sold_at).localeCompare(String(a.sold_at)); }).forEach(function(x){ h += _payrollLineHtml(x); });
+      h += '</div>';
+    }
+
     if (owedSRC.length) {
-      h += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#8DC63F;margin:16px 0 8px;">&#127974; Override income due to Solar Review Corp (1099)</div>';
+      h += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#8DC63F;margin:18px 0 8px;">&#127974; Override income due to Solar Review Corp (1099)</div>';
+      h += '<div class="fin-card">';
       owedSRC.forEach(function(x){
-        h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.73rem;color:#aaa;padding:7px 12px;background:rgba(141,198,63,0.04);border:1px solid rgba(141,198,63,0.15);border-radius:10px;margin-bottom:6px;flex-wrap:wrap;">';
+        h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.73rem;color:#aaa;padding:7px 0;border-top:1px solid rgba(255,255,255,0.05);flex-wrap:wrap;">';
         h += '<span style="color:#777;">'+(lineLbl[x.line]||x.line)+'</span>';
-        h += '<span style="color:#ddd;">'+esc(custName(x.customer_id))+'</span>';
+        h += '<span style="color:#ddd;">'+esc(finCustName(x.customer_id))+'</span>';
         h += '<span style="color:#ddd;font-weight:700;">'+money(x.amount)+'</span>';
         h += '<span style="color:#666;font-size:0.65rem;">sold '+new Date(x.sold_at).toLocaleDateString()+'</span>';
-        h += '<button onclick="edToggleCommission(\''+x.id+'\',\'sold\')" style="margin-left:auto;padding:4px 12px;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.35);border-radius:100px;color:#8DC63F;font-size:0.66rem;font-weight:700;cursor:pointer;">Mark Received</button>';
+        h += '<button class="no-print" onclick="edToggleCommission(\''+x.id+'\',\'sold\')" style="padding:4px 12px;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.35);border-radius:100px;color:#8DC63F;font-size:0.66rem;font-weight:700;cursor:pointer;">Mark Received</button>';
         h += '</div>';
       });
+      h += '</div>';
     }
 
     if (paidRecent.length) {
-      h += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#555;margin:16px 0 8px;">Paid / received — recent</div>';
+      h += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#555;margin:18px 0 8px;">Paid / received — recent (reps)</div>';
+      h += '<div class="fin-card">';
       paidRecent.forEach(function(x){
-        h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.7rem;color:#777;padding:4px 2px;border-bottom:1px solid rgba(255,255,255,0.04);flex-wrap:wrap;">';
+        h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.7rem;color:#777;padding:4px 0;border-top:1px solid rgba(255,255,255,0.04);flex-wrap:wrap;">';
         h += '<span>'+(x.paid_at?new Date(x.paid_at).toLocaleDateString():'')+'</span>';
         h += '<span style="color:#999;">'+esc(x.payee_name||repName(x.payee))+'</span>';
         h += '<span>'+(lineLbl[x.line]||x.line)+' &middot; '+(x.kind==='override'?'override':x.kind==='travel_reimbursement'?'travel':'commission')+'</span>';
-        h += '<span style="color:#aaa;">'+esc(custName(x.customer_id))+'</span>';
+        h += '<span style="color:#aaa;">'+esc(finCustName(x.customer_id))+'</span>';
         h += '<span style="color:#bbb;font-weight:700;margin-left:auto;">'+money(x.amount)+'</span>';
         h += '</div>';
       });
+      h += '</div>';
     }
 
+    h += '<div style="font-size:0.66rem;color:#555;margin-top:8px;">Rep commissions paid book to the P&amp;L as COGS &rarr; "Incentives - Sales"; overrides received book to income.</div>';
     h += '</div>';
-    body.innerHTML = h;
+    return h;
   }
   // Bulk "Mark all paid for this Friday" — one round trip instead of N, used by the
-  // per-pay-week group in renderPayrollView above (2026-09-14).
+  // per-pay-week group in _teamPayrollHtml (Administration → Payroll, 2026-09-14).
   window.finMarkPayrollGroupPaid = async function(idsCsv) {
     var ids = (idsCsv||'').split(',').filter(Boolean);
     if (!ids.length) return;
@@ -16328,7 +16465,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
       var { error } = await pc.from('commissions').update({ status:'paid', paid_at: new Date().toISOString() }).in('id', ids);
       if (error) throw error;
-      renderFinanceView();
+      renderTeamView('payroll');
     } catch(e) { alert('Could not mark paid: '+(e.message||e)); }
   };
   // The per-payee, per-week checkbox (2026-09-15) — same DB call as the whole-week
@@ -16348,7 +16485,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
       var { error } = await pc.from('commissions').update({ status:'paid', paid_at: new Date().toISOString() }).in('id', ids);
       if (error) throw error;
-      renderFinanceView();
+      renderTeamView('payroll');
     } catch(e) {
       alert('Could not mark paid: '+(e.message||e));
       el.checked = false; el.disabled = false;
@@ -16531,15 +16668,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button>'+
       '<button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button>'+
       '<button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button>'+
-      '<button class="portal-tab active" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="finGoTab(\'payroll\')">&#128181; Payroll</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button>'+
+      '<button class="portal-tab active" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderTeamView(\'payroll\')">&#128181; Payroll</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button>'+
       '<a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a>'+
     '</div>';
 
     var stStyle = 'width:auto;margin:0;padding:6px 14px;border:none;border-radius:100px;font-size:0.73rem;font-weight:700;cursor:pointer;transition:all 0.15s;white-space:nowrap;';
+    // Commissions + Payroll retired from Finance (2026-09-15, per Dennis — "two
+    // sources for the same feature... don't need both") — both live now as ONE
+    // consolidated view, Administration → Payroll (_teamPayrollHtml), which keeps
+    // Payroll's real pay-Friday organizing function and adopts Commissions' visual
+    // language on top of it. See renderTeamView's 'payroll' branch.
     var tabs = [
       ['dashboard','&#128202; Dashboard'], ['revenue','&#128181; Revenue'], ['subsheet','&#128203; Sub Sheet'],
-      ['commissions','&#129297; Commissions'], ['expenses','&#128179; Expenses'], ['sync','&#128260; Sync'], ['statements','&#128196; Statements'],
-      ['ai','&#129302; AI Advisor'], ['owed','&#128176; Money Owed'], ['payroll','&#129534; Payroll'], ['marketing','&#128200; Marketing']
+      ['expenses','&#128179; Expenses'], ['sync','&#128260; Sync'], ['statements','&#128196; Statements'],
+      ['ai','&#129302; AI Advisor'], ['owed','&#128176; Money Owed'], ['marketing','&#128200; Marketing']
     ];
     var subTabRow = '<div style="display:flex;gap:7px;margin-bottom:16px;flex-wrap:wrap;">'+tabs.map(function(t){
       var active = financeSubTab === t[0];
@@ -16548,7 +16690,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
     if (financeSubTab === 'marketing') { renderMarketingView(); return; }
     if (financeSubTab === 'owed')      { renderMoneyOwedView(portalNav, subTabRow); return; }
-    if (financeSubTab === 'payroll')   { renderPayrollView(portalNav, subTabRow); return; }
+    // A stale bookmark/localStorage value from before the retirement above still
+    // routes somewhere real instead of a dead function reference.
+    if (financeSubTab === 'commissions' || financeSubTab === 'payroll') { renderTeamView('payroll'); return; }
     renderSolarReviewFinance(portalNav, subTabRow);
   }
   window.finGoTab = function(k){ financeSubTab = k; renderFinanceView(); };
@@ -16854,7 +16998,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (financeSubTab === 'dashboard')       inner = finRenderDashboard();
     else if (financeSubTab === 'revenue')    inner = finRenderRevenue();
     else if (financeSubTab === 'subsheet')   inner = finRenderSubSheet();
-    else if (financeSubTab === 'commissions')inner = finRenderCommissions();
     else if (financeSubTab === 'expenses')   inner = finRenderExpenses();
     else if (financeSubTab === 'sync')       inner = finRenderSync();
     else if (financeSubTab === 'statements') inner = finRenderStatements();
@@ -17263,82 +17406,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   };
 
   // ── Commissions (new system + legacy job-level ledger, one view) ────────────
-  function finRenderCommissions(){
-    var C = finCache;
-    var comms = (C.comms||[]).filter(function(c){ return finInRange(c.paid_at || c.sold_at); });
-    var legacy = (adminCustomers||[]).filter(function(c){ return parseFloat(c.rep_commission) > 0 && finInRange(c.commission_paid_at || c.created_at); });
-
-    var owedNew = comms.filter(function(c){ return c.status==='sold' && c.payee!=='solar_review_corp'; });
-    var owedSRC = comms.filter(function(c){ return c.status==='sold' && c.payee==='solar_review_corp'; });
-    var paidNew = comms.filter(function(c){ return c.status==='paid' && c.payee!=='solar_review_corp'; });
-    var owedLegacy = legacy.filter(function(c){ return !c.commission_paid; });
-    var paidLegacy = legacy.filter(function(c){ return c.commission_paid; });
-    var sumC = function(l,f){ return l.reduce(function(t,x){ return t+(parseFloat(f?x[f]:x.amount)||0); },0); };
-    var totOwed = sumC(owedNew) + sumC(owedLegacy,'rep_commission');
-    var totPaid = sumC(paidNew) + sumC(paidLegacy,'rep_commission');
-
-    var lineLbl = { fixmy:'FixMy', top_tier:'Top Tier', new_solar:'Axia/QCells' };
-    var kindLbl = { rep_commission:'commission', setter_commission:'setter split', override:'override', travel_reimbursement:'travel' };
-    finCsvStash.commissions = { name:'solar_review_commissions', header:['Date','Payee','Line','Kind','Customer','Amount','Status'],
-      rows: comms.map(function(c){ return [String(c.paid_at||c.sold_at).slice(0,10), c.payee_name||repName(c.payee)||c.payee, lineLbl[c.line]||c.line, kindLbl[c.kind]||c.kind, finCustName(c.customer_id), (parseFloat(c.amount)||0).toFixed(2), c.status]; })
-        .concat(legacy.map(function(c){ return [String(c.commission_paid_at||c.created_at).slice(0,10), repName(c.rep_id)||c.rep_id||'—', 'FixMy (legacy)', 'commission', ((c.first_name||'')+' '+(c.last_name||'')).trim(), (parseFloat(c.rep_commission)||0).toFixed(2), c.commission_paid?'paid':'sold']; })) };
-
-    var h = '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px;">';
-    h += '<div class="fin-tile" style="flex:0 1 auto;"><div class="v" style="color:#ffaa00;">'+finMoney(totOwed)+'</div><div class="l">Owed to reps</div></div>';
-    h += '<div class="fin-tile" style="flex:0 1 auto;"><div class="v" style="color:#8DC63F;">'+finMoney(totPaid)+'</div><div class="l">Paid to reps</div></div>';
-    h += '<div class="fin-tile" style="flex:0 1 auto;"><div class="v" style="color:#9b6de8;">'+finMoney(sumC(owedSRC))+'</div><div class="l">Override income due to SRC</div></div>';
-    h += '<button class="fin-btn no-print" style="margin-left:auto;" onclick="finExportStashed(\'commissions\')">&#8681; Export CSV</button>';
-    h += '</div>';
-
-    // per-payee groups (new + legacy merged)
-    var byPayee = {};
-    comms.forEach(function(c){
-      if (c.payee === 'solar_review_corp') return;
-      var nm = c.payee_name || repName(c.payee) || c.payee;
-      (byPayee[nm] = byPayee[nm]||[]).push({ d:c.paid_at||c.sold_at, cust:finCustName(c.customer_id), lbl:(lineLbl[c.line]||c.line)+' &middot; '+(kindLbl[c.kind]||c.kind), amt:parseFloat(c.amount)||0, paid:c.status==='paid', id:c.id, legacy:false });
-    });
-    legacy.forEach(function(c){
-      var nm = repName(c.rep_id) || c.rep_id || 'Unassigned';
-      (byPayee[nm] = byPayee[nm]||[]).push({ d:c.commission_paid_at||c.created_at, cust:((c.first_name||'')+' '+(c.last_name||'')).trim()||c.address||'—', lbl:'FixMy &middot; commission (legacy)', amt:parseFloat(c.rep_commission)||0, paid:!!c.commission_paid, id:c.id, legacy:true });
-    });
-    var names = Object.keys(byPayee).sort();
-    if (!names.length && !owedSRC.length) h += '<div style="text-align:center;padding:30px;color:#555;font-size:0.8rem;">No commissions in this range. FixMy commissions lock in from the job editor once costs are entered; Top Tier / Axia/QCells are entered per deal.</div>';
-    names.forEach(function(nm){
-      var list = byPayee[nm].sort(function(a,b){ return String(b.d).localeCompare(String(a.d)); });
-      var owed = list.filter(function(x){ return !x.paid; }).reduce(function(t,x){ return t+x.amt; },0);
-      var paid = list.filter(function(x){ return x.paid; }).reduce(function(t,x){ return t+x.amt; },0);
-      h += '<div class="fin-card">';
-      h += '<div style="display:flex;align-items:center;gap:12px;margin-bottom:6px;flex-wrap:wrap;"><span style="font-weight:800;color:#eee;font-size:0.88rem;">'+esc(nm)+'</span>'+
-        (owed>0?'<span style="color:#ffaa00;font-weight:700;font-size:0.76rem;">'+finMoney(owed)+' owed</span>':'')+
-        (paid>0?'<span style="color:#8DC63F;font-size:0.76rem;">'+finMoney(paid)+' paid</span>':'')+'</div>';
-      list.forEach(function(x){
-        h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.74rem;color:#aaa;padding:5px 0;border-top:1px solid rgba(255,255,255,0.05);flex-wrap:wrap;">'+
-          '<span style="color:#666;font-size:0.65rem;">'+String(x.d).slice(0,10)+'</span>'+
-          '<span style="color:#ddd;flex:1;min-width:110px;">'+esc(x.cust)+'</span>'+
-          '<span style="color:#777;font-size:0.68rem;">'+x.lbl+'</span>'+
-          '<span style="color:#ddd;font-weight:700;">'+finMoney(x.amt)+'</span>'+
-          (x.paid
-            ? '<span style="font-size:0.6rem;font-weight:700;color:#8DC63F;padding:2px 9px;border:1px solid rgba(141,198,63,0.4);border-radius:100px;text-transform:uppercase;">paid</span>'
-            : '<button class="no-print" onclick="'+(x.legacy?'markCommissionPaid(\''+x.id+'\')':'edToggleCommission(\''+x.id+'\',\'sold\')')+'" style="padding:2px 10px;border-radius:100px;border:1px solid rgba(141,198,63,0.35);background:rgba(141,198,63,0.1);color:#8DC63F;font-size:0.6rem;font-weight:700;cursor:pointer;">Mark Paid</button>')+
-        '</div>';
-      });
-      h += '</div>';
-    });
-
-    if (owedSRC.length) {
-      h += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#8DC63F;margin:14px 0 8px;">&#127974; Override income due to Solar Review Corp (1099 receivables)</div>';
-      owedSRC.forEach(function(x){
-        h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.74rem;color:#aaa;padding:7px 12px;background:rgba(141,198,63,0.04);border:1px solid rgba(141,198,63,0.15);border-radius:10px;margin-bottom:6px;flex-wrap:wrap;">'+
-          '<span style="color:#777;">'+(lineLbl[x.line]||x.line)+'</span>'+
-          '<span style="color:#ddd;">'+esc(finCustName(x.customer_id))+'</span>'+
-          '<span style="color:#ddd;font-weight:700;">'+finMoney(x.amount)+'</span>'+
-          '<span style="color:#666;font-size:0.65rem;">sold '+String(x.sold_at).slice(0,10)+'</span>'+
-          '<button class="no-print" onclick="edToggleCommission(\''+x.id+'\',\'sold\')" style="margin-left:auto;padding:4px 12px;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.35);border-radius:100px;color:#8DC63F;font-size:0.66rem;font-weight:700;cursor:pointer;">Mark Received</button></div>';
-      });
-    }
-    h += '<div style="font-size:0.66rem;color:#555;margin-top:4px;">Rep commissions paid book to the P&amp;L as COGS &rarr; "Incentives - Sales"; overrides received book to income. Dennis-sold FixMy jobs carry no commission (SOP).</div>';
-    return h;
-  }
+  // finRenderCommissions() retired 2026-09-15 — see the "Payroll (Administration
+  // → Payroll sub-tab)" note above _teamPayrollHtml. Its per-payee/SRC/legacy
+  // reporting is now folded into that one consolidated view.
 
   // ── Expenses (statement upload + QuickBooks-style ledger) ───────────────────
   function finAccountOptions(selected){
@@ -18258,7 +18328,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button>'+
       '<button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button>'+
       '<button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button>'+
-      '<button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="finGoTab(\'payroll\')">&#128181; Payroll</button><button class="portal-tab active" onclick="renderPersonalView()">&#128100; Personal</button>'+
+      '<button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderTeamView(\'payroll\')">&#128181; Payroll</button><button class="portal-tab active" onclick="renderPersonalView()">&#128100; Personal</button>'+
       '<a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a>'+
     '</div>';
   }
@@ -19247,7 +19317,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<button class="portal-tab active" onclick="renderTeamView()">&#128101; Administration</button>'+
       '<button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button>'+
       '<button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button>'+
-      '<button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="finGoTab(\'payroll\')">&#128181; Payroll</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button>'+
+      '<button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderTeamView(\'payroll\')">&#128181; Payroll</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button>'+
       '<a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a>'+
     '</div>';
 
@@ -24412,10 +24482,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }
       var have = {}; (commRes.data||[]).forEach(function(x){ have[x.kind] = true; });
       var rows = [];
-      if (!have.rep_commission && closerAmt > 0) rows.push({ customer_id:cid, line:'fixmy', kind:'rep_commission', payee:rep, payee_name:closerNm, amount:closerAmt, status:'sold' });
+      if (!have.rep_commission && closerAmt > 0) rows.push(_stampAutoPaidIfDennis({ customer_id:cid, line:'fixmy', kind:'rep_commission', payee:rep, payee_name:closerNm, amount:closerAmt, status:'sold' }));
       if (hasSetter && !have.setter_commission && setterAmt > 0) {
         var sid = _repIdByName(setterName);
-        rows.push({ customer_id:cid, line:'fixmy', kind:'setter_commission', payee: sid || setterName, payee_name: setterName, amount: setterAmt, status:'sold' });
+        rows.push(_stampAutoPaidIfDennis({ customer_id:cid, line:'fixmy', kind:'setter_commission', payee: sid || setterName, payee_name: setterName, amount: setterAmt, status:'sold' }));
       }
       if (!rows.length) { alert('Nothing to record — already locked in, or no commissionable amount yet.'); return; }
       var summary = rows.map(function(r){ return (r.kind==='setter_commission'?'Setter · '+r.payee_name:'Closer · '+r.payee_name)+': $'+r.amount.toLocaleString(undefined,{maximumFractionDigits:2}); }).join('\n');
@@ -24451,11 +24521,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var amt = parseFloat(prompt(promptLabel + ' ($):') || '');
     if (!amt || amt <= 0) return;
     var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
-    var { error } = await pc.from('commissions').insert({
+    var { error } = await pc.from('commissions').insert(_stampAutoPaidIfDennis({
       customer_id: cid, line: cat, kind: kind,
       payee: payee, payee_name: payeeName,
       amount: amt, status: 'sold'
-    });
+    }));
     if (error) { alert('Could not add: ' + error.message); return; }
     edLoadAccounting();
   };
@@ -24464,7 +24534,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var next = cur === 'paid' ? 'sold' : 'paid';
     await pc.from('commissions').update({ status: next, paid_at: next==='paid' ? new Date().toISOString() : null }).eq('id', id);
     edLoadAccounting();
-    if (typeof financeSubTab !== 'undefined' && financeSubTab === 'payroll') renderFinanceView();
+    // Payroll moved from Finance into Administration (2026-09-15) — re-render there,
+    // not the old Finance sub-tab, when this toggle is clicked from that screen.
+    if (sessionStorage.getItem('teamSubView') === 'payroll') renderTeamView('payroll');
   };
   window.edDelCommission = async function(id) {
     if (!confirm('Delete this commission entry?')) return;
