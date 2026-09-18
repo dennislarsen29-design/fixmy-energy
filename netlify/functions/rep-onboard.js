@@ -68,6 +68,48 @@ exports.handler = async function(event) {
     return { statusCode: 409, headers: CORS, body: JSON.stringify({ error: 'An account with this email already exists. Contact dennis@fixmy.energy if you need help logging in.' }) };
   }
 
+  // ── Approval gate (2026-09-18, security fix) ───────────────────────────
+  // This endpoint used to create a real, working portal login for ANYONE who
+  // POSTed here with just a name/email/phone/market — including a bare POST
+  // from outside the app, since there was no server-side auth check at all.
+  // The public /onboarding page (linked from careers.html's own "scan the QR
+  // code, your login is created automatically — no waiting" copy) meant
+  // literally any site visitor could self-provision full portal access with
+  // zero review. A real incident (Joseph Kelley, source:'indeed') confirmed
+  // this — he applied via careers.html but was never approved, yet ended up
+  // with a working login.
+  //
+  // Fix: require the applicant to already be marked 'hired' in candidates
+  // before an account can be created — database-verified, checked here with
+  // the service-role key. ⚠️ Deliberately UNCONDITIONAL, no admin bypass: an
+  // earlier draft of this fix tried to auto-exempt calls carrying
+  // source:'admin-onboard' from a same-origin request, but same-origin does
+  // NOT distinguish "the authenticated admin panel" from "the public
+  // /onboarding page" — both are served from fixmy.energy, so anyone filling
+  // out the public form (or a raw POST with a spoofed Origin header, which
+  // costs nothing) could set that one string field themselves and walk
+  // straight back through the hole this exists to close. There is no
+  // server-verified admin session anywhere in this codebase to check against
+  // instead, so the honest, secure answer is: no bypass. Also confirmed and
+  // fixed the matching hole one level down — candidates' own RLS previously
+  // let the public anon key INSERT a row with ANY status including 'hired'
+  // directly, which would have let an attacker self-approve and walk straight
+  // through this exact gate; the anon INSERT policy now only allows
+  // status='applied' (see the companion RLS migration).
+  //
+  // Net effect for the admin "Onboard New Hire" panel: it keeps working
+  // unmodified for anyone who already applied and was marked hired (the
+  // normal case) or already has a hired candidates row from any other
+  // source. Onboarding someone with zero application history at all (a
+  // direct referral) will 403 with the message below — ask Claude to insert
+  // a hired candidates row for them directly, a one-line SQL fix, same as
+  // every other rare admin edge case handled this way throughout this file.
+  const candResp = await fetch(SUPA_URL + '/rest/v1/candidates?email=eq.' + encodeURIComponent(email.toLowerCase()) + '&status=eq.hired&select=id&limit=1', { headers: supaHeaders });
+  const candData = candResp.ok ? await candResp.json() : [];
+  if (!Array.isArray(candData) || candData.length === 0) {
+    return { statusCode: 403, headers: CORS, body: JSON.stringify({ error: 'No approved application on file for this email. If you applied, we\'ll reach out once you\'re cleared to set up your portal login. If an admin is onboarding a direct referral, mark them hired in the candidates table first.' }) };
+  }
+
   // Generate credentials
   var repId   = 'tech_' + randomCode(6).toLowerCase();
   var repCode = randomCode(8);
