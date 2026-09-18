@@ -21,6 +21,8 @@ const cors = {
   'Access-Control-Allow-Origin': '*'
 };
 
+const { promotePaidLeadToDiagnostic } = require('./lib/promote-paid-lead.js');
+
 exports.handler = async function(event) {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers: cors, body: '' };
   if (event.httpMethod !== 'POST') return { statusCode: 405, headers: cors, body: 'Method Not Allowed' };
@@ -120,6 +122,16 @@ exports.handler = async function(event) {
   );
 
   console.log('ghl-status-update:', trigger, 'for', customerName.trim(), '(', customerId, ')', updates);
+
+  // Paid FixMy lead = Diagnostic Job — mirror the portal's auto-conversion
+  // server-side (same gap as the payment sweeps: a GHL-triggered 'paid' that
+  // never passes through the lead editor left the customer stranded as a lead,
+  // invisible on the assigned Ops portal).
+  if (trigger === 'invoice_paid') {
+    await promotePaidLeadToDiagnostic(SUPA_URL + '/rest/v1', {
+      'Content-Type': 'application/json', apikey: SUPA_KEY, Authorization: 'Bearer ' + SUPA_KEY
+    }, customerId, null);
+  }
 
   return {
     statusCode: 200,
