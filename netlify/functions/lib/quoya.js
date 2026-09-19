@@ -22,6 +22,7 @@ const PHOTO_CATEGORIES = [
   'Sub Panel Sticker Photo',
   'Inverter Photo',
   'Serial Number',
+  'Error Codes',
   'Meter Photo',
   'Production Screenshot',
   'Solar Array',

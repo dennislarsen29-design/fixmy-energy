@@ -68,7 +68,7 @@ exports.handler = async function(event) {
   };
 
   // Fetch customer record
-  const cResp = await fetch(SUPA_URL + '/rest/v1/customers?id=eq.' + customerId + '&select=id,first_name,last_name,email,phone,address,invoice_amount,sold_type&limit=1', {
+  const cResp = await fetch(SUPA_URL + '/rest/v1/customers?id=eq.' + customerId + '&select=id,first_name,last_name,email,phone,address,invoice_amount,sold_type,sold_at&limit=1', {
     headers: supaHeaders
   });
   const cRows = await cResp.json();
@@ -82,6 +82,8 @@ exports.handler = async function(event) {
     invoice_status: 'paid',
     agreement_status: 'signed',
     sold_type: c.sold_type || 'diagnostic',
+    // sold_at feeds the payroll pay-date math — fill once, never overwrite.
+    sold_at: c.sold_at || actualSignedAt,
     sign_token: null,
     sign_token_expires_at: null,
     agreement_signed_at: actualSignedAt,
