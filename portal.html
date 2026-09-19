@@ -17326,6 +17326,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var { error: uErr } = await pc.from('customers').update(upd).eq('id', rec.id);
       if (uErr) throw uErr;
       rec.invoice_status = status; if (doConvert) { rec.sold_type = 'diagnostic'; rec.sold_at = upd.sold_at; }
+      if (doConvert) await _seedDiagnosticCogs(pc, rec.id);
       finCache = null;
       if (doConvert && typeof openDiagSchedulingModal === 'function') {
         alert('✓ Check recorded ('+finMoney(amt)+'). Invoice marked paid — converting to a Diagnostic job. Schedule it next.');
@@ -24415,6 +24416,26 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
   }
 
+  // Auto-seed the standard $300 Diagnostic COGS the moment a lead actually converts to a
+  // Diagnostic job (invoice paid / step reaches Diagnostic Booked's sold threshold). Per
+  // Dennis 2026-09-19: "shouldn't the redline automatically calculate" — before this, job_costs
+  // was 100% manual (edAddCost), so a real diagnostic job could sit with Redline $0 / Gross
+  // Commission overstated until someone remembered to type the $300 in by hand (exactly what
+  // happened to Will Barrera and Becky Phan). Scoped to sold_type==='diagnostic' ONLY — RMA
+  // ($350) and Service Fee (scope-of-work, variable) have no single standard figure to guess,
+  // so those still go through edAddCost same as always. Idempotent: only inserts when this
+  // customer has ZERO job_costs rows yet, so it can never double-seed or stomp a real Sub
+  // Sheet entry an admin already typed in (including a corrected, non-$300 diagnostic COGS).
+  var DIAG_STANDARD_COGS = 300;
+  async function _seedDiagnosticCogs(client, customerId) {
+    try {
+      var { data: existing } = await client.from('job_costs').select('id').eq('customer_id', customerId).limit(1);
+      if (existing && existing.length) return; // already has cost lines — never overwrite
+      await client.from('job_costs').insert({ customer_id: customerId, label: 'Diagnostic — COGS', amount: DIAG_STANDARD_COGS, status: 'pending', created_by: 'auto-diag-convert' });
+      delete _fixmyCommCache[customerId]; // force the card to recompute with the new redline
+    } catch(e) { console.warn('Auto-seed diagnostic COGS failed:', e.message); }
+  }
+
   window.edAddCost = async function(cid) {
     // ⚠️ This label renders verbatim on the assigned Ops partner's own portal (their COGS
     // view, 2026-08-30) — never put a customer revenue/invoice figure in it.
@@ -24796,6 +24817,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // Axia's formula reads system_size/setter_name/rep_id/black_box/lead_source, any of
       // which this editor can change — simplest correct rule is "any save invalidates it".
       delete _axiaCommCache[id];
+      if (diagConverting) await _seedDiagnosticCogs(client, id);
       // Update GHL appointment if diagnostic date changed and we have an existing appointment ID
       if (!isAutoSave && isFixMySave && cRec.ghl_appointment_id && diagDate && diagDate !== cRec.diagnostic_date && GHL_DIAG_CALENDAR_ID) {
         var _resDt = diagDate ? diagDate.slice(0,10) : null;
