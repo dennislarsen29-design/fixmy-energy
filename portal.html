@@ -29712,6 +29712,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }
       Object.assign(lead, { knock_status: 'booked', diagnostic_date: startISO, rep_id: _bkCloserId,
                             setter_name: (person.name || person.id), step: 1, black_box: false });
+      _cvSaveLeadsCache();   // without this a reload restores the PRE-booking cache — see the note on _cvSaveLeadsCache
       try {
         await bbLogActivity(lead.id, 'door_knock', 'booked',
           'Booked at the door for ' + _cvBkApptLabel(), { rep_name: person.name || person.id, rec: lead });
@@ -30033,7 +30034,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           if (res.miles) canvassBoxMiles = res.miles;
           _cvFetchLat = lat; _cvFetchLng = lng; _cvFetchAt = Date.now();
           _canvassRescore();
-          try { localStorage.setItem('bbLeadsCache', JSON.stringify({ts: Date.now(), leads: canvassLeads, lat: canvassUserLat, lng: canvassUserLng, skipIds: canvassSkipIds})); } catch(e) {}
+          _cvSaveLeadsCache();
         }
       } catch(e) {
         console.warn('canvass re-center failed:', e);
@@ -30062,6 +30063,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }, function(){ alert('Could not read your location. Check location permission for fixmy.energy.'); },
       { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 });
     };
+
+    // Single writer for the localStorage snapshot _canvassLoadLeads restores from on
+    // page load. Every place that mutates canvassLeads must call this or a reload
+    // (iOS Safari backgrounding a tab reloads it fresh, not resumes it) restores the
+    // PRE-mutation array — an already-knocked/booked door silently reverts to open
+    // and reappears as "Next Door" even though the Session Log (a separate
+    // localStorage key, bbKnockHistory, written by _cvPushKnockHistory) still shows
+    // it correctly worked. That mismatch — worked in the log, open on the card — is
+    // exactly the "Doors is duplicating addresses" report (2026-09-19). canvassKnock
+    // and canvassCommitBooking used to update canvassLeads in memory and the DB but
+    // never call this, so the cache went stale the instant either one fired.
+    function _cvSaveLeadsCache() {
+      try { localStorage.setItem('bbLeadsCache', JSON.stringify({ts: Date.now(), leads: canvassLeads, lat: canvassUserLat, lng: canvassUserLng, skipIds: canvassSkipIds})); } catch(e) {}
+    }
 
     async function _canvassLoadLeads(userLat, userLng) {
       canvassGpsStatus = 'loading';
@@ -30141,7 +30156,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       canvassLeads = leads.filter(function(l){ return canvassSkipIds.indexOf(l.id) < 0; });
       _cvSortRoute();   // street-at-a-time walking order over the kept set
       canvassGpsStatus = 'ready';
-      try { localStorage.setItem('bbLeadsCache', JSON.stringify({ts: Date.now(), leads: canvassLeads, lat: canvassUserLat, lng: canvassUserLng, skipIds: canvassSkipIds})); } catch(e) {}
+      _cvSaveLeadsCache();
       renderSales();
 
       // Start live GPS watch so route re-sorts as user walks — clears previous watch first
@@ -30222,6 +30237,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // (the warm-activation block that used to live here is gone — see the note on
       //  `upd` above. A warm door leaves the route because _cvIsOpen excludes any
       //  knock_status other than come_back, so nothing else was needed to retire it.)
+      _cvSaveLeadsCache();   // without this a reload restores the PRE-knock cache — see the note on _cvSaveLeadsCache
       renderSales();
     };
 
@@ -30233,7 +30249,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var unvisited = canvassLeads.filter(_cvIsOpen);
       if (!rid && unvisited.length) canvassSkipIds.push(unvisited[0].id);
       canvassLeads = canvassLeads.filter(function(l){ return canvassSkipIds.indexOf(l.id) < 0; });
-      try { localStorage.setItem('bbLeadsCache', JSON.stringify({ts: Date.now(), leads: canvassLeads, lat: canvassUserLat, lng: canvassUserLng, skipIds: canvassSkipIds})); } catch(e) {}
+      _cvSaveLeadsCache();
       renderSales();
     };
 
