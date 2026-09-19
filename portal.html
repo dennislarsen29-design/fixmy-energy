@@ -615,13 +615,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // — and, unlike a no-cors fetch (always an opaque, unreadable response even on
   // failure), returns GHL's real HTTP status/body so a caller can actually tell
   // whether GHL accepted the event, not just whether the request left the device.
-  // `url` is accepted for call-site compatibility but ignored — the relay only
-  // ever forwards to its own hardcoded GHL_PROPOSAL_WEBHOOK destination.
+  // `url` selects which of the relay's own two hardcoded destinations to use —
+  // it is matched against known constants below, never forwarded as a URL itself
+  // (the relay's own allowlist is what actually decides the fetch target; a
+  // caller can never redirect it anywhere else). Two other call sites (GHL_WEBHOOK,
+  // for setter-lead capture + rep-agreement-signed) had the identical no-cors+JSON
+  // mislabeling bug found 2026-09-19 while auditing for other instances — this
+  // function now covers both, not just GHL_PROPOSAL_WEBHOOK.
   function _ghlWebhookFire(url, payload) {
+    var dest = (url === GHL_WEBHOOK) ? 'general' : 'proposal';
     return fetch('/.netlify/functions/ghl-webhook-relay', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
+      body: JSON.stringify({ dest: dest, payload: payload })
     }).then(function(r) { return r.json().catch(function(){ return {ok:false}; }); });
   }
   var GHL_DIAG_AGREEMENT_WEBHOOK = 'https://services.leadconnectorhq.com/hooks/gXWwbOVymY0iRfj7c1It/webhook-trigger/f17004a5-5956-4d13-b7f0-a11098bac586';
@@ -750,7 +756,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
   function pushLeadToWebhooks(lead) {
     var data = Object.assign({ source:'portal-admin', timestamp: new Date().toISOString() }, lead);
-    fetch(GHL_WEBHOOK, { method:'POST', mode:'no-cors', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data) }).catch(function(e){ console.warn('GHL:', e); });
+    _ghlWebhookFire(GHL_WEBHOOK, data).catch(function(e){ console.warn('GHL:', e); });
     fetch(SHEETBEST_URL, { method:'POST', headers:{'Content-Type':'application/json','Accept':'application/json'}, body:JSON.stringify([data]) }).catch(function(e){ console.warn('Sheets:', e); });
   }
 
@@ -25884,7 +25890,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var sheetRow=Object.assign({},newLead,{id:(data&&data.id)?data.id:'tmp-'+Date.now(),setter_name:setterLabel||type,lat:geo?geo.lat:'',lng:geo?geo.lng:'',maps_status:'needs-followup',postcard:postcard,utility_bill:utilityBill,two_hr_window:window2hr,years_owned:owned,roof_age:roof,created_at:new Date().toISOString()});
       fetch(SHEETBEST_URL,{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify([sheetRow])}).catch(function(e){console.warn('Sheets:',e);});
       if (!_fixmyRealBooking) {
-        fetch(GHL_WEBHOOK,{method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},body:JSON.stringify({firstName:first,lastName:newLead.last_name||'',email:email,phone:phone,address1:addr,source:isOutbound?('Setter: '+type):'Admin Inbound',tags:['setter-lead','no-automation',type],customField:{monthly_bill:bill,annual_true_up:trueUp||null,lead_type:type,setter_name:setter||type,years_owned:owned,roof_age:roof,has_existing_solar:hasSolar||null,postcard:postcard,utility_bill_avail:utilityBill,two_hr_window:window2hr}})}).catch(function(e){console.warn('GHL:',e);});
+        _ghlWebhookFire(GHL_WEBHOOK,{firstName:first,lastName:newLead.last_name||'',email:email,phone:phone,address1:addr,source:isOutbound?('Setter: '+type):'Admin Inbound',tags:['setter-lead','no-automation',type],customField:{monthly_bill:bill,annual_true_up:trueUp||null,lead_type:type,setter_name:setter||type,years_owned:owned,roof_age:roof,has_existing_solar:hasSolar||null,postcard:postcard,utility_bill_avail:utilityBill,two_hr_window:window2hr}}).catch(function(e){console.warn('GHL:',e);});
       }
       // ⚠️ A failed ghl-book call used to only console.warn — invisible to the rep, and
       // exactly how a lead can "land on Portal leads but not on the calendar" with no
@@ -27408,10 +27414,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         try { localStorage.setItem('repAgreement_' + person.id, ts + '|' + repName + '|' + REP_AGREEMENT_VERSION); } catch(e) {}
         try { sessionStorage.setItem('repAgreementJustSigned_' + person.id, '1'); } catch(e) {} // bypass re-check this session
         try {
-          fetch(GHL_WEBHOOK, {method:'POST',mode:'no-cors',headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({firstName:person.name,lastName:repName,source:'Rep Agreement Signed',
-              tags:['rep-agreement-signed'],customField:{rep_id:person.id,rep_legal_name:repName,signed_at:ts,agreement_version:REP_AGREEMENT_VERSION}})
-          });
+          _ghlWebhookFire(GHL_WEBHOOK, {firstName:person.name,lastName:repName,source:'Rep Agreement Signed',
+              tags:['rep-agreement-signed'],customField:{rep_id:person.id,rep_legal_name:repName,signed_at:ts,agreement_version:REP_AGREEMENT_VERSION}});
         } catch(e){}
         try {
           var agClient = supabase.createClient(SUPA_URL, SUPA_KEY);
