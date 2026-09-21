@@ -13,12 +13,14 @@
 // finance-extract.js) so the reply is always machine-readable — no "no tool call" retry
 // path needed for a single well-scoped extraction like this.
 //
-// ⚠️ Unlike eval-analysis-core.js's toImageBlock (which silently DROPS any non-image
-// content-type, including PDF, despite a comment claiming otherwise — a real gap in
-// that pipeline, flagged in CLAUDE.md, not fixed here since it's a separate shipped
-// pipeline), THIS function properly sends a PDF bill as a `document` content block.
-// The wizard tells reps "PDF is best" for the bill upload, so this path has to handle
+// This function has always properly sent a PDF bill as a `document` content block —
+// the wizard tells reps "PDF is best" for the bill upload, so this path has to handle
 // PDF correctly or it would silently fail on the exact format reps are steered toward.
+// ⚠️ eval-analysis-core.js's toImageBlock had the matching gap (silently dropped any
+// non-image content-type, PDF included, despite a comment claiming otherwise) — left
+// unfixed here for a while as a separate pipeline, until reported live 2026-09-21
+// ("Quoya couldn't read the file... it's a real pdf"). Fixed there using this exact
+// content-type branch as the template, so both Quoya paths now handle PDF the same way.
 //
 // POST { billUrl, utility, lead: { address } }
 // → { readable, annual_kwh, avg_rate_per_kwh, monthly_amount_paid, annual_amount_paid,

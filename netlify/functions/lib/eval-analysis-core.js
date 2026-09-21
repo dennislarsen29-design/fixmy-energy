@@ -48,15 +48,29 @@ async function toImageBlock(p) {
     const r = await fetch(p.url, { signal: AbortSignal.timeout(9000) });
     if (!r.ok) return null;
     const ct = (r.headers.get('content-type') || 'image/jpeg').split(';')[0].trim();
-    // A PDF utility bill can't go down the vision path — it's passed as a document block.
-    if (!/^image\/(jpeg|png|gif|webp)$/.test(ct)) return null;
     const buf = Buffer.from(await r.arrayBuffer());
     if (buf.length > MAX_SINGLE_IMAGE_BYTES) {
-      console.warn('[eval-analysis] skipping oversized photo', p.url, buf.length, 'bytes');
+      console.warn('[eval-analysis] skipping oversized upload', p.url, buf.length, 'bytes');
       return null;
     }
     const b64 = buf.toString('base64');
-    return { type: 'image', source: { type: 'base64', media_type: ct, data: b64 } };
+    // ⚠️ 2026-09-21, real bug fixed: this comment used to claim "a PDF utility bill...
+    // is passed as a document block" while the code just below it actually returned
+    // null for ANY non-image content-type — a PDF was silently dropped from Quoya's
+    // full hardware/production/consumption analysis entirely, despite the Eval Wizard
+    // telling reps "PDF is best" for the bill upload. Flagged in CLAUDE.md when
+    // eval-bill-analysis.js (a separate, narrower Quoya call) was built correctly with
+    // this exact branch, deliberately left unfixed here at the time as a different
+    // pipeline. Reported live as "Quoya couldn't read the file... it's a real pdf" —
+    // fixed now using that same function's content-type branch as the template.
+    if (ct === 'application/pdf') {
+      return { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } };
+    }
+    if (/^image\/(jpeg|png|gif|webp)$/.test(ct)) {
+      return { type: 'image', source: { type: 'base64', media_type: ct, data: b64 } };
+    }
+    console.warn('[eval-analysis] unsupported content-type, skipping', p.url, ct);
+    return null;
   } catch (e) {
     console.warn('[eval-analysis] photo fetch failed', p.url, e.message);
     return null;
