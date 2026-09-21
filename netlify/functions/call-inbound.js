@@ -90,7 +90,8 @@ exports.handler = async (event) => {
 
   const noteEntry = `[${new Date().toISOString().slice(0,16).replace('T',' ')}] ` +
     (isCheckPage
-      ? `Check page submission — installer: ${body.installer || 'unknown'}${body.install_year ? ' (' + body.install_year + ')' : ''}`
+      ? `Check page submission — installer: ${body.installer || 'unknown'}${body.install_year ? ' (' + body.install_year + ')' : ''}` +
+        (body.system_status ? ` — SYSTEM STATUS: ${body.system_status}` : '')
       : `Inbound call (Smith.AI): ${body.status || body.event || 'received'}`) +
     (body.notes || body.call_summary || body.transcript ? '\n' + (body.notes || body.call_summary || body.transcript) : '');
 
