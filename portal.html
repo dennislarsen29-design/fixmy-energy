@@ -28031,20 +28031,34 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     catch(e) { document.getElementById('dashBody').innerHTML = '<p style="color:#ef4444;">Database error.</p>'; return; }
 
     // Fetch this person's accounts by rep_id
-    var r1 = await client.from('customers').select('*').eq('rep_id', person.id).or('archived.is.null,archived.eq.false').order('updated_at', {ascending:false, nullsFirst:false});
+    // ⚠️ 2026-09-21, real bug found off a live screenshot ("Unknown / Eval Booked" cards
+    // leaking into a rep's own Leads tab): this query never excluded black_box, unlike
+    // every admin customers query (loadAdminDashboard, _refreshAdminCustomersQuiet — both
+    // carry `.or('black_box.is.null,black_box.eq.false')`). A "Warm" door disposition
+    // (canvassKnock/adminCanvassKnock) deliberately stamps rep_id so the rep keeps
+    // ownership WITHOUT clearing black_box — see the 2026-08-12 "Warm stays in Black Box"
+    // fix — so any still-quarantined warm door the rep knocked immediately showed up here
+    // as a fabricated lead (no first/last name captured yet ⇒ renders "Unknown", default
+    // step 1 ⇒ renders "Eval Booked" even though nothing was ever booked). The WRITE side
+    // was fixed in 2026-08-12; this READ side was never given the matching guard. Same
+    // black_box exclusion as the admin queries closes it here too.
+    var r1 = await client.from('customers').select('*').eq('rep_id', person.id).or('archived.is.null,archived.eq.false').or('black_box.is.null,black_box.eq.false').order('updated_at', {ascending:false, nullsFirst:false});
     var allRecords = r1.data || [];
 
     // ── "Booked by me" — a setter's handed-off deals, READ ONLY ───────────────
     // When a setter who cannot close books a lead it is assigned to a closing Tech, so
     // it never appears in the query above. Their 20% rides on it, so they keep sight of
     // it. Matched on setter_name (there is no setter_id column) — the same string-match
-    // the commission split already relies on.
+    // the commission split already relies on. Same black_box guard as above — a warm door
+    // a setter happened to knock (setter_name isn't normally stamped by a knock, but this
+    // is belt-and-braces against the identical leak).
     var handedOff = [];
     try { await window.bbLoadClosers(); } catch(e) {}
     if (person.name && !window.bbIsCloser(person)) {
       var rh = await client.from('customers').select('*')
         .eq('setter_name', person.name).neq('rep_id', person.id)
         .or('archived.is.null,archived.eq.false')
+        .or('black_box.is.null,black_box.eq.false')
         .order('diagnostic_date', { ascending: false }).limit(100);
       handedOff = (rh.data || []);
     }
