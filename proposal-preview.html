@@ -89,6 +89,9 @@ details.spec summary:after{content:'+';font-size:1.1rem;font-weight:400;color:va
 details.spec[open] summary:after{content:'\2212';}
 details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:12px;}
 details.spec .body h3{font-family:'Playfair Display',serif;font-style:italic;font-weight:500;font-size:1.05rem;margin:0 0 8px;color:var(--dark);}
+.pw-video-wrap{margin-top:14px;border-radius:10px;overflow:hidden;aspect-ratio:16/9;width:100%;background:#0d0d0d;}
+.pw-video-wrap iframe{width:100%;height:100%;border:0;display:block;}
+.pw-video-caption{font-size:0.66rem;color:var(--muted);margin-top:6px;text-align:right;}
 .li-table{width:100%;border-collapse:collapse;}
 .li-table tr{border-bottom:1px solid var(--line);}
 .li-table tr:last-child{border-bottom:none;}
@@ -117,11 +120,15 @@ details.spec .body h3{font-family:'Playfair Display',serif;font-style:italic;fon
   var SUPA_URL = 'https://kbtobyoumvbcxfbugsid.supabase.co';
   var SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtidG9ieW91bXZiY3hmYnVnc2lkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ1NjY5MDcsImV4cCI6MjA5MDE0MjkwN30.nLE0TlMu43E4dNRxxjoc6P1OQMjfwXgonbA2MrCCrhk';
   var WHEELHOUSE_APR = 0.0824, WHEELHOUSE_TERM_YEARS = 15;
+  // Official Tesla-channel video ("Building Powerwall 3 | Tesla") — verified via search as
+  // real, currently-published Tesla content before embedding. Never guess a video id.
+  var POWERWALL3_VIDEO_ID = 'sFagRON6uZ8';
   var qs = new URLSearchParams(location.search);
   var custId = qs.get('id');
   var client = supabase.createClient(SUPA_URL, SUPA_KEY);
   var CUST = null, PROP = null, OPTS = [];
   var selIdx = 0, payMode = null, finSub = null; // payMode: 'cash'|'finance'; finSub: 'sdcp'|'standard'|'consolidate'
+  var INSIGHT_LOADED = false, INSIGHT_TEXT = null; // cached once, reused across every renderPanel() re-render
 
   function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
   function money(n){ return '$'+(parseFloat(n)||0).toLocaleString('en-US',{minimumFractionDigits:2}); }
@@ -163,6 +170,37 @@ details.spec .body h3{font-family:'Playfair Display',serif;font-style:italic;fon
         note: 'Finances the full price without the Participate discount. If you carry higher-interest debt elsewhere, rolling it in here at ' + (WHEELHOUSE_APR*100).toFixed(2) + '% APR could still save you money overall.'
       }
     };
+  }
+
+  function hasPowerwall(opt){
+    var s = ((opt.id||'')+' '+(opt.title||'')).toLowerCase();
+    return s.indexOf('pw3')!==-1 || s.indexOf('powerwall')!==-1;
+  }
+  // Builds the whole "The Situation" body — Quoya's insight (once loaded) plus the
+  // Powerwall video when the CURRENTLY SELECTED option includes one. Called fresh from
+  // renderPanel() on every option switch so it never gets stuck showing stale content
+  // for a different option, or a permanent "Loading…" spinner after the insight has
+  // already arrived (renderPanel used to hardcode the loading string every re-render).
+  function problemBodyHtml(opt){
+    var html;
+    if (!INSIGHT_LOADED) {
+      html = '<span style="color:var(--muted);font-style:italic;">Loading Quoya&rsquo;s read on this deal&hellip;</span>';
+    } else if (!INSIGHT_TEXT) {
+      html = '<span style="color:var(--muted);">Ask your rep what this evaluation found — the automated summary isn&rsquo;t available right now.</span>';
+    } else {
+      var lead = INSIGHT_TEXT.match(/^Problem:\s*(.+?)(?:\.\s|\.$)/i);
+      if (lead) {
+        var rest = INSIGHT_TEXT.slice(lead[0].length).trim();
+        html = '<h3>&ldquo;'+esc(lead[1].trim())+'.&rdquo;</h3>'+(rest?'<div>'+esc(rest)+'</div>':'');
+      } else {
+        html = '<div>'+esc(INSIGHT_TEXT)+'</div>';
+      }
+    }
+    if (hasPowerwall(opt)) {
+      html += '<div class="pw-video-wrap"><iframe src="https://www.youtube-nocookie.com/embed/'+POWERWALL3_VIDEO_ID+'" title="Tesla Powerwall 3" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe></div>'+
+        '<div class="pw-video-caption">Official Tesla Powerwall 3 video</div>';
+    }
+    return html;
   }
 
   function sizeLabelFor(opt){
@@ -333,7 +371,7 @@ details.spec .body h3{font-family:'Playfair Display',serif;font-style:italic;fon
       financeBlock+
       '<div class="opt-list">'+optListHtml+'</div>'+
       rebateHtml+
-      '<details class="spec" id="problemDetails" open><summary>The Situation</summary><div class="body" id="problemBody"><span style="color:var(--muted);font-style:italic;">Loading Quoya&rsquo;s read on this deal&hellip;</span></div></details>'+
+      '<details class="spec" id="problemDetails" open><summary>The Situation</summary><div class="body" id="problemBody">'+problemBodyHtml(opt)+'</div></details>'+
       '<details class="spec"><summary>Your System Summary</summary><div class="body"><table class="li-table">'+(includedHtml||'<tr><td class="li-name">&mdash;</td></tr>')+'</table></div></details>'+
       '<details class="spec"><summary>Warranties</summary><div class="body">'+warranty.join(' &middot; ')+'</div></details>';
   }
@@ -380,17 +418,13 @@ details.spec .body h3{font-family:'Playfair Display',serif;font-style:italic;fon
       return data.insight || null;
     } catch(e) { return null; }
   }
-  function renderProblem(text){
-    var body = document.getElementById('problemBody');
-    if (!body) return;
-    if (!text) { body.innerHTML = '<span style="color:var(--muted);">Ask your rep what this evaluation found — the automated summary isn’t available right now.</span>'; return; }
-    var lead = text.match(/^Problem:\s*(.+?)(?:\.\s|\.$)/i);
-    if (lead) {
-      var rest = text.slice(lead[0].length).trim();
-      body.innerHTML = '<h3>“'+esc(lead[1].trim())+'.”</h3>'+(rest?'<div>'+esc(rest)+'</div>':'');
-    } else {
-      body.innerHTML = '<div>'+esc(text)+'</div>';
-    }
+  // Caches the fetched insight once and re-renders the whole panel so "The Situation"
+  // (and the Powerwall video that rides inside it) reflects whichever option is
+  // currently selected, not just whichever was selected at boot time.
+  function applyInsight(text){
+    INSIGHT_LOADED = true;
+    INSIGHT_TEXT = text || null;
+    renderPanel();
   }
 
   async function send(){
@@ -448,7 +482,7 @@ details.spec .body h3{font-family:'Playfair Display',serif;font-style:italic;fon
 
     selectOption(0);
     var insight = await ensureInsight();
-    renderProblem(insight);
+    applyInsight(insight);
   }
   boot();
 </script>
