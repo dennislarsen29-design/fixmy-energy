@@ -58,6 +58,29 @@ INVERTER DEGRADATION (NREL / PVEL research):
 - Microinverter arrays (e.g. Enphase IQ) fail per-panel, not system-wide — on a mixed
   system, a production drop usually isolates to the string-inverter side
 
+NEM VALUE IS NOT FROZEN, EVEN UNDER GRANDFATHERING (2026-09-21, per Dennis — a real
+observed example from the field, not independently web-verified from this environment,
+so state it as an observed rate-structure fact rather than a formally cited one):
+- NEM 1.0/2.0 grandfathering locks in the RATE STRUCTURE (retail-rate 1:1 netting), not
+  a frozen dollar figure — a kWh exported during a given TOU window is credited at
+  WHATEVER that window's current price is, and the utility can and does move the TOU
+  window boundaries and prices over time
+- Concrete example: the 10 AM–2 PM window was recently reclassified from "off-peak" to
+  the new, lower-valued "super off-peak" tier — a homeowner's exports during that window
+  are now credited at less than before, with no change to their NEM agreement itself
+- The honest customer-facing framing: NEM protects the RULE, not the VALUE — a
+  grandfathered customer is still exposed to the utility's own rate-design decisions,
+  which have moved in one direction for years. Never state a dollar amount for this
+  specific erosion unless one is explicitly provided — describe the mechanism and its
+  direction, not an invented figure
+
+OUTAGE VULNERABILITY (a plain engineering fact, no hedging needed):
+- A grid-tied solar system with no battery storage shuts OFF during a utility power
+  outage regardless of how much sun is out — this is mandatory anti-islanding behavior
+  (UL 1741 / IEEE 1547), not a malfunction. The homeowner is exactly as dark as a
+  non-solar neighbor during an outage. A battery (Powerwall) is what actually keeps
+  the lights on — solar panels alone never do
+
 TESLA POWERWALL 3 INTEGRATED INVERTER (cost-reduction insight):
 - Powerwall 3 contains a built-in 11.5 kW solar inverter with 6 MPPTs (20 kW DC input)
 - Existing string arrays can usually land directly on the PW3's MPPTs — a dead string
@@ -80,27 +103,33 @@ PROPOSAL BUNDLE DETAILS:
 `;
 
 // ── Per-service-type focus instructions ──────────────────────────────────────
+// 2026-09-21, per Dennis: every focus now opens with an explicit "Problem:" line —
+// his own words for how he leads this pitch in person ("Problem: your solar has a
+// hole in its production") — instead of narrative prose that only implies a problem.
+// This is a presentation-format instruction, not new math; the underlying figures are
+// unchanged from before this edit.
 const SERVICE_FOCUS = {
-  inverter_swap: `Write 3–5 sentences that do ALL of the following:
-1. Open with the customer's specific diagnosed problem and what it is costing them RIGHT NOW in real dollars per month — make it concrete and personal
-2. Reference their NEM 1.0 status as a grandfathered asset worth serious money — losing production now costs them full retail-rate dollars
+  inverter_swap: `Write 4–6 sentences that do ALL of the following:
+1. Start with a line beginning exactly "Problem:" naming the customer's specific diagnosed issue and what it is costing them RIGHT NOW in real dollars per month — concrete and personal, not generic
+2. Reference their NEM status as a grandfathered asset worth serious money — losing production now costs them full retail-rate dollars, and if they are NEM 1.0/2.0, note plainly (using the NEM VALUE IS NOT FROZEN context above) that the CREDIT VALUE for their exported power is still exposed to the utility's own rate-design changes even though the grandfathered RULE is locked in — do not invent a dollar figure for this, describe the mechanism
 3. Describe exactly what the proposed fix restores and adds in concrete production and bill terms
 4. Close with urgency — every month without the fix is another month of overpaying SDG&E`,
 
-  battery_retrofit: `Write 3–5 sentences that do ALL of the following:
-1. Open with the customer's current situation — their solar generates well during the day but they're still paying $0.749/kWh peak rates (4–9 PM) because there's no storage
+  battery_retrofit: `Write 4–6 sentences that do ALL of the following:
+1. Start with a line beginning exactly "Problem:" — their solar generates well during the day but they're still paying $0.749/kWh peak rates (4–9 PM) because there's no storage, AND (using the OUTAGE VULNERABILITY context above) they have zero backup power during a utility outage regardless of how much sun is out — name both in this opening, not just the cost problem
 2. Describe the Powerwall 3's TOU arbitrage value concretely using their numbers: stores midday solar at $0.36/kWh super off-peak rate, discharges at peak to avoid $0.749/kWh — that's a $0.31/kWh shift on every stored kWh
-3. Reference that adding storage does NOT affect their NEM 1.0 grandfathered rate (CPUC D.22-12-056) — this is a no-downside upgrade
-4. Close with urgency — SDG&E's on-peak window is 4–9 PM every weekday; every evening without storage is money going back to the utility`,
+3. Reference that adding storage does NOT affect their NEM 1.0/2.0 grandfathered rate (CPUC D.22-12-056) — this is a no-downside upgrade, and unlike their current exposure to rate-design changes (NEM VALUE IS NOT FROZEN context), a battery's savings come from THEIR OWN stored energy, not a number the utility can quietly move
+4. Close with urgency — SDG&E's on-peak window is 4–9 PM every weekday; every evening without storage is money going back to the utility, and every outage without one is a house going dark`,
 
-  panel_add: `Write 3–5 sentences that do ALL of the following:
-1. Open with the concrete production gain from the additional panels — X kW at 1,600 kWh/kW/yr = Y kWh/yr of new generation credited at full NEM retail rate
-2. Value that production at $0.453/kWh (SDG&E blended rate) under their NEM 1.0 credit, showing the annual dollar value
-3. Reference the address-specific Solar API estimate if provided, or NREL San Diego average if not — make the source clear so the number feels real, not guessed
-4. Close with the compounding value — each additional kWh avoids rates that are rising ~7%/yr per CPUC SB 695, so the value of this production grows every year`,
+  panel_add: `Write 4–6 sentences that do ALL of the following:
+1. Start with a line beginning exactly "Problem:" — their existing system is undersized for their real usage, so a portion of every month's demand is still being bought from SDG&E at full retail rate no matter how well the existing panels perform
+2. State the concrete production gain from the additional panels — X kW at 1,600 kWh/kW/yr = Y kWh/yr of new generation credited at full NEM retail rate
+3. Value that production at $0.453/kWh (SDG&E blended rate) under their NEM credit, showing the annual dollar value, and if NEM 1.0/2.0 note (using the NEM VALUE IS NOT FROZEN context above) that the credit value itself is not immune to the utility's own future rate-design changes — describe the mechanism, never invent a dollar figure for it
+4. Reference the address-specific Solar API estimate if provided, or NREL San Diego average if not — make the source clear so the number feels real, not guessed
+5. Close with the compounding value — each additional kWh avoids rates that are rising ~7%/yr per CPUC SB 695, so the value of this production grows every year`,
 
-  new_solar: `Write 3–5 sentences that do ALL of the following:
-1. Open with the customer's current monthly SDG&E bill and what that compounds to over time at 7%/yr rate escalation (CPUC SB 695 projection)
+  new_solar: `Write 4–6 sentences that do ALL of the following:
+1. Start with a line beginning exactly "Problem:" — their current SDG&E bill and what that compounds to over time at 7%/yr rate escalation (CPUC SB 695 projection), plus (using the OUTAGE VULNERABILITY context above, if this deal doesn't already include a battery) noting that solar panels alone provide zero backup during a utility outage
 2. Describe the NEM lock-in opportunity — customers who install now lock in full retail-rate credits for 20 years; waiting means installing under less favorable future rate structures
 3. Show the full offset potential: annual system production vs. their annual usage at $0.453/kWh, with the specific data source (Solar API or NREL estimate)
 4. Close with urgency — every month on full utility power is another month of paying rates that compound upward with no cap`
