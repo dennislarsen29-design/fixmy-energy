@@ -22142,26 +22142,36 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // no re-upload. Anthropic fetches the URL itself server-side (same url-source pattern
   // already proven in generate-proposal-insight.js's photo blocks), so this sidesteps any
   // Storage-bucket CORS question entirely. Returns the extracted amount, or null.
-  window._propReadBillAmountFromUrl = async function(url) {
-    var isPdf = /\.pdf(\?|$)/i.test(url);
-    var contentBlock = isPdf
-      ? { type: 'document', source: { type: 'url', url: url } }
-      : { type: 'image', source: { type: 'url', url: url } };
+  // Reads a bill already sitting in Storage (job_photos) through the SAME real Quoya bill
+  // reader the Eval Wizard's Consumption step uses (eval-bill-analysis.js) — NOT the
+  // narrower claude-vision.js dollar-amount-only call this used to make. Real gap, reported
+  // live 2026-09-22 (Dennis: "Quoya should be able to see Care on the Utility bill and
+  // automatically pick up the additional value"): a lead whose bill was uploaded through
+  // some path OTHER than the Eval Wizard (so lead_evaluations.bill_analysis was never
+  // populated) — confirmed against Abhay Oswal's real record, the actual case the CARE-tier
+  // feature was originally built around — had its CARE/FERA/Medical-Baseline status
+  // asserted manually by Dennis in a code comment rather than ever actually detected by
+  // Quoya, because this function only ever asked Claude for the dollar figure and threw
+  // away everything else. eval-bill-analysis.js already extracts care/fera/medical_baseline
+  // (built 2026-08-27 for the Eval Wizard) — reusing it here, rather than adding a second,
+  // narrower extraction prompt, is what actually closes this gap end to end.
+  // Returns the full {readable, annual_kwh, avg_rate_per_kwh, monthly_amount_paid,
+  // annual_amount_paid, care, fera, medical_baseline, source, confidence, notes} object, or
+  // null on a hard failure (network/parse) — readable:false on a real but unreadable file.
+  window._propReadBillAnalysisFromUrl = async function(url, utility, address) {
     try {
-      var resp = await fetch('/.netlify/functions/claude-vision', {
+      var resp = await fetch('/.netlify/functions/eval-bill-analysis', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 80,
-          messages: [{ role: 'user', content: [
-            contentBlock,
-            { type: 'text', text: 'Extract the total monthly bill amount from this utility bill. Return ONLY this JSON: {"monthly_bill": <number or null>}. monthly_bill = TOTAL AMOUNT DUE for the current billing period.' }
-          ]}]
-        })
+        body: JSON.stringify({ billUrl: url, utility: utility || '', lead: { address: address || '' } })
       });
       var data = await resp.json();
-      var text = (data.content && data.content[0] && data.content[0].text) ? data.content[0].text.trim() : '';
-      var match = text.match(/"monthly_bill"\s*:\s*([\d.]+)/);
-      return match ? parseFloat(match[1]) : null;
+      return data || null;
     } catch (e) { return null; }
+  };
+  // Back-compat thin wrapper for any other caller that only ever wanted the dollar figure.
+  window._propReadBillAmountFromUrl = async function(url) {
+    var r = await window._propReadBillAnalysisFromUrl(url, '', '');
+    return (r && r.readable && typeof r.monthly_amount_paid === 'number') ? r.monthly_amount_paid : null;
   };
 
   // A real iPad/phone photo of a printed bill is routinely 3-10MB — base64 inflates that
@@ -22424,11 +22434,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // ⚠️ Always reset first — opening the builder for a different customer must never
     // carry over the previous lead's bill_analysis into this one's savings math.
     _propBillAnalysis = null;
+    var _propEvalRowId = null; // captured here so the job_photos fallback below can update the SAME row instead of guessing insert-vs-update
     try {
       var _beClient = supabase.createClient(SUPA_URL, SUPA_KEY);
-      var _beRes = await _beClient.from('lead_evaluations').select('bill_analysis').eq('customer_id', id).limit(1);
-      if (!_beRes.error && _beRes.data && _beRes.data[0] && _beRes.data[0].bill_analysis) {
-        _propBillAnalysis = _beRes.data[0].bill_analysis;
+      var _beRes = await _beClient.from('lead_evaluations').select('id,bill_analysis').eq('customer_id', id).limit(1);
+      if (!_beRes.error && _beRes.data && _beRes.data[0]) {
+        _propEvalRowId = _beRes.data[0].id;
+        if (_beRes.data[0].bill_analysis) _propBillAnalysis = _beRes.data[0].bill_analysis;
       }
     } catch (e) { /* no evaluation on file, or table not applied — falls back to the estimate */ }
 
@@ -22438,7 +22450,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // so a lead with a real bill on file (job_photos, label 'Utility Bill') still showed "No
     // utility bill on file" here because only customers.monthly_bill was ever checked.
     var _propBillFileExistsButUnread = false;
-    if (!(parseFloat(c.monthly_bill) > 0)) {
+    // ⚠️ Widened 2026-09-22: this used to gate purely on "is monthly_bill already known" —
+    // but a lead can easily have a dollar figure on file (typed manually, or read via the
+    // OLDER dollar-only bill-upload path) while CARE/FERA/Medical-Baseline was NEVER
+    // checked at all. Gating only on the dollar amount meant such a lead could never get its
+    // real bill re-read for CARE here, even with a real bill photo sitting right in
+    // job_photos — exactly the gap Abhay Oswal's record showed (a real dollar figure and a
+    // saved proposal, CARE only ever asserted manually, bill_analysis genuinely null). Now
+    // runs whenever EITHER piece of information is still missing.
+    if (!(parseFloat(c.monthly_bill) > 0) || !_propBillAnalysis) {
       try {
         var _bpClient = supabase.createClient(SUPA_URL, SUPA_KEY);
         var _bpJob  = await _bpClient.from('job_photos').select('id,url,label,expected_label').eq('job_id', id);
@@ -22454,14 +22474,37 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         // elsewhere for job_photos lookups.
         _bpBills.sort(function(a,b){ return b.id - a.id; });
         if (_bpBills[0]) {
-          var _bpExtracted = await _propReadBillAmountFromUrl(_bpBills[0].url);
-          if (_bpExtracted && _bpExtracted > 0) {
-            await _bpClient.from('customers').update({ monthly_bill: _bpExtracted }).eq('id', id);
-            c.monthly_bill = _bpExtracted;
-            var _bpRec = adminCustomers.find(function(x){ return x.id === id; });
-            if (_bpRec) _bpRec.monthly_bill = _bpExtracted;
-          } else {
-            _propBillFileExistsButUnread = true;
+          // Only run this when bill_analysis genuinely doesn't exist yet (_propBillAnalysis
+          // null coming in) — a lead that already has a real Eval-Wizard bill read must never
+          // be silently re-analyzed/overwritten here just because monthly_bill also happened
+          // to be unset.
+          if (!_propBillAnalysis) {
+            var _bpFull = await window._propReadBillAnalysisFromUrl(_bpBills[0].url, c.utility || '', c.address || '');
+            if (_bpFull && _bpFull.readable) {
+              _propBillAnalysis = _bpFull;
+              // Persist so this expensive vision call never has to re-run on the next open,
+              // and so the Eval Wizard's own bill-analysis UI picks up the same real read —
+              // one extraction, reused everywhere, same as every other Quoya read in this file.
+              try {
+                var _bpEvalClient = supabase.createClient(SUPA_URL, SUPA_KEY);
+                if (_propEvalRowId) {
+                  await _bpEvalClient.from('lead_evaluations').update({ bill_analysis: _bpFull }).eq('id', _propEvalRowId);
+                } else {
+                  var _bpIns = await _bpEvalClient.from('lead_evaluations').insert({ customer_id: id, bill_analysis: _bpFull }).select();
+                  if (!_bpIns.error && _bpIns.data && _bpIns.data[0]) _propEvalRowId = _bpIns.data[0].id;
+                }
+              } catch (e) { /* table not applied, or a genuine write failure — the in-session read above still works for this open */ }
+              if (typeof _bpFull.monthly_amount_paid === 'number' && _bpFull.monthly_amount_paid > 0) {
+                await _bpClient.from('customers').update({ monthly_bill: _bpFull.monthly_amount_paid }).eq('id', id);
+                c.monthly_bill = _bpFull.monthly_amount_paid;
+                var _bpRec = adminCustomers.find(function(x){ return x.id === id; });
+                if (_bpRec) _bpRec.monthly_bill = _bpFull.monthly_amount_paid;
+              } else {
+                _propBillFileExistsButUnread = true;
+              }
+            } else {
+              _propBillFileExistsButUnread = true;
+            }
           }
         }
       } catch (e) { /* job_photos lookup/read failed — falls back to the upload prompt below */ }
