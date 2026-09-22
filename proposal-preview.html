@@ -302,29 +302,63 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
     return (pd && pd.batteryArbitrageKwh > 0) ? pd.batteryArbitrageKwh : null;
   }
 
+  // Powerwall-equivalent unit count, derived from prod_data.storageKwh (already-trusted
+  // structured data — see the componentNames() comment above on why line_items/prod_data
+  // beat string-parsing a name) rather than regex-parsing "×N" out of a line-item name.
+  // 13.5 kWh is one Powerwall 3's usable capacity, the same constant battery-arbitrage math
+  // elsewhere in this codebase already uses.
+  var POWERWALL_UNIT_KWH = 13.5;
+  function powerwallUnitCountFor(opt){
+    var pd = opt.prod_data;
+    if (!pd || !(pd.storageKwh > 0)) return null;
+    return Math.max(1, Math.round(pd.storageKwh / POWERWALL_UNIT_KWH));
+  }
+
   // "Ongoing Performance Value" — layers 3/4 of Dennis's 4-layer model (2026-09-22):
   // SDCP Performance Incentive vs. Tesla VPP Performance Incentive as its fallback "if SDCP
   // isn't available." Deliberately NOT part of compareCardHtml's price total — these are
   // periodic payments for battery participation, not a purchase-price reduction, so they
   // render as their own section regardless of Cash/Finance mode or which price toggle is active.
+  //
+  // Tesla VPP figure sourced from https://www.tesla.com/support/energy/virtual-power-plant/dsgs
+  // (confirmed 2026-09-22, per Dennis) — California's Demand Side Grid Support program (run by
+  // the CEC via Olivine Inc.), the statewide fallback VPP a Powerwall enrolls in when SDCP's own
+  // program isn't available. DSGS does NOT pay a clean $/kWh-discharged rate — it pays monthly
+  // capacity payments ($/kW, varying by month, roughly $7-$15/kW across a 2024 season) settled
+  // annually, netting to Tesla's own stated ceiling of "up to $350 a year per Powerwall." That is
+  // why this is modeled as a flat per-Powerwall annual figure (never forced into the same $/kWh
+  // shape as the SDCP line below it — that would misrepresent how DSGS actually pays out) and
+  // labeled "up to", matching Tesla's own framing, not a guaranteed number.
+  //
+  // NOTE: the same research also surfaced a DIFFERENT, more specific Tesla+SDCP joint VPP page
+  // (tesla.com/support/energy/virtual-power-plant/sdcp) quoting $0.10/kWh during events PLUS a
+  // separate $4,725/Powerwall upfront enrollment incentive — the $0.10/kWh matches
+  // SDCP_PERF_RATE_PER_KWH exactly, but the $4,725 figure does not match the $3,375 sdcp_rebate
+  // already used elsewhere in this codebase for the upfront SDCP incentive. Deliberately NOT
+  // applied here — Dennis gave SDCP_PERF_RATE_PER_KWH and sdcp_rebate directly, and silently
+  // swapping in a web-sourced number for either risks overriding a figure he already confirmed.
+  // Flagged for Dennis to confirm whether $4,725 is the same upfront incentive under a different
+  // (possibly updated, possibly enrollment-bonus-only) name, or a genuinely separate program.
+  var TESLA_VPP_ANNUAL_PER_POWERWALL = 350;
   function ongoingValueHtml(opt){
     if (!((opt.sdcp_rebate||0) > 0)) return ''; // not SDCP-eligible at all -> nothing to offer here
     var kwh = annualBatteryKwhFor(opt);
+    var units = powerwallUnitCountFor(opt);
     var sdcpChecked = perfIncentive === 'sdcp';
     var teslaChecked = perfIncentive === 'tesla';
     var sdcpAmt = kwh != null
       ? '<span class="ov-amt">~'+moneyRound(kwh * SDCP_PERF_RATE_PER_KWH)+'/yr</span>'
       : '<span class="ov-amt muted">Needs usage data to estimate</span>';
-    var teslaAmt = TESLA_VPP_RATE_PER_KWH != null
-      ? '<span class="ov-amt">~'+moneyRound((kwh||0) * TESLA_VPP_RATE_PER_KWH)+'/yr</span>'
-      : '<span class="ov-amt muted">Rate not yet configured</span>';
+    var teslaAmt = units != null
+      ? '<span class="ov-amt">up to ~'+moneyRound(units * TESLA_VPP_ANNUAL_PER_POWERWALL)+'/yr</span>'
+      : '<span class="ov-amt muted">Needs battery size to estimate</span>';
     return '<div class="ov-section">'+
       '<div class="ov-title">Ongoing Performance Value</div>'+
       '<label class="ov-check"><input type="checkbox" '+(sdcpChecked?'checked':'')+' onchange="togglePerfIncentive(\'sdcp\', this.checked)"/>'+
         '<span>SDCP Performance Incentive<small>$'+SDCP_PERF_RATE_PER_KWH.toFixed(2)+'/kWh on battery TOU arbitrage</small></span>'+sdcpAmt+
       '</label>'+
       '<label class="ov-check"><input type="checkbox" '+(teslaChecked?'checked':'')+' onchange="togglePerfIncentive(\'tesla\', this.checked)"/>'+
-        '<span>Tesla VPP Performance Incentive<small>alternative program if SDCP isn&rsquo;t available</small></span>'+teslaAmt+
+        '<span>Tesla VPP Performance Incentive (DSGS)<small>CEC statewide program &mdash; alternative if SDCP isn&rsquo;t available</small></span>'+teslaAmt+
       '</label>'+
       '<div class="ov-note">Paid periodically for battery grid participation &mdash; not a purchase-price discount, and not guaranteed until program enrollment is confirmed.</div>'+
     '</div>';
@@ -411,13 +445,14 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
 
   // Ongoing Performance Value (per Dennis, 2026-09-22) — layers 3/4 of the 4-layer model:
   // SDCP Performance Incentive ($0.10/kWh, paid on real battery TOU-arbitrage throughput)
-  // vs. Tesla VPP Performance Incentive as the alternative program "if SDCP failed" — these
-  // are mutually exclusive (a system is enrolled in one VPP program, not both at once), so
-  // perfIncentive is a single tri-state value, not two independent checkboxes.
+  // vs. Tesla VPP Performance Incentive (DSGS, up to $350/Powerwall/yr — see
+  // TESLA_VPP_ANNUAL_PER_POWERWALL above, sourced from Tesla's own DSGS support page) as the
+  // alternative program "if SDCP failed" — these are mutually exclusive (a system is enrolled
+  // in one VPP program, not both at once), so perfIncentive is a single tri-state value, not
+  // two independent checkboxes.
   var perfIncentive = null; // 'sdcp' | 'tesla' | null
   var perfIncentiveTouched = false; // once a rep manually toggles it, auto-defaulting stops overriding their choice
   var SDCP_PERF_RATE_PER_KWH = 0.10; // per Dennis, 2026-09-22
-  var TESLA_VPP_RATE_PER_KWH = null; // not yet provided — never invent a rate here, show "not configured" instead
   function syncPerfIncentiveDefault(){
     if (perfIncentiveTouched) return;
     perfIncentive = (finSub === 'sdcp') ? 'sdcp' : null;
