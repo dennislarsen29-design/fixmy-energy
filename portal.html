@@ -22124,18 +22124,26 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   var _propPanelCounts = {}; // per-option Tesla 420W panel quantity
   var _propExpPackCounts = {}; // per-option Tesla Powerwall Expansion Pack quantity
 
+  // ⚠️ Called from TWO places (the "Save & Enable" manual-entry button, with no wrapper of
+  // its own, and _propExtractBill above, now wrapped) — a thrown error here (as opposed to
+  // a resolved {error}) previously had no catch at all and would silently do nothing from
+  // either caller. Wrapped so both callers always get real feedback.
   window._propSaveBill = async function(id, val) {
     var bill = parseFloat(val) || 0;
     if (bill <= 0) { alert('Enter a valid monthly bill amount.'); return; }
-    var client = supabase.createClient(SUPA_URL, SUPA_KEY);
-    var { error } = await client.from('customers').update({ monthly_bill: bill }).eq('id', id);
-    if (error) { alert('Save failed: ' + error.message); return; }
-    var rec = adminCustomers.find(function(x){ return x.id === id; });
-    if (rec) rec.monthly_bill = bill;
-    var _pType = sessionStorage.getItem('proposalType_' + id) || 'br';
-    var _m = document.getElementById('proposalModal');
-    if (_m) _m.remove();
-    openProposalBuilder(id, _pType);
+    try {
+      var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var { error } = await client.from('customers').update({ monthly_bill: bill }).eq('id', id);
+      if (error) { alert('Save failed: ' + error.message); return; }
+      var rec = adminCustomers.find(function(x){ return x.id === id; });
+      if (rec) rec.monthly_bill = bill;
+      var _pType = sessionStorage.getItem('proposalType_' + id) || 'br';
+      var _m = document.getElementById('proposalModal');
+      if (_m) _m.remove();
+      openProposalBuilder(id, _pType);
+    } catch (e) {
+      alert('Save failed: ' + (e && e.message ? e.message : String(e)));
+    }
   };
 
   // Reads a bill amount straight off an already-uploaded Storage URL — no browser fetch,
@@ -22226,9 +22234,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         repMsg: 'This file is too large (' + sizeMb + 'MB) to read automatically. Enter the amount manually below.',
         adminDetail: 'File exceeds the ' + (BILL_VISION_MAX_RAW_BYTES/1024/1024).toFixed(1) + 'MB client-side cap before base64 (claude-vision.js\'s own MAX_BODY_BYTES is 8MB once encoded) — likely a PDF, since images are compressed first.' };
     }
-    var base64 = await new Promise(function(resolve) {
+    // ⚠️ reader.onerror was never wired — a genuine read failure (corrupted/odd file,
+    // reported live 2026-09-22 as "picking a file does nothing") left this Promise NEVER
+    // resolving or rejecting, hanging the whole upload forever on "Reading bill…" with no
+    // way out except closing the modal — which looks exactly like "nothing happened."
+    var base64 = await new Promise(function(resolve, reject) {
       var reader = new FileReader();
       reader.onload = function(e){ resolve(e.target.result.split(',')[1]); };
+      reader.onerror = function(){ reject(new Error('Could not read this file (' + (reader.error && reader.error.message ? reader.error.message : 'unknown FileReader error') + ')')); };
       reader.readAsDataURL(compressed);
     });
     var isPdf = (compressed.type === 'application/pdf') || /\.pdf$/i.test(file.name||'');
@@ -22272,41 +22285,82 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       adminDetail: 'AI responded but returned no parseable monthly_bill (image genuinely illegible, or not a bill) — raw response: ' + text.slice(0, 200) };
   };
 
+  // ⚠️ Reported live 2026-09-22 (Patricia Barbee's lead): picking a file "takes you back to
+  // this screen and doesn't appear to upload" — the whole function had NO top-level
+  // try/catch, so any thrown error (a rejected _extractBillFromFile call, or _propSaveBill
+  // throwing rather than returning {error} — a real gap, since it awaited a network round
+  // trip with nothing guarding it either) became a silent unhandled promise rejection:
+  // console-only, zero visible UI change, indistinguishable from "nothing happened" — the
+  // exact symptom reported. `if (!file) return;` had the same silent-no-op shape for a
+  // cancelled/failed picker. Same "never let a failing path render identically to nothing
+  // happening" rule used throughout this file (Regrid no_key, Tracerfy 429, etc.) — now
+  // EVERY path out of this function leaves a real, visible message.
   window._propExtractBill = async function(id, file) {
     var btn = document.getElementById('propBillUploadBtn');
     var statusEl = document.getElementById('propBillStatus');
-    if (!file) return;
+    if (!file) {
+      var _noFileMsg = 'No file was selected — tap Upload and choose a photo or PDF.';
+      if (statusEl) statusEl.innerHTML = '<span style="color:#ffaa00;">'+_noFileMsg+'</span>';
+      else alert(_noFileMsg);
+      return;
+    }
     if (btn) { btn.disabled = true; btn.textContent = 'Reading bill…'; }
     if (statusEl) statusEl.textContent = 'Reading bill…';
-    var result = await window._extractBillFromFile(file);
-    if (result.ok) {
-      if (statusEl) statusEl.textContent = 'Found $' + Math.round(result.amount) + '/mo — saving…';
-      await _propSaveBill(id, result.amount);
-    } else {
+    try {
+      var result = await window._extractBillFromFile(file);
+      if (result.ok) {
+        if (statusEl) statusEl.textContent = 'Found $' + Math.round(result.amount) + '/mo — saving…';
+        await _propSaveBill(id, result.amount);
+      } else {
+        if (btn) { btn.disabled = false; btn.textContent = '📄 Upload Utility Bill'; }
+        var _msg = result.repMsg + (typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE === 'admin' ? ' <span style="color:#666;">(' + result.adminDetail + ')</span>' : '');
+        if (statusEl) statusEl.innerHTML = _msg + ' <a href="#" onclick="document.getElementById(\'propBillManualFallback\').style.display=\'flex\';return false;" style="color:#ffaa00;text-decoration:none;">Enter manually ▸</a>';
+        else alert(result.repMsg);
+      }
+    } catch (e) {
       if (btn) { btn.disabled = false; btn.textContent = '📄 Upload Utility Bill'; }
-      var _msg = result.repMsg + (typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE === 'admin' ? ' <span style="color:#666;">(' + result.adminDetail + ')</span>' : '');
-      if (statusEl) statusEl.innerHTML = _msg + ' <a href="#" onclick="document.getElementById(\'propBillManualFallback\').style.display=\'flex\';return false;" style="color:#ffaa00;text-decoration:none;">Enter manually ▸</a>';
+      var _adminBit = (typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE === 'admin') ? ' <span style="color:#666;">(' + (e && e.message ? e.message : String(e)) + ')</span>' : '';
+      var _failMsg = 'Something went wrong reading this file — try again, or enter the amount manually.';
+      if (statusEl) statusEl.innerHTML = _failMsg + _adminBit + ' <a href="#" onclick="document.getElementById(\'propBillManualFallback\').style.display=\'flex\';return false;" style="color:#ffaa00;text-decoration:none;">Enter manually ▸</a>';
+      else alert(_failMsg + (_adminBit ? ' (' + (e && e.message ? e.message : String(e)) + ')' : ''));
     }
   };
 
-  // Utility bill upload + AI extraction for lead editors (admin + tech)
+  // Utility bill upload + AI extraction for lead editors (admin + tech). ⚠️ Same silent-
+  // no-op/no-try-catch gap as _propExtractBill above, same fix: every path out of this
+  // function now leaves a real, visible message rather than potentially none at all.
   window._edExtractBill = async function(inputId, file, fileInputEl) {
-    if (!file) return;
     var input    = document.getElementById(inputId);
     var statusId = inputId + 'UploadStatus';
     var statusEl = document.getElementById(statusId);
     var btnId    = inputId + 'UploadBtn';
     var btn      = document.getElementById(btnId);
+    if (!file) {
+      var _edNoFileMsg = 'No file was selected — tap the upload button and choose a photo or PDF.';
+      if (statusEl) statusEl.innerHTML = '<span style="color:#ffaa00;">'+_edNoFileMsg+'</span>';
+      else alert(_edNoFileMsg);
+      return;
+    }
     if (btn) { btn.disabled = true; btn.textContent = 'Reading…'; }
     if (statusEl) statusEl.textContent = 'Reading bill…';
-    var result = await window._extractBillFromFile(file);
-    if (result.ok && input) {
-      input.value = Math.round(result.amount);
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      if (statusEl) statusEl.innerHTML = '<span style="color:#8DC63F;">&#10003; $' + Math.round(result.amount) + '/mo — verify &amp; save</span>';
-    } else {
-      var _edMsg = result.repMsg + (typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE === 'admin' ? ' <span style="color:#666;">(' + result.adminDetail + ')</span>' : '');
-      if (statusEl) statusEl.innerHTML = '<span style="color:#ffaa00;">' + _edMsg + '</span>';
+    try {
+      var result = await window._extractBillFromFile(file);
+      if (result.ok && input) {
+        input.value = Math.round(result.amount);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        if (statusEl) statusEl.innerHTML = '<span style="color:#8DC63F;">&#10003; $' + Math.round(result.amount) + '/mo — verify &amp; save</span>';
+      } else if (!input) {
+        // Element vanished (a full re-render happened mid-read) — still surface SOMETHING.
+        alert(result.ok ? ('Found $' + Math.round(result.amount) + '/mo — but the form field is no longer on screen. Re-open and try again.') : result.repMsg);
+      } else {
+        var _edMsg = result.repMsg + (typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE === 'admin' ? ' <span style="color:#666;">(' + result.adminDetail + ')</span>' : '');
+        if (statusEl) statusEl.innerHTML = '<span style="color:#ffaa00;">' + _edMsg + '</span>';
+      }
+    } catch (e) {
+      var _edAdminBit = (typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE === 'admin') ? ' (' + (e && e.message ? e.message : String(e)) + ')' : '';
+      var _edFailMsg = 'Something went wrong reading this file — try again, or enter the amount manually.' + _edAdminBit;
+      if (statusEl) statusEl.innerHTML = '<span style="color:#ffaa00;">' + _edFailMsg + '</span>';
+      else alert(_edFailMsg);
     }
     if (btn) { btn.disabled = false; btn.textContent = '📄'; }
     if (fileInputEl) fileInputEl.value = '';
