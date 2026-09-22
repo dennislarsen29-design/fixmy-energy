@@ -257,18 +257,23 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
     if (pd.storageKwh > 0) return pd.storageKwh + ' kWh storage';
     return null;
   }
-  function paybackFor(opt){
+  function paybackFor(opt, priceOverride){
     var mod = opt.savings && opt.savings.moderate;
-    return (opt.price > 0 && mod && mod.annual > 0) ? (Math.round(opt.price/mod.annual*10)/10 + '-yr payback') : null;
+    var price = priceOverride != null ? priceOverride : opt.price;
+    return (price > 0 && mod && mod.annual > 0) ? (Math.round(price/mod.annual*10)/10 + '-yr payback') : null;
   }
 
   // Aurora-style "Compare pre and post-solar" itemized card, built only from figures
   // already computed elsewhere (CUST.monthly_bill, opt.savings.moderate) — never a fabricated number.
+  // sdcpApplied now also applies in CASH mode (financeMode=false): the SDCP rebate is a
+  // purchase-price incentive, not exclusively a financing feature, so a cash buyer can
+  // get the same dollar credit taken directly off the cash price.
   function compareCardHtml(opt, hasParticipate, financeMode, financeMonthly, sdcpApplied){
     var billToday = parseFloat(CUST.monthly_bill) || 0;
     var mod = opt.savings && opt.savings.moderate;
     var monthlySavings = (mod && mod.monthly > 0) ? mod.monthly : 0;
     var rows = '', totalLbl, totalAmt, totalSuffix = '', deltaHtml = '', footHtml = '';
+    var cashPriceForFoot = opt.price;
 
     if (financeMode) {
       var estGridBill = billToday > 0 ? Math.max(0, Math.round(billToday - monthlySavings)) : null;
@@ -287,18 +292,24 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
         deltaHtml = '<div class="delta">&darr; '+moneyRound(billToday-newTotal)+'/mo vs. your bill today</div>';
       }
     } else {
+      var cashSdcp = sdcpApplied && (opt.sdcp_rebate||0) > 0;
+      var cashPrice = cashSdcp ? Math.max(0, opt.price - opt.sdcp_rebate) : opt.price;
+      cashPriceForFoot = cashPrice;
       if (billToday > 0) {
         rows += '<div class="compare-row"><div class="lbl">Your bill today</div><div class="amt">'+moneyRound(billToday)+'/mo</div></div>';
         var afterBill = Math.max(0, Math.round(billToday - monthlySavings));
         rows += '<div class="compare-row"><div class="lbl">Your bill after solar<span class="sub">estimated</span></div><div class="amt amt neg">'+moneyRound(afterBill)+'/mo</div></div>';
       }
-      totalLbl = 'Price due today';
-      totalAmt = money(opt.price);
+      if (cashSdcp) {
+        rows += '<div class="compare-row"><div class="lbl">SDCP incentive<span class="sub">applied to price below</span></div><div class="amt neg">&minus;'+moneyRound(opt.sdcp_rebate)+'</div></div>';
+      }
+      totalLbl = 'Price due today'+(cashSdcp?'<span class="applied-badge">&#10003; SDCP</span>':'');
+      totalAmt = money(cashPrice);
     }
 
     var footParts = [];
     var sz = sizeLabelFor(opt); if (sz) footParts.push(sz);
-    var pb = financeMode ? null : paybackFor(opt); if (pb) footParts.push(pb);
+    var pb = financeMode ? null : paybackFor(opt, cashPriceForFoot); if (pb) footParts.push(pb);
     if (mod && mod.annual > 0) footParts.push('~'+moneyRound(mod.annual*25)+' est. over 25 yrs');
     if (footParts.length) {
       footHtml = '<div class="compare-foot"><span>'+footParts.map(esc).join(' &middot; ')+'</span></div>';
@@ -320,12 +331,19 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
     return out.slice(0,4);
   }
 
+  // SDCP is an "assumed first" default whenever it's available, in EITHER pay mode — the
+  // rebate is a purchase-price incentive, not something exclusive to financing. 'consolidate'
+  // is finance-only and is never a default; a tab switch always resets to this mode's own
+  // sensible default rather than trying to carry a stale finSub across modes (e.g. a
+  // finance-only 'consolidate' leaking into cash, which has no such concept).
+  function defaultFinSubFor(mode, opt){
+    var hasSdcp = (opt.sdcp_rebate||0) > 0;
+    if (mode === 'finance') return hasSdcp ? 'sdcp' : 'standard';
+    return hasSdcp ? 'sdcp' : null;
+  }
   function setPayMode(mode){
     payMode = mode;
-    if (mode === 'finance' && !finSub) {
-      var scen = financeScenarios(OPTS[selIdx]);
-      finSub = scen.sdcp ? 'sdcp' : 'standard';
-    }
+    finSub = defaultFinSubFor(mode, OPTS[selIdx]);
     renderPanel();
     renderBottomBar();
   }
@@ -335,10 +353,7 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
     var opt = OPTS[i];
     var hasParticipate = !!(opt.participate && opt.participate_price);
     payMode = hasParticipate ? 'finance' : 'cash';
-    if (payMode === 'finance') {
-      var scen = financeScenarios(opt);
-      finSub = scen.sdcp ? 'sdcp' : 'standard';
-    } else { finSub = null; }
+    finSub = defaultFinSubFor(payMode, opt);
     renderStage();
     renderPanel();
     renderSituation();
@@ -419,6 +434,7 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
   function renderPanel(){
     var opt = OPTS[selIdx];
     var hasParticipate = !!(opt.participate && opt.participate_price);
+    var hasSdcp = (opt.sdcp_rebate||0) > 0;
 
     var financeBlock = '';
     if (payMode === 'finance' && hasParticipate) {
@@ -434,12 +450,41 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
         '<div class="fin-note">'+s.note+'</div>'+
         '<div class="fine-print">Financed through Wheelhouse Credit Union &middot; '+(WHEELHOUSE_APR*100).toFixed(2)+'% APR &middot; '+WHEELHOUSE_TERM_YEARS+'-year term. Payment example is an estimate based on the figures above and is not an approval or offer of credit — final terms are set directly by Wheelhouse CU after application. Rebates and incentives referenced here are not guaranteed and are subject to program qualification.</div>';
     } else {
-      financeBlock = compareCardHtml(opt, hasParticipate, false)+
+      // Cash mode gets its own Standard/With-SDCP toggle (SDCP is a purchase-price rebate,
+      // not exclusive to financing) plus a cross-sell note surfacing the Participate price —
+      // Dennis's report: paying cash showed a flat $18,759 with no way to see that Participate
+      // financing brings the same option to $13,131 (or $9,756 with SDCP) without switching tabs.
+      var cashKeys = hasSdcp ? ['standard','sdcp'] : [];
+      var cashToggle = cashKeys.length ? ('<div class="fin-sub">'+
+        '<button class="fin-sub-btn'+(finSub==='standard'?' active':'')+'" onclick="setFinSub(\'standard\')">Standard</button>'+
+        '<button class="fin-sub-btn'+(finSub==='sdcp'?' active':'')+'" onclick="setFinSub(\'sdcp\')">With SDCP</button>'+
+      '</div>') : '';
+      var participateInfoHtml = hasParticipate ? (
+        '<div class="fin-note"><strong>Prefer to finance?</strong> Participate brings this option to '+money(opt.participate_price)+
+        (hasSdcp ? ' &mdash; or '+money(Math.max(0, opt.participate_price - opt.sdcp_rebate))+' with SDCP' : '')+
+        '. <a href="javascript:void(0)" onclick="setPayMode(\'finance\')">Switch to Finance &rarr;</a></div>'
+      ) : '';
+      financeBlock = cashToggle +
+        compareCardHtml(opt, hasParticipate, false, null, finSub==='sdcp') +
+        participateInfoHtml +
         '<div class="fine-print">This estimate is preliminary and for illustration only — final pricing is confirmed after a full site evaluation. Not a bid for work or a binding agreement.</div>';
     }
 
+    // Option list always reflects the price for the CURRENTLY ACTIVE pay mode — this was
+    // the actual bug in the report: it showed the Participate price even while the Cash tab's
+    // own compare-card showed the full price for the same option, two different numbers with
+    // nothing explaining why they differed.
     var optListHtml = OPTS.map(function(o,i){
-      var disp = (o.participate && o.participate_price) ? o.participate_price : o.price;
+      var disp;
+      if (payMode === 'finance') {
+        disp = (o.participate && o.participate_price) ? o.participate_price : o.price;
+      } else {
+        // Cash mode: track the SDCP toggle per-row too, so a row's price always matches
+        // what the main compare-card would show if that row were selected — this is the
+        // exact mismatch from the report (list showed the Participate total while the
+        // card showed the full cash price for the same option).
+        disp = (finSub === 'sdcp' && (o.sdcp_rebate||0) > 0) ? Math.max(0, o.price - o.sdcp_rebate) : o.price;
+      }
       var parts = optPartsLine(o);
       return '<div class="opt-row'+(i===selIdx?' active':'')+'" onclick="selectOption('+i+')">'+
         '<div><div class="ot">'+esc(optDisplayName(o))+'</div><div class="os">'+(parts?esc(parts):('Option '+(i+1)))+'</div></div>'+
@@ -447,7 +492,7 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
       '</div>';
     }).join('');
 
-    var rebateHtml = (opt.sdcp_rebate && !(payMode==='finance' && finSub==='sdcp')) ? '<div class="rebate-note">Up to '+moneyRound(opt.sdcp_rebate)+' potential SDCP savings after qualification</div>' : '';
+    var rebateHtml = (opt.sdcp_rebate && finSub !== 'sdcp') ? '<div class="rebate-note">Up to '+moneyRound(opt.sdcp_rebate)+' potential SDCP savings after qualification</div>' : '';
 
     var includedHtml = (opt.line_items||[]).map(function(li){
       return '<tr><td class="li-name">'+esc(li.name)+'</td><td class="li-price">'+(li.price>0?money(li.price):'')+'</td></tr>';
@@ -485,7 +530,8 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
       var s = scen[finSub] || scen.standard;
       priceHtml = '~$'+wheelhouseMonthly(s.principal).toLocaleString('en-US')+'<small>/mo</small>';
     } else {
-      priceHtml = money(opt.price);
+      var bbCashSdcp = finSub === 'sdcp' && (opt.sdcp_rebate||0) > 0;
+      priceHtml = money(bbCashSdcp ? Math.max(0, opt.price - opt.sdcp_rebate) : opt.price);
     }
     var itemCount = (opt.line_items||[]).length;
     var bbSub = (itemCount > 1 ? (itemCount + ' items') : ('Option '+(selIdx+1))) + ' &middot; ' + (payMode==='finance'?'Financed':'Cash');
