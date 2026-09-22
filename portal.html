@@ -22136,22 +22136,70 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     } catch (e) { return null; }
   };
 
-  window._propExtractBill = async function(id, file) {
-    var btn = document.getElementById('propBillUploadBtn');
-    var statusEl = document.getElementById('propBillStatus');
-    if (!file) return;
-    if (btn) { btn.disabled = true; btn.textContent = 'Reading bill…'; }
+  // A real iPad/phone photo of a printed bill is routinely 3-10MB — base64 inflates that
+  // ~33%, so an unmodified photo can blow straight past claude-vision.js's own 8MB body cap
+  // (and likely Netlify/Lambda's platform-level request-size ceiling below that). When it
+  // does, both bill-upload paths below used to collapse that failure into the exact same
+  // "Could not read amount" message a genuinely blurry/unreadable photo produces — giving
+  // Dennis zero way to tell "the AI tried and failed" apart from "this never even reached
+  // the AI." Fixed two ways: (1) compress any image client-side before it's ever sent —
+  // Anthropic downscales anything over ~1568px on the long edge server-side anyway (same
+  // fact already used to justify not sending full camera resolution in eval-analysis-core.js
+  // — see the 2026-08-19 note in CLAUDE.md), so this loses no real read accuracy — and
+  // (2) classify the actual failure (too large / AI couldn't read it / server error /
+  // network) instead of a single catch-all message. A PDF can't be canvas-resized this way
+  // and is passed through unchanged; if a PDF alone is still too large, the size check below
+  // catches it before the network call and says so plainly.
+  var BILL_VISION_MAX_RAW_BYTES = 5.5 * 1024 * 1024; // headroom under claude-vision.js's 8MB body cap once base64'd (~33% inflation)
+  window._compressImageForBillUpload = function(file) {
+    return new Promise(function(resolve) {
+      if (!file.type || file.type.indexOf('image/') !== 0) { resolve(file); return; } // PDFs pass through untouched
+      var img = new Image();
+      var url = URL.createObjectURL(file);
+      img.onload = function() {
+        URL.revokeObjectURL(url);
+        var MAX_DIM = 1600;
+        var scale = Math.min(1, MAX_DIM / Math.max(img.width, img.height));
+        var canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        var ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob(function(blob) {
+          resolve(blob && blob.size > 0 && blob.size < file.size ? blob : file); // never use a compressed result that's somehow bigger
+        }, 'image/jpeg', 0.85);
+      };
+      img.onerror = function() { URL.revokeObjectURL(url); resolve(file); }; // can't decode client-side -> let the server try the original
+      img.src = url;
+    });
+  };
+
+  // Shared extraction core for both bill-upload surfaces (Internal Proposal Tool + lead
+  // editor) — one implementation so a fix here can't land in one place and not the other,
+  // the same "built in one place, not the other" drift this codebase has hit repeatedly.
+  // Returns {ok:true, amount} or {ok:false, code, repMsg, adminDetail} — repMsg is always
+  // safe to show a non-admin, adminDetail is the real cause (status code, byte size, server
+  // error text) for CURRENT_ROLE==='admin' only, same split as _aiNoteFailText elsewhere.
+  window._extractBillFromFile = async function(file) {
+    var compressed = await window._compressImageForBillUpload(file);
+    var sizeMb = (compressed.size / (1024*1024)).toFixed(1);
+    if (compressed.size > BILL_VISION_MAX_RAW_BYTES) {
+      return { ok: false, code: 'too_large',
+        repMsg: 'This file is too large (' + sizeMb + 'MB) to read automatically. Enter the amount manually below.',
+        adminDetail: 'File exceeds the ' + (BILL_VISION_MAX_RAW_BYTES/1024/1024).toFixed(1) + 'MB client-side cap before base64 (claude-vision.js\'s own MAX_BODY_BYTES is 8MB once encoded) — likely a PDF, since images are compressed first.' };
+    }
     var base64 = await new Promise(function(resolve) {
       var reader = new FileReader();
       reader.onload = function(e){ resolve(e.target.result.split(',')[1]); };
-      reader.readAsDataURL(file);
+      reader.readAsDataURL(compressed);
     });
-    var isPdf = file.type === 'application/pdf';
+    var isPdf = (compressed.type === 'application/pdf') || /\.pdf$/i.test(file.name||'');
     var contentBlock = isPdf
       ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } }
-      : { type: 'image', source: { type: 'base64', media_type: file.type, data: base64 } };
+      : { type: 'image', source: { type: 'base64', media_type: compressed.type || 'image/jpeg', data: base64 } };
+    var resp;
     try {
-      var resp = await fetch('/.netlify/functions/claude-vision', {
+      resp = await fetch('/.netlify/functions/claude-vision', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 80,
           messages: [{ role: 'user', content: [
@@ -22160,20 +22208,46 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           ]}]
         })
       });
-      var data = await resp.json();
-      var text = (data.content && data.content[0] && data.content[0].text) ? data.content[0].text.trim() : '';
-      var match = text.match(/"monthly_bill"\s*:\s*([\d.]+)/);
-      var extracted = match ? parseFloat(match[1]) : null;
-      if (extracted && extracted > 0) {
-        if (statusEl) statusEl.textContent = 'Found $' + Math.round(extracted) + '/mo — saving…';
-        await _propSaveBill(id, extracted);
-      } else {
-        if (btn) { btn.disabled = false; btn.textContent = '📄 Upload Utility Bill'; }
-        if (statusEl) statusEl.innerHTML = 'Could not read amount. <a href="#" onclick="document.getElementById(\'propBillManualFallback\').style.display=\'flex\';return false;" style="color:#ffaa00;text-decoration:none;">Enter manually ▸</a>';
-      }
-    } catch(e) {
+    } catch (e) {
+      return { ok: false, code: 'network_error',
+        repMsg: 'Could not reach the bill reader — check your connection and try again, or enter the amount manually.',
+        adminDetail: 'fetch() threw: ' + e.message };
+    }
+    if (resp.status === 413) {
+      return { ok: false, code: 'too_large',
+        repMsg: 'This file is too large (' + sizeMb + 'MB) to read automatically. Enter the amount manually below.',
+        adminDetail: 'claude-vision.js returned 413 at ' + sizeMb + 'MB raw (compressed) — the function\'s own 8MB body cap.' };
+    }
+    var data = null;
+    try { data = await resp.json(); } catch (e) { /* non-JSON error body (e.g. a platform-level gateway error page) — data stays null */ }
+    if (!resp.ok) {
+      return { ok: false, code: 'server_error',
+        repMsg: 'The bill reader hit an error — try again, or enter the amount manually.',
+        adminDetail: 'claude-vision.js status ' + resp.status + ': ' + (data && data.error ? data.error : '(non-JSON response, likely a platform-level error before the function ran)') };
+    }
+    var text = (data && data.content && data.content[0] && data.content[0].text) ? data.content[0].text.trim() : '';
+    var match = text.match(/"monthly_bill"\s*:\s*([\d.]+)/);
+    var extracted = match ? parseFloat(match[1]) : null;
+    if (extracted && extracted > 0) return { ok: true, amount: extracted };
+    return { ok: false, code: 'unreadable',
+      repMsg: 'Could not read an amount from this file. Try a clearer photo, or enter it manually.',
+      adminDetail: 'AI responded but returned no parseable monthly_bill (image genuinely illegible, or not a bill) — raw response: ' + text.slice(0, 200) };
+  };
+
+  window._propExtractBill = async function(id, file) {
+    var btn = document.getElementById('propBillUploadBtn');
+    var statusEl = document.getElementById('propBillStatus');
+    if (!file) return;
+    if (btn) { btn.disabled = true; btn.textContent = 'Reading bill…'; }
+    if (statusEl) statusEl.textContent = 'Reading bill…';
+    var result = await window._extractBillFromFile(file);
+    if (result.ok) {
+      if (statusEl) statusEl.textContent = 'Found $' + Math.round(result.amount) + '/mo — saving…';
+      await _propSaveBill(id, result.amount);
+    } else {
       if (btn) { btn.disabled = false; btn.textContent = '📄 Upload Utility Bill'; }
-      if (statusEl) statusEl.textContent = 'Upload failed — try again';
+      var _msg = result.repMsg + (typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE === 'admin' ? ' <span style="color:#666;">(' + result.adminDetail + ')</span>' : '');
+      if (statusEl) statusEl.innerHTML = _msg + ' <a href="#" onclick="document.getElementById(\'propBillManualFallback\').style.display=\'flex\';return false;" style="color:#ffaa00;text-decoration:none;">Enter manually ▸</a>';
     }
   };
 
@@ -22187,38 +22261,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var btn      = document.getElementById(btnId);
     if (btn) { btn.disabled = true; btn.textContent = 'Reading…'; }
     if (statusEl) statusEl.textContent = 'Reading bill…';
-    var base64 = await new Promise(function(resolve) {
-      var reader = new FileReader();
-      reader.onload = function(e){ resolve(e.target.result.split(',')[1]); };
-      reader.readAsDataURL(file);
-    });
-    var isPdf = file.type === 'application/pdf';
-    var contentBlock = isPdf
-      ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } }
-      : { type: 'image', source: { type: 'base64', media_type: file.type, data: base64 } };
-    try {
-      var resp = await fetch('/.netlify/functions/claude-vision', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 80,
-          messages: [{ role: 'user', content: [
-            contentBlock,
-            { type: 'text', text: 'Extract the total monthly bill amount from this utility bill. Return ONLY this JSON: {"monthly_bill": <number or null>}. monthly_bill = TOTAL AMOUNT DUE for the current billing period.' }
-          ]}]
-        })
-      });
-      var data = await resp.json();
-      var text = (data.content && data.content[0] && data.content[0].text) ? data.content[0].text.trim() : '';
-      var match = text.match(/"monthly_bill"\s*:\s*([\d.]+)/);
-      var extracted = match ? parseFloat(match[1]) : null;
-      if (extracted && extracted > 0 && input) {
-        input.value = Math.round(extracted);
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        if (statusEl) statusEl.innerHTML = '<span style="color:#8DC63F;">&#10003; $' + Math.round(extracted) + '/mo — verify &amp; save</span>';
-      } else {
-        if (statusEl) statusEl.innerHTML = '<span style="color:#ffaa00;">Could not read — enter manually</span>';
-      }
-    } catch(e) {
-      if (statusEl) statusEl.innerHTML = '<span style="color:#ef4444;">Failed — try again</span>';
+    var result = await window._extractBillFromFile(file);
+    if (result.ok && input) {
+      input.value = Math.round(result.amount);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      if (statusEl) statusEl.innerHTML = '<span style="color:#8DC63F;">&#10003; $' + Math.round(result.amount) + '/mo — verify &amp; save</span>';
+    } else {
+      var _edMsg = result.repMsg + (typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE === 'admin' ? ' <span style="color:#666;">(' + result.adminDetail + ')</span>' : '');
+      if (statusEl) statusEl.innerHTML = '<span style="color:#ffaa00;">' + _edMsg + '</span>';
     }
     if (btn) { btn.disabled = false; btn.textContent = '📄'; }
     if (fileInputEl) fileInputEl.value = '';
