@@ -4692,6 +4692,26 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         if (moE) throw new Error(moE.message);
         var idx = adminTeamMembers.findIndex(function(m){return m.id===repId;});
         if (idx>-1) adminTeamMembers[idx][field] = value;
+        // ⚠️ REAL BUG, found live 2026-09-21 (Dennis: "I've already done the training" while
+        // still hard-locked out of Black Box): this onboarding checklist's "Training
+        // Completed" flag and the real per-module gate (bbModulesOutstanding, driven by
+        // rep_agreements 'training_cert:<mod>' rows) were two completely disconnected
+        // signals — ticking this box here has always looked like it certified someone, but
+        // never wrote a single training_cert row, so the hard gate never noticed. Confirmed
+        // directly against the DB: Dennis's team_members.training_completed was already
+        // true with ZERO training_cert rows for him, meaning this exact button was clicked
+        // for him at some point and silently did nothing toward the real requirement.
+        // Fixed by making this one action actually DO what it visibly claims: ticking
+        // Training Completed here now also grants the real per-module certification for
+        // that rep's whole track, through the same bbCertifyModules() the click-through
+        // walkthrough itself uses — so this can never again just flip a cosmetic flag while
+        // leaving Black Box locked. Only fires on the true-value "Mark Done" click, never on
+        // a hypothetical uncheck (this UI has no such control).
+        if (field === 'training_completed' && value === true) {
+          var moRep = adminTeamMembers.find(function(m){ return m.id === repId; });
+          var moTrack = bbTrainingTrackFor(moRep && moRep.role).filter(bbModuleHasContent);
+          if (moTrack.length) await bbCertifyModules(moTrack, repId, moRep && moRep.name);
+        }
         // Re-render modal content in place if modal is open for this rep
         var overlay = document.getElementById('repModalOverlay');
         if (overlay && overlay.style.display !== 'none' && overlay.dataset.repId === repId) {
