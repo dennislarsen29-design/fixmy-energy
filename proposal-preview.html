@@ -248,7 +248,7 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
     var partPrice = participatePriceFor(opt);
     return {
       sdcp: hasSdcp ? {
-        label: 'With SDCP',
+        label: 'SDCP Enhanced',
         principal: Math.max(0, partPrice - opt.sdcp_rebate),
         note: 'Assumes your ' + moneyRound(opt.sdcp_rebate) + ' SDCP battery incentive is approved and applied directly to this loan. <strong>You must qualify</strong> — not guaranteed until confirmed after evaluation.'
       } : null,
@@ -258,7 +258,7 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
         note: 'Financed on your Participate price (30% off), no incentives assumed.'
       },
       consolidate: {
-        label: 'Debt Consolidation',
+        label: 'ReAllocation',
         principal: opt.price,
         note: 'Finances the full price without the Participate discount. If you carry higher-interest debt elsewhere, rolling it in here at ' + (WHEELHOUSE_APR*100).toFixed(2) + '% APR could still save you money overall.'
       }
@@ -314,11 +314,13 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
     return Math.max(1, Math.round(pd.storageKwh / POWERWALL_UNIT_KWH));
   }
 
-  // "Ongoing Performance Value" — layers 3/4 of Dennis's 4-layer model (2026-09-22):
-  // SDCP Performance Incentive vs. Tesla VPP Performance Incentive as its fallback "if SDCP
-  // isn't available." Deliberately NOT part of compareCardHtml's price total — these are
-  // periodic payments for battery participation, not a purchase-price reduction, so they
-  // render as their own section regardless of Cash/Finance mode or which price toggle is active.
+  // "Ongoing Performance Value" — layers 3/4 of Dennis's 4-layer model (2026-09-22, revised
+  // same day per Dennis's follow-up): each financing tab now offers exactly ONE of the two
+  // programs, never a choice between them — SDCP Performance Incentive on the "SDCP
+  // Enhanced" tab, Tesla VPP (DSGS) on every other tab ("Standard", "ReAllocation", and
+  // cash mode with no SDCP tab active). requiredPerfKindFor() is the one place that
+  // decision is made, so the checkbox shown, its auto-checked default, and the monthly-math
+  // fold-in below can never disagree about which program applies to the tab you're on.
   //
   // Tesla VPP figure sourced from https://www.tesla.com/support/energy/virtual-power-plant/dsgs
   // (confirmed 2026-09-22, per Dennis) — California's Demand Side Grid Support program (run by
@@ -340,27 +342,66 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
   // Flagged for Dennis to confirm whether $4,725 is the same upfront incentive under a different
   // (possibly updated, possibly enrollment-bonus-only) name, or a genuinely separate program.
   var TESLA_VPP_ANNUAL_PER_POWERWALL = 350;
+
+  // The ONE decision point for which of the two programs a given financing tab offers.
+  // 'sdcp' only on the SDCP Enhanced tab (finSub==='sdcp'); Tesla VPP everywhere else,
+  // including Standard, ReAllocation, and cash mode when no SDCP tab is active (finSub null).
+  function requiredPerfKindFor(finSubVal){
+    return finSubVal === 'sdcp' ? 'sdcp' : 'tesla';
+  }
+
+  // The dollar/yr value of whichever incentive is CURRENTLY CHECKED (perfIncentive) — null
+  // when unchecked, or when the underlying data (usage kWh / battery size) isn't known yet.
+  // One shared calc so the Ongoing Performance Value display and the monthly-cost fold-in
+  // below can never compute two different numbers for the same checked box.
+  function perfIncentiveAnnualFor(opt){
+    if (perfIncentive === 'sdcp') {
+      var kwh = annualBatteryKwhFor(opt);
+      return kwh != null ? kwh * SDCP_PERF_RATE_PER_KWH : null;
+    }
+    if (perfIncentive === 'tesla') {
+      var units = powerwallUnitCountFor(opt);
+      return units != null ? units * TESLA_VPP_ANNUAL_PER_POWERWALL : null;
+    }
+    return null;
+  }
+  function perfIncentiveLabel(){
+    return perfIncentive === 'sdcp' ? 'SDCP Performance Incentive'
+      : perfIncentive === 'tesla' ? 'Tesla VPP Performance Incentive'
+      : '';
+  }
+
   function ongoingValueHtml(opt){
     if (!((opt.sdcp_rebate||0) > 0)) return ''; // not SDCP-eligible at all -> nothing to offer here
-    var kwh = annualBatteryKwhFor(opt);
-    var units = powerwallUnitCountFor(opt);
-    var sdcpChecked = perfIncentive === 'sdcp';
-    var teslaChecked = perfIncentive === 'tesla';
-    var sdcpAmt = kwh != null
-      ? '<span class="ov-amt">~'+moneyRound(kwh * SDCP_PERF_RATE_PER_KWH)+'/yr</span>'
-      : '<span class="ov-amt muted">Needs usage data to estimate</span>';
-    var teslaAmt = units != null
-      ? '<span class="ov-amt">up to ~'+moneyRound(units * TESLA_VPP_ANNUAL_PER_POWERWALL)+'/yr</span>'
-      : '<span class="ov-amt muted">Needs battery size to estimate</span>';
+    var kind = requiredPerfKindFor(finSub);
+    var checked = perfIncentive === kind;
+    var row;
+    if (kind === 'sdcp') {
+      var kwh = annualBatteryKwhFor(opt);
+      var sdcpAmt = kwh != null
+        ? '<span class="ov-amt">~'+moneyRound(kwh * SDCP_PERF_RATE_PER_KWH)+'/yr</span>'
+        : '<span class="ov-amt muted">Needs usage data to estimate</span>';
+      row = '<label class="ov-check"><input type="checkbox" '+(checked?'checked':'')+' onchange="togglePerfIncentive(\'sdcp\', this.checked)"/>'+
+        '<span>SDCP Performance Incentive<small>$'+SDCP_PERF_RATE_PER_KWH.toFixed(2)+'/kWh on battery TOU arbitrage</small></span>'+sdcpAmt+
+      '</label>';
+    } else {
+      var units = powerwallUnitCountFor(opt);
+      var teslaAmt = units != null
+        ? '<span class="ov-amt">up to ~'+moneyRound(units * TESLA_VPP_ANNUAL_PER_POWERWALL)+'/yr</span>'
+        : '<span class="ov-amt muted">Needs battery size to estimate</span>';
+      row = '<label class="ov-check"><input type="checkbox" '+(checked?'checked':'')+' onchange="togglePerfIncentive(\'tesla\', this.checked)"/>'+
+        '<span>Tesla VPP Performance Incentive (DSGS)<small>CEC statewide program &mdash; alternative if SDCP isn&rsquo;t available</small></span>'+teslaAmt+
+      '</label>';
+    }
+    // Only actually reflected in the monthly total in Finance mode (compareCardHtml's
+    // finance branch) — a one-time cash price has no recurring figure for it to reduce.
+    var noteTail = (payMode === 'finance')
+      ? ' When checked, it&rsquo;s already reflected as a credit in your monthly cost above.'
+      : '';
     return '<div class="ov-section">'+
       '<div class="ov-title">Ongoing Performance Value</div>'+
-      '<label class="ov-check"><input type="checkbox" '+(sdcpChecked?'checked':'')+' onchange="togglePerfIncentive(\'sdcp\', this.checked)"/>'+
-        '<span>SDCP Performance Incentive<small>$'+SDCP_PERF_RATE_PER_KWH.toFixed(2)+'/kWh on battery TOU arbitrage</small></span>'+sdcpAmt+
-      '</label>'+
-      '<label class="ov-check"><input type="checkbox" '+(teslaChecked?'checked':'')+' onchange="togglePerfIncentive(\'tesla\', this.checked)"/>'+
-        '<span>Tesla VPP Performance Incentive (DSGS)<small>CEC statewide program &mdash; alternative if SDCP isn&rsquo;t available</small></span>'+teslaAmt+
-      '</label>'+
-      '<div class="ov-note">Paid periodically for battery grid participation &mdash; not a purchase-price discount, and not guaranteed until program enrollment is confirmed.</div>'+
+      row+
+      '<div class="ov-note">Paid periodically for battery grid participation &mdash; not a purchase-price discount, and not guaranteed until program enrollment is confirmed.'+noteTail+'</div>'+
     '</div>';
   }
 
@@ -369,7 +410,15 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
   // sdcpApplied now also applies in CASH mode (financeMode=false): the SDCP rebate is a
   // purchase-price incentive, not exclusively a financing feature, so a cash buyer can
   // get the same dollar credit taken directly off the cash price.
-  function compareCardHtml(opt, hasParticipate, financeMode, financeMonthly, sdcpApplied){
+  //
+  // perfCreditMonthly/perfLabel (per Dennis, 2026-09-22) — the checked Ongoing Performance
+  // Value program's dollar/mo value, folded into "Your new average monthly cost" as its own
+  // explicit credit line (never baked silently into "Solar payment", which is the real
+  // Wheelhouse loan payment and has nothing to do with either incentive program). Finance
+  // mode only — a one-time cash price has no recurring figure for a periodic incentive to
+  // reduce, so cash mode ignores both params (still passed for one consistent call shape).
+  function compareCardHtml(opt, hasParticipate, financeMode, financeMonthly, sdcpApplied, perfCreditMonthly, perfLabel){
+    perfCreditMonthly = perfCreditMonthly || 0;
     var billToday = parseFloat(CUST.monthly_bill) || 0;
     var mod = opt.savings && opt.savings.moderate;
     var monthlySavings = (mod && mod.monthly > 0) ? mod.monthly : 0;
@@ -385,8 +434,11 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
       if (estGridBill !== null) {
         rows += '<div class="compare-row"><div class="lbl">Est. remaining grid use<span class="sub">what solar doesn&rsquo;t offset</span></div><div class="amt">'+moneyRound(estGridBill)+'/mo</div></div>';
       }
+      if (perfCreditMonthly > 0) {
+        rows += '<div class="compare-row"><div class="lbl">'+esc(perfLabel||'Performance Incentive')+'<span class="sub">applied as a monthly credit</span></div><div class="amt neg">&minus;'+moneyRound(perfCreditMonthly)+'/mo</div></div>';
+      }
       totalLbl = 'Your new average monthly cost';
-      var newTotal = financeMonthly + (estGridBill||0);
+      var newTotal = Math.max(0, financeMonthly + (estGridBill||0) - perfCreditMonthly);
       totalAmt = moneyRound(newTotal);
       totalSuffix = '<small>/mo</small>';
       if (billToday > 0 && newTotal < billToday) {
@@ -443,19 +495,25 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
     return hasSdcp ? 'sdcp' : null;
   }
 
-  // Ongoing Performance Value (per Dennis, 2026-09-22) — layers 3/4 of the 4-layer model:
-  // SDCP Performance Incentive ($0.10/kWh, paid on real battery TOU-arbitrage throughput)
-  // vs. Tesla VPP Performance Incentive (DSGS, up to $350/Powerwall/yr — see
-  // TESLA_VPP_ANNUAL_PER_POWERWALL above, sourced from Tesla's own DSGS support page) as the
-  // alternative program "if SDCP failed" — these are mutually exclusive (a system is enrolled
-  // in one VPP program, not both at once), so perfIncentive is a single tri-state value, not
-  // two independent checkboxes.
+  // Ongoing Performance Value (per Dennis, 2026-09-22, revised same day) — SDCP Performance
+  // Incentive ($0.10/kWh, paid on real battery TOU-arbitrage throughput) vs. Tesla VPP
+  // Performance Incentive (DSGS, up to $350/Powerwall/yr — see TESLA_VPP_ANNUAL_PER_POWERWALL
+  // above). Mutually exclusive (a system is enrolled in one VPP program, not both at once),
+  // and — per Dennis's revision — no longer offered as a choice on the same tab: each
+  // financing tab now shows and auto-checks exactly ONE of the two (requiredPerfKindFor
+  // above decides which). perfIncentive itself stays a real, single tri-state value ('sdcp'
+  // | 'tesla' | null — null only ever means "the rep unchecked the one box this tab offers").
   var perfIncentive = null; // 'sdcp' | 'tesla' | null
-  var perfIncentiveTouched = false; // once a rep manually toggles it, auto-defaulting stops overriding their choice
+  var perfIncentiveTouched = false; // true only within the current tab's own checkbox interaction
   var SDCP_PERF_RATE_PER_KWH = 0.10; // per Dennis, 2026-09-22
+  // Always resets to the CURRENT tab's own required kind, auto-checked. Since each tab now
+  // offers only one program, there is nothing to "remember" across a tab switch the way the
+  // old two-checkbox version needed to — switching tabs is switching which program applies,
+  // not re-asking the same question, so a rep's uncheck on one tab never suppresses the
+  // auto-check on a DIFFERENT tab.
   function syncPerfIncentiveDefault(){
-    if (perfIncentiveTouched) return;
-    perfIncentive = (finSub === 'sdcp') ? 'sdcp' : null;
+    perfIncentive = requiredPerfKindFor(finSub);
+    perfIncentiveTouched = false;
   }
   function togglePerfIncentive(which, isChecked){
     perfIncentiveTouched = true;
@@ -563,6 +621,14 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
     var hasSdcp = (opt.sdcp_rebate||0) > 0;
     var estimateNote = partIsEstimate ? ' <em>(estimated at the standard 30% Participate rate — ask your rep to confirm the exact price)</em>' : '';
 
+    // The checked Ongoing Performance Value program's dollar/mo value — computed once here
+    // (from the CURRENT perfIncentive state, itself synced to this tab by syncPerfIncentiveDefault
+    // whenever finSub/payMode change) and threaded into both the finance and cash compareCardHtml
+    // calls below, so it can never be computed two different ways for the same rendered panel.
+    var perfAnnual = perfIncentiveAnnualFor(opt);
+    var perfMonthly = perfAnnual != null ? perfAnnual / 12 : 0;
+    var perfLabel = perfIncentiveLabel();
+
     var financeBlock = '';
     if (payMode === 'finance' && hasParticipate) {
       var scen = financeScenarios(opt);
@@ -573,7 +639,7 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
         '<div class="fin-sub">'+keys.map(function(k){
           return '<button class="fin-sub-btn'+(k===finSub?' active':'')+'" onclick="setFinSub(\''+k+'\')">'+scen[k].label+'</button>';
         }).join('')+'</div>'+
-        compareCardHtml(opt, hasParticipate, true, monthly, finSub==='sdcp')+
+        compareCardHtml(opt, hasParticipate, true, monthly, finSub==='sdcp', perfMonthly, perfLabel)+
         '<div class="fin-note">'+s.note+estimateNote+'</div>'+
         '<div class="fine-print">Financed through Wheelhouse Credit Union &middot; '+(WHEELHOUSE_APR*100).toFixed(2)+'% APR &middot; '+WHEELHOUSE_TERM_YEARS+'-year term. Payment example is an estimate based on the figures above and is not an approval or offer of credit — final terms are set directly by Wheelhouse CU after application. Rebates and incentives referenced here are not guaranteed and are subject to program qualification.</div>';
     } else {
@@ -584,7 +650,7 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
       var cashKeys = hasSdcp ? ['standard','sdcp'] : [];
       var cashToggle = cashKeys.length ? ('<div class="fin-sub">'+
         '<button class="fin-sub-btn'+(finSub==='standard'?' active':'')+'" onclick="setFinSub(\'standard\')">Standard</button>'+
-        '<button class="fin-sub-btn'+(finSub==='sdcp'?' active':'')+'" onclick="setFinSub(\'sdcp\')">With SDCP</button>'+
+        '<button class="fin-sub-btn'+(finSub==='sdcp'?' active':'')+'" onclick="setFinSub(\'sdcp\')">SDCP Enhanced</button>'+
       '</div>') : '';
       var participateInfoHtml = hasParticipate ? (
         '<div class="fin-note"><strong>Prefer to finance?</strong> Participate brings this option to '+money(partPrice)+
@@ -592,7 +658,7 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
         estimateNote+' <a href="javascript:void(0)" onclick="setPayMode(\'finance\')">Switch to Finance &rarr;</a></div>'
       ) : '';
       financeBlock = cashToggle +
-        compareCardHtml(opt, hasParticipate, false, null, finSub==='sdcp') +
+        compareCardHtml(opt, hasParticipate, false, null, finSub==='sdcp', perfMonthly, perfLabel) +
         participateInfoHtml +
         '<div class="fine-print">This estimate is preliminary and for illustration only — final pricing is confirmed after a full site evaluation. Not a bid for work or a binding agreement.</div>';
     }
