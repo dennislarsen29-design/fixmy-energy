@@ -13354,6 +13354,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   function _qaApplyNlUpdates(data) {
     window._qaLocked = window._qaLocked || {};
     window._qaWriting = true;
+    // ⚠️ When Quoya Assist writes the address, this is the ONLY path that ever sets
+    // #nlAddr's value — it never dispatches a real input event and never goes through
+    // Google's Places Autocomplete, so the place_changed listener (initNlPlaces) that
+    // normally triggers the owner lookup + satellite/solar preview never fires. Left
+    // unfixed, the address field shows filled-and-tagged while the owner lookup panel
+    // sits forever on "Checking parcel data…" — reported live 2026-09-22 as "the Owner
+    // lookup tool isn't auto populating the owners." addressWasFilled tracks whether
+    // this pass actually wrote a NEW address so the lookup fires only once, right after
+    // a real address lands, not on every extraction pass.
+    var addressWasFilled = false;
     try {
       var f = data.fields || {};
       Object.keys(QA_NL_TEXT_FIELDS).forEach(function(k){
@@ -13363,6 +13373,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         if (!el || String(el.value||'').trim() === String(v).trim()) return;
         el.value = v;
         _qaTagFilled(el);
+        if (id === 'nlAddr') addressWasFilled = true;
       });
       if (f.has_solar && !window._qaLocked.nlHasSolar) {
         var cur = (document.getElementById('nlHasSolar')||{}).value || '';
@@ -13384,6 +13395,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (typeof nlUpdateCal === 'function') nlUpdateCal();
       if (f.monthly_bill && typeof nlSyncBill === 'function') nlSyncBill();
     } finally { window._qaWriting = false; }
+    // Same trigger a real Places selection fires (see initNlPlaces' place_changed
+    // listener) — geocodes the address Quoya just typed and runs the owner-parcel
+    // lookup, since setting .value directly can never fire that listener itself.
+    if (addressWasFilled && typeof nlManualTitleLookup === 'function') nlManualTitleLookup();
     var missEl = document.getElementById('nlAiMissing');
     if (missEl) {
       var missing = data.missing || [];
@@ -13461,6 +13476,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (noteEl) { noteEl.value = (noteEl.value ? noteEl.value.trim() + '\n' : '') + _aiConsentTag() + noteText; }
     if (st) st.textContent = d ? '✓ added to note' : ('✓ transcript saved. ' + _aiNoteFailText(_aiLastFail, null));
   };
+  // Stops Quoya Assist's mic + extraction loop WITHOUT trying to summarize/write a note —
+  // used whenever the New Lead form itself is about to be torn down (lead created, or the
+  // form is cancelled). Without this, _nlAiRec's own onend handler auto-restarts recognition
+  // forever (see _nlAiBegin), so the mic stayed hot and _qaStartLoop('nl', ...) kept polling
+  // a form whose fields no longer exist — reported live 2026-09-22 as "the recording button
+  // isn't stopping appropriately for Quoya Assist after the lead was created."
+  function _nlAiHardStop() {
+    _nlAiActive = false;
+    if (_nlAiRec) { try { _nlAiRec.onend = null; _nlAiRec.stop(); } catch(e){} _nlAiRec = null; }
+    _qaStopLoop('nl');
+  }
 
   // ── Email field (2026-07-23) — Black Box leads often arrive without an email
   // from skip-trace/GIS enrichment. Reps confirm/add it right on the call card;
@@ -25235,7 +25261,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
   function edField(label,id,val,type){ return '<div><label class="ed-label">'+label+'</label><input type="'+type+'" id="'+id+'" class="ed-input" value="'+esc(val)+'"/></div>'; }
   function edSelect(label,id,val,options){ var opts=options.map(function(o){ return '<option value="'+o[0]+'"'+(o[0]==val?' selected':'')+'>'+o[1]+'</option>'; }).join(''); return '<div><label class="ed-label">'+label+'</label><select id="'+id+'" class="ed-input">'+opts+'</select></div>'; }
-  function closeLeadEditor(){ var slot=document.getElementById('editorSlot'); if(slot) slot.innerHTML=''; }
+  function closeLeadEditor(){ if (typeof _nlAiHardStop === 'function') _nlAiHardStop(); var slot=document.getElementById('editorSlot'); if(slot) slot.innerHTML=''; }
 
   async function saveLeadEditor(opts) {
     opts = opts || {}; var isAutoSave = opts.auto || false;
@@ -25731,7 +25757,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     fetch('/.netlify/functions/ghl-slots').then(function(r){ return r.json(); }).then(function(data){
       var slots = (data && data.slots) || [];
       if (!slots.length) {
-        list.innerHTML = '<div style="font-size:0.75rem;color:#c77;padding:10px;">No open times found &mdash; use manual entry below.</div>';
+        list.innerHTML = '<div style="font-size:0.75rem;color:#c77;padding:10px;">No open times found &mdash; enter the date/time below instead.</div>';
+        _nlForceManualAppt();
         return;
       }
       var html = '';
@@ -25742,8 +25769,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       list.innerHTML = html;
     }).catch(function(e){
       console.warn('ghl-slots load failed:', e.message);
-      list.innerHTML = '<div style="font-size:0.75rem;color:#c77;padding:10px;">Could not load times &mdash; use manual entry below.</div>';
+      list.innerHTML = '<div style="font-size:0.75rem;color:#c77;padding:10px;">Could not load times ('+(e.message||'connection error')+') &mdash; enter the date/time below instead.</div>';
+      _nlForceManualAppt();
     });
+  }
+  // The override for whenever the slot picker itself comes back empty or errors —
+  // reported live 2026-09-22 as "the booking calendar isn't populating next available
+  // options with an override feature." The manual date/time fields already existed
+  // behind a subtle "Enter date/time manually instead" link; this auto-opens them the
+  // instant the real slot list has nothing to offer, instead of requiring an extra tap
+  // to discover the fallback even exists.
+  function _nlForceManualAppt() {
+    var mw = document.getElementById('nlManualApptWrap');
+    if (mw && mw.style.display === 'none') mw.style.display = 'block';
   }
 
   function nlSelectSlot(btn) {
@@ -25944,6 +25982,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           sourceLabel = sourceLabels[rgData.source] || 'Parcel Data';
         }
         debugInfo = rgData.debug || null;
+      } else {
+        // ⚠️ A non-OK response used to fall straight through to "No parcel record
+        // found" below — indistinguishable from a genuine no-match. Reported live
+        // 2026-09-22 as "the lookup owner isn't populating... it's failing" —
+        // surface the real failure instead.
+        var rgErrBody = null; try { rgErrBody = await rgResp.json(); } catch(e2) {}
+        body.innerHTML = '<span style="font-size:0.75rem;color:#ef4444;">Lookup failed (status ' + rgResp.status + (rgErrBody && rgErrBody.error ? ': ' + esc(String(rgErrBody.error)) : '') + ') &mdash; tap Look Up Owner to retry, or verify manually with <a href="https://landglide.com" target="_blank" style="color:#4a9eff;">LandGlide</a>.</span>';
+        return;
       }
     } catch(e) {
       body.innerHTML = '<span style="font-size:0.75rem;color:#ef4444;">Lookup error: ' + (e.message||'unknown') + '</span>';
@@ -26231,6 +26277,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (lat != null) { payload.lat = lat; payload.lng = lng; }
       var resp = await fetch('/.netlify/functions/regrid-lookup', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
       if (resp.ok) { var d = await resp.json(); if (d.owner) { owner = d.owner; apn = d.apn||null; sourceLabel = sourceLabels[d.source]||'Parcel Data'; } debugInfo = d.debug||null; }
+      else {
+        // Same fix as the New Lead form's checkTitleOwner — a non-OK response must
+        // never render identically to a genuine "no parcel found."
+        var errBody2 = null; try { errBody2 = await resp.json(); } catch(e3) {}
+        if (body) body.innerHTML = '<span style="font-size:0.75rem;color:#ef4444;">Lookup failed (status '+resp.status+(errBody2 && errBody2.error ? ': '+esc(String(errBody2.error)) : '')+') &mdash; tap Run Lookup to retry, or verify manually with <a href="https://landglide.com" target="_blank" style="color:#4a9eff;">LandGlide</a>.</span>';
+        return;
+      }
     } catch(e) {
       if (body) body.innerHTML = '<span style="font-size:0.75rem;color:#ef4444;">Lookup error: '+(e.message||'unknown')+'</span>';
       return;
@@ -26479,6 +26532,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // exactly how a lead can "land on Portal leads but not on the calendar" with no
       // sign anything went wrong. Tracked here so the confirmation panel below can show
       // a real warning instead of a silent success message.
+      // ⚠️ Read unconditionally (not just inside the real-booking branch below) — this
+      // used to be scoped inside `if (_fixmyRealBooking)`, so whenever no real slot/
+      // manual time was ever captured (e.g. the booking calendar never populated slots,
+      // see nlLoadFixmySlots), the confirmation panel showed NOTHING about whether
+      // automations were suppressed. Reported live 2026-09-22 as "Dennis's Lead capture
+      // is not showing the update w/No Notifications auto on with the toggle."
+      var _isSetterType = (document.getElementById('nlNoAutomation')||{}).value === '1';
       var _ghlBookOk = null, _ghlBookFailReason = '';
       if (_fixmyRealBooking) {
         try {
@@ -26489,7 +26549,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           // "No Automations" toggle on this form (defaults on for setter-* types, off for
           // Quoya/inbound) rather than the lead type alone — either Ronda or Dennis can
           // override it per-lead for the rare case the automation is actually wanted.
-          var _isSetterType = (document.getElementById('nlNoAutomation')||{}).value === '1';
           var _bookResp = await fetch('/.netlify/functions/ghl-book', {
             method: 'POST', headers: {'Content-Type':'application/json'},
             // ⚠️ customerId MUST be passed here — every other ghl-book.js caller
@@ -26537,6 +26596,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '<div style="font-weight:800;margin-bottom:4px;">&#9888; Not on the calendar</div>'+
           '<div style="color:#ddd;">The lead saved, but the appointment did not book to the GHL calendar (' + esc(_ghlBookFailReason) + '). Open the booking calendar below and book it manually, or edit this lead\'s date to retry.</div>'+
         '</div>' : '';
+      // Always-visible, regardless of whether a real GHL appointment was booked — the
+      // detailed tag-diagnostic block below (_setterDiagHtml) only ever rendered inside
+      // the real-booking branch, so a lead with no booked time (e.g. slots never loaded)
+      // showed nothing about automation status at all. This is the fix for that gap.
+      var _autoStatusHtml =
+        '<div style="text-align:left;margin-top:14px;padding:10px 14px;border-radius:10px;font-size:0.74rem;'+
+        (_isSetterType ? 'background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.25);color:#ffaa00;' : 'background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.25);color:#8DC63F;')+
+        '">'+(_isSetterType ? '&#128222; <strong>No Automations</strong> &mdash; no confirmation SMS/email was sent to the customer.' : '&#127760; <strong>Automations ON</strong> &mdash; a confirmation SMS/email was sent to the customer.')+
+        '</div>';
       var _setterDiagHtml = '';
       if (typeof _isSetterType !== 'undefined' && _isSetterType && typeof _bookResult !== 'undefined' && _bookResult) {
         var _tr = _bookResult.tagResult;
@@ -26549,6 +26617,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             (_ghlUrl ? '<a href="'+_ghlUrl+'" target="_blank" style="color:#4a9eff;display:inline-block;margin-top:6px;">Open this exact contact in GHL &rarr;</a>' : '')+
           '</div>';
       }
+      // The lead is now real — stop Quoya Assist before the confirmation panel replaces
+      // #newLeadPanel's DOM out from under it. Without this, an active recording's own
+      // onend handler auto-restarts SpeechRecognition forever with no visible controls
+      // left on screen (reported live 2026-09-22 as "the recording button isn't stopping
+      // appropriately... after the lead was created").
+      if (typeof _nlAiHardStop === 'function') _nlAiHardStop();
       var panel = document.getElementById('newLeadPanel');
       if (panel) {
         panel.innerHTML =
@@ -26557,6 +26631,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '<div style="font-size:1.05rem;font-weight:800;color:#8DC63F;margin-bottom:4px;">Lead Created!</div>'+
           '<div style="font-size:0.82rem;color:#aaa;margin-bottom:24px;">'+custName+'</div>'+
           _calBookWarningHtml+
+          _autoStatusHtml+
           _setterDiagHtml+
           '<div style="display:flex;flex-direction:column;gap:10px;margin-top:14px;">'+
             '<button onclick="navigator.clipboard.writeText(\''+mlLink+'\').then(function(){this.textContent=\'✓ Copied!\';},function(){prompt(\'Copy link:\',\''+mlLink+'\');}).bind(this)" style="width:100%;padding:13px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);border-radius:10px;color:#4a9eff;font-size:0.88rem;font-weight:700;cursor:pointer;">🔗 Copy Customer Portal Link</button>'+
