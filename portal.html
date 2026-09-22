@@ -22822,7 +22822,29 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var buildForOpt = _propBuilds[oIdx] || _propBuilds[0];
       var annualUsageKwh = _usage.annualUsageKwh;
       var prod = _propCalcBaseProduction(buildForOpt, _propSolarData, custRec ? custRec.system_size : null, annualUsageKwh);
-      if (!prod.hasData || !bill) return;
+      if (!prod.hasData) return; // nothing at all in this build (no panels/inverter/battery) — genuinely nothing to store
+      // ⚠️ Reported live 2026-09-22 (Patricia Barbee): the Ongoing Performance Value section
+      // (SDCP/Tesla VPP incentives on proposal-preview.html — reads ONLY opt.prod_data,
+      // never opt.savings) showed "Needs usage data" / "Needs battery size to estimate"
+      // even though her utility bill HAD been analyzed. Root cause: this whole block used to
+      // bail out on `!bill` alone (customers.monthly_bill unset/zero) BEFORE ever saving
+      // opt.prod_data — but storageKwh/batteryUnits/batteryArbitrageKwh are derived purely
+      // from the Powerwall line items + (optionally) Quoya's real usage kWh, and need no
+      // dollar bill amount at all. A bill can legitimately be "analyzed" (CARE/usage/rate
+      // extracted) with no clean monthly_amount_paid on a given pass — e.g. a True-Up
+      // statement — which left monthly_bill at 0 and silently dropped battery-size data
+      // that was already fully computable. prod_data is now ALWAYS saved once prod.hasData
+      // is true; only the DOLLAR-denominated opt.savings scenarios below still require a
+      // real bill (they need a rate baseline to convert kWh into $).
+      opt.prod_data = {
+        panelKwh: prod.panelKwh, panelKw: prod.panelKw, panelCount: prod.panelCount, panelSource: prod.panelSource,
+        inverterKwh: prod.inverterKwh, hasInverter: prod.hasInverter, sysKw: prod.sysKw, outputPct: prod.outputPct,
+        batteryArbitrageKwh: prod.batteryArbitrageKwh, hasBattery: prod.hasBattery,
+        storageKwh: prod.storageKwh, batteryUnits: prod.batteryUnits, batteryCycledDaily: prod.batteryCycledDaily,
+        surplusKwh: 0, annualUsageKwh: annualUsageKwh,
+        billBaseline: bill
+      };
+      if (!bill) return; // no dollar baseline yet — prod_data (incl. battery size) is still saved above
       // Non-export systems can't sell back excess — reduce panel+inverter production by 25%
       var exportFactor = opt.non_export ? 0.75 : 1.0;
       var scen = {};
@@ -22844,15 +22866,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         scen[s.key] = { monthly: monthly, annual: Math.round(annualSaved), total20yr: total20yr, afterBill: afterBill };
       });
       opt.savings = scen;
-      // Store production data so customer proposal can show methodology
-      opt.prod_data = {
-        panelKwh: prod.panelKwh, panelKw: prod.panelKw, panelCount: prod.panelCount, panelSource: prod.panelSource,
-        inverterKwh: prod.inverterKwh, hasInverter: prod.hasInverter, sysKw: prod.sysKw, outputPct: prod.outputPct,
-        batteryArbitrageKwh: prod.batteryArbitrageKwh, hasBattery: prod.hasBattery,
-        storageKwh: prod.storageKwh, batteryUnits: prod.batteryUnits, batteryCycledDaily: prod.batteryCycledDaily,
-        surplusKwh: _modSurplus, annualUsageKwh: annualUsageKwh,
-        billBaseline: bill
-      };
+      opt.prod_data.surplusKwh = _modSurplus; // the one prod_data field that genuinely depends on the $ scenario loop above
     });
 
     var commissionEstimate = options.reduce(function(sum, o){ return sum + (o.rep_commission || 0); }, 0);
