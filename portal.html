@@ -10192,6 +10192,417 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return h;
   }
 
+  // ── Axia/QCells Site Evaluation (2026-09-24, per Dennis: "rework the Axia/QCells
+  // Site Evaluation process... mimic the FixMy.energy Evaluation but specify the
+  // details only related to onboarding with Axia/QCells"). Deliberately its own,
+  // separate module (own vars, own render, own Netlify function) rather than folded
+  // into _evSteps()/EVAL_STEPS above — those are built around diagnosing an EXISTING
+  // system (hardware photos, power-cycle, equipment warranty) which a brand-new Axia
+  // install doesn't have. Per Dennis: no site-photo upload needed here ("eventually
+  // we'll be able to do rep led site surveys") — just the utility bill and Quoya's
+  // read of it. One screen: upload, Quoya reads it automatically, review/correct the
+  // numbers, done. Persists into the SAME `lead_evaluations` row FixMy's wizard would
+  // use for this customer_id (generic table, one row per lead either way — a lead is
+  // never worked by both wizards at once) but writes only its own `axia_bill_analysis`
+  // column, so it can never collide with FixMy's `bill_analysis`/`analysis`/`step`
+  // fields even if the lead was ever moved between pipelines (evMoveToAxia above).
+  var _axId = null, _axRec = null, _axRow = null, _axBillAnalyzing = false;
+  var _axLocal = { billAnalysis: null };
+
+  function _axBillPhotos() {
+    return (jobPhotos[_axId] || []).filter(function(p){ return (p.label || p.Label || '') === 'Utility Bill'; });
+  }
+
+  async function _axSave(patch) {
+    if (!_axId) return;
+    var body = Object.assign({
+      customer_id: _axId, rep_id: (typeof bbRepId === 'function' ? bbRepId() : null),
+      rep_name: _evRepName(), updated_at: new Date().toISOString()
+    }, patch);
+    try {
+      var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+      if (_axRow && _axRow.id) {
+        await c.from('lead_evaluations').update(body).eq('id', _axRow.id);
+        Object.assign(_axRow, body);
+      } else {
+        var ins = await c.from('lead_evaluations').insert(body).select();
+        if (!ins.error && ins.data && ins.data[0]) _axRow = ins.data[0];
+      }
+    } catch(e) { /* table not applied — nothing to resume, upload/analysis still work */ }
+  }
+
+  window.openAxiaEvalWizard = async function(id) {
+    var rec = (adminCustomers || []).find(function(x){ return String(x.id) === String(id); });
+    if (!rec) return;
+    _axId = id; _axRec = rec;
+    _axLocal = { billAnalysis: null };
+    currentJobId = id;
+
+    var slot = document.getElementById('editorSlot') || (function(){
+      var d = document.createElement('div'); d.id = 'editorSlot'; document.body.appendChild(d); return d;
+    })();
+    slot.innerHTML = '<div id="axEvalWrap" style="position:fixed;inset:0;background:#0e0e0e;z-index:9500;overflow-y:auto;">'
+      + '<div style="max-width:620px;margin:0 auto;padding:16px 14px 60px;color:#F3EDE3;">'
+      + '<div style="text-align:center;padding:60px 0;color:#888;font-size:0.85rem;">Loading evaluation&hellip;</div>'
+      + '</div></div>';
+
+    _axRow = await _evLoadRow(id); // shared generic select('*') — works for either wizard
+    if (_axRow) _axLocal.billAnalysis = _axRow.axia_bill_analysis || null;
+    try { await loadJobPhotos(id); } catch(e) {}
+    _axRender();
+  };
+
+  window.closeAxiaEvalWizard = function() {
+    var s = document.getElementById('editorSlot');
+    if (s) s.innerHTML = '';
+    _axId = null; _axRec = null; _axRow = null; _axBillAnalyzing = false;
+  };
+
+  window.axUpload = async function(inputEl) {
+    var files = Array.from(inputEl.files || []);
+    if (!files.length || !_axId) return;
+    var st = document.getElementById('axStatus');
+    if (st) { st.style.color = '#4a9eff'; st.textContent = 'Uploading ' + files.length + ' file' + (files.length > 1 ? 's' : '') + '…'; }
+    try {
+      await uploadPhotos(files, 'Utility Bill');
+    } catch(e) {
+      if (st) { st.style.color = '#ef4444'; st.textContent = 'Upload failed: ' + e.message; }
+    }
+    try { await loadJobPhotos(_axId); } catch(e) {}
+    inputEl.value = '';
+    _axRender();
+    window.axRunBillAnalysis();
+  };
+
+  // Recomputes the two derived figures Dennis specified, from whichever raw inputs are
+  // currently in effect — NEVER trusted to the model's own arithmetic (same "never trust
+  // the model's division" rule this file follows everywhere else a derived dollar figure
+  // matters). A field the rep has manually corrected (tracked in `edited`) is left alone,
+  // same "a human correction beats a re-read" rule as FixMy's own evBillField.
+  //   Average Rate         = Generation + Delivery charges (period) ÷ kWh (same period)
+  //   Average Monthly Bill = (Average Rate × Annual kWh) ÷ 12
+  function _axRecalc(ba) {
+    if (!ba) return;
+    var edited = ba.edited || {};
+    if (!edited.avg_rate_per_kwh) {
+      var charges = parseFloat(ba.period_generation_delivery_charges);
+      var kwh = parseFloat(ba.period_kwh);
+      ba.avg_rate_per_kwh = (charges > 0 && kwh > 0) ? Math.round((charges / kwh) * 100000) / 100000 : null;
+    }
+    if (!edited.avg_monthly_bill) {
+      var rate = parseFloat(ba.avg_rate_per_kwh);
+      var annual = parseFloat(ba.annual_kwh);
+      ba.avg_monthly_bill = (rate > 0 && annual > 0) ? Math.round(((rate * annual) / 12) * 100) / 100 : null;
+    }
+  }
+
+  window.axRunBillAnalysis = async function() {
+    if (_axBillAnalyzing || !_axId) return;
+    var bills = _axBillPhotos();
+    if (!bills.length) return;
+    // Same "never trust incidental array order" rule as FixMy's evRunBillAnalysis —
+    // loadJobPhotos is an unordered select, so a replaced bill must be picked by real
+    // insertion order (id), not whatever position Postgres happens to return.
+    var bill = bills.slice().sort(function(a, b) {
+      var ai = Number(a.id) || 0, bi = Number(b.id) || 0;
+      if (ai !== bi) return bi - ai;
+      return String(b.Uploaded_at || '').localeCompare(String(a.Uploaded_at || ''));
+    })[0];
+    if (!bill || !bill.url) return;
+    _axBillAnalyzing = true;
+    _axRender();
+    var out = null, failMsg = '';
+    try {
+      var r = await fetch('/.netlify/functions/axia-bill-analysis', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ billUrl: bill.url, lead: { address: _axRec ? (_axRec.address || '') : '' } })
+      });
+      out = await r.json().catch(function(){ return null; });
+      if (!r.ok || !out || out.readable === false) {
+        failMsg = (out && out.notes) || 'Quoya could not read this bill — enter the figures manually below.';
+        out = null;
+      }
+    } catch (e) {
+      failMsg = 'Couldn\'t reach Quoya — enter the figures manually below.';
+    }
+    var prevEdited = (_axLocal.billAnalysis && _axLocal.billAnalysis.edited) || {};
+    var prev = _axLocal.billAnalysis || {};
+    if (out) {
+      var merged = {
+        account_holder_name: out.account_holder_name || '',
+        period_generation_delivery_charges: out.period_generation_delivery_charges,
+        period_kwh: out.period_kwh,
+        annual_kwh: out.annual_kwh,
+        avg_rate_per_kwh: out.avg_rate_per_kwh,
+        avg_monthly_bill: out.avg_monthly_bill,
+        monthly_usage: out.monthly_usage || [],
+        care: !!out.care, fera: !!out.fera, medical_baseline: !!out.medical_baseline,
+        source: out.source, confidence: out.confidence, notes: out.notes || '',
+        analyzed_at: new Date().toISOString(), edited: prevEdited
+      };
+      Object.keys(prevEdited).forEach(function(f){ if (prevEdited[f] && f in prev) merged[f] = prev[f]; });
+      _axRecalc(merged);
+      _axLocal.billAnalysis = merged;
+    } else {
+      _axLocal.billAnalysis = { _err: failMsg, edited: prevEdited };
+    }
+    _axSave({ axia_bill_analysis: _axLocal.billAnalysis });
+    _axBillAnalyzing = false;
+    _axRender();
+  };
+
+  window.axBillField = function(field, val) {
+    if (!_axLocal.billAnalysis || _axLocal.billAnalysis._err) _axLocal.billAnalysis = { edited: {} };
+    if (!_axLocal.billAnalysis.edited) _axLocal.billAnalysis.edited = {};
+    if (field === 'care' || field === 'fera' || field === 'medical_baseline') {
+      _axLocal.billAnalysis[field] = !_axLocal.billAnalysis[field];
+    } else if (field === 'account_holder_name') {
+      _axLocal.billAnalysis[field] = String(val || '').slice(0, 120);
+    } else {
+      var n = parseFloat(val);
+      _axLocal.billAnalysis[field] = isNaN(n) ? null : n;
+    }
+    _axLocal.billAnalysis.edited[field] = true;
+    _axRecalc(_axLocal.billAnalysis);
+    _axSave({ axia_bill_analysis: _axLocal.billAnalysis });
+    _axRender();
+  };
+
+  // Cross-references the bill's account-holder name against the lead's own name AND
+  // its title_owner (per Dennis: "cross reference the name on the Utility Bill to
+  // ensure it matches the title name and name listed on lead"). Deterministic token
+  // overlap, not a second AI call — same "compute it, don't ask the model to judge a
+  // string match" pattern as _repCanonical/_bbOwnerParse elsewhere in this file. A
+  // warning, never a block — could be a spouse, a trust, a name Quoya misread.
+  function _axNormName(s) {
+    return String(s || '').toUpperCase().replace(/[^A-Z\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+  function _axNameTokens(s) {
+    var STOP = { AND:1, TRUST:1, FAMILY:1, REVOCABLE:1, LLC:1, INC:1, TR:1, TRS:1, JR:1, SR:1, II:1, III:1 };
+    return _axNormName(s).split(' ').filter(function(t){ return t.length > 1 && !STOP[t]; });
+  }
+  function _axNameMatchInfo(billName, rec) {
+    var bill = _axNameTokens(billName);
+    if (!bill.length) return { status: 'unknown', billName: billName || '' };
+    var candidates = [];
+    var leadName = ((rec.first_name || '') + ' ' + (rec.last_name || '')).trim();
+    if (leadName) candidates.push({ label: 'Lead', name: leadName, tokens: _axNameTokens(leadName) });
+    if (rec.title_owner) {
+      var titleDisp = (typeof _bbOwnerParse === 'function') ? (_bbOwnerParse(rec.title_owner).display || rec.title_owner) : rec.title_owner;
+      candidates.push({ label: 'Title', name: titleDisp, tokens: _axNameTokens(rec.title_owner) });
+    }
+    if (!candidates.length) return { status: 'unknown', billName: billName || '' };
+    var billSet = {}; bill.forEach(function(t){ billSet[t] = 1; });
+    var best = null;
+    candidates.forEach(function(c){
+      var hits = c.tokens.filter(function(t){ return billSet[t]; }).length;
+      var pct = c.tokens.length ? hits / c.tokens.length : 0;
+      if (!best || pct > best.pct) best = { label: c.label, name: c.name, pct: pct, hits: hits };
+    });
+    // Overlap is checked in BOTH directions — a candidate with more tokens than the
+    // bill name (e.g. a family trust) shouldn't false-flag just because most of ITS
+    // tokens aren't on the bill, as long as most of the BILL's own tokens are covered.
+    var billPct = bill.length ? (best ? best.hits / bill.length : 0) : 0;
+    var match = !!(best && (best.hits >= 2 || best.pct >= 0.5 || billPct >= 0.5));
+    return { status: match ? 'match' : 'mismatch', billName: billName || '', best: best };
+  }
+
+  function _axTextField(ba, field, label) {
+    var val = ba[field];
+    var auto = !ba._err && val && !(ba.edited && ba.edited[field]);
+    return '<div style="margin-bottom:10px;">'
+      + '<label style="display:block;font-size:0.68rem;color:#888;margin-bottom:4px;">' + label + '</label>'
+      + '<input type="text" value="' + esc(val || '') + '" oninput="axBillField(\'' + field + '\',this.value)" '
+        + 'style="width:100%;box-sizing:border-box;padding:9px 11px;border-radius:8px;background:rgba(255,255,255,0.04);color:#F3EDE3;font-size:0.85rem;'
+        + (auto ? 'border:1px solid #4a9eff;box-shadow:0 0 0 1px rgba(74,158,255,0.35);' : 'border:1px solid rgba(255,255,255,0.14);')
+        + '" ' + (auto ? 'title="Filled by Quoya Assist — double-check this"' : '') + '>'
+      + '</div>';
+  }
+  function _axNumField(ba, field, label, prefix, suffix, step) {
+    var val = ba[field];
+    var auto = !ba._err && val != null && !(ba.edited && ba.edited[field]);
+    var display = (val == null) ? '' : val;
+    return '<div style="margin-bottom:10px;">'
+      + '<label style="display:block;font-size:0.68rem;color:#888;margin-bottom:4px;">' + label + '</label>'
+      + '<div style="display:flex;align-items:center;gap:5px;">'
+      + (prefix ? '<span style="color:#888;font-size:0.82rem;">' + prefix + '</span>' : '')
+      + '<input type="number" step="' + (step || 1) + '" value="' + esc(String(display)) + '" oninput="axBillField(\'' + field + '\',this.value)" '
+        + 'style="flex:1;min-width:0;padding:9px 11px;border-radius:8px;background:rgba(255,255,255,0.04);color:#F3EDE3;font-size:0.85rem;'
+        + (auto ? 'border:1px solid #4a9eff;box-shadow:0 0 0 1px rgba(74,158,255,0.35);' : 'border:1px solid rgba(255,255,255,0.14);')
+        + '" ' + (auto ? 'title="Filled by Quoya Assist — double-check this"' : '') + '>'
+      + (suffix ? '<span style="color:#888;font-size:0.78rem;white-space:nowrap;">' + suffix + '</span>' : '')
+      + '</div></div>';
+  }
+  function _axBoolPill(ba, field, label) {
+    var on = !!ba[field];
+    var auto = !ba._err && on && !(ba.edited && ba.edited[field]);
+    return '<button onclick="axBillField(\'' + field + '\')" style="width:auto;margin:0;padding:8px 13px;border-radius:100px;font-size:0.74rem;font-weight:700;cursor:pointer;'
+      + (on ? 'background:rgba(255,170,0,0.18);border:1px solid rgba(255,170,0,0.5);color:#ffaa00;' : 'background:transparent;border:1px solid rgba(255,255,255,0.14);color:#888;')
+      + (auto ? 'box-shadow:0 0 0 2px rgba(74,158,255,0.35);' : '') + '" '
+      + (auto ? 'title="Filled by Quoya Assist — double-check this"' : '') + '>'
+      + (on ? '&#10003; ' : '') + label + '</button>';
+  }
+
+  // Simple hand-rolled CSS bar chart — no chart library is guaranteed loaded outside
+  // Finance (Chart.js there is lazy-loaded via finLoadChartJs), and a dozen bars is
+  // well within what plain flex/divs can render cleanly.
+  function _axMonthlyChartHtml(rows) {
+    if (!rows || !rows.length) {
+      return '<div style="font-size:0.7rem;color:#777;margin-bottom:12px;line-height:1.5;">No month-by-month bar chart or NEM summary table was found on this bill &mdash; only the annual total below.</div>';
+    }
+    var max = Math.max.apply(null, rows.map(function(r){ return Number(r.kwh) || 0; })) || 1;
+    var h = '<div style="margin-bottom:14px;">';
+    h += '<label style="display:block;font-size:0.68rem;color:#888;margin-bottom:8px;">Month-by-Month Usage</label>';
+    h += '<div style="display:flex;align-items:flex-end;gap:3px;height:90px;padding:0 2px;">';
+    rows.forEach(function(r){
+      var kwh = Number(r.kwh) || 0;
+      var pct = Math.max(4, Math.round((kwh / max) * 100));
+      h += '<div title="' + esc(String(r.month)) + ': ' + kwh + ' kWh" style="flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;">'
+        + '<div style="width:100%;height:' + pct + '%;background:linear-gradient(180deg,#4a9eff,#2c6bc7);border-radius:3px 3px 0 0;"></div>'
+        + '</div>';
+    });
+    h += '</div>';
+    h += '<div style="display:flex;gap:3px;padding:0 2px;margin-top:4px;">';
+    rows.forEach(function(r){
+      h += '<div style="flex:1;min-width:0;text-align:center;font-size:0.52rem;color:#777;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + esc(String(r.month).slice(0, 3)) + '</div>';
+    });
+    h += '</div></div>';
+    return h;
+  }
+
+  function _axBillSlotHtml() {
+    var bills = _axBillPhotos();
+    var done = bills.length > 0;
+    var h = '<div style="background:rgba(255,255,255,0.035);border:1px solid ' + (done ? 'rgba(74,158,255,0.45)' : 'rgba(245,158,11,0.35)') + ';border-radius:14px;padding:13px;margin-bottom:9px;">';
+    h += '<div style="display:flex;align-items:flex-start;gap:10px;">';
+    h += '<div style="font-size:1.25rem;line-height:1;flex-shrink:0;">&#128196;</div>';
+    h += '<div style="flex:1;min-width:0;">';
+    h += '<div style="font-size:0.86rem;font-weight:700;">Utility Bill</div>';
+    h += '<div style="font-size:0.7rem;color:#888;line-height:1.45;margin-top:2px;">PDF is best &mdash; a True-Up/annual statement gives the most accurate numbers. A photo of the paper bill works too.</div>';
+    if (done) {
+      h += '<div style="font-size:0.7rem;color:#4a9eff;font-weight:700;margin-top:6px;">&#10003; ' + bills.length + ' uploaded</div>';
+      h += '<div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:6px;">';
+      bills.slice(0, 5).forEach(function(p){
+        h += '<img src="' + p.url + '" onclick="window.open(\'' + p.url + '\',\'_blank\')" style="width:44px;height:44px;object-fit:cover;border-radius:7px;cursor:pointer;border:1px solid rgba(255,255,255,0.15);">';
+      });
+      h += '</div>';
+    }
+    h += '</div></div>';
+    h += '<div style="display:flex;gap:7px;margin-top:11px;">';
+    h += '<label style="flex:1;text-align:center;padding:11px;background:' + (done ? 'rgba(255,255,255,0.06)' : 'rgba(74,158,255,0.14)') + ';border:1px solid ' + (done ? 'rgba(255,255,255,0.14)' : 'rgba(74,158,255,0.4)') + ';color:' + (done ? '#aaa' : '#4a9eff') + ';border-radius:100px;font-size:0.78rem;font-weight:700;cursor:pointer;">'
+      + (done ? '&#43; Replace / Add another' : '&#128247; Take / Upload')
+      + '<input type="file" accept="image/*,application/pdf" style="display:none" onchange="axUpload(this)"></label>';
+    h += '</div>';
+    h += '</div>';
+    return h;
+  }
+
+  function _axBillAnalysisHtml() {
+    if (_axBillAnalyzing) {
+      return '<div style="background:rgba(74,158,255,0.06);border:1px solid rgba(74,158,255,0.28);border-radius:14px;padding:16px;margin:14px 0;text-align:center;">'
+        + '<div style="font-size:0.82rem;color:#8dbfff;font-weight:700;">&#129302; Quoya is reading the bill&hellip;</div></div>';
+    }
+    var hasBill = _axBillPhotos().length > 0;
+    if (!hasBill || !_axLocal.billAnalysis) return '';
+    var ba = _axLocal.billAnalysis;
+    var h = '';
+
+    if (ba._err) {
+      h += '<div style="background:rgba(74,158,255,0.06);border:1px solid rgba(74,158,255,0.28);border-radius:14px;padding:15px;margin:14px 0;">';
+      h += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">';
+      h += '<div style="font-size:0.82rem;font-weight:800;color:#8dbfff;">&#129302; Quoya&rsquo;s Bill Analysis</div>';
+      h += '<button onclick="axRunBillAnalysis()" style="width:auto;margin:0;background:none;border:none;color:#888;font-size:0.68rem;cursor:pointer;text-decoration:underline;">&#8635; Re-read bill</button>';
+      h += '</div>';
+      h += '<div style="font-size:0.74rem;color:#f59e0b;line-height:1.5;">' + esc(ba._err) + '</div></div>';
+      return h;
+    }
+
+    // ── #5: name on the bill vs. the title/lead name ──
+    var nm = _axNameMatchInfo(ba.account_holder_name, _axRec);
+    if (nm.status === 'mismatch') {
+      h += '<div style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.35);border-radius:14px;padding:14px;margin:14px 0;">';
+      h += '<div style="font-size:0.82rem;font-weight:800;color:#f87171;margin-bottom:5px;">&#9888; Name on bill doesn&rsquo;t match the lead</div>';
+      h += '<div style="font-size:0.76rem;color:#ddd;line-height:1.55;">Bill: <b>' + esc(nm.billName || '—') + '</b><br/>'
+        + esc(nm.best ? nm.best.label : 'Lead') + ': <b>' + esc(nm.best ? nm.best.name : '') + '</b></div>';
+      h += '<div style="font-size:0.7rem;color:#aaa;margin-top:7px;line-height:1.5;">Confirm this is the right account/property before proceeding &mdash; could be a spouse, a renter, or the wrong bill.</div>';
+      h += '</div>';
+    } else if (nm.status === 'match') {
+      h += '<div style="font-size:0.72rem;color:#8DC63F;margin:10px 0;">&#10003; Bill name matches ' + esc((nm.best.label || '').toLowerCase()) + ' on file (' + esc(nm.best.name) + ').</div>';
+    }
+
+    // ── #4: CARE/FERA/Medical Baseline — Tech needs to indicate in Aurora ──
+    if (ba.care || ba.fera || ba.medical_baseline) {
+      var progs = [ba.care ? 'CARE' : null, ba.fera ? 'FERA' : null, ba.medical_baseline ? 'Medical Baseline' : null].filter(Boolean).join(' / ');
+      var auroraArgs = JSON.stringify({ address: _axRec.address || '', firstName: _axRec.first_name || '', lastName: _axRec.last_name || '', email: _axRec.email || '', customerId: _axRec.id || '' }).replace(/"/g, '&quot;');
+      h += '<div style="background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.4);border-radius:14px;padding:14px;margin:14px 0;">';
+      h += '<div style="font-size:0.82rem;font-weight:800;color:#ffaa00;margin-bottom:5px;">&#9888; ' + esc(progs) + ' account</div>';
+      h += '<div style="font-size:0.76rem;color:#ddd;line-height:1.55;margin-bottom:10px;">Mark this in Aurora before building the proposal &mdash; it changes the numbers.</div>';
+      h += '<button onclick="window._propOpenAurora(' + auroraArgs + ')" style="width:100%;margin:0;padding:11px;background:rgba(255,170,0,0.15);border:1px solid rgba(255,170,0,0.5);color:#ffaa00;border-radius:100px;font-size:0.78rem;font-weight:700;cursor:pointer;">&#9728; Open Aurora</button>';
+      h += '</div>';
+    }
+
+    h += '<div style="background:rgba(74,158,255,0.06);border:1px solid rgba(74,158,255,0.28);border-radius:14px;padding:15px;margin:14px 0;">';
+    h += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">';
+    h += '<div style="font-size:0.82rem;font-weight:800;color:#8dbfff;">&#129302; Quoya&rsquo;s Bill Analysis</div>';
+    h += '<button onclick="axRunBillAnalysis()" style="width:auto;margin:0;background:none;border:none;color:#888;font-size:0.68rem;cursor:pointer;text-decoration:underline;">&#8635; Re-read bill</button>';
+    h += '</div>';
+    h += '<div style="font-size:0.68rem;color:#999;margin-bottom:12px;line-height:1.5;">'
+      + (ba.source === 'true_up' ? 'Read from a True-Up statement — most accurate annual figures.'
+        : ba.source === 'monthly_bill' ? 'Read from a single monthly bill — annual figures are estimated.'
+        : 'Could not tell what kind of statement this is.')
+      + (ba.confidence ? ' Confidence: ' + esc(ba.confidence) + '.' : '') + '</div>';
+    if (ba.notes) h += '<div style="font-size:0.7rem;color:#ffaa00;margin-bottom:12px;line-height:1.5;">&#128161; ' + esc(ba.notes) + '</div>';
+
+    // #1/#5: who the bill is for
+    h += _axTextField(ba, 'account_holder_name', 'Account Holder Name (on bill)');
+    // #2: month-by-month usage
+    h += _axMonthlyChartHtml(ba.monthly_usage || []);
+    // #3: annual usage total
+    h += _axNumField(ba, 'annual_kwh', 'Annual Usage Total', '', 'kWh/yr', 1);
+
+    // #6/#7: the two formulas, raw inputs first so an edit here recomputes both derived fields
+    h += '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#666;margin:14px 0 7px;">Average Rate = Generation + Delivery charges &divide; kWh, one billing period (excludes gas)</div>';
+    h += _axNumField(ba, 'period_generation_delivery_charges', 'Generation + Delivery Charges (period)', '$', '', 1);
+    h += _axNumField(ba, 'period_kwh', 'kWh Consumed (same period)', '', 'kWh', 1);
+    h += _axNumField(ba, 'avg_rate_per_kwh', 'Average Rate', '$', '/kWh', 0.001);
+    h += _axNumField(ba, 'avg_monthly_bill', 'Average Monthly Bill', '$', '', 0.01);
+
+    h += '<div style="margin:14px 0 2px;">';
+    h += '<label style="display:block;font-size:0.68rem;color:#888;margin-bottom:6px;">Discount Programs</label>';
+    h += '<div style="display:flex;gap:6px;flex-wrap:wrap;">'
+      + _axBoolPill(ba, 'care', 'CARE') + _axBoolPill(ba, 'fera', 'FERA') + _axBoolPill(ba, 'medical_baseline', 'Medical Baseline')
+      + '</div></div>';
+    h += '</div>';
+    return h;
+  }
+
+  function _axRender() {
+    var wrap = document.getElementById('axEvalWrap');
+    if (!wrap || !_axRec) return;
+    var name = ((_axRec.first_name || '') + ' ' + (_axRec.last_name || '')).trim() || _axRec.title_owner || _axRec.address || 'Lead';
+
+    var h = '<div style="max-width:620px;margin:0 auto;padding:14px 14px 80px;color:#F3EDE3;">';
+    h += '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:4px;">';
+    h += '<div style="font-size:0.7rem;font-weight:800;text-transform:uppercase;letter-spacing:0.09em;color:#4a9eff;">&#9728; Axia/QCells Site Evaluation</div>';
+    h += '<button onclick="closeAxiaEvalWizard()" style="width:auto;margin:0;background:none;border:none;color:#888;font-size:1.5rem;line-height:1;cursor:pointer;padding:0 4px;">&times;</button>';
+    h += '</div>';
+    h += '<div style="font-size:0.95rem;font-weight:700;margin-bottom:2px;">' + esc(name) + '</div>';
+    h += '<div style="font-size:0.72rem;color:#777;margin-bottom:16px;">' + esc(_axRec.address || '') + '</div>';
+
+    h += '<div style="font-size:1.05rem;font-weight:800;margin-bottom:4px;">&#128196; Utility Bill</div>';
+    h += '<div style="font-size:0.76rem;color:#999;line-height:1.5;margin-bottom:16px;">Upload the homeowner&rsquo;s utility bill and Quoya reads it automatically.</div>';
+
+    h += _axBillSlotHtml();
+    h += '<div id="axStatus" style="font-size:0.72rem;min-height:16px;margin:8px 0;color:#4a9eff;"></div>';
+    h += _axBillAnalysisHtml();
+
+    h += '<div style="display:flex;gap:8px;margin-top:20px;">';
+    h += '<button onclick="closeAxiaEvalWizard()" style="width:100%;margin:0;padding:13px 20px;background:#4a9eff;border:none;color:#0e1526;border-radius:100px;font-size:0.86rem;font-weight:800;cursor:pointer;">Done &#8594; Continue in Proposal Tools</button>';
+    h += '</div>';
+    h += '</div>';
+    wrap.innerHTML = h;
+  }
+
   // Production-based savings helper — calculates kWh contributions by component
   // Used by propShowScenario (builder preview) and sendProposal (stored proposal)
   function _propCalcBaseProduction(build, solarData, systemSize, annualUsageKwh) {
@@ -20219,11 +20630,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   }
 
   // Extracted from _proposalToolsRow (2026-09-06, per Dennis — Start Evaluation now
-  // leads the whole lead card, the very first thing on the page). FixMy only: it's
-  // built around diagnosing an existing system, which a New Solar lead doesn't have.
+  // leads the whole lead card, the very first thing on the page). The FixMy path is
+  // built around diagnosing an existing system, which a New Solar lead doesn't have —
+  // Axia/QCells leads route to the separate, trimmed-down Axia Site Evaluation instead
+  // (2026-09-24, per Dennis: "rework the Axia/QCells Site Evaluation process... mimic
+  // the FixMy.energy Evaluation but specify the details only related to onboarding
+  // with Axia/QCells" — no site photos, just the utility bill + Quoya's read of it).
   function _startEvalButtonHtml(c, isNS){
-    if (isNS) return '';
     var id = (c && c.id) || '';
+    if (isNS) {
+      return '<div style="margin-bottom:14px;">'+
+        '<button type="button" onclick="openAxiaEvalWizard(\''+id+'\')" title="Upload the utility bill — Quoya reads usage, rate, CARE status, and checks the name against the lead." style="width:100%;padding:14px;background:rgba(74,158,255,0.14);border:1px solid rgba(74,158,255,0.45);border-radius:100px;color:#4a9eff;font-size:0.86rem;font-weight:800;cursor:pointer;">&#9728; Start Site Evaluation</button>'+
+      '</div>';
+    }
     return '<div style="margin-bottom:14px;">'+
       '<button type="button" onclick="openEvalWizard(\''+id+'\')" title="Step-by-step evaluation: hardware, production, consumption. Quoya diagnoses it and pre-fills the proposal." style="width:100%;padding:14px;background:rgba(141,198,63,0.14);border:1px solid rgba(141,198,63,0.45);border-radius:100px;color:#8DC63F;font-size:0.86rem;font-weight:800;cursor:pointer;">&#9889; Start Evaluation</button>'+
     '</div>';
