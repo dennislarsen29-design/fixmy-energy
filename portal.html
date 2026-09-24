@@ -1253,8 +1253,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     try { var tmResp = await client.from('team_members').select('*').order('created_at',{ascending:true}); adminTeamMembers = tmResp.data || []; } catch(e) { adminTeamMembers = []; }
     try { var mktResp = await client.from('marketing_expenses').select('*').order('expense_date',{ascending:false}); adminMarketingExpenses = mktResp.data || []; } catch(e) { adminMarketingExpenses = []; }
     loadAdminBbStats(); // fire-and-forget — populates adminBlackBoxCustomers for BB tab stats
-    try { renderAdminView('dashboard'); }
-    catch(e) { _dbEl.innerHTML = '<p style="color:#ef4444;">Render error: '+e.message+'. <button onclick="loadAdminDashboard()" style="width:auto;padding:8px 16px;font-size:0.75rem;background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;cursor:pointer;">Retry</button></p>'; console.error('[renderAdminView]', e); }
+    // Command Center is now the landing screen on login (2026-09-24, per Dennis —
+    // "pulse on all systems from first log in"). Was renderAdminView('dashboard')
+    // (the Leads list, despite the internal 'dashboard' name) — that view is still one
+    // tap away via its own nav button, unchanged.
+    try { renderAdminHomeView(); }
+    catch(e) { _dbEl.innerHTML = '<p style="color:#ef4444;">Render error: '+e.message+'. <button onclick="loadAdminDashboard()" style="width:auto;padding:8px 16px;font-size:0.75rem;background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;cursor:pointer;">Retry</button></p>'; console.error('[renderAdminHomeView]', e); }
     showBlackBoxPopup();
     if (!window._hotLeadsPoll) {
       window._hotLeadsPoll = setInterval(function() {
@@ -1525,7 +1529,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var newOnboards = adminTeamMembers.filter(function(m){ return (m.role==='tech'||m.role==='rep') && m.created_at && new Date(m.created_at).getTime() > twoDaysAgo; });
     var onboardBadge = newOnboards.length ? ' <span style="display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;background:#fb923c;color:#fff;border-radius:50%;font-size:0.6rem;font-weight:900;margin-left:2px;">'+newOnboards.length+'</span>' : '';
     var portalNav = '<div class="portal-tab-nav">'+
-      '<button class="portal-tab active" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
+      '<button class="portal-tab" onclick="renderAdminHomeView()">&#127919; Command Center</button><button class="portal-tab active" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button>'+
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Administration'+teamBadge+onboardBadge+'</button>'+
@@ -1871,11 +1875,214 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return _deployedDocIds;
   }
 
+  // ── Admin Command Center — "pulse on all systems from first log in" (2026-09-24,
+  // per Dennis: "rebuild the Admin Dashboard too — Jarvis from Iron Man type of central
+  // hub... major experience improvement with real data and pulse on all systems"). Not
+  // a literal sci-fi UI — a real status/health overview across the systems this app
+  // already tracks, built ONLY from already-computed or trivially-summed real data,
+  // same "never invent a plausible-looking number" rule as everywhere else in this file.
+  // adminCustomers/adminTeamMembers/adminRecentAgreements are already in memory from
+  // loadAdminDashboard's own select('*') — the top section renders instantly off those,
+  // zero extra latency. A handful of small, independent queries (commissions/payments/
+  // rep_shifts/agent_reports/pipeline_state) are batched and patched into placeholder
+  // divs once they land, so one slow query can never block the rest of the page — same
+  // DOM-local "mount after paint" pattern _bbRepScoreboardHtml/bbMountRepScore use.
+  function _cmdCard(title, inner) {
+    return '<div style="background:rgba(255,255,255,0.035);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:16px;margin-bottom:14px;">'
+      + '<div style="font-size:0.68rem;font-weight:800;text-transform:uppercase;letter-spacing:0.07em;color:#888;margin-bottom:12px;">' + title + '</div>'
+      + inner + '</div>';
+  }
+  function _cmdTile(value, label, color, onclick) {
+    return '<button' + (onclick ? ' onclick="' + onclick + '"' : ' disabled') + ' style="text-align:left;width:100%;margin:0;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:12px;cursor:' + (onclick ? 'pointer' : 'default') + ';">'
+      + '<div style="font-size:1.4rem;font-weight:800;color:' + color + ';line-height:1.1;">' + value + '</div>'
+      + '<div style="font-size:0.66rem;color:#888;margin-top:3px;">' + label + '</div>'
+      + '</button>';
+  }
+  function _cmdHealthRow(dot, label, detail, onclick) {
+    var colors = { ok: '#8DC63F', warn: '#f59e0b', bad: '#ef4444', unknown: '#666' };
+    var col = colors[dot] || colors.unknown;
+    return '<div onclick="' + (onclick || '') + '" style="display:flex;align-items:flex-start;gap:10px;padding:9px 0;border-top:1px solid rgba(255,255,255,0.06);' + (onclick ? 'cursor:pointer;' : '') + '">'
+      + '<span style="width:9px;height:9px;border-radius:50%;background:' + col + ';flex-shrink:0;margin-top:5px;box-shadow:0 0 8px ' + col + '99;"></span>'
+      + '<div style="flex:1;min-width:0;"><div style="font-size:0.82rem;font-weight:700;color:#eee;">' + label + '</div>'
+      + (detail ? '<div style="font-size:0.72rem;color:#888;margin-top:1px;line-height:1.4;">' + detail + '</div>' : '')
+      + '</div></div>';
+  }
+
+  async function renderAdminHomeView() {
+    if (_adminOnlyGuard()) return;
+    adminView = 'home';
+
+    var portalNav = '<div class="portal-tab-nav"><button class="portal-tab active" onclick="renderAdminHomeView()">&#127919; Command Center</button><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button><button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button><button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button><button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderTeamView(\'payroll\')">&#128181; Payroll</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button><a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a></div>';
+
+    var hr = new Date().getHours();
+    var greet = hr < 12 ? 'Good morning' : hr < 17 ? 'Good afternoon' : 'Good evening';
+
+    // ── Pipeline pulse — instant, off the already-loaded adminCustomers ──
+    var allLeads = adminCustomers.filter(function(x){ return !x.sold_type && !x.black_box; });
+    var fixmyLeads = allLeads.filter(function(x){ return x.lead_category !== 'new_solar'; });
+    var nsLeads = allLeads.filter(function(x){ return x.lead_category === 'new_solar'; });
+    var fixmyJobs = adminCustomers.filter(function(x){ return x.sold_type && x.lead_category !== 'new_solar'; });
+    var nsJobs = adminCustomers.filter(function(x){ return x.sold_type && x.lead_category === 'new_solar'; });
+    var todayStr = new Date().toDateString();
+    var weekAgo = Date.now() - 7 * 86400000;
+    var newToday = adminCustomers.filter(function(x){ return x.created_at && new Date(x.created_at).toDateString() === todayStr; }).length;
+    var soldThisWeek = adminCustomers.filter(function(x){ return x.sold_at && new Date(x.sold_at).getTime() > weekAgo; }).length;
+
+    var pipelineHtml = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;">'
+      + _cmdTile(fixmyLeads.length, 'FixMy Leads', '#8DC63F', "adminLeadCat='fixmy';renderAdminView('dashboard')")
+      + _cmdTile(nsLeads.length, 'Axia Leads', '#4a9eff', "adminLeadCat='new_solar';renderAdminView('dashboard')")
+      + _cmdTile(fixmyJobs.length, 'FixMy Jobs', '#8DC63F', "adminJobCat='fixmy';renderJobsView()")
+      + _cmdTile(nsJobs.length, 'Axia Jobs', '#4a9eff', "adminJobCat='new_solar';renderJobsView()")
+      + _cmdTile(newToday, 'New Today', '#c4a3f0', null)
+      + _cmdTile(soldThisWeek, 'Sold This Week', '#8DC63F', null)
+      + '</div>';
+
+    // ── Needs Your Attention — HIS licenses expiring/expired (already loaded), new
+    // agreement signatures in the last 24h (same real-agreement-row-only, deduped-by-rep
+    // filter renderAdminView's own banner uses, so the two counts can never disagree) ──
+    var HIS_WARN_DAYS = 60;
+    var hisSoon = adminTeamMembers.filter(function(m){
+      if (!m.his_expiration_date) return false;
+      var days = (new Date(m.his_expiration_date).getTime() - Date.now()) / 86400000;
+      return days < HIS_WARN_DAYS;
+    });
+    var dayAgo = Date.now() - 24 * 60 * 60 * 1000;
+    var newSigs = adminRecentAgreements.filter(_isRepAgreementRow).filter(function(a){ return a.signed_at && new Date(a.signed_at).getTime() > dayAgo; });
+    (function(){ var seen = {}; newSigs = newSigs.filter(function(a){ var k = a.rep_id || a.rep_name; if (seen[k]) return false; seen[k] = true; return true; }); })();
+
+    var actionItemsHtml = '';
+    if (hisSoon.length) {
+      actionItemsHtml += _cmdHealthRow('warn', hisSoon.length + ' HIS license' + (hisSoon.length > 1 ? 's' : '') + ' expired or expiring within 60 days',
+        hisSoon.map(function(m){ return esc(m.name); }).join(', '), "renderTeamView()");
+    }
+    if (newSigs.length) {
+      actionItemsHtml += _cmdHealthRow('ok', newSigs.length + ' new agreement' + (newSigs.length > 1 ? 's' : '') + ' signed today',
+        newSigs.map(function(a){ return esc(a.rep_name || a.rep_id); }).join(', '), "renderTeamView()");
+    }
+    if (!actionItemsHtml) actionItemsHtml = '<div style="font-size:0.78rem;color:#666;padding:8px 0;">Nothing needs you right now.</div>';
+
+    document.getElementById('dashBody').innerHTML = portalNav
+      + '<div style="padding:0 4px;">'
+      + '<div style="margin-bottom:16px;"><div style="font-size:1.25rem;font-weight:800;">&#127919; ' + greet + ' &mdash; here&rsquo;s the pulse</div>'
+      + '<div style="font-size:0.76rem;color:#888;margin-top:2px;">Solar Review &middot; updated just now</div></div>'
+      + _cmdCard('Pipeline', pipelineHtml)
+      + _cmdCard('Needs Your Attention', actionItemsHtml)
+      + '<div id="cmdMoneyCard">' + _cmdCard('Money', '<div style="font-size:0.78rem;color:#666;padding:8px 0;">Loading&hellip;</div>') + '</div>'
+      + '<div id="cmdTeamCard">' + _cmdCard('Team &mdash; Right Now', '<div style="font-size:0.78rem;color:#666;padding:8px 0;">Loading&hellip;</div>') + '</div>'
+      + '<div id="cmdSystemsCard">' + _cmdCard('System Health', '<div style="font-size:0.78rem;color:#666;padding:8px 0;">Loading&hellip;</div>') + '</div>'
+      + '<div id="cmdAgentsCard">' + _cmdCard('Agent Reports', '<div style="font-size:0.78rem;color:#666;padding:8px 0;">Loading&hellip;</div>') + '</div>'
+      + '</div>';
+
+    _cmdLoadAsync();
+  }
+  window.renderAdminHomeView = renderAdminHomeView;
+
+  // Batched, independent, small queries for the System/Money/Team/Agent cards — fired
+  // right after the instant top section paints. Each result patches its OWN placeholder
+  // div, so a slow or failed query only ever blanks its own card, never the whole page.
+  async function _cmdLoadAsync() {
+    var c;
+    try { c = supabase.createClient(SUPA_URL, SUPA_KEY); } catch (e) { return; }
+    var monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
+    var monthStartIso = monthStart.toISOString();
+
+    var results = await Promise.all([
+      c.from('commissions').select('amount').eq('status', 'sold').then(function(r){ return r; }).catch(function(){ return { error: true }; }),
+      c.from('payments').select('amount').eq('category', 'revenue').gte('created_at', monthStartIso).then(function(r){ return r; }).catch(function(){ return { error: true }; }),
+      c.from('rep_shifts').select('rep_name,started_at').is('ended_at', null).then(function(r){ return r; }).catch(function(){ return { error: true }; }),
+      c.from('agent_reports').select('priority,title,agent').eq('reviewed', false).order('created_at', { ascending: false }).limit(20).then(function(r){ return r; }).catch(function(){ return { error: true }; }),
+      c.from('pipeline_state').select('key,value').in('key', ['last_run_at', 'last_run_phase']).then(function(r){ return r; }).catch(function(){ return { error: true }; }),
+      c.from('pipeline_state').select('value').eq('key', 'seo_sync_status').limit(1).then(function(r){ return r; }).catch(function(){ return { error: true }; })
+    ]);
+    var commRes = results[0], payRes = results[1], shiftRes = results[2], agentRes = results[3], pipeRes = results[4], seoRes = results[5];
+
+    // ── Money ──
+    var moneyEl = document.getElementById('cmdMoneyCard');
+    if (moneyEl) {
+      var pendingComm = (!commRes.error && commRes.data) ? commRes.data.reduce(function(s, r){ return s + (parseFloat(r.amount) || 0); }, 0) : null;
+      var revenueMonth = (!payRes.error && payRes.data) ? payRes.data.reduce(function(s, r){ return s + (parseFloat(r.amount) || 0); }, 0) : null;
+      var moneyHtml = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;">'
+        + _cmdTile(revenueMonth != null ? finMoney(revenueMonth, 0) : '—', 'Revenue This Month', '#8DC63F', "renderFinanceView()")
+        + _cmdTile(pendingComm != null ? finMoney(pendingComm, 0) : '—', 'Commissions Pending Payout', '#ffaa00', "renderTeamView('payroll')")
+        + '</div>';
+      moneyEl.innerHTML = _cmdCard('Money', moneyHtml);
+    }
+
+    // ── Team right now ──
+    var teamEl = document.getElementById('cmdTeamCard');
+    if (teamEl) {
+      var onShift = (!shiftRes.error && shiftRes.data) ? shiftRes.data : [];
+      var names = {};
+      onShift.forEach(function(r){ var k = _repCanonical(r.rep_name); if (!names[k]) names[k] = r.rep_name; });
+      var uniqueNames = Object.keys(names).map(function(k){ return names[k]; });
+      var teamHtml;
+      if (!uniqueNames.length) {
+        teamHtml = '<div style="font-size:0.78rem;color:#666;padding:8px 0;">No one clocked in right now.</div>';
+      } else {
+        teamHtml = '<div style="display:flex;flex-wrap:wrap;gap:6px;">' + uniqueNames.map(function(n){
+          return '<span style="display:inline-flex;align-items:center;gap:5px;padding:5px 12px;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.3);border-radius:100px;font-size:0.76rem;color:#8DC63F;font-weight:700;"><span style="width:7px;height:7px;border-radius:50%;background:#8DC63F;"></span>' + esc(n) + '</span>';
+        }).join('') + '</div>';
+      }
+      teamEl.innerHTML = _cmdCard('Team &mdash; On Shift Now (' + uniqueNames.length + ')', teamHtml);
+    }
+
+    // ── System health ──
+    var sysEl = document.getElementById('cmdSystemsCard');
+    if (sysEl) {
+      function pgVal(rows, key) {
+        var row = (rows || []).find(function(r){ return r.key === key; });
+        if (!row) return null;
+        try { return typeof row.value === 'string' ? JSON.parse(row.value) : row.value; } catch (e) { return null; }
+      }
+      var bbRows = (!pipeRes.error && pipeRes.data) ? pipeRes.data : [];
+      var bbPhase = pgVal(bbRows, 'last_run_phase');
+      var bbAt = pgVal(bbRows, 'last_run_at');
+      var sysHtml = '';
+      if (bbAt) {
+        var hoursSince = (Date.now() - new Date(bbAt).getTime()) / 3600000;
+        var bbStatus = bbPhase === 'complete' ? (hoursSince < 30 ? 'ok' : 'warn') : 'warn';
+        var bbDetail = 'Last run ' + (hoursSince < 1 ? 'under an hour ago' : Math.round(hoursSince) + 'h ago') + (bbPhase !== 'complete' ? ' — stopped after ' + esc(String(bbPhase)) : '');
+        sysHtml += _cmdHealthRow(bbStatus, 'Black Box Pipeline', bbDetail, "renderAdminCanvassView()");
+      } else {
+        sysHtml += _cmdHealthRow('unknown', 'Black Box Pipeline', 'No run recorded yet', null);
+      }
+      var seoRaw = (!seoRes.error && seoRes.data && seoRes.data[0]) ? seoRes.data[0].value : null;
+      var seoStatus = null;
+      try { seoStatus = seoRaw ? (typeof seoRaw === 'string' ? JSON.parse(seoRaw) : seoRaw) : null; } catch (e) {}
+      if (seoStatus) {
+        var seoOk = seoStatus.status === 'ok';
+        sysHtml += _cmdHealthRow(seoOk ? 'ok' : 'bad', 'SEO Sync', seoOk ? (seoStatus.queries || 0) + ' queries tracked, GA4 ' + (seoStatus.ga4 ? 'connected' : 'not connected') : (seoStatus.hint || seoStatus.status), "renderAgentsView()");
+      } else {
+        sysHtml += _cmdHealthRow('unknown', 'SEO Sync', 'Not configured yet', null);
+      }
+      sysEl.innerHTML = _cmdCard('System Health', sysHtml);
+    }
+
+    // ── Agent reports ──
+    var agEl = document.getElementById('cmdAgentsCard');
+    if (agEl) {
+      var reports = (!agentRes.error && agentRes.data) ? agentRes.data : [];
+      var urgent = reports.filter(function(r){ return r.priority === 'urgent'; });
+      var agHtml;
+      if (!reports.length) {
+        agHtml = '<div style="font-size:0.78rem;color:#666;padding:8px 0;">All caught up &mdash; nothing unread.</div>';
+      } else {
+        agHtml = (urgent.length ? '<div style="font-size:0.8rem;color:#f87171;font-weight:700;margin-bottom:8px;">&#9888; ' + urgent.length + ' urgent</div>' : '')
+          + reports.slice(0, 5).map(function(r){
+              var col = r.priority === 'urgent' ? 'bad' : r.priority === 'high' ? 'warn' : 'unknown';
+              return _cmdHealthRow(col, esc(r.title || r.agent), esc(r.agent), "renderAgentsView()");
+            }).join('')
+          + (reports.length > 5 ? '<div style="font-size:0.72rem;color:#666;margin-top:6px;">+' + (reports.length - 5) + ' more</div>' : '');
+      }
+      agEl.innerHTML = _cmdCard('Agent Reports Unread (' + reports.length + ')', agHtml);
+    }
+  }
+
   // ── JOBS TAB ───────────────────────────────────────────────────────────────
   function renderJobsView() {
     if (_adminOnlyGuard()) return;
     adminView = 'jobs';
-    var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab active" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button><button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button><button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button><button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderTeamView(\'payroll\')">&#128181; Payroll</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button><a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a></div>';
+    var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminHomeView()">&#127919; Command Center</button><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab active" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button><button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button><button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button><button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderTeamView(\'payroll\')">&#128181; Payroll</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button><a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a></div>';
     if (!_jobsRevenueIds) { _ensureJobsRevenueIds().then(function(){ if (adminView==='jobs') renderJobsView(); }); }
     var allJobs = adminCustomers.filter(_isRealJob);
     var fixmyJobs = allJobs.filter(function(c){ return c.lead_category !== 'new_solar'; });
@@ -4018,7 +4225,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (subTab === 'social') subTab = 'team';   // Socials moved to the Personal tab
     sessionStorage.setItem('teamSubView', subTab);
     adminView = 'team';
-    var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button><button class="portal-tab active" onclick="renderTeamView()">&#128101; Administration</button><button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button><button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderTeamView(\'payroll\')">&#128181; Payroll</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button><a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a></div>';
+    var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminHomeView()">&#127919; Command Center</button><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button><button class="portal-tab active" onclick="renderTeamView()">&#128101; Administration</button><button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button><button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderTeamView(\'payroll\')">&#128181; Payroll</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button><a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a></div>';
     document.getElementById('dashBody').innerHTML = portalNav + '<p style="color:#aaa;padding:20px 0;">Loading team data...</p>';
     // Closing roles drive where every booking lands — load before rendering the roster.
     try { await window.bbLoadClosers(true); } catch(e) {}
@@ -5171,7 +5378,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (_adminOnlyGuard()) return;
     adminView = 'schedule';
     var portalNav = '<div class="portal-tab-nav">'+
-      '<button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
+      '<button class="portal-tab" onclick="renderAdminHomeView()">&#127919; Command Center</button><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button>'+
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button>'+
@@ -5307,7 +5514,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   function renderMarketingView() {
     adminView = 'marketing';
     var portalNav = '<div class="portal-tab-nav">'+
-      '<button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
+      '<button class="portal-tab" onclick="renderAdminHomeView()">&#127919; Command Center</button><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button>'+
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button>'+
@@ -5594,7 +5801,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   function renderImportView() {
     adminView = 'import';
     var portalNav = '<div class="portal-tab-nav">'+
-      '<button class="portal-tab active" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
+      '<button class="portal-tab" onclick="renderAdminHomeView()">&#127919; Command Center</button><button class="portal-tab active" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button>'+
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button>'+
@@ -6265,7 +6472,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (!window._agentChatDisplay) window._agentChatDisplay = [];
 
     var portalNav = '<div class="portal-tab-nav">'+
-      '<button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
+      '<button class="portal-tab" onclick="renderAdminHomeView()">&#127919; Command Center</button><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button>'+
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button>'+
@@ -7658,7 +7865,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (_adminOnlyGuard()) return;
     adminView = 'canvass';
     var portalNav = '<div class="portal-tab-nav">'+
-      '<button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
+      '<button class="portal-tab" onclick="renderAdminHomeView()">&#127919; Command Center</button><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab active" onclick="renderAdminCanvassView()">&#128230; Black Box</button>'+
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button>'+
@@ -14157,7 +14364,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     adminView = 'dialer';
     var isAdminDialer = CURRENT_ROLE === 'admin';
     var portalNav = isAdminDialer ? '<div class="portal-tab-nav">'+
-      '<button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
+      '<button class="portal-tab" onclick="renderAdminHomeView()">&#127919; Command Center</button><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab active" onclick="renderAdminCanvassView()">&#128230; Black Box</button>'+
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button>'+
@@ -17680,7 +17887,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (_adminOnlyGuard()) return;
     adminView = 'finance';
     var portalNav = '<div class="portal-tab-nav">'+
-      '<button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
+      '<button class="portal-tab" onclick="renderAdminHomeView()">&#127919; Command Center</button><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button>'+
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button>'+
@@ -19341,7 +19548,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
   function privacyNav() {
     return '<div class="portal-tab-nav">'+
-      '<button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
+      '<button class="portal-tab" onclick="renderAdminHomeView()">&#127919; Command Center</button><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button>'+
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button>'+
@@ -20330,7 +20537,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   async function renderHiringView() {
     return renderTeamView('hiring');
     var portalNav = '<div class="portal-tab-nav">'+
-      '<button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
+      '<button class="portal-tab" onclick="renderAdminHomeView()">&#127919; Command Center</button><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button>'+
       '<button class="portal-tab active" onclick="renderTeamView()">&#128101; Administration</button>'+
