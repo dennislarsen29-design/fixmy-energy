@@ -1269,8 +1269,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     try { var tmResp = await client.from('team_members').select('*').order('created_at',{ascending:true}); adminTeamMembers = tmResp.data || []; } catch(e) { adminTeamMembers = []; }
     try { var mktResp = await client.from('marketing_expenses').select('*').order('expense_date',{ascending:false}); adminMarketingExpenses = mktResp.data || []; } catch(e) { adminMarketingExpenses = []; }
     loadAdminBbStats(); // fire-and-forget — populates adminBlackBoxCustomers for BB tab stats
-    try { renderAdminView('dashboard'); }
-    catch(e) { _dbEl.innerHTML = '<p style="color:#ef4444;">Render error: '+e.message+'. <button onclick="loadAdminDashboard()" style="width:auto;padding:8px 16px;font-size:0.75rem;background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;cursor:pointer;">Retry</button></p>'; console.error('[renderAdminView]', e); }
+    // Command Center is now the landing screen on login (2026-09-24, per Dennis —
+    // "pulse on all systems from first log in"). Was renderAdminView('dashboard')
+    // (the Leads list, despite the internal 'dashboard' name) — that view is still one
+    // tap away via its own nav button, unchanged.
+    try { renderAdminHomeView(); }
+    catch(e) { _dbEl.innerHTML = '<p style="color:#ef4444;">Render error: '+e.message+'. <button onclick="loadAdminDashboard()" style="width:auto;padding:8px 16px;font-size:0.75rem;background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;cursor:pointer;">Retry</button></p>'; console.error('[renderAdminHomeView]', e); }
     showBlackBoxPopup();
     if (!window._hotLeadsPoll) {
       window._hotLeadsPoll = setInterval(function() {
@@ -1541,7 +1545,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var newOnboards = adminTeamMembers.filter(function(m){ return (m.role==='tech'||m.role==='rep') && m.created_at && new Date(m.created_at).getTime() > twoDaysAgo; });
     var onboardBadge = newOnboards.length ? ' <span style="display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;background:#fb923c;color:#fff;border-radius:50%;font-size:0.6rem;font-weight:900;margin-left:2px;">'+newOnboards.length+'</span>' : '';
     var portalNav = '<div class="portal-tab-nav">'+
-      '<button class="portal-tab active" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
+      '<button class="portal-tab" onclick="renderAdminHomeView()">&#127919; Command Center</button><button class="portal-tab active" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button>'+
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Administration'+teamBadge+onboardBadge+'</button>'+
@@ -1887,11 +1891,214 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return _deployedDocIds;
   }
 
+  // ── Admin Command Center — "pulse on all systems from first log in" (2026-09-24,
+  // per Dennis: "rebuild the Admin Dashboard too — Jarvis from Iron Man type of central
+  // hub... major experience improvement with real data and pulse on all systems"). Not
+  // a literal sci-fi UI — a real status/health overview across the systems this app
+  // already tracks, built ONLY from already-computed or trivially-summed real data,
+  // same "never invent a plausible-looking number" rule as everywhere else in this file.
+  // adminCustomers/adminTeamMembers/adminRecentAgreements are already in memory from
+  // loadAdminDashboard's own select('*') — the top section renders instantly off those,
+  // zero extra latency. A handful of small, independent queries (commissions/payments/
+  // rep_shifts/agent_reports/pipeline_state) are batched and patched into placeholder
+  // divs once they land, so one slow query can never block the rest of the page — same
+  // DOM-local "mount after paint" pattern _bbRepScoreboardHtml/bbMountRepScore use.
+  function _cmdCard(title, inner) {
+    return '<div style="background:rgba(255,255,255,0.035);border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:16px;margin-bottom:14px;">'
+      + '<div style="font-size:0.68rem;font-weight:800;text-transform:uppercase;letter-spacing:0.07em;color:#888;margin-bottom:12px;">' + title + '</div>'
+      + inner + '</div>';
+  }
+  function _cmdTile(value, label, color, onclick) {
+    return '<button' + (onclick ? ' onclick="' + onclick + '"' : ' disabled') + ' style="text-align:left;width:100%;margin:0;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:12px;cursor:' + (onclick ? 'pointer' : 'default') + ';">'
+      + '<div style="font-size:1.4rem;font-weight:800;color:' + color + ';line-height:1.1;">' + value + '</div>'
+      + '<div style="font-size:0.66rem;color:#888;margin-top:3px;">' + label + '</div>'
+      + '</button>';
+  }
+  function _cmdHealthRow(dot, label, detail, onclick) {
+    var colors = { ok: '#8DC63F', warn: '#f59e0b', bad: '#ef4444', unknown: '#666' };
+    var col = colors[dot] || colors.unknown;
+    return '<div onclick="' + (onclick || '') + '" style="display:flex;align-items:flex-start;gap:10px;padding:9px 0;border-top:1px solid rgba(255,255,255,0.06);' + (onclick ? 'cursor:pointer;' : '') + '">'
+      + '<span style="width:9px;height:9px;border-radius:50%;background:' + col + ';flex-shrink:0;margin-top:5px;box-shadow:0 0 8px ' + col + '99;"></span>'
+      + '<div style="flex:1;min-width:0;"><div style="font-size:0.82rem;font-weight:700;color:#eee;">' + label + '</div>'
+      + (detail ? '<div style="font-size:0.72rem;color:#888;margin-top:1px;line-height:1.4;">' + detail + '</div>' : '')
+      + '</div></div>';
+  }
+
+  async function renderAdminHomeView() {
+    if (_adminOnlyGuard()) return;
+    adminView = 'home';
+
+    var portalNav = '<div class="portal-tab-nav"><button class="portal-tab active" onclick="renderAdminHomeView()">&#127919; Command Center</button><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button><button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button><button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button><button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderTeamView(\'payroll\')">&#128181; Payroll</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button><a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a></div>';
+
+    var hr = new Date().getHours();
+    var greet = hr < 12 ? 'Good morning' : hr < 17 ? 'Good afternoon' : 'Good evening';
+
+    // ── Pipeline pulse — instant, off the already-loaded adminCustomers ──
+    var allLeads = adminCustomers.filter(function(x){ return !x.sold_type && !x.black_box; });
+    var fixmyLeads = allLeads.filter(function(x){ return x.lead_category !== 'new_solar'; });
+    var nsLeads = allLeads.filter(function(x){ return x.lead_category === 'new_solar'; });
+    var fixmyJobs = adminCustomers.filter(function(x){ return x.sold_type && x.lead_category !== 'new_solar'; });
+    var nsJobs = adminCustomers.filter(function(x){ return x.sold_type && x.lead_category === 'new_solar'; });
+    var todayStr = new Date().toDateString();
+    var weekAgo = Date.now() - 7 * 86400000;
+    var newToday = adminCustomers.filter(function(x){ return x.created_at && new Date(x.created_at).toDateString() === todayStr; }).length;
+    var soldThisWeek = adminCustomers.filter(function(x){ return x.sold_at && new Date(x.sold_at).getTime() > weekAgo; }).length;
+
+    var pipelineHtml = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;">'
+      + _cmdTile(fixmyLeads.length, 'FixMy Leads', '#8DC63F', "adminLeadCat='fixmy';renderAdminView('dashboard')")
+      + _cmdTile(nsLeads.length, 'Axia Leads', '#4a9eff', "adminLeadCat='new_solar';renderAdminView('dashboard')")
+      + _cmdTile(fixmyJobs.length, 'FixMy Jobs', '#8DC63F', "adminJobCat='fixmy';renderJobsView()")
+      + _cmdTile(nsJobs.length, 'Axia Jobs', '#4a9eff', "adminJobCat='new_solar';renderJobsView()")
+      + _cmdTile(newToday, 'New Today', '#c4a3f0', null)
+      + _cmdTile(soldThisWeek, 'Sold This Week', '#8DC63F', null)
+      + '</div>';
+
+    // ── Needs Your Attention — HIS licenses expiring/expired (already loaded), new
+    // agreement signatures in the last 24h (same real-agreement-row-only, deduped-by-rep
+    // filter renderAdminView's own banner uses, so the two counts can never disagree) ──
+    var HIS_WARN_DAYS = 60;
+    var hisSoon = adminTeamMembers.filter(function(m){
+      if (!m.his_expiration_date) return false;
+      var days = (new Date(m.his_expiration_date).getTime() - Date.now()) / 86400000;
+      return days < HIS_WARN_DAYS;
+    });
+    var dayAgo = Date.now() - 24 * 60 * 60 * 1000;
+    var newSigs = adminRecentAgreements.filter(_isRepAgreementRow).filter(function(a){ return a.signed_at && new Date(a.signed_at).getTime() > dayAgo; });
+    (function(){ var seen = {}; newSigs = newSigs.filter(function(a){ var k = a.rep_id || a.rep_name; if (seen[k]) return false; seen[k] = true; return true; }); })();
+
+    var actionItemsHtml = '';
+    if (hisSoon.length) {
+      actionItemsHtml += _cmdHealthRow('warn', hisSoon.length + ' HIS license' + (hisSoon.length > 1 ? 's' : '') + ' expired or expiring within 60 days',
+        hisSoon.map(function(m){ return esc(m.name); }).join(', '), "renderTeamView()");
+    }
+    if (newSigs.length) {
+      actionItemsHtml += _cmdHealthRow('ok', newSigs.length + ' new agreement' + (newSigs.length > 1 ? 's' : '') + ' signed today',
+        newSigs.map(function(a){ return esc(a.rep_name || a.rep_id); }).join(', '), "renderTeamView()");
+    }
+    if (!actionItemsHtml) actionItemsHtml = '<div style="font-size:0.78rem;color:#666;padding:8px 0;">Nothing needs you right now.</div>';
+
+    document.getElementById('dashBody').innerHTML = portalNav
+      + '<div style="padding:0 4px;">'
+      + '<div style="margin-bottom:16px;"><div style="font-size:1.25rem;font-weight:800;">&#127919; ' + greet + ' &mdash; here&rsquo;s the pulse</div>'
+      + '<div style="font-size:0.76rem;color:#888;margin-top:2px;">Solar Review &middot; updated just now</div></div>'
+      + _cmdCard('Pipeline', pipelineHtml)
+      + _cmdCard('Needs Your Attention', actionItemsHtml)
+      + '<div id="cmdMoneyCard">' + _cmdCard('Money', '<div style="font-size:0.78rem;color:#666;padding:8px 0;">Loading&hellip;</div>') + '</div>'
+      + '<div id="cmdTeamCard">' + _cmdCard('Team &mdash; Right Now', '<div style="font-size:0.78rem;color:#666;padding:8px 0;">Loading&hellip;</div>') + '</div>'
+      + '<div id="cmdSystemsCard">' + _cmdCard('System Health', '<div style="font-size:0.78rem;color:#666;padding:8px 0;">Loading&hellip;</div>') + '</div>'
+      + '<div id="cmdAgentsCard">' + _cmdCard('Agent Reports', '<div style="font-size:0.78rem;color:#666;padding:8px 0;">Loading&hellip;</div>') + '</div>'
+      + '</div>';
+
+    _cmdLoadAsync();
+  }
+  window.renderAdminHomeView = renderAdminHomeView;
+
+  // Batched, independent, small queries for the System/Money/Team/Agent cards — fired
+  // right after the instant top section paints. Each result patches its OWN placeholder
+  // div, so a slow or failed query only ever blanks its own card, never the whole page.
+  async function _cmdLoadAsync() {
+    var c;
+    try { c = supabase.createClient(SUPA_URL, SUPA_KEY); } catch (e) { return; }
+    var monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
+    var monthStartIso = monthStart.toISOString();
+
+    var results = await Promise.all([
+      c.from('commissions').select('amount').eq('status', 'sold').then(function(r){ return r; }).catch(function(){ return { error: true }; }),
+      c.from('payments').select('amount').eq('category', 'revenue').gte('created_at', monthStartIso).then(function(r){ return r; }).catch(function(){ return { error: true }; }),
+      c.from('rep_shifts').select('rep_name,started_at').is('ended_at', null).then(function(r){ return r; }).catch(function(){ return { error: true }; }),
+      c.from('agent_reports').select('priority,title,agent').eq('reviewed', false).order('created_at', { ascending: false }).limit(20).then(function(r){ return r; }).catch(function(){ return { error: true }; }),
+      c.from('pipeline_state').select('key,value').in('key', ['last_run_at', 'last_run_phase']).then(function(r){ return r; }).catch(function(){ return { error: true }; }),
+      c.from('pipeline_state').select('value').eq('key', 'seo_sync_status').limit(1).then(function(r){ return r; }).catch(function(){ return { error: true }; })
+    ]);
+    var commRes = results[0], payRes = results[1], shiftRes = results[2], agentRes = results[3], pipeRes = results[4], seoRes = results[5];
+
+    // ── Money ──
+    var moneyEl = document.getElementById('cmdMoneyCard');
+    if (moneyEl) {
+      var pendingComm = (!commRes.error && commRes.data) ? commRes.data.reduce(function(s, r){ return s + (parseFloat(r.amount) || 0); }, 0) : null;
+      var revenueMonth = (!payRes.error && payRes.data) ? payRes.data.reduce(function(s, r){ return s + (parseFloat(r.amount) || 0); }, 0) : null;
+      var moneyHtml = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;">'
+        + _cmdTile(revenueMonth != null ? finMoney(revenueMonth, 0) : '—', 'Revenue This Month', '#8DC63F', "renderFinanceView()")
+        + _cmdTile(pendingComm != null ? finMoney(pendingComm, 0) : '—', 'Commissions Pending Payout', '#ffaa00', "renderTeamView('payroll')")
+        + '</div>';
+      moneyEl.innerHTML = _cmdCard('Money', moneyHtml);
+    }
+
+    // ── Team right now ──
+    var teamEl = document.getElementById('cmdTeamCard');
+    if (teamEl) {
+      var onShift = (!shiftRes.error && shiftRes.data) ? shiftRes.data : [];
+      var names = {};
+      onShift.forEach(function(r){ var k = _repCanonical(r.rep_name); if (!names[k]) names[k] = r.rep_name; });
+      var uniqueNames = Object.keys(names).map(function(k){ return names[k]; });
+      var teamHtml;
+      if (!uniqueNames.length) {
+        teamHtml = '<div style="font-size:0.78rem;color:#666;padding:8px 0;">No one clocked in right now.</div>';
+      } else {
+        teamHtml = '<div style="display:flex;flex-wrap:wrap;gap:6px;">' + uniqueNames.map(function(n){
+          return '<span style="display:inline-flex;align-items:center;gap:5px;padding:5px 12px;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.3);border-radius:100px;font-size:0.76rem;color:#8DC63F;font-weight:700;"><span style="width:7px;height:7px;border-radius:50%;background:#8DC63F;"></span>' + esc(n) + '</span>';
+        }).join('') + '</div>';
+      }
+      teamEl.innerHTML = _cmdCard('Team &mdash; On Shift Now (' + uniqueNames.length + ')', teamHtml);
+    }
+
+    // ── System health ──
+    var sysEl = document.getElementById('cmdSystemsCard');
+    if (sysEl) {
+      function pgVal(rows, key) {
+        var row = (rows || []).find(function(r){ return r.key === key; });
+        if (!row) return null;
+        try { return typeof row.value === 'string' ? JSON.parse(row.value) : row.value; } catch (e) { return null; }
+      }
+      var bbRows = (!pipeRes.error && pipeRes.data) ? pipeRes.data : [];
+      var bbPhase = pgVal(bbRows, 'last_run_phase');
+      var bbAt = pgVal(bbRows, 'last_run_at');
+      var sysHtml = '';
+      if (bbAt) {
+        var hoursSince = (Date.now() - new Date(bbAt).getTime()) / 3600000;
+        var bbStatus = bbPhase === 'complete' ? (hoursSince < 30 ? 'ok' : 'warn') : 'warn';
+        var bbDetail = 'Last run ' + (hoursSince < 1 ? 'under an hour ago' : Math.round(hoursSince) + 'h ago') + (bbPhase !== 'complete' ? ' — stopped after ' + esc(String(bbPhase)) : '');
+        sysHtml += _cmdHealthRow(bbStatus, 'Black Box Pipeline', bbDetail, "renderAdminCanvassView()");
+      } else {
+        sysHtml += _cmdHealthRow('unknown', 'Black Box Pipeline', 'No run recorded yet', null);
+      }
+      var seoRaw = (!seoRes.error && seoRes.data && seoRes.data[0]) ? seoRes.data[0].value : null;
+      var seoStatus = null;
+      try { seoStatus = seoRaw ? (typeof seoRaw === 'string' ? JSON.parse(seoRaw) : seoRaw) : null; } catch (e) {}
+      if (seoStatus) {
+        var seoOk = seoStatus.status === 'ok';
+        sysHtml += _cmdHealthRow(seoOk ? 'ok' : 'bad', 'SEO Sync', seoOk ? (seoStatus.queries || 0) + ' queries tracked, GA4 ' + (seoStatus.ga4 ? 'connected' : 'not connected') : (seoStatus.hint || seoStatus.status), "renderAgentsView()");
+      } else {
+        sysHtml += _cmdHealthRow('unknown', 'SEO Sync', 'Not configured yet', null);
+      }
+      sysEl.innerHTML = _cmdCard('System Health', sysHtml);
+    }
+
+    // ── Agent reports ──
+    var agEl = document.getElementById('cmdAgentsCard');
+    if (agEl) {
+      var reports = (!agentRes.error && agentRes.data) ? agentRes.data : [];
+      var urgent = reports.filter(function(r){ return r.priority === 'urgent'; });
+      var agHtml;
+      if (!reports.length) {
+        agHtml = '<div style="font-size:0.78rem;color:#666;padding:8px 0;">All caught up &mdash; nothing unread.</div>';
+      } else {
+        agHtml = (urgent.length ? '<div style="font-size:0.8rem;color:#f87171;font-weight:700;margin-bottom:8px;">&#9888; ' + urgent.length + ' urgent</div>' : '')
+          + reports.slice(0, 5).map(function(r){
+              var col = r.priority === 'urgent' ? 'bad' : r.priority === 'high' ? 'warn' : 'unknown';
+              return _cmdHealthRow(col, esc(r.title || r.agent), esc(r.agent), "renderAgentsView()");
+            }).join('')
+          + (reports.length > 5 ? '<div style="font-size:0.72rem;color:#666;margin-top:6px;">+' + (reports.length - 5) + ' more</div>' : '');
+      }
+      agEl.innerHTML = _cmdCard('Agent Reports Unread (' + reports.length + ')', agHtml);
+    }
+  }
+
   // ── JOBS TAB ───────────────────────────────────────────────────────────────
   function renderJobsView() {
     if (_adminOnlyGuard()) return;
     adminView = 'jobs';
-    var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab active" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button><button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button><button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button><button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderTeamView(\'payroll\')">&#128181; Payroll</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button><a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a></div>';
+    var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminHomeView()">&#127919; Command Center</button><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab active" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button><button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button><button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button><button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderTeamView(\'payroll\')">&#128181; Payroll</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button><a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a></div>';
     if (!_jobsRevenueIds) { _ensureJobsRevenueIds().then(function(){ if (adminView==='jobs') renderJobsView(); }); }
     var allJobs = adminCustomers.filter(_isRealJob);
     var fixmyJobs = allJobs.filter(function(c){ return c.lead_category !== 'new_solar'; });
@@ -4065,7 +4272,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (subTab === 'social') subTab = 'team';   // Socials moved to the Personal tab
     sessionStorage.setItem('teamSubView', subTab);
     adminView = 'team';
-    var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button><button class="portal-tab active" onclick="renderTeamView()">&#128101; Administration</button><button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button><button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderTeamView(\'payroll\')">&#128181; Payroll</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button><a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a></div>';
+    var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminHomeView()">&#127919; Command Center</button><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button><button class="portal-tab active" onclick="renderTeamView()">&#128101; Administration</button><button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button><button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><button class="portal-tab" onclick="renderFinanceView()">&#128176; Finance</button><button class="portal-tab" onclick="renderTeamView(\'payroll\')">&#128181; Payroll</button><button class="portal-tab" onclick="renderPersonalView()">&#128100; Personal</button><a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a></div>';
     document.getElementById('dashBody').innerHTML = portalNav + '<p style="color:#aaa;padding:20px 0;">Loading team data...</p>';
     // Closing roles drive where every booking lands — load before rendering the roster.
     try { await window.bbLoadClosers(true); } catch(e) {}
@@ -5218,7 +5425,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (_adminOnlyGuard()) return;
     adminView = 'schedule';
     var portalNav = '<div class="portal-tab-nav">'+
-      '<button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
+      '<button class="portal-tab" onclick="renderAdminHomeView()">&#127919; Command Center</button><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button>'+
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button>'+
@@ -5354,7 +5561,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   function renderMarketingView() {
     adminView = 'marketing';
     var portalNav = '<div class="portal-tab-nav">'+
-      '<button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
+      '<button class="portal-tab" onclick="renderAdminHomeView()">&#127919; Command Center</button><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button>'+
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button>'+
@@ -5641,7 +5848,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   function renderImportView() {
     adminView = 'import';
     var portalNav = '<div class="portal-tab-nav">'+
-      '<button class="portal-tab active" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
+      '<button class="portal-tab" onclick="renderAdminHomeView()">&#127919; Command Center</button><button class="portal-tab active" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button>'+
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button>'+
@@ -6312,7 +6519,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (!window._agentChatDisplay) window._agentChatDisplay = [];
 
     var portalNav = '<div class="portal-tab-nav">'+
-      '<button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
+      '<button class="portal-tab" onclick="renderAdminHomeView()">&#127919; Command Center</button><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button>'+
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button>'+
@@ -7705,7 +7912,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (_adminOnlyGuard()) return;
     adminView = 'canvass';
     var portalNav = '<div class="portal-tab-nav">'+
-      '<button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
+      '<button class="portal-tab" onclick="renderAdminHomeView()">&#127919; Command Center</button><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab active" onclick="renderAdminCanvassView()">&#128230; Black Box</button>'+
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button>'+
@@ -14235,7 +14442,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     adminView = 'dialer';
     var isAdminDialer = CURRENT_ROLE === 'admin';
     var portalNav = isAdminDialer ? '<div class="portal-tab-nav">'+
-      '<button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
+      '<button class="portal-tab" onclick="renderAdminHomeView()">&#127919; Command Center</button><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab active" onclick="renderAdminCanvassView()">&#128230; Black Box</button>'+
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button>'+
@@ -17758,7 +17965,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (_adminOnlyGuard()) return;
     adminView = 'finance';
     var portalNav = '<div class="portal-tab-nav">'+
-      '<button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
+      '<button class="portal-tab" onclick="renderAdminHomeView()">&#127919; Command Center</button><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button>'+
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button>'+
@@ -19419,7 +19626,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
   function privacyNav() {
     return '<div class="portal-tab-nav">'+
-      '<button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
+      '<button class="portal-tab" onclick="renderAdminHomeView()">&#127919; Command Center</button><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button>'+
       '<button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button>'+
@@ -20408,7 +20615,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   async function renderHiringView() {
     return renderTeamView('hiring');
     var portalNav = '<div class="portal-tab-nav">'+
-      '<button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
+      '<button class="portal-tab" onclick="renderAdminHomeView()">&#127919; Command Center</button><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button>'+
       '<button class="portal-tab" onclick="renderJobsView()">&#128295; Jobs</button>'+
       '<button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button>'+
       '<button class="portal-tab active" onclick="renderTeamView()">&#128101; Administration</button>'+
@@ -28732,7 +28939,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }
     } catch(e) {}
 
-    var salesView = sessionStorage.getItem('salesView_'+person.id) || 'leads';
+    // Default landing view is now Tech Dashboard (2026-09-24) — previously 'leads'. Still
+    // per-device/session sticky via sessionStorage, same as every other view, so a rep
+    // who navigates away and comes back mid-session stays where they left off.
+    var salesView = sessionStorage.getItem('salesView_'+person.id) || 'hq';
     var OPS_NAMES = {ops1:'Jon Klos',ops2:'John Espinoza',ops3:'Cosmic Solar',ops4:'Axia',dennis:'Dennis'};
 
     function fmtDt(iso) {
@@ -28831,6 +29041,150 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // Doors/Dialing scoreboard (hours vs 30h + doors/dials/convos/booked) is now the
       // one dashboard, and it lives on the surface where the work happens.
 
+      // ── Tech Dashboard — home base (2026-09-24, per Dennis: reviewed a competitor's gamified
+      // "REP HQ" menu screen and asked for the one piece worth borrowing without cloning
+      // the 3D/gamification production value. Renamed "REP HQ" → "Tech Dashboard" per
+      // Dennis (2026-09-24), before this ever shipped — internal identifiers
+      // (salesView==='hq', _repHq*) are left as-is, same "display name changes, internal
+      // identifier doesn't" convention as every other rebrand in this file
+      // (FixMy.Energy→Solar Review, New Solar→Axia/QCells).
+      //
+      // ⚠️ REBUILT 2026-09-25, per Dennis's own live-preview feedback on the first
+      // version: "This looks a little more fun but it's not much change. It's duplicating
+      // a lot of the buttons." He was right — v1 rendered one big tile per tab
+      // (Leads/Jobs/Payroll/Appts/Training/Map/Field), and EVERY one of those already has
+      // its own nav-bar button one scroll away. A tile that only navigates somewhere a
+      // button already navigates isn't a dashboard, it's a second nav bar. Real dashboards
+      // answer "what do I need to know right now," not "where can I click." Rebuilt around
+      // three real, data-first cards instead — nothing here just links to a tab:
+      //   Today       — real appointments today, pulled off diagnostic_date/install_date,
+      //                  with one-tap Call — the thing a rep actually needs the instant
+      //                  they open the app in the morning.
+      //   Needs Your Attention — real overdue callbacks (callback_at in the past) and
+      //                  real stale leads (no touch in 5+ days), tap-to-open. This is
+      //                  genuinely new information no tab surfaces as a single glanceable
+      //                  list today.
+      //   Money       — real Earned/Upcoming totals, computed the exact same way the
+      //                  Payroll tab computes them (_myShareOf over the shared
+      //                  _fixmyCommCache/_axiaCommCache — never a second formula), so the
+      //                  number here and the number on Payroll can never disagree.
+      // Nothing left is a plain nav-duplicate tile — a rep who wants to just go somewhere
+      // still uses the tab row right below, which was never the thing that needed fixing.
+      // Still reuses the exact scoreboard component Doors/Dialing already built
+      // (_bbRepScoreboardHtml / bbMountRepScore) — "hours vs the 30h goal" is already the
+      // one number Dennis said matters most, and it was the one part of v1 that wasn't a
+      // duplicate (nothing else on this screen showed it).
+      function _hqAgo(ts) {
+        var mins = Math.round((Date.now() - ts) / 60000);
+        if (mins < 1) return 'just now';
+        if (mins < 60) return mins + 'm ago';
+        var hrs = Math.floor(mins / 60);
+        if (hrs < 24) return hrs + 'h ago';
+        return Math.floor(hrs / 24) + 'd ago';
+      }
+      // Real Earned/Upcoming totals off the SAME cache + _myShareOf the Payroll tab uses
+      // (never a second commission formula). Returns null while any of this rep's jobs
+      // still have a cache miss, so the card can show an honest loading state instead of
+      // a partial total that later silently changes — the post-render patch below fills
+      // this in once every job's cache entry has actually resolved.
+      function _repHqMoneyHtml() {
+        var haveAll = true, earned = 0, upcoming = 0;
+        myJobs.forEach(function(j){
+          var cache = j.lead_category === 'new_solar' ? _axiaCommCache : _fixmyCommCache;
+          var d = cache[j.id];
+          if (!d) { haveAll = false; return; }
+          var mine = _myShareOf(d, person);
+          if (!mine) return;
+          if (d.earned) earned += mine.amount; else upcoming += mine.amount;
+        });
+        if (!haveAll) return null;
+        function moneyHq(n){ return '$'+(n||0).toLocaleString(undefined,{maximumFractionDigits:0}); }
+        var hhc = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">';
+        hhc += '<div style="background:rgba(240,180,41,0.06);border:1px solid rgba(240,180,41,0.25);border-radius:12px;padding:13px;">'
+          + '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;color:'+COMM_COLOR_GOLD+';letter-spacing:0.05em;">Earned</div>'
+          + '<div style="font-family:'+COMM_MONO+';font-size:1.35rem;font-weight:800;color:#fff;margin-top:3px;">'+moneyHq(earned)+'</div></div>';
+        hhc += '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:13px;">'
+          + '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;color:#888;letter-spacing:0.05em;">Est. Upcoming</div>'
+          + '<div style="font-family:'+COMM_MONO+';font-size:1.35rem;font-weight:800;color:#ccc;margin-top:3px;">'+moneyHq(upcoming)+'</div></div>';
+        hhc += '</div>';
+        hhc += '<a onclick="salesSetView(\'payroll\')" style="display:block;text-align:center;margin-top:8px;font-size:0.7rem;color:#4a9eff;cursor:pointer;text-decoration:none;">See the full breakdown &rarr;</a>';
+        return hhc;
+      }
+      function _repHqHtml() {
+        var firstName = (person.name || '').split(' ')[0] || person.name || 'there';
+        var hh = '<div style="margin-bottom:16px;">';
+        hh += '<div style="font-size:1.25rem;font-weight:800;">&#127968; Tech Dashboard</div>';
+        hh += '<div style="font-size:0.78rem;color:#888;margin-top:2px;">Welcome back, ' + esc(firstName) + ' &middot; ' + esc(roleLabel) + ' &middot; Solar Review</div>';
+        hh += '</div>';
+        // Placeholder shell — bbMountRepScore('hq') repaints this in place once the
+        // week's real numbers land (or instantly, if already cached from a recent
+        // Doors/Dialing visit this session) — same DOM-local mount pattern those two
+        // surfaces already use, so a real number never has to be invented for this.
+        hh += window._bbRepScoreboardHtml('hq');
+
+        // ── Today ────────────────────────────────────────────────────────
+        var nowHq = new Date(), todayKeyHq = nowHq.toDateString(), todaysAppts = [];
+        allRecords.forEach(function(c){
+          if (c.diagnostic_date && new Date(c.diagnostic_date).toDateString() === todayKeyHq) {
+            todaysAppts.push({ c: c, date: new Date(c.diagnostic_date), kind: c.lead_category==='new_solar' ? ((c.solar_status==='ns_welcome_scheduled'||c.solar_status==='ns_welcome_rescheduled')?'Welcome Call':'Evaluation') : 'Diagnostic Eval' });
+          }
+          if (c.install_date && new Date(c.install_date).toDateString() === todayKeyHq) {
+            todaysAppts.push({ c: c, date: new Date(c.install_date), kind: c.lead_category==='new_solar' ? 'NS Install' : 'Install' });
+          }
+        });
+        todaysAppts.sort(function(a,b){ return a.date - b.date; });
+        hh += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#8DC63F;margin:18px 0 8px;">&#128197; Today</div>';
+        if (!todaysAppts.length) {
+          hh += '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:14px;font-size:0.78rem;color:#888;">Nothing on the calendar today &mdash; good day to work <a onclick="salesSetView(\'canvass\')" style="color:#8DC63F;cursor:pointer;text-decoration:none;font-weight:700;">Doors</a> or <a onclick="salesSetView(\'dialer\')" style="color:#4a9eff;cursor:pointer;text-decoration:none;font-weight:700;">Dialing</a>.</div>';
+        } else {
+          todaysAppts.forEach(function(a){
+            var c = a.c, isPastHq = a.date < nowHq;
+            var tStrHq = a.date.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true});
+            var nameHq = ((c.first_name||'')+' '+(c.last_name||'')).trim() || 'Unnamed';
+            hh += '<div style="display:flex;align-items:center;gap:10px;background:rgba(255,255,255,0.04);border:1px solid '+(isPastHq?'rgba(255,255,255,0.06)':'rgba(141,198,63,0.2)')+';border-radius:12px;padding:11px 13px;margin-bottom:7px;'+(isPastHq?'opacity:0.55;':'')+'">'
+              + '<div style="flex:1;min-width:0;"><div style="font-size:0.85rem;font-weight:700;">'+esc(nameHq)+'</div>'
+              + '<div style="font-size:0.7rem;color:#888;margin-top:1px;">'+tStrHq+' &middot; '+a.kind+(c.address?' &middot; '+esc(c.address):'')+'</div></div>'
+              + (c.phone ? '<a href="tel:'+c.phone.replace(/\D/g,'')+'" style="flex-shrink:0;font-size:0.7rem;padding:6px 11px;background:rgba(141,198,63,0.12);color:#8DC63F;border-radius:100px;border:1px solid rgba(141,198,63,0.25);text-decoration:none;font-weight:700;">&#128222;</a>' : '')
+              + '</div>';
+          });
+        }
+
+        // ── Needs Your Attention ─────────────────────────────────────────
+        var nowMsHq = nowHq.getTime(), attnItems = [];
+        myLeads.forEach(function(c){
+          if (c.callback_at) {
+            var cbMs = new Date(c.callback_at).getTime();
+            if (cbMs <= nowMsHq) attnItems.push({ c: c, icon: '&#128222;', sortAt: cbMs, label: 'Callback was due ' + _hqAgo(cbMs) });
+            return; // a scheduled (not-yet-due) callback means this lead is being worked — not stale
+          }
+          var lastTouch = new Date(c.updated_at || c.created_at).getTime();
+          if ((nowMsHq - lastTouch) > 5*86400000) attnItems.push({ c: c, icon: '&#128564;', sortAt: lastTouch, label: 'No activity in ' + _hqAgo(lastTouch).replace(' ago','') });
+        });
+        attnItems.sort(function(a,b){ return a.sortAt - b.sortAt; });
+        hh += '<div style="display:flex;align-items:baseline;justify-content:space-between;margin:18px 0 8px;">'
+          + '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:'+(attnItems.length?'#ef4444':'#888')+';">&#9888; Needs Your Attention'+(attnItems.length?' ('+attnItems.length+')':'')+'</div>'
+          + (attnItems.length > 5 ? '<a onclick="salesSetView(\'leads\')" style="font-size:0.68rem;color:#4a9eff;cursor:pointer;text-decoration:none;">See all &rarr;</a>' : '')
+          + '</div>';
+        if (!attnItems.length) {
+          hh += '<div style="background:rgba(141,198,63,0.05);border:1px solid rgba(141,198,63,0.15);border-radius:12px;padding:14px;font-size:0.78rem;color:#8DC63F;">&#10003; You&#39;re caught up &mdash; no overdue callbacks or stale leads.</div>';
+        } else {
+          attnItems.slice(0,5).forEach(function(it){
+            var c = it.c, nameA = ((c.first_name||'')+' '+(c.last_name||'')).trim() || c.address || 'Unnamed';
+            hh += '<div onclick="salesEditLead(\''+c.id+'\')" style="display:flex;align-items:center;gap:10px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:11px 13px;margin-bottom:7px;cursor:pointer;">'
+              + '<div style="font-size:1.1rem;flex-shrink:0;">'+it.icon+'</div>'
+              + '<div style="flex:1;min-width:0;"><div style="font-size:0.85rem;font-weight:700;">'+esc(nameA)+'</div>'
+              + '<div style="font-size:0.7rem;color:#888;margin-top:1px;">'+it.label+'</div></div>'
+              + '<div style="font-size:0.68rem;color:#555;flex-shrink:0;">&rarr;</div></div>';
+          });
+        }
+
+        // ── Money ────────────────────────────────────────────────────────
+        hh += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:'+COMM_COLOR_GOLD+';margin:18px 0 8px;">&#128176; Money</div>';
+        hh += '<div id="hqMoneyCard">' + (_repHqMoneyHtml() || '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:14px;font-size:0.78rem;color:#666;">Loading your numbers&hellip;</div>') + '</div>';
+
+        return hh;
+      }
+
       // Main view tabs
       function tBtn(v,lbl) {
         var a = salesView===v;
@@ -28838,7 +29192,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }
       var nowTs = Date.now();
       var myApptCount = allRecords.filter(function(r){ return (r.diagnostic_date&&new Date(r.diagnostic_date).getTime()>nowTs-7*86400000)||(r.install_date&&new Date(r.install_date).getTime()>nowTs-7*86400000); }).length;
-      h += '<div style="display:flex;gap:6px;margin-bottom:16px;">';
+      h += '<div style="display:flex;gap:6px;margin-bottom:16px;flex-wrap:wrap;">';
+      h += tBtn('hq','&#127968; Dashboard');
       h += tBtn('leads','📋 Leads ('+myLeads.length+')');
       h += tBtn('jobs','💼 Jobs ('+myJobs.length+')');
       h += tBtn('payroll','💵 Payroll');
@@ -28859,8 +29214,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         return h2;
       }
 
+      // ── Tech Dashboard view ────────────────────────────────────────────────
+      if (salesView === 'hq') {
+        h += _repHqHtml();
+      }
       // ── Leads view ──────────────────────────────────────────────────────────
-      if (salesView === 'leads') {
+      else if (salesView === 'leads') {
         // Search + Archived, mirroring the admin Leads toolbar (#adminSearchInput /
         // openArchivedModal) — see the 2026-09-21 fix note on salesSearch above. Counts
         // in the category pills stay full totals (search only filters the rendered list),
@@ -29728,6 +30087,23 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // Doors satellite map — mounted after the HTML lands, since renderSales() replaces
       // dashBody wholesale and the container has to exist first.
       if (salesView === 'canvass' && document.getElementById('bbScoreboard')) window.bbMountRepScore('door');
+      if (salesView === 'hq' && document.getElementById('bbScoreboard')) window.bbMountRepScore('hq');
+      // Tech Dashboard's Money card — same missing-cache-entries-then-load pattern the
+      // Payroll view uses just below, but patches the one placeholder div in place
+      // instead of a full re-render (nothing else on this screen depends on the cache).
+      if (salesView === 'hq') {
+        var _hqMissingF = myFixmyJobs.filter(function(j){ return !_fixmyCommCache[j.id]; }).map(function(j){ return j.id; });
+        var _hqMissingN = myNSJobs.filter(function(j){ return !_axiaCommCache[j.id]; }).map(function(j){ return j.id; });
+        if (_hqMissingF.length || _hqMissingN.length) {
+          Promise.all([
+            _hqMissingF.length ? _loadFixmyJobCommissions(_hqMissingF) : Promise.resolve(),
+            _hqMissingN.length ? _loadAxiaJobCommissions(_hqMissingN) : Promise.resolve()
+          ]).then(function(){
+            var elHq = document.getElementById('hqMoneyCard');
+            if (elHq && salesView === 'hq') { var mh = _repHqMoneyHtml(); if (mh) elHq.innerHTML = mh; }
+          });
+        }
+      }
       if (salesView === 'canvass' && _cvMapOpen && document.getElementById('cvDoorsMap')) {
         setTimeout(function(){
           try { window._cvRenderDoorsMap('cvDoorsMap', canvassLeads, canvassUserLat, canvassUserLng); }
