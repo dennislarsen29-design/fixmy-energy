@@ -64,9 +64,22 @@ exports.handler = async function(event) {
     // Matches exactly the RIV_PS_CITIES / EXPANSION_QUEUE Riverside blocks already
     // active in bb-auto-pipeline-background.js (that pipeline's own expansion_index
     // gate for Riverside, >=54, was already crossed — it's at 60 as of this fix).
-    // Coachella Valley/Palm Springs and San Bernardino County are their own, separate,
-    // not-yet-activated EXPANSION_QUEUE blocks — deliberately NOT added here.
-    'TEMECULA','MURRIETA','RIVERSIDE','MORENO VALLEY','HEMET','PERRIS'];
+    'TEMECULA','MURRIETA','RIVERSIDE','MORENO VALLEY','HEMET','PERRIS',
+    // Coachella Valley / Palm Springs desert (2026-09-25, per Dennis — "might as well
+    // add them since it's not going to cost anything more"). This is a widened
+    // ACCEPTANCE filter only on this manual, on-demand pull's already-nationwide
+    // contractor search — it does not touch bb-auto-pipeline-background.js's nightly
+    // pipeline. Deliberately kept out of that pipeline's own territory gating, since
+    // its Phase 3 auto-submits every no-contact lead to Tracerfy with no region
+    // filter — widening ITS scope would auto-spend Tracerfy credits on these leads,
+    // which conflicts with "only want to be strategic with Tracerfy." This manual
+    // button never touches Tracerfy, so widening it here is genuinely free.
+    'PALM SPRINGS','PALM DESERT','CATHEDRAL CITY','RANCHO MIRAGE','INDIO','LA QUINTA',
+    'DESERT HOT SPRINGS','COACHELLA','INDIAN WELLS',
+    // San Bernardino County — West Valley + Redlands/Highland (2026-09-25, same "add
+    // them, it's free on this button" instruction — same Tracerfy caveat as above).
+    'FONTANA','ONTARIO','RIALTO','CHINO','CHINO HILLS','RANCHO CUCAMONGA','UPLAND',
+    'MONTCLAIR','REDLANDS','HIGHLAND'];
 
   const OC_ZIPS = new Set(['92629','92651','92652','92653','92656','92672','92673','92677','92618']);
   // Same three already-active EXPANSION_QUEUE Riverside blocks (SW Riverside/Temecula-
@@ -81,6 +94,14 @@ exports.handler = async function(event) {
     '92551','92553','92555','92557',
     '92543','92544','92545','92570','92571'
   ]);
+  // Coachella Valley / Palm Springs desert — same EXPANSION_QUEUE zip block as above.
+  const COACHELLA_ZIPS = new Set(['92234','92236','92240','92241','92260','92262','92264','92270']);
+  // San Bernardino County — West Valley + Redlands/Highland — same EXPANSION_QUEUE block.
+  const SB_ZIPS = new Set([
+    '92336','91761','91762','91764','92376','91708','91709',
+    '91701','91729','91730','91737','91739','91784','91786','91763',
+    '92373','92374','92346'
+  ]);
 
   function isTargetTerritory(street, city, state, zip) {
     const z = String(zip || '');
@@ -91,6 +112,8 @@ exports.handler = async function(event) {
     if (/^92[012]\d{2}$/.test(z)) return true;
     if (OC_ZIPS.has(z.slice(0,5))) return true;
     if (RIV_ZIPS.has(z.slice(0,5))) return true;
+    if (COACHELLA_ZIPS.has(z.slice(0,5))) return true;
+    if (SB_ZIPS.has(z.slice(0,5))) return true;
     if (TARGET_CITIES.includes(c)) return true;
     const combined = `${street} ${city} ${state} ${zip}`.toUpperCase();
     if (TARGET_CITIES.some(n => combined.includes(n))) return true;
