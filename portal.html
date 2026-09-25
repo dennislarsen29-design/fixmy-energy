@@ -8607,7 +8607,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
     await c2.from('customers').update({ knock_status: knockStatus, knocked_at: now, knocked_by: 'admin' }).eq('id', id);
     lead.knock_status = knockStatus; lead.knocked_at = now; lead.knocked_by = 'admin';
-    bbLogActivity(id, 'door_knock', knockStatus, ''); // shared feed — dialers see knock outcomes
+    // ⚠️ 2026-09-25 fix, found via /debug: this admin card mounts the exact same
+    // _cvAiControls Quoya Assist recorder as the rep Doors card (see line ~8057), but
+    // this disposition function never got the 2026-08-11 "AI notes lost on disposition"
+    // fix that canvassKnock/bbDialCommit did — it always logged an empty note AND never
+    // called _cvAiHarvest(), so a live recording was silently discarded and (since
+    // _cvAiActive was never cleared) kept recording in the background after the tap.
+    // Same harvest-before-disposition pattern as canvassKnock, below.
+    var _aiH = _cvAiHarvest();
+    var _knockNote = '';
+    if (_aiH) {
+      var _aiNote = await _aiNoteFromHarvest(_aiH, 'door_knock', id, document.getElementById('cvAiStatus_'+id));
+      if (_aiNote) _knockNote = _aiNote;
+    }
+    bbLogActivity(id, 'door_knock', knockStatus, _knockNote); // shared feed — dialers see knock outcomes
     // Save to session history
     window._cvPushKnockHistory({id:id, address:lead.address, name:((lead.first_name||'')+' '+(lead.last_name||'')).trim(), knockStatus:knockStatus, ts:now, distMi:lead._distMi||null});
     adminCanvassLeads.sort(function(a,b) {
@@ -11080,7 +11093,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (cl) cl.knock_status = newStatus;
     var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
     await c2.from('customers').update({ knock_status: newStatus, knocked_at: newStatus ? new Date().toISOString() : null, knocked_by: newStatus ? 'admin' : null }).eq('id', id);
-    if (newStatus) bbLogActivity(id, 'door_knock', newStatus, ''); // shared feed — dialers see knock outcomes
+    if (newStatus) {
+      // ⚠️ 2026-09-25 fix, found via /debug — same gap as adminCanvassKnock right above:
+      // this is the actual "Black Box tab" quarantined-lead card's own disposition path
+      // (mounts _cvAiControls at 'bbNt_'+lead.id), and it had the identical bug — a
+      // hardcoded '' note and no _cvAiHarvest() call, so a live recording was silently
+      // dropped instead of saved, and never stopped on disposition.
+      var _aiH = _cvAiHarvest();
+      var _knockNote = '';
+      if (_aiH) {
+        var _aiNote = await _aiNoteFromHarvest(_aiH, 'door_knock', id, document.getElementById('cvAiStatus_'+id));
+        if (_aiNote) _knockNote = _aiNote;
+      }
+      bbLogActivity(id, 'door_knock', newStatus, _knockNote); // shared feed — dialers see knock outcomes
+    }
     if (newStatus === 'interested') { activateBlackBoxLead(id); return; }
     renderAdminCanvassView();
   };
