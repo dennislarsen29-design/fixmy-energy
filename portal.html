@@ -2122,7 +2122,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       (data || []).forEach(function(r) {
         var isNS = r.lead_category === 'new_solar';
         var key = isNS ? 'new_solar' : (r.sold_type || 'diagnostic');
-        var doneAt = r.install_date || (isNS ? r.ns_pto_at : r.installed_at);
+        // ⚠️ 2026-09-25, per Dennis ("a similar field for Diagnostics... a scheduled date
+        // as a manual entry similar to the install scheduled date"): diagnostic jobs don't
+        // have an "install" at all — they have a scheduled diagnostic VISIT — so the
+        // diagnostic bucket's real duration data has to come from diagnostic_date (the new
+        // manual field, see _installDateBlockHtml below), never install_date, which a
+        // diagnostic job has no reason to ever carry a value in.
+        var doneAt = isNS ? (r.install_date || r.ns_pto_at)
+          : (key === 'diagnostic' ? (r.diagnostic_date || r.installed_at) : (r.install_date || r.installed_at));
         if (!doneAt) return;
         var days = (new Date(doneAt) - new Date(r.sold_at)) / 86400000;
         if (!(days >= 0) || days > 365) return; // guard against bad/impossible data, never let it skew the median
@@ -2175,28 +2182,48 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // correct it in one tap, no editor to open. Computed synchronously off fields
   // already on the customer record (install_date/sold_at/step/solar_status) — no
   // async fetch, unlike the commission line above it, so it renders immediately.
+  // ⚠️ 2026-09-25, per Dennis: "a similar field for Diagnostics in Jobs too... a
+  // scheduled date as a manual entry similar to the install scheduled date." Before this,
+  // _installDateBlockHtml rendered unconditionally on every FixMy job card, including
+  // diagnostic-only jobs — showing "Install Date" on a job where nothing gets installed.
+  // Both functions below are now sold_type-aware: a diagnostic FixMy job reads/writes
+  // customers.diagnostic_date (the field that already exists and is already the real
+  // scheduled-visit date, per confirmDiagSchedule) under an "Install Date" label swapped
+  // for "Scheduled Date", while battery_retrofit/monitoring/Axia keep the exact same
+  // install_date behavior as before, unchanged. One function, not a second copy — same
+  // reasoning as everywhere else in this file that a per-type variant gets branched
+  // rather than duplicated.
   function _installTimelineStatus(c) {
-    if (!c.install_date) return null;
-    var inst = new Date(c.install_date); if (isNaN(inst.getTime())) return null;
+    var isNSJob = c.lead_category === 'new_solar';
+    var isDiag = !isNSJob && c.sold_type === 'diagnostic';
+    var dateVal = isDiag ? c.diagnostic_date : c.install_date;
+    if (!dateVal) return null;
+    var inst = new Date(dateVal); if (isNaN(inst.getTime())) return null;
     var today = new Date(); today.setHours(0, 0, 0, 0);
     var instDay = new Date(inst); instDay.setHours(0, 0, 0, 0);
     var diffDays = Math.round((instDay - today) / 86400000);
-    var isNSJob = c.lead_category === 'new_solar';
     var earned = isNSJob ? c.solar_status === 'ns_pto' : (c.step || 1) >= 9;
     var elapsedFromSale = null;
     if (c.sold_at) { var soldDay = new Date(c.sold_at); soldDay.setHours(0, 0, 0, 0); elapsedFromSale = Math.round((instDay - soldDay) / 86400000); }
     var shortDate = inst.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    if (earned) return { text: '&#9989; Installed ' + shortDate + (elapsedFromSale != null ? ' &middot; ' + elapsedFromSale + 'd after sale' : ''), color: COMM_COLOR_EARNED };
-    if (diffDays < 0) return { text: '&#9888; Install date passed ' + shortDate + ' &middot; ' + Math.abs(diffDays) + 'd overdue', color: COMM_COLOR_REDLINE };
-    if (diffDays === 0) return { text: '&#128197; Install scheduled today', color: COMM_COLOR_POTENTIAL };
-    return { text: '&#128197; Install scheduled ' + shortDate + ' &middot; in ' + diffDays + 'd', color: '#4a9eff' };
+    var L = isDiag
+      ? { done: 'Diagnostic done', overdue: 'Diagnostic date passed', today: 'Diagnostic scheduled today', future: 'Diagnostic scheduled' }
+      : { done: 'Installed', overdue: 'Install date passed', today: 'Install scheduled today', future: 'Install scheduled' };
+    if (earned) return { text: '&#9989; ' + L.done + ' ' + shortDate + (elapsedFromSale != null ? ' &middot; ' + elapsedFromSale + 'd after sale' : ''), color: COMM_COLOR_EARNED };
+    if (diffDays < 0) return { text: '&#9888; ' + L.overdue + ' ' + shortDate + ' &middot; ' + Math.abs(diffDays) + 'd overdue', color: COMM_COLOR_REDLINE };
+    if (diffDays === 0) return { text: '&#128197; ' + L.today, color: COMM_COLOR_POTENTIAL };
+    return { text: '&#128197; ' + L.future + ' ' + shortDate + ' &middot; in ' + diffDays + 'd', color: '#4a9eff' };
   }
   function _installDateBlockHtml(c) {
+    var isNSJob = c.lead_category === 'new_solar';
+    var isDiag = !isNSJob && c.sold_type === 'diagnostic';
     var status = _installTimelineStatus(c);
-    var val = c.install_date ? String(c.install_date).slice(0, 10) : '';
+    var dateVal = isDiag ? c.diagnostic_date : c.install_date;
+    var val = dateVal ? String(dateVal).slice(0, 10) : '';
+    var label = isDiag ? 'Scheduled Date' : 'Install Date';
     return '<div style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;" onclick="event.stopPropagation();">' +
-      '<label style="font-size:0.62rem;font-weight:700;color:#888;white-space:nowrap;">&#128197; Install Date</label>' +
-      '<input type="date" value="' + val + '" onchange="window._saveInstallDate(\'' + c.id + '\', this.value)" style="width:auto;padding:4px 8px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.04);color:#ddd;font-size:0.72rem;"/>' +
+      '<label style="font-size:0.62rem;font-weight:700;color:#888;white-space:nowrap;">&#128197; ' + label + '</label>' +
+      '<input type="date" value="' + val + '" onchange="window._saveInstallDate(\'' + c.id + '\', this.value, ' + (isDiag ? 'true' : 'false') + ')" style="width:auto;padding:4px 8px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.04);color:#ddd;font-size:0.72rem;"/>' +
       (status ? '<span style="font-size:0.68rem;color:' + status.color + ';font-weight:700;">' + status.text + '</span>' : '') +
     '</div>';
   }
@@ -2206,24 +2233,28 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // session — see loadSalesDashboard — so one update covers both contexts), and
   // re-renders whichever view is actually open so the new status text shows
   // immediately instead of waiting for the next natural reload.
-  window._saveInstallDate = async function(id, val) {
+  window._saveInstallDate = async function(id, val, isDiag) {
     try {
       var cl = supabase.createClient(SUPA_URL, SUPA_KEY);
       // Noon, not midnight — a bare YYYY-MM-DD parsed as UTC midnight rolls back to
       // the prior day once rendered in a western-US timezone (toLocaleDateString
-      // above), which would show the wrong install date on every card.
+      // above), which would show the wrong date on every card.
       var iso = val ? new Date(val + 'T12:00:00').toISOString() : null;
-      var resp = await cl.from('customers').update({ install_date: iso }).eq('id', id);
-      if (resp.error) { alert('Could not save install date: ' + resp.error.message); return; }
+      // isDiag (from _installDateBlockHtml) picks which column this card's field
+      // actually edits — see the 2026-09-25 note on _installTimelineStatus above.
+      var field = isDiag ? 'diagnostic_date' : 'install_date';
+      var upd = {}; upd[field] = iso;
+      var resp = await cl.from('customers').update(upd).eq('id', id);
+      if (resp.error) { alert('Could not save ' + (isDiag ? 'scheduled' : 'install') + ' date: ' + resp.error.message); return; }
       // adminCustomers IS the rep session's own `allRecords` array (aliased in
       // loadSalesDashboard specifically so a single update reaches both contexts —
       // myFixmyJobs/myNSJobs are filter()'d views over the same object references,
       // never copies), so one mutation here is visible everywhere, admin or rep.
       var idx = (adminCustomers || []).findIndex(function(x) { return x.id === id; });
-      if (idx > -1) adminCustomers[idx].install_date = iso;
+      if (idx > -1) adminCustomers[idx][field] = iso;
       if (typeof adminView !== 'undefined' && adminView === 'jobs') renderJobsView();
       else if (typeof salesView !== 'undefined' && salesView === 'jobs' && typeof renderSales === 'function') renderSales();
-    } catch (e) { alert('Could not save install date: ' + e.message); }
+    } catch (e) { alert('Could not save date: ' + e.message); }
   };
   // Friday of the week AFTER the week `d` falls in. Week = Mon-Sun (Sunday is day 7
   // of ITS week, not day 1 of the next — same convention as the Dialers Hours gauge
