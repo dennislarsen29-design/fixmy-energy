@@ -59,9 +59,28 @@ exports.handler = async function(event) {
     'ALPINE','BONITA','CAMPO','DESCANSO','DULZURA','JAMUL','PINE VALLEY','POTRERO',
     'RANCHO SANTA FE','SAN MARCOS','VALLEY CENTER',
     'SAN CLEMENTE','DANA POINT','LAGUNA BEACH','LAGUNA NIGUEL','LAGUNA HILLS',
-    'ALISO VIEJO','LAGUNA WOODS','MISSION VIEJO'];
+    'ALISO VIEJO','LAGUNA WOODS','MISSION VIEJO',
+    // Riverside County (2026-09-25, per Dennis — "let's expand in Riverside County").
+    // Matches exactly the RIV_PS_CITIES / EXPANSION_QUEUE Riverside blocks already
+    // active in bb-auto-pipeline-background.js (that pipeline's own expansion_index
+    // gate for Riverside, >=54, was already crossed — it's at 60 as of this fix).
+    // Coachella Valley/Palm Springs and San Bernardino County are their own, separate,
+    // not-yet-activated EXPANSION_QUEUE blocks — deliberately NOT added here.
+    'TEMECULA','MURRIETA','RIVERSIDE','MORENO VALLEY','HEMET','PERRIS'];
 
   const OC_ZIPS = new Set(['92629','92651','92652','92653','92656','92672','92673','92677','92618']);
+  // Same three already-active EXPANSION_QUEUE Riverside blocks (SW Riverside/Temecula-
+  // Murrieta, Riverside Metro/Moreno Valley, Hemet/San Jacinto/Perris) as the nightly
+  // pipeline's RIV_PS_CITIES gate — this is a pure acceptance-filter widening (this
+  // function's contractor-search strategy already pulls nationwide permit data per
+  // installer; Riverside-area results were being silently discarded here before this
+  // fix, which is the real "wasted PermitStack fees" leak this was reported as).
+  const RIV_ZIPS = new Set([
+    '92590','92591','92592','92595','92596',
+    '92501','92503','92504','92505','92506','92507','92508','92509',
+    '92551','92553','92555','92557',
+    '92543','92544','92545','92570','92571'
+  ]);
 
   function isTargetTerritory(street, city, state, zip) {
     const z = String(zip || '');
@@ -71,6 +90,7 @@ exports.handler = async function(event) {
     if (/^919\d{2}$/.test(z)) return true;
     if (/^92[012]\d{2}$/.test(z)) return true;
     if (OC_ZIPS.has(z.slice(0,5))) return true;
+    if (RIV_ZIPS.has(z.slice(0,5))) return true;
     if (TARGET_CITIES.includes(c)) return true;
     const combined = `${street} ${city} ${state} ${zip}`.toUpperCase();
     if (TARGET_CITIES.some(n => combined.includes(n))) return true;
