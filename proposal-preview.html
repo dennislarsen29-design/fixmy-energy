@@ -82,6 +82,8 @@ header{padding:22px 28px;border-bottom:1px solid var(--line);}
 .compare-total .big{font-family:'Inter',sans-serif;font-weight:300;font-size:2.2rem;line-height:1.05;letter-spacing:-0.01em;margin-top:2px;}
 .compare-total .big small{font-weight:400;font-size:0.95rem;color:var(--muted);}
 .compare-total .delta{font-size:0.76rem;color:#3f6b16;font-weight:600;margin-top:4px;}
+.compare-total .starting{font-size:0.76rem;color:var(--muted);margin-top:5px;}
+.compare-total .starting strong{color:var(--dark);font-weight:700;}
 .compare-foot{display:flex;justify-content:space-between;padding:9px 16px;background:#EFE9DC;font-size:0.68rem;color:var(--muted);}
 .compare-foot strong{color:var(--dark);}
 
@@ -445,9 +447,18 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
         deltaHtml = '<div class="delta">&darr; '+moneyRound(billToday-newTotal)+'/mo vs. your bill today</div>';
       }
     } else {
+      // 2026-09-28, per Dennis — on the Cash tab, broadcast Participate's discounted price
+      // as the headline number (the same 30%-off figure Finance already leads with), never
+      // the raw un-discounted price. The raw cash price is never hidden — it still renders
+      // right under the headline, in smaller print, as "Starting cash price". SDCP nets off
+      // whichever price is being shown, using the exact same math financeScenarios().sdcp
+      // already applies on the Finance tab, so a customer switching tabs never sees the SDCP
+      // incentive computed two different ways for "the same" price.
       var cashSdcp = sdcpApplied && (opt.sdcp_rebate||0) > 0;
-      var cashPrice = cashSdcp ? Math.max(0, opt.price - opt.sdcp_rebate) : opt.price;
-      cashPriceForFoot = cashPrice;
+      var partPriceCash = participatePriceFor(opt);
+      var broadcastPrice = cashSdcp ? Math.max(0, partPriceCash - opt.sdcp_rebate) : partPriceCash;
+      var rawCashPrice = cashSdcp ? Math.max(0, opt.price - opt.sdcp_rebate) : opt.price;
+      cashPriceForFoot = broadcastPrice;
       if (billToday > 0) {
         rows += '<div class="compare-row"><div class="lbl">Your bill today</div><div class="amt">'+moneyRound(billToday)+'/mo</div></div>';
         var afterBill = Math.max(0, Math.round(billToday - monthlySavings));
@@ -456,8 +467,9 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
       if (cashSdcp) {
         rows += '<div class="compare-row"><div class="lbl">SDCP incentive<span class="sub">applied to price below</span></div><div class="amt neg">&minus;'+moneyRound(opt.sdcp_rebate)+'</div></div>';
       }
-      totalLbl = 'Price due today'+(cashSdcp?'<span class="applied-badge">&#10003; SDCP</span>':'');
-      totalAmt = money(cashPrice);
+      totalLbl = 'Price With Participate'+(cashSdcp?'<span class="applied-badge">&#10003; SDCP</span>':'');
+      totalAmt = money(broadcastPrice);
+      deltaHtml = '<div class="starting">Starting cash price: <strong>'+money(rawCashPrice)+'</strong> without Participate</div>';
     }
 
     var footParts = [];
@@ -652,10 +664,12 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
         '<button class="fin-sub-btn'+(finSub==='standard'?' active':'')+'" onclick="setFinSub(\'standard\')">Standard</button>'+
         '<button class="fin-sub-btn'+(finSub==='sdcp'?' active':'')+'" onclick="setFinSub(\'sdcp\')">SDCP Enhanced</button>'+
       '</div>') : '';
+      // The price shown above already reflects Participate's discounted rate — this note no
+      // longer repeats that dollar figure (it used to, before the headline itself broadcast
+      // it), it just explains what the number is and offers the monthly-payment alternative.
       var participateInfoHtml = hasParticipate ? (
-        '<div class="fin-note"><strong>Prefer to finance?</strong> Participate brings this option to '+money(partPrice)+
-        (hasSdcp ? ' &mdash; or '+money(Math.max(0, partPrice - opt.sdcp_rebate))+' with SDCP' : '')+
-        estimateNote+' <a href="javascript:void(0)" onclick="setPayMode(\'finance\')">Switch to Finance &rarr;</a></div>'
+        '<div class="fin-note">This price reflects Participate&rsquo;s financing rate'+estimateNote+
+        '. Want a monthly payment instead of paying it up front? <a href="javascript:void(0)" onclick="setPayMode(\'finance\')">Switch to Finance &rarr;</a></div>'
       ) : '';
       financeBlock = cashToggle +
         compareCardHtml(opt, hasParticipate, false, null, finSub==='sdcp', perfMonthly, perfLabel) +
@@ -676,8 +690,11 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
         // Cash mode: track the SDCP toggle per-row too, so a row's price always matches
         // what the main compare-card would show if that row were selected — this is the
         // exact mismatch from the report (list showed the Participate total while the
-        // card showed the full cash price for the same option).
-        disp = (finSub === 'sdcp' && (o.sdcp_rebate||0) > 0) ? Math.max(0, o.price - o.sdcp_rebate) : o.price;
+        // card showed the full cash price for the same option). As of 2026-09-28 the
+        // card's own cash-mode headline broadcasts the Participate price too, so this has
+        // to follow suit or the same mismatch reappears in the other direction.
+        var oPart = participatePriceFor(o);
+        disp = (finSub === 'sdcp' && (o.sdcp_rebate||0) > 0) ? Math.max(0, oPart - o.sdcp_rebate) : oPart;
       }
       var parts = optPartsLine(o);
       return '<div class="opt-row'+(i===selIdx?' active':'')+'" onclick="selectOption('+i+')">'+
@@ -736,8 +753,13 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
       var s = scen[finSub] || scen.standard;
       priceHtml = '~$'+wheelhouseMonthly(s.principal).toLocaleString('en-US')+'<small>/mo</small>';
     } else {
+      // Matches compareCardHtml's cash-mode headline: broadcast the Participate price, with
+      // the true starting cash price still visible right alongside it (never hidden).
       var bbCashSdcp = finSub === 'sdcp' && (opt.sdcp_rebate||0) > 0;
-      priceHtml = money(bbCashSdcp ? Math.max(0, opt.price - opt.sdcp_rebate) : opt.price);
+      var bbPart = participatePriceFor(opt);
+      var bbBroadcast = bbCashSdcp ? Math.max(0, bbPart - opt.sdcp_rebate) : bbPart;
+      var bbRaw = bbCashSdcp ? Math.max(0, opt.price - opt.sdcp_rebate) : opt.price;
+      priceHtml = money(bbBroadcast) + '<small> &middot; '+money(bbRaw)+' cash</small>';
     }
     var itemCount = (opt.line_items||[]).length;
     var bbSub = (itemCount > 1 ? (itemCount + ' items') : ('Option '+(selIdx+1))) + ' &middot; ' + (payMode==='finance'?'Financed':'Cash');
