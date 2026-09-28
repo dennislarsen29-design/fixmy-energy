@@ -8994,6 +8994,73 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   }
   function _evRepName() { return (typeof bbRepName === 'function') ? bbRepName() : 'Rep'; }
 
+  // ── Proposal gate (2026-09-28, per Dennis: "block Internal Proposal progression
+  // till the Evaluation is completed to prevent any issues coming up or forgetting
+  // something like a photo if the job gets too far through the process"). A standalone
+  // check — deliberately NOT a call into _evStepDone/_evSteps, which read the LIVE
+  // wizard's module-level state (_evLocal/_evId) — so it can run with no wizard open
+  // and can never clobber whatever wizard state exists elsewhere. It mirrors the same
+  // branching EVAL_STEPS/_evSteps() encodes, one level simplified, and counts a slot as
+  // done from ANY photo source (customer upload included), same as the live wizard.
+  async function _evGateCheck(id) {
+    try {
+      var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var rowRes = await client.from('lead_evaluations').select('*').eq('customer_id', id).limit(1);
+      var row = (rowRes.data && rowRes.data[0]) || null;
+      if (!row) return { complete: false, reason: 'not_started' };
+      var a = row.answers || {};
+      if (a.has_solar !== 'yes') return { complete: false, reason: 'not_started' };
+      if (!a.ownership_status || (a.system_issue !== 'yes' && a.system_issue !== 'no')) return { complete: false, reason: 'triage' };
+
+      var jobRes = await client.from('job_photos').select('id,label,expected_label').eq('job_id', id);
+      var custRes = await client.from('job_photos').select('id,label,expected_label').eq('customer_id', id);
+      var seen = {}, labels = [];
+      [].concat(jobRes.data || [], custRes.data || []).forEach(function(p) {
+        if (seen[p.id]) return; seen[p.id] = true;
+        labels.push(p.label || p.expected_label || '');
+      });
+      function has(label) { return labels.indexOf(label) > -1; }
+
+      if (!row.inverter_brand) return { complete: false, reason: 'hardware' };
+      if (!has('Inverter Photo') || !has('Front of House')) return { complete: false, reason: 'hardware' };
+      if (a.system_issue === 'yes') {
+        if (!has('Serial Number') || !has('Meter Photo')) return { complete: false, reason: 'hardware' };
+        if (!has('Error Codes') || !a.pc_outcome) return { complete: false, reason: 'powercycle' };
+      }
+      if (!row.utility || !has('Utility Bill')) return { complete: false, reason: 'consumption' };
+      if (a.system_issue === 'yes' && row.status !== 'ready') return { complete: false, reason: 'analysis' };
+      return { complete: true };
+    } catch (e) {
+      // Table not applied, or a genuine fetch failure — a check that can't run must
+      // never trap a rep out of real pricing work; degrade to "allowed".
+      return { complete: true };
+    }
+  }
+  function _evGateReasonText(reason) {
+    return ({
+      not_started: 'This lead hasn’t gone through the Site Evaluation yet — there’s no hardware info, photos, or usage data on file.',
+      triage: 'The Site Check step isn’t finished — does the home have solar, is it leased/financed/owned, and is there an active issue right now.',
+      hardware: 'Required hardware photos or the inverter brand are still missing.',
+      powercycle: 'The system was flagged as having an active issue, but the Power Cycle step (error-code photos, restart outcome) isn’t finished.',
+      consumption: 'The utility and a Utility Bill upload are still missing — there’s no usage data to size or price anything from.',
+      analysis: 'Quoya’s analysis hasn’t finished yet.'
+    })[reason] || 'The Site Evaluation isn’t finished yet.';
+  }
+  function _evShowGateModal(id, reason) {
+    var old = document.getElementById('evGateModal'); if (old) old.remove();
+    var d = document.createElement('div');
+    d.id = 'evGateModal';
+    d.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9600;display:flex;align-items:center;justify-content:center;padding:20px;';
+    d.innerHTML = '<div style="max-width:420px;width:100%;background:#161616;border:1px solid rgba(255,170,0,0.35);border-radius:16px;padding:22px;color:#F3EDE3;">'
+      + '<div style="font-size:0.95rem;font-weight:800;color:#ffaa00;margin-bottom:8px;">&#9888; Finish the Site Evaluation first</div>'
+      + '<div style="font-size:0.82rem;color:#ccc;line-height:1.55;margin-bottom:18px;">' + esc(_evGateReasonText(reason)) + ' Pricing off incomplete data risks missing something — like a photo — once the job is further along.</div>'
+      + '<div style="display:flex;gap:8px;">'
+      + '<button onclick="document.getElementById(\'evGateModal\').remove()" style="flex:0 0 auto;padding:11px 16px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.14);color:#aaa;border-radius:100px;font-size:0.8rem;font-weight:700;cursor:pointer;">Cancel</button>'
+      + '<button onclick="document.getElementById(\'evGateModal\').remove();openEvalWizard(\'' + id + '\')" style="flex:1;padding:11px;background:#8DC63F;border:none;color:#1A1A1A;border-radius:100px;font-size:0.84rem;font-weight:800;cursor:pointer;">&#9889; Continue Evaluation &rarr;</button>'
+      + '</div></div>';
+    document.body.appendChild(d);
+  }
+
   // ── Persistence. Degrades silently if 20260808_lead_evaluations.sql is unapplied:
   // the wizard still uploads and still analyzes, it just can't resume tomorrow.
   async function _evLoadRow(id) {
@@ -9132,6 +9199,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
   // Upload straight into a known category — the wizard always knows what it asked for,
   // so unlike a free-form drop these never need the categorizer to guess.
+  // Finds the slot key a given label belongs to (across every path's slots, hardware's
+  // included, since the healthy fast lane's cloned hwLight still shares the same keys) —
+  // used to clear a stale "skipped" flag once a real photo actually lands for that slot.
+  function _evSlotKeyForLabel(label) {
+    for (var i = 0; i < EVAL_STEPS.length; i++) {
+      var slots = EVAL_STEPS[i].slots || [];
+      for (var j = 0; j < slots.length; j++) {
+        if (slots[j].label === label) return slots[j].key;
+      }
+    }
+    return null;
+  }
+
   window.evUpload = async function(inputEl, label) {
     var files = Array.from(inputEl.files || []);
     if (!files.length || !_evId) return;
@@ -9142,6 +9222,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // Passed as an explicit argument, not just window._evForceLabel — a second slot tapped
       // before this upload finishes must not be able to relabel these photos mid-flight.
       await uploadPhotos(files, label);
+      // 2026-09-28, per Dennis's report: a slot skipped, then uploaded into afterward,
+      // rendered greyed-out (opacity from the stale "skipped" flag) even though the real
+      // photo was there and correctly counted as done. The upload itself always worked —
+      // nothing ever cleared _evLocal.skipped once a real photo replaced the skip.
+      var _slotKey = _evSlotKeyForLabel(label);
+      if (_slotKey && _evLocal.skipped[_slotKey]) {
+        delete _evLocal.skipped[_slotKey];
+        _evSave({ skipped: _evLocal.skipped });
+      }
     } catch(e) {
       if (st) { st.style.color = '#ef4444'; st.textContent = 'Upload failed: ' + e.message; }
     } finally {
@@ -9395,7 +9484,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     };
     var id = _evId;
     window.closeEvalWizard();
-    if (typeof openProposalBuilder === 'function') openProposalBuilder(id);
+    if (typeof openProposalBuilder === 'function') openProposalBuilder(id, null, true);
   };
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -10005,7 +10094,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     };
     var id = _evId;
     window.closeEvalWizard();
-    if (typeof openProposalBuilder === 'function') openProposalBuilder(id);
+    if (typeof openProposalBuilder === 'function') openProposalBuilder(id, null, true);
   };
 
   function _evHardwareFieldsHtml() {
@@ -22709,7 +22798,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var _pType = sessionStorage.getItem('proposalType_' + id) || 'br';
       var _m = document.getElementById('proposalModal');
       if (_m) _m.remove();
-      openProposalBuilder(id, _pType);
+      openProposalBuilder(id, _pType, true);
     } catch (e) {
       alert('Save failed: ' + (e && e.message ? e.message : String(e)));
     }
@@ -23050,9 +23139,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return _proposalCatalogCache['all'];
   }
 
-  async function openProposalBuilder(id, typeOverride) {
+  async function openProposalBuilder(id, typeOverride, skipEvalGate) {
     var c = adminCustomers.find(function(x){ return x.id===id; });
     if (!c) return;
+
+    // Gate a FRESH pricing session on a finished Site Evaluation — only when there is
+    // no proposal on this lead yet (skipEvalGate is set by the three trusted hand-offs:
+    // the wizard's own "Build Proposal" buttons, which only ever fire once the wizard
+    // itself is done, and _propSaveBill's re-open of an already-in-progress builder).
+    // Reopening an EXISTING proposal (draft, sent, or accepted) is never blocked — the
+    // pricing conversation is already underway, and locking a rep out of an accepted
+    // deal's own pricing tool would be actively harmful. New Solar has its own separate
+    // Axia Site Evaluation, not this one, so it's excluded here too.
+    if (!skipEvalGate && c.lead_category !== 'new_solar' && !safeJson(c.proposal, null)) {
+      var _evGate = await _evGateCheck(id);
+      if (!_evGate.complete) { _evShowGateModal(id, _evGate.reason); return; }
+    }
 
     // ⚠️ Always reset first — opening the builder for a different customer must never
     // carry over the previous lead's bill_analysis into this one's savings math.
