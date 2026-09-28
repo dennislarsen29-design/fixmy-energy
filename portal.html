@@ -8983,7 +8983,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   function _evStepDone(step) {
     if (step.key === 'triage') {
       var a = _evLocal.answers || {};
-      return a.has_solar === 'yes' && (a.system_issue === 'yes' || a.system_issue === 'no');
+      return a.has_solar === 'yes' && !!a.ownership_status && (a.system_issue === 'yes' || a.system_issue === 'no');
     }
     if (step.key === 'powercycle' && !(_evLocal.answers || {}).pc_outcome) return false;
     if (step.key === 'hardware') {
@@ -9478,7 +9478,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         if (step.key === 'triage') {
           var ta = _evLocal.answers || {};
           if (!ta.has_solar) missing.unshift('does the home have solar?');
-          else if (ta.has_solar === 'yes' && !ta.system_issue) missing.unshift('is there an issue right now?');
+          else if (!ta.ownership_status) missing.unshift('leased, financed, or owned?');
+          else if (!ta.system_issue) missing.unshift('is there an issue right now?');
         }
         if (step.key === 'powercycle' && !(_evLocal.answers || {}).pc_outcome) missing.push('how the power cycle ended');
         h += '<div style="font-size:0.7rem;color:#f59e0b;text-align:center;margin-top:8px;">Still needed: ' + missing.join(', ') + '</div>';
@@ -9585,8 +9586,35 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
 
     if (a.has_solar === 'yes') {
+      // 2026-09-28, per Dennis: "Is the currently installed solar system Leased, Financed
+      // ... or Owned? This question is relevant because Financed or Owned tells us if we
+      // can link new panels to the existing hardware. Eventually once an Insurance Policy
+      // is added to the business model it will help us take over solar systems." Asked
+      // right after has_solar (same topic — the existing system), before the issue
+      // question — a rep should know who owns the hardware before diagnosing it.
       h += '<div style="background:rgba(255,255,255,0.035);border:1px solid rgba(255,255,255,0.1);border-radius:14px;padding:14px;margin-bottom:10px;">';
-      h += '<div style="font-size:0.88rem;font-weight:700;margin-bottom:3px;">2. Is there an issue with the system right now?</div>';
+      h += '<div style="font-size:0.88rem;font-weight:700;margin-bottom:3px;">2. Is the existing system leased, financed, or owned?</div>';
+      h += '<div style="font-size:0.7rem;color:#888;line-height:1.45;margin-bottom:9px;">Ask the homeowner directly if it isn&rsquo;t obvious. This decides whether new panels or a battery can tie onto what&rsquo;s already there.</div>';
+      h += '<div style="display:flex;gap:6px;flex-wrap:wrap;">';
+      [['leased', 'Leased'], ['financed', 'Financed &mdash; they own it, still paying'], ['owned', 'Owned &mdash; paid off']].forEach(function(o) {
+        var on = a.ownership_status === o[0];
+        h += '<button onclick="evAnswer(\'ownership_status\',\'' + o[0] + '\')" style="width:auto;margin:0;flex:1 1 auto;min-width:112px;padding:11px 12px;border-radius:100px;font-size:0.78rem;font-weight:700;cursor:pointer;'
+          + (on ? 'background:rgba(141,198,63,0.18);border:1px solid rgba(141,198,63,0.55);color:#8DC63F;'
+                : 'background:transparent;border:1px solid rgba(255,255,255,0.16);color:#999;') + '">' + o[1] + '</button>';
+      });
+      h += '</div>';
+      if (a.ownership_status === 'leased') {
+        h += '<div style="font-size:0.72rem;color:#f0b3b3;line-height:1.55;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.25);border-radius:10px;padding:10px 12px;margin-top:9px;">&#9888; <b>Leased</b> &mdash; the leasing company owns this equipment, not the homeowner. New panels or a battery generally can&rsquo;t be tied onto leased hardware; treat any addition as its own separate system and confirm who the lease is with before quoting a tie-on.</div>';
+      }
+      if (a.ownership_status === 'financed' || a.ownership_status === 'owned') {
+        h += '<div style="font-size:0.72rem;color:#8DC63F;line-height:1.55;background:rgba(141,198,63,0.07);border:1px solid rgba(141,198,63,0.3);border-radius:10px;padding:10px 12px;margin-top:9px;">&#10003; ' + (a.ownership_status === 'financed' ? 'Financed &mdash; the homeowner owns the hardware (with a loan against it).' : 'Owned free and clear.') + ' New panels or a battery can generally tie onto the existing system.</div>';
+      }
+      h += '</div>';
+    }
+
+    if (a.has_solar === 'yes' && a.ownership_status) {
+      h += '<div style="background:rgba(255,255,255,0.035);border:1px solid rgba(255,255,255,0.1);border-radius:14px;padding:14px;margin-bottom:10px;">';
+      h += '<div style="font-size:0.88rem;font-weight:700;margin-bottom:3px;">3. Is there an issue with the system right now?</div>';
       h += '<div style="font-size:0.7rem;color:#888;line-height:1.45;margin-bottom:9px;">Downed system, outage, or clear signs of production problems.</div>';
       h += _evYesNoPills('system_issue', '&#9888; Yes &mdash; something\'s wrong', '&#10003; No &mdash; working fine');
       h += '</div>';
@@ -9925,6 +9953,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var h = '';
     h += '<div style="font-size:1.05rem;font-weight:800;margin-bottom:4px;">&#9889; Upgrade Path</div>';
     h += '<div style="font-size:0.76rem;color:#999;line-height:1.5;margin-bottom:14px;">No active issue &mdash; the play is an upgrade, sized from what this home actually uses.</div>';
+
+    // Ownership decides whether the sizing below assumes a tie-on to the existing
+    // hardware or a genuinely separate system — see the triage step's own question 2.
+    var own = (_evLocal.answers || {}).ownership_status;
+    if (own === 'leased') {
+      h += '<div style="background:rgba(239,68,68,0.07);border:1px solid rgba(239,68,68,0.3);border-radius:14px;padding:13px;margin-bottom:11px;font-size:0.76rem;color:#f0b3b3;line-height:1.55;">&#9888; <b>Leased system</b> &mdash; this equipment belongs to the leasing company, not the homeowner. The sizing below is for a NEW, separate system, not an extension of what&rsquo;s installed. Confirm the lessor before quoting anything that assumes tying onto the existing hardware.</div>';
+    } else if (own === 'financed' || own === 'owned') {
+      h += '<div style="background:rgba(141,198,63,0.06);border:1px solid rgba(141,198,63,0.28);border-radius:14px;padding:13px;margin-bottom:11px;font-size:0.76rem;color:#c8e6a0;line-height:1.55;">&#10003; ' + (own === 'financed' ? 'Financed' : 'Owned') + ' &mdash; the homeowner owns this hardware, so new panels or a battery below can generally tie onto the existing system.</div>';
+    }
 
     if (!s.annualKwh) {
       h += '<div style="background:rgba(255,170,0,0.07);border:1px solid rgba(255,170,0,0.3);border-radius:14px;padding:14px;margin-bottom:11px;font-size:0.78rem;color:#ffd28a;line-height:1.55;">No usage data yet &mdash; go back and upload the utility bill (Quoya reads it in seconds), or enter a monthly bill amount on the lead. The builder still opens without it; the sizing just can\'t be pre-computed.</div>';
