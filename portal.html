@@ -7455,7 +7455,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return msg.includes('cors') || msg.includes('network') || msg.includes('failed to fetch') || msg.includes('load failed') || msg.includes('typeerror');
   }
 
-  async function uploadPhotos(files, forcedLabel) {
+  async function uploadPhotos(files, forcedLabel, statusElId) {
     if (!files.length || !currentJobId) return;
     // forcedLabel is captured ONCE here, in this call's own local scope — never read from
     // window._evForceLabel per-file inside the loop below. Two slot uploads fired in quick
@@ -7465,10 +7465,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // photos saved with the WRONG label and others with label:null. See canvassBkUpload/evUpload.
     var _forcedLabelForThisCall = (typeof forcedLabel !== 'undefined' && forcedLabel !== null) ? forcedLabel : (window._evForceLabel || null);
     // Status element differs by context: admin/ops job view uses #photoStatus,
-    // the Tech/Sales lead editor uses #sePhotoStatus. Falling back to a dummy
-    // keeps uploads working from any context — previously a missing #photoStatus
+    // the Tech/Sales lead editor uses #sePhotoStatus. An explicit statusElId (the Eval
+    // Wizard passes evSlotStatus_<key> — 2026-09-28, per Dennis: the upload progress was
+    // rendering in one frozen line above the whole slot list, not inside the slot it
+    // actually belonged to) takes priority when its element exists. Falling back to a
+    // dummy keeps uploads working from any context — previously a missing #photoStatus
     // silently aborted the whole upload while the caller still reported success.
-    var status = document.getElementById('photoStatus') || document.getElementById('sePhotoStatus')
+    var status = (statusElId && document.getElementById(statusElId))
+      || document.getElementById('photoStatus') || document.getElementById('sePhotoStatus')
       || document.getElementById('editorPhotoStatus')
       || { style: {}, textContent: '', innerHTML: '' };
     status.style.color = '#4a9eff';
@@ -9106,18 +9110,23 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     {
       key: 'hardware', title: 'Hardware', icon: '&#128295;',
       blurb: 'What is on the wall. Start with anything the customer already sent — you only fill the gaps.',
+      // multi:true on every slot here (2026-09-28, per Dennis: "there is not a multiple
+      // picture upload feature, it takes a really long time to load all photos") — each
+      // single-photo upload paid uploadPhotos()'s own storage-access preflight check on
+      // its own, so a rep shooting 6 hardware photos one at a time ran that preflight 6
+      // times. Selecting several at once now costs it exactly once.
       slots: [
-        { label: 'Inverter Photo',                key: 'inverter', icon: '&#128247;', required: true,
+        { label: 'Inverter Photo',                key: 'inverter', icon: '&#128247;', required: true, multi: true,
           hint: 'The whole unit, straight on, close enough to read the front label.' },
-        { label: 'Serial Number',                 key: 'serial',   icon: '&#128290;', required: true,
+        { label: 'Serial Number',                 key: 'serial',   icon: '&#128290;', required: true, multi: true,
           hint: 'Close-up of the sticker. The serial encodes the build date, which decides the warranty.' },
-        { label: 'Meter Photo',                   key: 'meter',    icon: '&#9201;',   required: true,
+        { label: 'Meter Photo',                   key: 'meter',    icon: '&#9201;',   required: true, multi: true,
           hint: 'The utility meter face, with the numbers readable.' },
-        { label: 'MSP Step Back Photo',           key: 'msp',      icon: '&#9889;',   required: false,
+        { label: 'MSP Step Back Photo',           key: 'msp',      icon: '&#9889;',   required: false, multi: true,
           hint: 'Main breaker panel with the door open — shows the amp rating and spare breaker space.' },
-        { label: 'Battery Placement Wall Photo',  key: 'battery',  icon: '&#128267;', required: false,
+        { label: 'Battery Placement Wall Photo',  key: 'battery',  icon: '&#128267;', required: false, multi: true,
           hint: 'Where a battery could physically go. Skip if there is nowhere obvious.' },
-        { label: 'Front of House',                key: 'front',    icon: '&#127968;', required: true,
+        { label: 'Front of House',                key: 'front',    icon: '&#127968;', required: true, multi: true,
           hint: 'From the street, showing the roof and array if visible.' }
       ]
     },
@@ -9142,8 +9151,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       key: 'consumption', title: 'Consumption', icon: '&#128196;',
       blurb: 'What the home uses and pays. This one is required — without it there is no savings math and no proposal.',
       slots: [
-        { label: 'Utility Bill', key: 'bill', icon: '&#128196;', required: true, pdf: true,
-          hint: 'PDF is best. A photo of the paper bill works if that is all there is.' }
+        { label: 'Utility Bill', key: 'bill', icon: '&#128196;', required: true, pdf: true, multi: true,
+          hint: 'PDF is best. A photo of the paper bill works if that is all there is — multiple photos are fine for a multi-page True-Up statement.' }
       ]
     },
     { key: 'upgrade',  title: 'Upgrade Path', icon: '&#9889;',   blurb: '', slots: [] },
@@ -9196,7 +9205,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (step.key === 'hardware') {
       if (!_evLocal.brand) return false;
     }
-    if (step.key === 'consumption' && !_evLocal.utility) return false;
+    // 2026-09-28, per Dennis: "the select Utility feature is not necessary" — no longer
+    // a hard requirement to advance. Quoya reads it straight off the bill the instant it
+    // uploads (evRunBillAnalysis); the picker below stays as a correction/fallback, not
+    // a gate. The Utility Bill PHOTO itself is still required via the slot check below.
     return step.slots.filter(function(s){ return s.required; }).every(_evSlotDone);
   }
   function _evRepName() { return (typeof bbRepName === 'function') ? bbRepName() : 'Rep'; }
@@ -9384,6 +9396,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
   window.evSetField = function(field, val) {
     _evLocal[field] = val;
+    // A rep tapping a utility pill by hand is a real correction — the pick must read
+    // as manual from here on, not still show Quoya's auto-fill styling.
+    if (field === 'utility') _evLocal.utilityAuto = false;
     var patch = {};
     if (field === 'brand')    patch.inverter_brand = val;
     if (field === 'model')    patch.inverter_model = val;
@@ -9422,23 +9437,27 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   window.evUpload = async function(inputEl, label) {
     var files = Array.from(inputEl.files || []);
     if (!files.length || !_evId) return;
-    var st = document.getElementById('evStatus');
-    if (st) { st.style.color = '#8DC63F'; st.textContent = 'Uploading ' + files.length + ' file' + (files.length > 1 ? 's' : '') + '…'; }
+    // 2026-09-28, per Dennis: the upload status used to show as one frozen line above
+    // the whole slot list. uploadPhotos() now writes its own real per-file progress
+    // ("Checking storage access...", "Uploading 1 of 3 — filename.jpg") directly into
+    // THIS slot's own status div — no separate pre-status line needed here anymore.
+    var _slotKey = _evSlotKeyForLabel(label);
+    var _statusId = _slotKey ? ('evSlotStatus_' + _slotKey) : 'evStatus';
     _evBusy = true;
     try {
       // Passed as an explicit argument, not just window._evForceLabel — a second slot tapped
       // before this upload finishes must not be able to relabel these photos mid-flight.
-      await uploadPhotos(files, label);
+      await uploadPhotos(files, label, _statusId);
       // 2026-09-28, per Dennis's report: a slot skipped, then uploaded into afterward,
       // rendered greyed-out (opacity from the stale "skipped" flag) even though the real
       // photo was there and correctly counted as done. The upload itself always worked —
       // nothing ever cleared _evLocal.skipped once a real photo replaced the skip.
-      var _slotKey = _evSlotKeyForLabel(label);
       if (_slotKey && _evLocal.skipped[_slotKey]) {
         delete _evLocal.skipped[_slotKey];
         _evSave({ skipped: _evLocal.skipped });
       }
     } catch(e) {
+      var st = document.getElementById(_statusId) || document.getElementById('evStatus');
       if (st) { st.style.color = '#ef4444'; st.textContent = 'Upload failed: ' + e.message; }
     } finally {
       _evBusy = false;
@@ -9505,6 +9524,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       };
       Object.keys(prevEdited).forEach(function(f){ if (prevEdited[f] && f in prev) merged[f] = prev[f]; });
       _evLocal.billAnalysis = merged;
+      // 2026-09-28, per Dennis: "the select Utility feature is not necessary — if
+      // Quoya can pull data from the bill, it should read the name and select the
+      // correct utility." Only fills a BLANK utility, never overwrites a rep's own
+      // pick — same "never clobber a human correction" rule as every other Quoya
+      // auto-fill in this file. UTILITY_HELP has no 'unknown' key, so an
+      // unidentifiable bill correctly leaves the picker exactly as it was.
+      if (out.utility_detected && UTILITY_HELP[out.utility_detected] && !_evLocal.utility) {
+        _evLocal.utility = out.utility_detected;
+        _evLocal.utilityAuto = true;
+        _evSave({ utility: out.utility_detected });
+      }
     } else {
       _evLocal.billAnalysis = { _err: failMsg, edited: prevEdited };
     }
@@ -9770,7 +9800,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (!ready && !hideNext) {
         var missing = step.slots.filter(function(s){ return s.required && !_evSlotDone(s); }).map(function(s){ return s.label; });
         if (step.key === 'hardware' && !_evLocal.brand) missing.unshift('inverter brand');
-        if (step.key === 'consumption' && !_evLocal.utility) missing.unshift('which utility');
         if (step.key === 'triage') {
           var ta = _evLocal.answers || {};
           if (!ta.has_solar) missing.unshift('does the home have solar?');
@@ -9807,13 +9836,23 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var fromCust = have.some(function(p){ return p.uploaded_by === 'customer'; });
       h += '<div style="font-size:0.7rem;color:#8DC63F;font-weight:700;margin-top:6px;">&#10003; ' + have.length + ' uploaded'
         + (fromCust ? ' <span style="color:#4a9eff;font-weight:600;">(customer sent this)</span>' : '') + '</div>';
-      h += '<div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:6px;">';
-      have.slice(0, 5).forEach(function(p){
-        h += '<img src="' + p.url + '" onclick="window.open(\'' + p.url + '\',\'_blank\')" style="width:44px;height:44px;object-fit:cover;border-radius:7px;cursor:pointer;border:1px solid rgba(255,255,255,0.15);">';
+      // 2026-09-28, per Dennis — "much too small to tell if that's the right photo".
+      // 44px -> 92px; still wraps to a grid on a wide slot with several photos, but a
+      // rep can now actually recognize what they're looking at without tapping through.
+      h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">';
+      have.slice(0, 8).forEach(function(p){
+        h += '<img src="' + p.url + '" loading="lazy" onclick="window.open(\'' + p.url + '\',\'_blank\')" style="width:92px;height:92px;object-fit:cover;border-radius:9px;cursor:pointer;border:1px solid rgba(255,255,255,0.15);">';
       });
       h += '</div>';
     }
     h += '</div></div>';
+
+    // 2026-09-28, per Dennis: "the uploading photo indication isn't showing in the
+    // correct area... put that status in the section the photo is uploading" — this
+    // div's id is a stable target (evSlotStatus_<key>) that uploadPhotos() writes its
+    // own real per-file progress into (see the statusElId param added there), instead
+    // of a single frozen line sitting above the whole slot list.
+    h += '<div id="evSlotStatus_' + slot.key + '" style="font-size:0.72rem;min-height:0;margin-top:8px;"></div>';
 
     h += '<div style="display:flex;gap:7px;margin-top:11px;">';
     h += '<label style="flex:1;text-align:center;padding:11px;background:' + (done ? 'rgba(255,255,255,0.06)' : 'rgba(141,198,63,0.14)') + ';border:1px solid ' + (done ? 'rgba(255,255,255,0.14)' : 'rgba(141,198,63,0.4)') + ';color:' + (done ? '#aaa' : '#8DC63F') + ';border-radius:100px;font-size:0.78rem;font-weight:700;cursor:pointer;">'
@@ -10349,10 +10388,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return h;
   }
 
+  // 2026-09-28, per Dennis: "the select Utility feature is not necessary — if Quoya
+  // can pull the data from the bill, they should read the name and select the correct
+  // utility." No longer a required pick — evRunBillAnalysis auto-fills this the moment
+  // the bill uploads (report_bill_analysis's utility_detected field). The pill row stays
+  // for two real jobs it still does: the "how to pull the bill" retrieval instructions
+  // (useful BEFORE the rep has the bill in hand, when there's nothing yet for Quoya to
+  // read), and a one-tap correction if Quoya reads it wrong.
   function _evUtilityHelpHtml() {
     var h = '<div style="margin-bottom:14px;">';
-    h += '<label style="display:block;font-size:0.68rem;color:#888;margin-bottom:5px;">Which utility? *</label>';
-    h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:11px;">';
+    h += '<label style="display:block;font-size:0.68rem;color:#888;margin-bottom:5px;">Which utility? <span style="font-weight:500;color:#666;">(auto-filled from the bill once uploaded &mdash; correct it here if needed)</span></label>';
+    h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;">';
     Object.keys(UTILITY_HELP).forEach(function(k){
       var on = _evLocal.utility === k;
       h += '<button onclick="evSetField(\'utility\',\'' + k + '\')" style="width:auto;margin:0;padding:9px 14px;border-radius:100px;font-size:0.76rem;font-weight:700;cursor:pointer;'
@@ -10361,6 +10407,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         + UTILITY_HELP[k].label + '</button>';
     });
     h += '</div>';
+    if (_evLocal.utility && _evLocal.utilityAuto) {
+      h += '<div style="font-size:0.68rem;color:#9b6de8;margin-bottom:11px;">&#10024; Filled by Quoya from the uploaded bill &mdash; tap a different one above if it&rsquo;s wrong.</div>';
+    } else {
+      h += '<div style="margin-bottom:11px;"></div>';
+    }
     var u = UTILITY_HELP[_evLocal.utility];
     if (u) {
       h += '<div style="background:rgba(255,170,0,0.05);border:1px solid rgba(255,170,0,0.22);border-radius:14px;padding:13px;">';
