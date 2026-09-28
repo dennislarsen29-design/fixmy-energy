@@ -419,8 +419,9 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
   // Finance mode only — a one-time cash price has no recurring figure for a periodic
   // incentive to reduce, so cash mode ignores both params (still passed for one consistent
   // call shape).
-  function compareCardHtml(opt, hasParticipate, financeMode, financeMonthly, sdcpApplied, perfCreditMonthly, perfLabel){
+  function compareCardHtml(opt, hasParticipate, financeMode, financeMonthly, sdcpApplied, perfCreditMonthly, perfLabel, touDeltaMonthly){
     perfCreditMonthly = perfCreditMonthly || 0;
+    touDeltaMonthly = touDeltaMonthly || 0;
     var billToday = parseFloat(CUST.monthly_bill) || 0;
     var mod = opt.savings && opt.savings.moderate;
     var monthlySavings = (mod && mod.monthly > 0) ? mod.monthly : 0;
@@ -439,8 +440,16 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
       if (perfCreditMonthly > 0) {
         rows += '<div class="compare-row"><div class="lbl">'+esc(perfLabel||'Performance Incentive')+'<span class="sub">applied as a monthly credit</span></div><div class="amt neg">&minus;'+moneyRound(perfCreditMonthly)+'/mo</div></div>';
       }
+      // touDeltaMonthly is the difference the rep's LIVE TOU-rate adjustment makes vs. the
+      // $0.31/kWh default already baked into financeMonthly's underlying savings figure —
+      // zero (no row shown) until the rep actually touches the rate in the Time-of-Use
+      // Savings card below. A positive delta means the adjusted rate implies MORE savings
+      // than assumed, so it reduces the total; a negative delta means less, so it raises it.
+      if (touDeltaMonthly) {
+        rows += '<div class="compare-row"><div class="lbl">Time-of-Use rate adjustment<span class="sub">vs. the standard $0.31/kWh assumption</span></div><div class="amt'+(touDeltaMonthly>0?' neg':'')+'">'+(touDeltaMonthly>=0?'&minus;':'+')+moneyRound(Math.abs(touDeltaMonthly))+'/mo</div></div>';
+      }
       totalLbl = 'Your new average monthly cost';
-      var newTotal = Math.max(0, financeMonthly + (estGridBill||0) - perfCreditMonthly);
+      var newTotal = Math.max(0, financeMonthly + (estGridBill||0) - perfCreditMonthly - touDeltaMonthly);
       totalAmt = moneyRound(newTotal);
       totalSuffix = '<small>/mo</small>';
       if (billToday > 0 && newTotal < billToday) {
@@ -533,6 +542,50 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
     renderPanel();
   }
   window.togglePerfIncentive = togglePerfIncentive;
+
+  // Time-of-Use arbitrage savings (2026-09-28, per Dennis — "not seeing any TOU savings
+  // showing on the proposal"). Quoya's own narrative in "The Situation" already TALKS about
+  // this ($0.36/kWh super off-peak store, $0.749/kWh peak discharge, a $0.31/kWh swing per
+  // kWh shifted) but never surfaced it as a real number anywhere a rep or customer could see
+  // it structurally — it was buried in prose. The dollar figure is already computed and
+  // saved once per option, server-side, at BATTERY_TOU_RATE_DEFAULT (portal.html's own
+  // standard $0.31/kWh assumption — see _propCalcBaseProduction) as part of opt.savings.*,
+  // and the raw kWh-shifted figure rides in opt.prod_data.batteryArbitrageKwh regardless of
+  // whether a dollar baseline (bill) was on file yet. touRate is a LIVE, rep-adjustable
+  // override of that rate, right here on the page — no trip back into the builder needed.
+  var BATTERY_TOU_RATE_DEFAULT = 0.31;
+  var touRate = BATTERY_TOU_RATE_DEFAULT;
+  function touSavingsAnnualFor(opt, rate){
+    var kwh = annualBatteryKwhFor(opt);
+    return kwh != null ? kwh * rate : null;
+  }
+  function setTouRate(v){
+    var n = parseFloat(v);
+    touRate = (isFinite(n) && n >= 0) ? n : BATTERY_TOU_RATE_DEFAULT;
+    renderPanel();
+  }
+  window.setTouRate = setTouRate;
+  // Renders the informational Time-of-Use Savings card, with the rate input live in it.
+  // Deliberately its own section from Ongoing Performance Value (SDCP/Tesla VPP) below it —
+  // TOU arbitrage is savings on the customer's OWN bill from shifting when they draw stored
+  // power; the Performance Value section is a separate, periodic grid-participation PAYMENT.
+  // Conflating the two into one number would misrepresent where the dollars actually come from.
+  function touSavingsHtml(opt){
+    if (!hasPowerwall(opt)) return '';
+    var kwh = annualBatteryKwhFor(opt);
+    var annual = touSavingsAnnualFor(opt, touRate);
+    var amtHtml = annual != null
+      ? '<span class="ov-amt">~'+moneyRound(annual)+'/yr <span style="font-weight:500;color:var(--muted);">(~'+moneyRound(annual/12)+'/mo)</span></span>'
+      : '<span class="ov-amt muted">Needs usage data to estimate</span>';
+    return '<div class="ov-section">'+
+      '<div class="ov-title">Time-of-Use Savings</div>'+
+      '<div class="ov-check" style="cursor:default;border-top:none;">'+
+        '<span>Shifting stored solar off $0.749/kWh peak rates<small>Stores midday solar at ~$0.36/kWh super off-peak, discharges 4&ndash;9 PM peak'+(kwh!=null?' &middot; ~'+kwh.toLocaleString()+' kWh/yr shifted':'')+'</small></span>'+
+        amtHtml+
+      '</div>'+
+      '<div class="ov-note">Quoya&rsquo;s arbitrage rate: <input type="number" id="touRateInput" value="'+touRate.toFixed(2)+'" step="0.01" min="0" style="width:58px;background:var(--white);border:1px solid var(--line);border-radius:5px;padding:2px 5px;font-size:0.72rem;font-family:inherit;" onchange="setTouRate(this.value)"/> $/kWh shifted (standard: $'+BATTERY_TOU_RATE_DEFAULT.toFixed(2)+') &mdash; adjust live if this account&rsquo;s real peak/off-peak spread differs. Already reflected in the finance-mode monthly total above; a one-time cash price has no recurring figure for it to reduce.</div>'+
+    '</div>';
+  }
 
   function setPayMode(mode){
     payMode = mode;
@@ -641,6 +694,14 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
     var perfMonthly = perfAnnual != null ? perfAnnual / 12 : 0;
     var perfLabel = perfIncentiveLabel();
 
+    // Same "compute once, thread everywhere" rule as perfMonthly above — the delta the
+    // rep's live touRate edit makes vs. the $0.31/kWh default already baked into
+    // opt.savings, so the finance-mode headline total and the Time-of-Use Savings card
+    // below can never disagree about the current rate.
+    var touBaseAnnual = touSavingsAnnualFor(opt, BATTERY_TOU_RATE_DEFAULT);
+    var touAdjustedAnnual = touSavingsAnnualFor(opt, touRate);
+    var touDeltaMonthly = (touBaseAnnual != null && touAdjustedAnnual != null) ? (touAdjustedAnnual - touBaseAnnual) / 12 : 0;
+
     var financeBlock = '';
     if (payMode === 'finance' && hasParticipate) {
       var scen = financeScenarios(opt);
@@ -651,7 +712,7 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
         '<div class="fin-sub">'+keys.map(function(k){
           return '<button class="fin-sub-btn'+(k===finSub?' active':'')+'" onclick="setFinSub(\''+k+'\')">'+scen[k].label+'</button>';
         }).join('')+'</div>'+
-        compareCardHtml(opt, hasParticipate, true, monthly, finSub==='sdcp', perfMonthly, perfLabel)+
+        compareCardHtml(opt, hasParticipate, true, monthly, finSub==='sdcp', perfMonthly, perfLabel, touDeltaMonthly)+
         '<div class="fin-note">'+s.note+estimateNote+'</div>'+
         '<div class="fine-print">Financed through Wheelhouse Credit Union &middot; '+(WHEELHOUSE_APR*100).toFixed(2)+'% APR &middot; '+WHEELHOUSE_TERM_YEARS+'-year term. Payment example is an estimate based on the figures above and is not an approval or offer of credit — final terms are set directly by Wheelhouse CU after application. Rebates and incentives referenced here are not guaranteed and are subject to program qualification.</div>';
     } else {
@@ -676,7 +737,7 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
         participateInfoHtml +
         '<div class="fine-print">This estimate is preliminary and for illustration only — final pricing is confirmed after a full site evaluation. Not a bid for work or a binding agreement.</div>';
     }
-    financeBlock += ongoingValueHtml(opt);
+    financeBlock += touSavingsHtml(opt) + ongoingValueHtml(opt);
 
     // Option list always reflects the price for the CURRENTLY ACTIVE pay mode — this was
     // the actual bug in the report: it showed the Participate price even while the Cash tab's
