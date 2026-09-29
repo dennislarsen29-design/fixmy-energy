@@ -23634,6 +23634,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var _stCatRow  = _stPrimary && _propCatItems.find(function(r){ return r.option_key === _stPrimary.id; });
     var serviceType = (_stCatRow && _stCatRow.service_type) || (document.getElementById('prop_service_type')||{}).value || 'battery_retrofit';
     var insight = ((document.getElementById('propInsightText')||{}).value || '').trim() || null;
+    // ⚠️ 2026-09-29, found while auditing the Jobs tab — generateProposalInsight's own
+    // catch block writes a raw JS error ("Error: The string did not match the expected
+    // pattern.") straight into this SAME textarea on a failed AI call, with no visual
+    // distinction from real content. proposal-preview.html's ensureInsight() trusts a
+    // saved proposal.insight unconditionally and renders it verbatim as the customer's
+    // "Problem: ..." headline — found live on Christopher Marsh's draft proposal, never
+    // sent, but nothing here would have stopped a rep from sending it. Never let a
+    // failed-generation string reach a customer-facing proposal; null it out instead,
+    // which already has a clean, honest fallback everywhere it's consumed ("Ask your
+    // rep what this evaluation found").
+    if (insight && /^(Error:|Could not generate insight:)/.test(insight)) insight = null;
 
     if (sendBtn) { sendBtn.disabled = true; sendBtn.textContent = 'Saving…'; }
 
@@ -25767,6 +25778,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           h += '<span style="font-size:0.75rem;color:#ddd;font-weight:700;">$'+costSum.toLocaleString(undefined,{maximumFractionDigits:2})+' total</span>';
           h += '<button onclick="edAddCost(\''+cid+'\')" style="margin-left:auto;padding:4px 10px;background:rgba(249,115,22,0.1);border:1px solid rgba(249,115,22,0.3);border-radius:100px;color:#f97316;font-size:0.68rem;font-weight:700;cursor:pointer;">+ Add Cost</button>';
           h += '</div>';
+          // ⚠️ Real, recurring failure mode (Antoinette Kruse/David Witthoft/Jan Burrell/
+          // Arturo Ma/Gerald McGee/Christopher Marsh, all 2026-08-30 through today) — a
+          // battery retrofit deal whose sold_type was never flipped from 'diagnostic'
+          // renders THIS panel, and Revenue stays $0 no matter how many Sub Sheet costs
+          // get added here, since a Cosmic-direct battery deal has no real payments rows.
+          // Surfaced right where the mistake happens, not buried elsewhere.
+          h += '<div style="margin-top:6px;padding:8px 10px;background:rgba(74,158,255,0.05);border:1px dashed rgba(74,158,255,0.3);border-radius:8px;font-size:0.68rem;color:#888;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">';
+          h += '<span>Actually a Powerwall / battery retrofit deal? This panel will show $0 Revenue no matter what you add above.</span>';
+          h += '<button onclick="edConvertToBatteryRetrofit(\''+cid+'\')" style="margin-left:auto;padding:4px 10px;background:rgba(74,158,255,0.12);border:1px solid rgba(74,158,255,0.4);border-radius:100px;color:#4a9eff;font-size:0.68rem;font-weight:700;cursor:pointer;white-space:nowrap;">&#128267; Convert to Battery Retrofit</button>';
+          h += '</div>';
           costs.forEach(function(x){
             h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.72rem;color:#aaa;padding:4px 0;border-top:1px solid rgba(255,255,255,0.05);flex-wrap:wrap;">';
             h += '<span style="color:#ddd;flex:1;">'+esc(x.label)+'</span>';
@@ -25977,6 +25998,55 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
     await pc.from('job_costs').delete().eq('id', id);
     edLoadAccounting();
+  };
+  // ⚠️ 2026-09-29, per Dennis (Christopher Marsh: "Revenue isn't calculating correctly"
+  // after adding Sub Costs) — root cause traced to a real, systemic gap: sold_type is
+  // NEVER set to 'battery_retrofit' anywhere in this file. The Progress Step dropdown's
+  // own stepImpliesSold logic (saveLeadEditor) only ever derives sold_type='diagnostic'
+  // when a lead crosses into the "sold" step range — moving a real battery-retrofit
+  // deal's step to 6 ("BR Sold") auto-stamps it 'diagnostic' instead, which routes
+  // edLoadAccounting into the WRONG (Sub Sheet job_costs) accounting branch. An admin
+  // adding real Sub Sheet costs there — the intuitive place, and the only "+ Add Cost"
+  // button visible — populates Redline while Revenue stays $0 (a battery-retrofit deal
+  // legitimately has no real `payments` rows under the Cosmic-direct model), producing
+  // exactly the reported "$0 – $12,500 = $0" card. Every prior battery-retrofit deal in
+  // this codebase's history (Antoinette Kruse, David Witthoft, Jan Burrell, Arturo Ma,
+  // Gerald McGee, now Christopher Marsh) needed a one-off manual SQL fix for this same
+  // reason. This button is the real, permanent fix — a first-class way to flip a lead
+  // into the correct accounting model instead of relying on step-dropdown side effects.
+  window.edConvertToBatteryRetrofit = async function(cid) {
+    var rec = (adminCustomers||[]).find(function(x){ return x.id === cid; }) || {};
+    var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+    // If Sub Sheet cost lines were already added under the wrong model (the exact
+    // mistake this button exists to prevent), sum them as the suggested Redline so
+    // that real, already-entered dealer-cost data isn't just thrown away.
+    var existingRes = await pc.from('job_costs').select('id,amount').eq('customer_id', cid);
+    var existingCosts = existingRes.data || [];
+    var suggestedRedline = existingCosts.reduce(function(t,x){ return t + (parseFloat(x.amount)||0); }, 0);
+    var warn = existingCosts.length
+      ? ('\n\n' + existingCosts.length + ' existing Sub Sheet cost line(s) totaling $' + suggestedRedline.toLocaleString() + ' will be removed and folded into the Redline you enter next.')
+      : '';
+    if (!confirm('Convert this lead to a Battery Retrofit sale?\n\nThis switches it to the flat Revenue/Redline accounting a Cosmic-direct battery deal uses, replacing the Sub Sheet job-costs panel below.' + warn)) return;
+    var revenueStr = prompt('Revenue — the real sold System Price ($, before Participate):', rec.br_revenue || '');
+    if (!revenueStr) return;
+    var revenue = parseFloat(revenueStr);
+    if (isNaN(revenue) || revenue <= 0) { alert('Enter a real dollar amount.'); return; }
+    var redlineStr = prompt('Redline — real dealer cost ($):', (suggestedRedline > 0 ? suggestedRedline : (rec.br_redline || '')) + '');
+    if (!redlineStr) return;
+    var redline = parseFloat(redlineStr);
+    if (isNaN(redline) || redline < 0) { alert('Enter a real dollar amount.'); return; }
+    var patch = { sold_type: 'battery_retrofit', br_revenue: revenue, br_redline: redline };
+    if (!rec.sold_at) patch.sold_at = new Date().toISOString();
+    if ((parseInt(rec.step)||1) < 6) patch.step = 6;
+    var { error } = await pc.from('customers').update(patch).eq('id', cid);
+    if (error) { alert('Could not convert: ' + error.message); return; }
+    if (existingCosts.length) await pc.from('job_costs').delete().eq('customer_id', cid);
+    Object.assign(rec, patch);
+    delete _fixmyCommCache[cid];
+    var stepSel = document.getElementById('edStep');
+    if (stepSel && patch.step) stepSel.value = patch.step;
+    edLoadAccounting();
+    alert('Converted — Revenue $' + revenue.toLocaleString() + ', Redline $' + redline.toLocaleString() + '. Use "Lock in as Sold → Payroll" below once you\'re ready to record the commission.');
   };
   function _repIdByName(name){ var n=(name||'').trim().toLowerCase(); if(!n) return null; for (var k in REP_NAMES){ if (REP_NAMES[k].toLowerCase()===n) return k; } return null; }
   // Lock in the FixMy commission split as SOLD → Payroll. Recomputes net authoritatively at
@@ -27413,7 +27483,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var titleConfVal=titleConfRaw==='true'?true:titleConfRaw==='false'?false:null;
     var setterLabel=repName||setter||null;
     var initialNotes = fullNotes ? JSON.stringify([{ts:new Date().toISOString(),by:setterLabel?'Setter: '+setterLabel:'Setter',text:fullNotes}]) : null;
-    var newLead={first_name:first,last_name:(document.getElementById('nlLast').value||null),email:email,phone:phone,address:addr,monthly_bill:bill||null,access_code:digits,step:1,notes:initialNotes,rep_id:repId||null,lead_category:leadCat,solar_status:initSolarStatus,diagnostic_date:apptISO,arrival_window:null,arrival_end:apptEndISO,lead_source:nlLeadSrcEl?nlLeadSrcEl.value||null:null,title_owner:titleOwnerVal,apn:titleApnVal,title_confirmed:titleConfVal};
+    // ⚠️ 2026-09-29, per Dennis ("Setter Ronda isn't automatically getting loaded — I
+    // had to go back and add her") — setterLabel was already correctly computed and
+    // used for the notes text, the in-memory adminCustomers patch below, and the
+    // Sheets backup row, but was NEVER included in the actual customers.insert(). The
+    // DB row's own setter_name column landed NULL every time regardless of who
+    // captured the lead, so it only ever "worked" until the next fresh page load
+    // re-read the real (unset) column from Supabase. Fixed by writing it here too —
+    // the one place it was missing.
+    var newLead={first_name:first,last_name:(document.getElementById('nlLast').value||null),email:email,phone:phone,address:addr,monthly_bill:bill||null,access_code:digits,step:1,notes:initialNotes,rep_id:repId||null,setter_name:setterLabel,lead_category:leadCat,solar_status:initSolarStatus,diagnostic_date:apptISO,arrival_window:null,arrival_end:apptEndISO,lead_source:nlLeadSrcEl?nlLeadSrcEl.value||null:null,title_owner:titleOwnerVal,apn:titleApnVal,title_confirmed:titleConfVal};
     var btn=document.querySelector('#newLeadPanel .lead-btn.lime');
     if(btn){btn.textContent='Creating...';btn.disabled=true;}
     try{
