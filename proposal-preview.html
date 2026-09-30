@@ -363,9 +363,31 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
   // unknown — that overstates the real, usage-capped figure by as much as 13x on a light-use
   // home (confirmed against Lowell Jennings' real record: capped to 548 of a 7,391 theoretical
   // max). Missing data means an honest "can't estimate yet" message, never an inflated guess.
+  // Solar the inverter swap brings back (kWh/yr) — 0 unless the inverter is marked down and the
+  // system size is known. The battery does NOT produce anything; it only shifts energy, so its
+  // shifted kWh are capped against the grid use LEFT after this (below).
+  var SOLAR_KWH_PER_KW_YR = 1600;
+  function solarRecoveredKwh(opt){
+    var use = PROP && PROP.usage_kwh > 0 ? PROP.usage_kwh : 0;
+    var kw = PROP && parseFloat(PROP.system_kw) > 0 ? parseFloat(PROP.system_kw) : 0;
+    if (!(PROP && PROP.inverter_down) || !(kw > 0) || !(use > 0) || !/inverter/.test(componentText(opt))) return 0;
+    return Math.round(Math.min(kw * SOLAR_KWH_PER_KW_YR, use * 0.9));
+  }
   function annualBatteryKwhFor(opt){
     var pd = opt.prod_data;
-    if (pd && pd.batteryArbitrageKwh > 0) return pd.batteryArbitrageKwh;
+    var base = null;
+    if (pd && pd.batteryArbitrageKwh > 0) base = pd.batteryArbitrageKwh;
+    else base = annualBatteryKwhRaw(opt);
+    if (base == null) return null;
+    // A battery only moves energy, so it can't shift more than 60% of the grid use that is
+    // left once the restored solar has covered its share.
+    var sol = solarRecoveredKwh(opt);
+    var use = PROP && PROP.usage_kwh > 0 ? PROP.usage_kwh : 0;
+    if (sol > 0 && use > 0) base = Math.min(base, Math.round(0.6 * Math.max(0, use - sol)));
+    return base;
+  }
+  function annualBatteryKwhRaw(opt){
+    var pd = opt.prod_data;
     // No saved production data: fall back to a rep-entered annual usage (PROP.usage_kwh), capped
     // at 60% of usage exactly like the builder's own math — never an uncapped theoretical max.
     var units = powerwallUnitCountFor(opt);
@@ -510,7 +532,7 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
     var cashPriceForFoot = opt.price;
 
     if (financeMode) {
-      var estGridBill = billToday > 0 ? Math.max(0, Math.round(billToday - monthlySavings)) : null;
+      var estGridBill = billToday > 0 ? Math.max(monthlySavings > 0 ? MIN_MONTHLY_CHARGE : 0, Math.round(billToday - monthlySavings)) : null;
       if (billToday > 0) {
         rows += '<div class="compare-row"><div class="lbl">Your bill today<span class="sub">before any upgrade</span></div><div class="amt">'+moneyRound(billToday)+'/mo</div></div>';
       }
@@ -551,7 +573,7 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
       cashPriceForFoot = broadcastPrice;
       if (billToday > 0) {
         rows += '<div class="compare-row"><div class="lbl">Your bill today</div><div class="amt">'+moneyRound(billToday)+'/mo</div></div>';
-        var afterBill = Math.max(0, Math.round(billToday - monthlySavings));
+        var afterBill = Math.max(monthlySavings > 0 ? MIN_MONTHLY_CHARGE : 0, Math.round(billToday - monthlySavings));
         rows += '<div class="compare-row"><div class="lbl">Your bill after solar<span class="sub">estimated</span></div><div class="amt amt neg">'+moneyRound(afterBill)+'/mo</div></div>';
       }
       if (cashSdcp) {
@@ -650,6 +672,7 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
   // whether a dollar baseline (bill) was on file yet. touRate is a LIVE, rep-adjustable
   // override of that rate, right here on the page — no trip back into the builder needed.
   var BATTERY_TOU_RATE_DEFAULT = 0.31;
+  var MIN_MONTHLY_CHARGE = 10; // SDG&E base services charge — a bill never reaches $0
   var touRate = BATTERY_TOU_RATE_DEFAULT;
   function touSavingsAnnualFor(opt, rate){
     var kwh = annualBatteryKwhFor(opt);
@@ -738,7 +761,6 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
   // be calculated, not just narrated. Every input is explicit and editable on the page (system kW,
   // inverter down?, current working battery kWh) and saved on the proposal; nothing is invented —
   // a missing input hides that line rather than guessing.
-  var SOLAR_KWH_PER_KW_YR = 1600; // same constant the builder's production math uses
   function effectiveRate(){
     var bill = parseFloat(CUST.monthly_bill) || 0;
     var use = PROP && PROP.usage_kwh > 0 ? PROP.usage_kwh : 0;
@@ -749,11 +771,8 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
     var use = PROP && PROP.usage_kwh > 0 ? PROP.usage_kwh : 0;
     var kw = PROP && parseFloat(PROP.system_kw) > 0 ? parseFloat(PROP.system_kw) : 0;
     out.kw = kw;
-    var hasInv = /inverter/.test(componentText(opt));
-    if (hasInv && PROP && PROP.inverter_down && kw > 0 && out.rate > 0) {
-      out.solarKwh = Math.round(Math.min(kw * SOLAR_KWH_PER_KW_YR, use * 0.9));
-      out.solarMonthly = Math.round(out.solarKwh * out.rate / 12);
-    }
+    var sk = solarRecoveredKwh(opt);
+    if (sk > 0 && out.rate > 0) { out.solarKwh = sk; out.solarMonthly = Math.round(sk * out.rate / 12); }
     if (hasPowerwall(opt)) {
       var units = powerwallUnitCountFor(opt) || 1;
       out.units = units;
@@ -765,7 +784,7 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
     out.totalMonthly = out.solarMonthly + out.touMonthly;
     // The upgrade can't remove more than the customer pays today.
     var billMo = parseFloat(CUST.monthly_bill) || 0;
-    if (billMo > 0 && out.totalMonthly > billMo) out.totalMonthly = Math.round(billMo);
+    if (billMo > 0 && out.totalMonthly > billMo - MIN_MONTHLY_CHARGE) out.totalMonthly = Math.max(0, Math.round(billMo - MIN_MONTHLY_CHARGE));
     return out;
   }
   function improvementsHtml(opt){
@@ -778,7 +797,7 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
     if (im.touMonthly > 0) {
       rows += '<div class="im-row"><div class="im-h"><span>Battery upgrade &mdash; load shifting</span><span class="im-amt">~'+moneyRound(im.touMonthly)+'/mo</span></div>'+
         '<div class="im-d">'+(im.from > 0 ? 'Storage goes from '+im.from+' kWh (not working) to '+im.to+' kWh' : 'You gain '+im.to+' kWh of working storage')+
-        '. It holds midday solar and super-off-peak power and covers the 4&ndash;9 PM peak, shifting about '+im.touKwh.toLocaleString()+' kWh a year off the most expensive rates.</div></div>';
+        '. The battery doesn&rsquo;t make power &mdash; it stores solar and super-off-peak power and uses it during the 4&ndash;9 PM peak, shifting about '+im.touKwh.toLocaleString()+' kWh a year off the most expensive rates.</div></div>';
     }
     if (!rows) return '';
     var assume = CUSTOMER_MODE ? '' :
