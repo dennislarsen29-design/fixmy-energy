@@ -760,6 +760,7 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
   function creditMathHtml(opt){
     var credit = diagCreditFor(opt);
     if (!(credit > 0)) return '';
+    // opt.price is already net of a diagnostic_credit line item (price = sum of lines incl. the negative credit).
     var net = opt.price || 0;
     return '<div class="credit-card"><div class="cc-title">Your Diagnostic Fee credit</div>'+
       '<div class="cc-row"><span>Total before credit</span><span>'+money(net + credit)+'</span></div>'+
@@ -775,6 +776,8 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
   // be calculated, not just narrated. Every input is explicit and editable on the page (system kW,
   // inverter down?, current working battery kWh) and saved on the proposal; nothing is invented —
   // a missing input hides that line rather than guessing.
+  function nemVersion(){ var v = parseInt(PROP && PROP.nem_version, 10); return (v === 1 || v === 2 || v === 3) ? v : 2; }
+  function postfixBillFor(){ var v = parseFloat(PROP && PROP.postfix_monthly_bill); return v > 0 ? v : 15; }
   function effectiveRate(){
     var bill = parseFloat(CUST.monthly_bill) || 0;
     var use = PROP && PROP.usage_kwh > 0 ? PROP.usage_kwh : 0;
@@ -796,8 +799,21 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
       if (k != null) { out.touKwh = k; out.touMonthly = Math.round(k * BATTERY_TOU_RATE_DEFAULT / 12); }
     }
     out.totalMonthly = out.solarMonthly + out.touMonthly;
-    // The upgrade can't remove more than the customer pays today.
     var billMo = parseFloat(CUST.monthly_bill) || 0;
+    // Remaining bill once a down inverter is restored is NEM-version dependent (2026-09-30, per Dennis).
+    // Under NEM 1.0/2.0 the restored array nets against usage, so the bill falls to roughly the
+    // customer's own true-up history ($9-21/mo for Becky; default = midpoint, editable, saved on the
+    // proposal). Battery shifting adds no bill value there (it is backup + VPP). NEM 3.0 has no anchor
+    // (export credits are low), so it keeps the production x rate model below.
+    out.nem = nemVersion();
+    if (sk > 0 && billMo > 0 && out.nem !== 3) {
+      out.remaining = Math.max(MIN_MONTHLY_CHARGE, postfixBillFor());
+      out.solarMonthly = Math.max(0, Math.round(billMo - out.remaining));
+      out.touMonthly = 0; out.touKwh = out.touKwh;
+      out.totalMonthly = out.solarMonthly;
+      return out;
+    }
+    // The upgrade can't remove more than the customer pays today.
     if (billMo > 0 && out.totalMonthly > billMo - MIN_MONTHLY_CHARGE) out.totalMonthly = Math.max(0, Math.round(billMo - MIN_MONTHLY_CHARGE));
     return out;
   }
@@ -817,13 +833,15 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
     var assume = CUSTOMER_MODE ? '' :
       '<div class="im-assume">Assumptions (saved on this proposal): system <input type="number" step="0.1" min="0" value="'+(PROP.system_kw||'')+'" onchange="setImpField(\'system_kw\',this.value)"/> kW &middot; '+
       '<label><input type="checkbox" '+(PROP.inverter_down?'checked':'')+' onchange="setImpField(\'inverter_down\',this.checked)"/> inverter currently down</label> &middot; '+
-      'current working battery <input type="number" step="0.5" min="0" value="'+(PROP.current_battery_kwh||'')+'" onchange="setImpField(\'current_battery_kwh\',this.value)"/> kWh</div>';
+      'current working battery <input type="number" step="0.5" min="0" value="'+(PROP.current_battery_kwh||'')+'" onchange="setImpField(\'current_battery_kwh\',this.value)"/> kWh &middot; '+
+      'NEM <select onchange="setImpField(\'nem_version\',this.value)">'+[1,2,3].map(function(n){return '<option value="'+n+'"'+(nemVersion()===n?' selected':'')+'>'+n+'.0</option>';}).join('')+'</select> &middot; '+
+      'bill after fix (NEM 1/2) $<input type="number" step="1" min="0" value="'+postfixBillFor()+'" onchange="setImpField(\'postfix_monthly_bill\',this.value)"/>/mo</div>';
     return '<div class="improve-card"><div class="im-title">What this upgrade changes for you</div>'+rows+
       '<div class="im-total"><span>Estimated reduction in your monthly grid cost</span><span>~'+moneyRound(im.totalMonthly)+'/mo</span></div>'+
       '<div class="im-assume">Estimates from your bill and system size &mdash; confirmed in your usage review.</div>'+assume+'</div>';
   }
   async function setImpField(k, v){
-    var val = (k === 'inverter_down') ? !!v : (parseFloat(v) > 0 ? parseFloat(v) : 0);
+    var val = (k === 'inverter_down') ? !!v : (k === 'nem_version') ? parseInt(v,10) : (parseFloat(v) > 0 ? parseFloat(v) : 0);
     var patch = {}; patch[k] = val;
     try { await savePropField(patch); } catch(e) { alert('Could not save: '+e.message); }
     renderPanel(); renderBottomBar();
