@@ -9671,36 +9671,53 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (_evBillAnalyzing || !_evId) return;
     var bills = _evHas('Utility Bill');
     if (!bills.length) return;
-    // ⚠️ job_photos loads via an unordered .select() (loadJobPhotos) — array position is
-    // NOT upload order. Sort explicitly by id (bigint, autoincrement) so a re-uploaded
-    // bill is actually the one analyzed, not whichever row Postgres happened to return
-    // first. Same "never trust incidental array order" rule documented repeatedly
-    // elsewhere in this file for unordered Supabase lookups.
-    var bill = bills.slice().sort(function(a, b) {
+    // ⚠️ job_photos loads via an unordered .select() — array position is NOT upload order.
+    // Sort explicitly by id (newest first). 2026-09-30: a home can have SEVERAL bill files
+    // (Becky Phan uploaded a NEM true-up statement AND a regular monthly bill) and each says
+    // something different, so every file (newest 3) is read and merged below instead of
+    // trusting only the newest one.
+    var sorted = bills.slice().sort(function(a, b) {
       var ai = Number(a.id) || 0, bi = Number(b.id) || 0;
       if (ai !== bi) return bi - ai;
       return String(b.Uploaded_at || '').localeCompare(String(a.Uploaded_at || ''));
-    })[0];
-    if (!bill || !bill.url) return;
+    }).filter(function(x){ return x && x.url; }).slice(0, 3);
+    if (!sorted.length) return;
     _evBillAnalyzing = true;
     _evRender();
-    var out = null, failMsg = '';
-    try {
-      var r = await fetch('/.netlify/functions/eval-bill-analysis', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          billUrl: bill.url,
-          utility: (UTILITY_HELP[_evLocal.utility] || {}).label || _evLocal.utility,
-          lead: { address: _evRec ? (_evRec.address || '') : '' }
-        })
-      });
-      out = await r.json().catch(function(){ return null; });
-      if (!r.ok || !out || out.readable === false) {
-        failMsg = (out && out.notes) || 'Quoya could not read this bill — enter the figures manually below.';
-        out = null;
+    var failMsg = '';
+    async function readOne(bill) {
+      try {
+        var r = await fetch('/.netlify/functions/eval-bill-analysis', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            billUrl: bill.url,
+            utility: (UTILITY_HELP[_evLocal.utility] || {}).label || _evLocal.utility,
+            lead: { address: _evRec ? (_evRec.address || '') : '' }
+          })
+        });
+        var o = await r.json().catch(function(){ return null; });
+        if (!r.ok || !o || o.readable === false) { failMsg = failMsg || (o && o.notes) || 'Quoya could not read this bill — enter the figures manually below.'; return null; }
+        return o;
+      } catch (e) { failMsg = failMsg || 'Couldn\'t reach Quoya — enter the figures manually below.'; return null; }
+    }
+    var reads = (await Promise.all(sorted.map(readOne))).filter(Boolean);
+    // Annual figures: prefer a true-up statement (real 12-month numbers), else the newest read.
+    // Monthly figure: the newest read that is a regular monthly bill — a true-up's "monthly"
+    // number is only the net-metering charge, not what the household actually pays a month.
+    var out = null;
+    if (reads.length) {
+      var tu = reads.filter(function(x){ return x.source === 'true_up'; })[0];
+      var mb = reads.filter(function(x){ return x.source !== 'true_up' && x.monthly_amount_paid > 0; })[0];
+      out = Object.assign({}, tu || reads[0]);
+      if (mb) {
+        out.monthly_amount_paid = mb.monthly_amount_paid;
+        out.monthly_source = 'monthly_bill';
+        if (!(tu)) { out.annual_amount_paid = mb.annual_amount_paid; out.annual_kwh = mb.annual_kwh; out.avg_rate_per_kwh = mb.avg_rate_per_kwh; }
+        if (mb.care) out.care = true; if (mb.fera) out.fera = true; if (mb.medical_baseline) out.medical_baseline = true;
+        if (!out.utility_detected) out.utility_detected = mb.utility_detected;
+      } else {
+        out.monthly_source = (out.source === 'true_up') ? 'true_up' : 'monthly_bill';
       }
-    } catch (e) {
-      failMsg = 'Couldn\'t reach Quoya — enter the figures manually below.';
     }
     // A re-read (bill replaced, or the rep tapped "Re-read bill") must not clobber a
     // field the rep already corrected by hand — merge in only what wasn't edited.
@@ -9709,7 +9726,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (out) {
       var merged = {
         annual_kwh: out.annual_kwh, avg_rate_per_kwh: out.avg_rate_per_kwh,
-        monthly_amount_paid: out.monthly_amount_paid, annual_amount_paid: out.annual_amount_paid,
+        monthly_amount_paid: out.monthly_amount_paid, annual_amount_paid: out.annual_amount_paid, monthly_source: out.monthly_source || null,
         care: !!out.care, fera: !!out.fera, medical_baseline: !!out.medical_baseline,
         source: out.source, confidence: out.confidence, notes: out.notes || '',
         // 2026-09-30 — the "show the math" build. Read-only, not individually
@@ -9737,8 +9754,26 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       _evLocal.billAnalysis = { _err: failMsg, edited: prevEdited };
     }
     _evSave({ bill_analysis: _evLocal.billAnalysis });
+    // Per Dennis (2026-09-30): a setter's intake note is only a stand-in until a real bill is
+    // on file. Once Quoya has read a regular monthly bill, its figure REPLACES customers.monthly_bill.
+    // A true-up-only read is deliberately NOT used (its "monthly" number is net-metering only).
+    try { await window._syncMonthlyBillFromAnalysis(_evId, _evLocal.billAnalysis, _evRec); } catch(e) {}
     _evBillAnalyzing = false;
     _evRender();
+  };
+
+  window._syncMonthlyBillFromAnalysis = async function(custId, ba, rec) {
+    if (!ba || ba._err || (ba.edited && ba.edited.monthly_amount_paid)) return false;
+    if (ba.monthly_source !== 'monthly_bill') return false;
+    var v = parseFloat(ba.monthly_amount_paid);
+    if (!(v > 0)) return false;
+    var cur = parseFloat(rec && rec.monthly_bill);
+    if (cur > 0 && Math.abs(cur - v) < 0.5) return false;
+    var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var up = await c2.from('customers').update({ monthly_bill: Math.round(v) }).eq('id', custId);
+    if (up.error) return false;
+    if (rec) rec.monthly_bill = Math.round(v);
+    return true;
   };
 
   // A rep correcting/filling in a field by hand — mirrors Quoya Assist's field-lock
@@ -10469,7 +10504,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // point, never a quote — same honesty rule as every estimate in this file.
   function _evUpgradeSizing() {
     var ba = (_evLocal.billAnalysis && !_evLocal.billAnalysis._err) ? _evLocal.billAnalysis : null;
-    var billMo = parseFloat(_evRec && _evRec.monthly_bill) || (ba && ba.monthly_amount_paid) || 0;
+    var billMo = (ba && ba.monthly_source === 'monthly_bill' && ba.monthly_amount_paid > 0) ? ba.monthly_amount_paid : (parseFloat(_evRec && _evRec.monthly_bill) || (ba && ba.monthly_amount_paid) || 0);
     var fromBill = !!(ba && ba.annual_kwh);
     var annualKwh = fromBill ? ba.annual_kwh : (billMo ? Math.round(billMo * 12 / 0.453) : 0);
     var daily = annualKwh ? annualKwh / 365 : 0;
@@ -11426,6 +11461,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // Quoya's first guess.
   function _propUsageFromBill(bill, fallbackRate) {
     var ba = _propBillAnalysis;
+    // A NEM true-up statement reports NET usage after solar offset (Becky Phan: 109 kWh on a
+    // home paying ~$490/mo) — it is not household consumption, so never use it as usage/rate.
+    if (ba && ba.source === 'true_up') ba = null;
     var rate = (ba && typeof ba.avg_rate_per_kwh === 'number' && ba.avg_rate_per_kwh > 0) ? ba.avg_rate_per_kwh : fallbackRate;
     var fromBill = !!(ba && typeof ba.annual_kwh === 'number' && ba.annual_kwh > 0);
     var kwh = fromBill ? ba.annual_kwh : (bill > 0 ? Math.round(bill * 12 / rate) : 0);
@@ -23805,6 +23843,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       } catch (e) { /* job_photos lookup/read failed — falls back to the upload prompt below */ }
     }
 
+    // Quoya's read of a real monthly bill supersedes whatever the setter noted at intake.
+    try {
+      if (_propBillAnalysis && await window._syncMonthlyBillFromAnalysis(id, _propBillAnalysis, c)) {
+        var _bsRec = adminCustomers.find(function(x){ return x.id === id; });
+        if (_bsRec) _bsRec.monthly_bill = c.monthly_bill;
+      }
+    } catch (e) {}
     var catalog = await _loadCatalog();
     var existing = safeJson(c.proposal, null);
     var serviceType = 'battery_retrofit'; // default; sendProposal() re-derives from selected items
