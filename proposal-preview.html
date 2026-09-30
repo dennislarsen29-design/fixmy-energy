@@ -192,6 +192,20 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
 .im-total{display:flex;justify-content:space-between;border-top:2px solid var(--dark);margin-top:8px;padding-top:10px;font-weight:800;}
 .im-assume{font-size:0.7rem;color:var(--muted);margin-top:8px;}
 .im-assume input[type=number]{width:70px;background:var(--white);border:1px solid var(--line);border-radius:6px;padding:3px 6px;}
+
+.cmp-btn{display:block;margin:10px 0 0;background:none;border:none;color:var(--dark);font-family:'Inter',sans-serif;font-weight:700;font-size:0.8rem;text-decoration:underline;cursor:pointer;padding:0;}
+.cmp-overlay{position:fixed;inset:0;background:rgba(26,26,26,0.55);z-index:200;display:flex;align-items:center;justify-content:center;padding:16px;}
+.cmp-box{background:var(--white);border-radius:16px;max-width:760px;width:100%;max-height:90vh;overflow:auto;padding:22px 22px 18px;position:relative;}
+.cmp-box h3{font-family:'Playfair Display',serif;margin:0 0 4px;font-size:1.2rem;}
+.cmp-box .cmp-sub{font-size:0.76rem;color:var(--muted);margin-bottom:14px;}
+.cmp-x{position:absolute;top:12px;right:14px;background:none;border:none;font-size:1.4rem;cursor:pointer;color:var(--muted);}
+.cmp-table{width:100%;border-collapse:collapse;font-size:0.84rem;}
+.cmp-table th{font-size:0.7rem;text-transform:uppercase;letter-spacing:0.06em;color:var(--muted);text-align:right;padding:6px 8px;}
+.cmp-table th:first-child,.cmp-table td:first-child{text-align:left;}
+.cmp-table td{padding:9px 8px;border-top:1px solid var(--line);text-align:right;}
+.cmp-table tr.tot td{font-weight:800;border-top:2px solid var(--dark);}
+.cmp-table td.neg{color:#3d6b12;}
+.cmp-note{font-size:0.7rem;color:var(--muted);margin-top:12px;line-height:1.5;}
 </style>
 </head>
 <body>
@@ -824,6 +838,55 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
     renderBottomBar();
   }
   function setFinSub(mode){ finSub = mode; syncPerfIncentiveDefault(); renderPanel(); renderBottomBar(); }
+  // ── Side-by-side: Today vs each option (popup) ──
+  function compareColumn(opt){
+    var bill = parseFloat(CUST.monthly_bill) || 0;
+    var use = PROP.usage_kwh > 0 ? PROP.usage_kwh : 0;
+    var im = improvementsFor(opt);
+    var solarKwhMo = Math.round(im.solarKwh/12), shiftKwhMo = Math.round(im.touKwh/12);
+    var afterSolarBill = Math.max(MIN_MONTHLY_CHARGE, Math.round(bill - im.solarMonthly));
+    var afterBill = (im.totalMonthly > 0) ? Math.max(MIN_MONTHLY_CHARGE, Math.round(bill - im.totalMonthly)) : Math.round(bill);
+    var pay = financingAvailable(opt) ? wheelhouseMonthly(participatePriceFor(opt)) : 0;
+    var units = hasPowerwall(opt) ? (powerwallUnitCountFor(opt)||1) : 0;
+    var vpp = units ? Math.round(units * TESLA_VPP_ANNUAL_PER_POWERWALL / 12) : 0;
+    return {
+      gridKwh: use ? Math.round(use/12 - solarKwhMo) : null,
+      afterSolarBill: afterSolarBill, afterBill: afterBill,
+      hasSolar: im.solarMonthly > 0, hasBattery: im.touMonthly > 0,
+      shiftKwhMo: shiftKwhMo, pay: pay, vpp: vpp,
+      total: Math.max(0, afterBill + pay - vpp),
+      price: participatePriceFor(opt)
+    };
+  }
+  function compareAvailable(){
+    return !CUSTOMER_MODE || !PROP.hide_bill ? ((parseFloat(CUST.monthly_bill)||0) > 0 && PROP.usage_kwh > 0 && OPTS.length > 0 && !PROP.hide_bill) : false;
+  }
+  function openCompare(){
+    var bill = Math.round(parseFloat(CUST.monthly_bill)||0);
+    var use = PROP.usage_kwh > 0 ? PROP.usage_kwh : 0;
+    var cols = OPTS.map(compareColumn);
+    var head = '<tr><th></th><th>Today</th>'+OPTS.map(function(o,i){ return '<th>Option '+(i+1)+'<br><span style="text-transform:none;letter-spacing:0;font-weight:600;">'+esc(o.title||'')+'</span></th>'; }).join('')+'</tr>';
+    function row(label, today, fn, cls){ return '<tr class="'+(cls||'')+'"><td>'+label+'</td><td>'+today+'</td>'+cols.map(function(c,i){ return '<td>'+fn(c,i)+'</td>'; }).join('')+'</tr>'; }
+    var body =
+      row('Grid use (kWh/mo)', use ? Math.round(use/12).toLocaleString() : '&mdash;', function(c){ return c.gridKwh != null ? c.gridKwh.toLocaleString() : '&mdash;'; })+
+      row('Grid bill after solar is restored', moneyRound(bill), function(c){ return c.hasSolar ? moneyRound(c.afterSolarBill) : moneyRound(bill); })+
+      row('Grid bill after battery load shifting', '&mdash;', function(c){ return c.hasBattery ? moneyRound(c.afterBill) : (c.hasSolar ? moneyRound(c.afterSolarBill) : '&mdash;'); })+
+      row('Financed payment', '&mdash;', function(c){ return c.pay ? moneyRound(c.pay) : 'none'; })+
+      row('Tesla VPP credit', '&mdash;', function(c){ return c.vpp ? '&minus;'+moneyRound(c.vpp) : '&mdash;'; })+
+      row('Estimated total per month', moneyRound(bill), function(c){ return moneyRound(c.total); }, 'tot')+
+      row('Price', '&mdash;', function(c,i){ return money(c.price)+(financingAvailable(OPTS[i]) && participateIsEstimate(OPTS[i]) ? ' <small>(est.)</small>' : ''); });
+    var ov = document.createElement('div');
+    ov.className = 'cmp-overlay'; ov.id = 'cmpOverlay';
+    ov.onclick = function(e){ if (e.target === ov) closeCompare(); };
+    ov.innerHTML = '<div class="cmp-box"><button class="cmp-x" onclick="closeCompare()" aria-label="Close">&times;</button>'+
+      '<h3>Your options, side by side</h3><div class="cmp-sub">What your monthly cost looks like today and with each option.</div>'+
+      '<table class="cmp-table">'+head+body+'</table>'+
+      '<div class="cmp-note">Estimates based on your bill and system size, confirmed in your usage review. The Powerwall doesn&rsquo;t produce power &mdash; it stores solar and off-peak energy and uses it during the 4&ndash;9 PM peak. Financed payment is on the Participate price at '+(WHEELHOUSE_APR*100).toFixed(2)+'% for '+WHEELHOUSE_TERM_YEARS+' years (Wheelhouse CU), subject to approval. Incentives are not guaranteed and depend on program qualification. A minimum monthly utility charge of about '+moneyRound(MIN_MONTHLY_CHARGE)+' always applies.</div></div>';
+    document.body.appendChild(ov);
+  }
+  function closeCompare(){ var o = document.getElementById('cmpOverlay'); if (o) o.remove(); }
+  window.openCompare = openCompare; window.closeCompare = closeCompare;
+
   function renderOptToggle(){
     var el = document.getElementById('optToggle'); if (!el) return;
     if (OPTS.length < 2) { el.innerHTML = ''; return; }
@@ -833,6 +896,8 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
         '<div class="ot-n">View Option '+(i+1)+'</div>'+
         '<div class="ot-t">'+esc(t)+'</div></button>';
     }).join('');
+    var w = document.getElementById('cmpBtnWrap');
+    if (w) w.innerHTML = compareAvailable() ? '<button class="cmp-btn" onclick="openCompare()">&#9638; Compare Today vs. both options</button>' : '';
   }
   function selectOption(i){
     selIdx = i;
@@ -1082,6 +1147,7 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
 
   async function ensureInsight(){
     if (PROP.insight) return PROP.insight;
+    if (CUSTOMER_MODE) return null; // never trigger an AI call from a customer's device
     try {
       var topOpt = OPTS[0] || {};
       var r = await fetch('/.netlify/functions/generate-proposal-insight', {
@@ -1253,6 +1319,7 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
       reportHtml()+
       '<div id="configurator"></div>'+
       '<div class="opt-toggle" id="optToggle"></div>'+
+      '<div id="cmpBtnWrap"></div>'+
       '<div class="configurator-grid">'+
         '<div class="hero-col"><div class="stage" id="stage"></div><div class="situation-block" id="situationBlock"></div></div>'+
         '<div class="panel" id="panel"></div>'+
