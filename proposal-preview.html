@@ -168,6 +168,19 @@ body.opt-1{--accent:#8DC63F;--accent-soft:#EEF4E0;--accent-ink:#1A1A1A;}
 body.opt-0 .stage,body.opt-1 .stage{background:var(--accent-soft);}
 body.opt-0 .cta-btn,body.opt-1 .cta-btn{background:var(--accent);color:var(--accent-ink);}
 body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent);}
+
+.r-photos{margin-top:22px;}
+.r-photos h3{font-family:'Playfair Display',serif;font-size:1.05rem;margin:0 0 10px;}
+.r-photo-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px;}
+.r-photo{display:block;border-radius:10px;overflow:hidden;background:var(--cream2);text-decoration:none;color:var(--dark);}
+.r-photo img{width:100%;height:100px;object-fit:cover;display:block;}
+.r-photo span{display:block;font-size:0.66rem;font-weight:600;padding:5px 8px;color:var(--muted);}
+.credit-card{border:1.5px solid var(--lime);background:#F4F9EA;border-radius:14px;padding:16px 18px;margin-bottom:16px;}
+.credit-card .cc-title{font-size:0.68rem;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;color:#4a6b1a;margin-bottom:8px;}
+.credit-card .cc-row{display:flex;justify-content:space-between;font-size:0.88rem;padding:4px 0;}
+.credit-card .cc-row.credit{color:#3d6b12;font-weight:700;}
+.credit-card .cc-row.total{border-top:1px solid #cfe0a8;margin-top:6px;padding-top:8px;font-weight:800;font-size:0.98rem;}
+.credit-card .cc-note{font-size:0.72rem;color:var(--muted);margin-top:6px;}
 </style>
 </head>
 <body>
@@ -685,6 +698,25 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
       '<span>Show previous-bill comparison<small>Turn off when the upgrade isn&rsquo;t about saving on the bill &mdash; hides &ldquo;your bill today / after&rdquo; from the customer</small></span></label>';
   }
 
+  // Diagnostic Fee credit — show the math so the customer sees what they're being credited.
+  function diagCreditFor(opt){
+    var c = 0;
+    (opt.line_items||[]).forEach(function(li){
+      if ((li.price||0) < 0 && (li.id === 'diagnostic_credit' || /diagnostic.*credit/i.test(li.name||''))) c += Math.abs(li.price);
+    });
+    return c;
+  }
+  function creditMathHtml(opt){
+    var credit = diagCreditFor(opt);
+    if (!(credit > 0)) return '';
+    var net = opt.price || 0;
+    return '<div class="credit-card"><div class="cc-title">Your Diagnostic Fee credit</div>'+
+      '<div class="cc-row"><span>Total before credit</span><span>'+money(net + credit)+'</span></div>'+
+      '<div class="cc-row credit"><span>Diagnostic Fee credit</span><span>&minus;'+money(credit)+'</span></div>'+
+      '<div class="cc-row total"><span>Your price</span><span>'+money(net)+'</span></div>'+
+      '<div class="cc-note">The diagnostic fee you already paid is applied toward this work.</div></div>';
+  }
+
   function setPayMode(mode){
     payMode = mode;
     finSub = defaultFinSubFor(mode, OPTS[selIdx]);
@@ -849,7 +881,7 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
         '<div class="fine-print">This estimate is preliminary and for illustration only — final pricing is confirmed after a full site evaluation. Not a bid for work or a binding agreement.</div>';
     }
     financeBlock += touSavingsHtml(opt) + ongoingValueHtml(opt);
-    financeBlock = billToggleHtml() + financeBlock;
+    financeBlock = billToggleHtml() + creditMathHtml(opt) + financeBlock;
 
     // Option list always reflects the price for the CURRENTLY ACTIVE pay mode — this was
     // the actual bug in the report: it showed the Participate price even while the Cash tab's
@@ -1063,6 +1095,23 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
   }
   window.acceptSelected = acceptSelected;
 
+  var PHOTOS = [];
+  function photosHtml(){
+    if (!PHOTOS.length) return '';
+    return '<div class="r-photos"><h3>Photos from your visit</h3><div class="r-photo-grid">'+
+      PHOTOS.map(function(p){
+        return '<a class="r-photo" href="'+esc(p.url)+'" target="_blank" rel="noopener"><img src="'+esc(p.url)+'" loading="lazy" alt="'+esc(p.label||'Photo')+'"/>'+
+          '<span>'+esc(p.label||'Photo')+'</span></a>';
+      }).join('')+'</div></div>';
+  }
+  async function loadPhotos(){
+    try {
+      var r = await client.from('job_photos').select('url,label,id').or('job_id.eq.'+custId+',customer_id.eq.'+custId);
+      var seen = {};
+      (r.data||[]).forEach(function(p){ if (p && p.url && !seen[p.url] && !/\.pdf(\?|$)/i.test(p.url)) { seen[p.url]=1; PHOTOS.push(p); } });
+    } catch(e) { /* photos are a bonus — never block the proposal */ }
+  }
+
   function reportHtml(){
     var txt = CUST.diagnostic_findings && String(CUST.diagnostic_findings).trim();
     if (!txt || ((parseInt(CUST.step)||1) < 3 && !CUST.sold_type)) return '';
@@ -1070,6 +1119,7 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
       '<h2>What we found at your home</h2>'+
       '<div class="r-meta">'+esc(CUST.address||'')+'</div>'+
       '<div class="r-body">'+esc(txt)+'</div>'+
+      photosHtml()+
       '<a class="r-jump" href="#configurator">See your options &darr;</a></div>';
   }
 
@@ -1098,6 +1148,7 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
     // "Option 1 / Option 2" references in the write-up must line up. Preview keeps price order.
     OPTS = CUSTOMER_MODE ? PROP.options.slice() : PROP.options.slice().sort(function(a,b){ return (b.price||0)-(a.price||0); });
 
+    await loadPhotos();
     app.innerHTML =
       (CUSTOMER_MODE && PROP.status === 'accepted' ? '<div class="accepted-banner"><strong>&#9989; Accepted.</strong> Our team will reach out within 24 hours to confirm next steps.</div>' : '')+
       reportHtml()+
