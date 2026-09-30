@@ -27969,6 +27969,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   function _showPortalOnboarding(c) {
     var tourKey = 'portalOnboard_' + (c.id || '');
     if (localStorage.getItem(tourKey)) return;
+    // A customer opening their Diagnostic Report is past onboarding — the "your
+    // evaluation is confirmed" tour would cover the report and their options.
+    if (c.diagnostic_findings && String(c.diagnostic_findings).trim() && ((parseInt(c.step)||1) >= 3 || c.sold_type)) return;
     var apptHtml;
     if (c.diagnostic_date) {
       var d = new Date(c.diagnostic_date);
@@ -28389,8 +28392,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
 
     // Appointment confirmation — show whenever diagnostic_date is set
+    // Diagnostic Report mode (2026-09-30, per Dennis — Becky Phan): once the tech's
+    // write-up exists on a real diagnostic, the portal leads with the report + options
+    // instead of pre-visit prep. Pre-visit sections stay reachable, just collapsed.
+    var _hasReport = !!(c.diagnostic_findings && String(c.diagnostic_findings).trim() && (step >= 3 || c.sold_type));
     var apptHtml = '';
-    if (c.diagnostic_date) {
+    if (_hasReport && c.diagnostic_date && new Date(c.diagnostic_date) < new Date()) {
+      var _dDone = new Date(c.diagnostic_date).toLocaleDateString('en-US', {timeZone:'America/Los_Angeles',weekday:'long',month:'long',day:'numeric'});
+      var _opsNamesDone = {ops1:'Jon Klos',ops2:'John Espinoza',ops3:'Cosmic Solar',ops4:'Axia'};
+      apptHtml = '<div style="display:flex;align-items:center;gap:10px;background:rgba(141,198,63,0.06);border:1px solid rgba(141,198,63,0.25);border-radius:12px;padding:12px 16px;margin-bottom:16px;">'+
+        '<span style="font-size:1.3rem;">&#9989;</span>'+
+        '<div><div style="font-weight:700;color:#fff;font-size:0.85rem;">Diagnostic completed &middot; '+_dDone+'</div>'+
+        '<div style="font-size:0.72rem;color:#888;margin-top:2px;">'+((c.assigned_ops && _opsNamesDone[c.assigned_ops]) || 'Your Solar Review technician')+' &middot; your report is below</div></div>'+
+      '</div>';
+    } else if (c.diagnostic_date) {
       var _apptDate = new Date(c.diagnostic_date);
       var _tzOpts = { timeZone: 'America/Los_Angeles' };
       var _apptStr = _apptDate.toLocaleDateString('en-US', Object.assign({}, _tzOpts, {weekday:'long',month:'long',day:'numeric'}));
@@ -28420,10 +28435,29 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
     // Diagnostic findings (step 3+ with tech notes visible to customer)
     var findingsHtml = '';
-    if (step >= 3 && c.diagnostic_findings) {
-      findingsHtml = '<div class="sect-label">Technician Assessment</div>'+
-        '<div class="card"><div style="font-size:0.8rem;color:#ccc;line-height:1.8;white-space:pre-wrap;">'+
-          c.diagnostic_findings.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')+
+    if (_hasReport) {
+      var _esc = function(t){ return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); };
+      var _pr = c.proposal || null;
+      var _prLive = !!(_pr && (_pr.status === 'sent' || _pr.status === 'accepted') && Array.isArray(_pr.options) && _pr.options.length);
+      // The proposal note already renders inside Option 1's savings panel when one exists —
+      // only repeat it here when it would otherwise never be seen.
+      var _noteShownElsewhere = _prLive && _pr.options[0] && _pr.options[0].savings;
+      var _noteHtml = (_prLive && _pr.insight && !_noteShownElsewhere) ?
+        '<div style="background:rgba(255,170,0,0.06);border-left:3px solid rgba(255,170,0,0.5);border-radius:0 8px 8px 0;padding:12px 14px;margin-top:14px;">'+
+          '<div style="font-size:0.62rem;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;color:#ffaa00;margin-bottom:6px;">Your options at a glance</div>'+
+          '<div style="font-size:0.8rem;color:#ccc;line-height:1.7;">'+_esc(_pr.insight)+'</div>'+
+        '</div>' : '';
+      var _ctaHtml = (_prLive && !_pr.accepted_option) ?
+        '<button onclick="var w=document.getElementById(\'proposalWrap\');if(w)w.scrollIntoView({behavior:\'smooth\',block:\'start\'});" class="btn-lime" style="display:block;width:100%;margin-top:16px;padding:13px;font-size:0.9rem;font-weight:700;border-radius:100px;border:none;cursor:pointer;">See your '+(_pr.options.length > 1 ? _pr.options.length+' options' : 'option')+' &darr;</button>' : '';
+      findingsHtml = '<div id="diagReportWrap"><div class="sect-label">Your Diagnostic Report</div>'+
+        '<div class="card" style="border:1px solid rgba(141,198,63,0.3);">'+
+          '<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid rgba(255,255,255,0.08);">'+
+            '<span style="font-size:1.5rem;">&#128203;</span>'+
+            '<div><div style="font-weight:800;color:#fff;font-size:0.95rem;">Solar Review Diagnostic Report</div>'+
+            '<div style="font-size:0.7rem;color:#888;margin-top:2px;">'+_esc(c.address||'')+'</div></div>'+
+          '</div>'+
+          '<div style="font-size:0.84rem;color:#ddd;line-height:1.8;white-space:pre-wrap;">'+_esc(c.diagnostic_findings)+'</div>'+
+          _noteHtml+_ctaHtml+
         '</div></div>';
     }
 
@@ -28479,9 +28513,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     showDash(name,
       '<div style="margin-bottom:24px;"><h2 style="font-size:1.3rem;margin-bottom:4px;">Hi, <span style="color:#8DC63F">'+(c.first_name||'there')+'</span> &#128075;</h2><p style="font-size:0.8rem;color:#aaa;">Your Solar Review evaluation status.</p></div>'+
       apptHtml+
+      (_hasReport ? findingsHtml+proposalHtml : '')+
       '<div class="info-grid"><div class="info-card"><div class="info-label">Address</div><div class="info-val">'+(c.address||'--')+'</div></div><div class="info-card"><div class="info-label">System Size</div><div class="info-val">'+sys+'</div></div><div class="info-card"><div class="info-label">Utility</div><div class="info-val">'+(c.utility||'--')+'</div></div><div class="info-card"><div class="info-label">Monthly Bill</div><div class="info-val">'+(c.monthly_bill?'$'+c.monthly_bill+'/mo':'--')+'</div></div></div>'+
       '<div class="sect-label">Your Progress</div><div style="overflow-x:auto;margin-bottom:16px;"><div class="timeline">'+stepsHtml+'</div></div>'+
-      '<div style="text-align:right;margin-bottom:20px;"><a href="https://api.leadconnectorhq.com/widget/booking/UjlvHxE8AlyhG5frBkqr" target="_blank" class="btn-lime" style="font-size:0.75rem;padding:9px 20px;">&#128197; Book / Reschedule Evaluation</a></div>'+
+      (_hasReport ? '' : '<div style="text-align:right;margin-bottom:20px;"><a href="https://api.leadconnectorhq.com/widget/booking/UjlvHxE8AlyhG5frBkqr" target="_blank" class="btn-lime" style="font-size:0.75rem;padding:9px 20px;">&#128197; Book / Reschedule Evaluation</a></div>')+
+      (_hasReport ? '<details style="margin-bottom:16px;"><summary style="cursor:pointer;font-size:0.75rem;color:#888;padding:10px 0;">&#128247; Your system details &amp; photos</summary>' : '')+
       '<div class="sect-label">Help Us Prepare</div>'+
       '<div class="card">'+
         '<div style="font-size:0.75rem;color:#aaa;margin-bottom:16px;line-height:1.6;">A few quick details help your technician arrive fully prepared.</div>'+
@@ -28513,7 +28549,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '</div>'+
       '<div class="sect-label">Required Documents</div>'+
       '<div class="upload-grid">'+ucCard('bill','&#128196;','Most Recent Utility Bill','Upload your full PDF utility bill.')+ucCard('inverter','&#128247;','Inverter Photo','Photo of your inverter on garage wall or exterior.')+ucCard('serial','&#128290;','Serial Number','Close-up of the serial number sticker on inverter.')+ucCard('panel','&#9889;','Main Service Panel','Photo of open breaker panel with amp rating visible.')+'</div>'+
-      signPayHtml+proposalHtml+invHtml+guaranteeHtml+agHtml+_custDocsWrapHtml(c)+findingsHtml+brHtml+
+      (_hasReport ? '</details>' : '')+
+      signPayHtml+(_hasReport ? '' : proposalHtml)+invHtml+guaranteeHtml+agHtml+_custDocsWrapHtml(c)+(_hasReport ? '' : findingsHtml)+brHtml+
       '<div id="solarWrap"></div>'+
       '<div class="cta-card"><div><strong>Questions?</strong><br><span style="font-size:0.75rem;color:#aaa;">Mon-Sat 8am-6pm</span></div><a href="tel:6197776527" class="btn-lime">&#128222; (619) 777-6527</a></div>'
     );
@@ -28530,7 +28567,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // to it the moment the page renders. Skipped once accepted — nothing left to decide.
     if (_prop && _prop.status === 'sent' && !_prop.accepted_option) {
       setTimeout(function(){
-        var pw = document.getElementById('proposalWrap');
+        var pw = document.getElementById('diagReportWrap') || document.getElementById('proposalWrap');
         if (pw) pw.scrollIntoView({ behavior: 'smooth', block: 'start' });
       }, 500);
     }
