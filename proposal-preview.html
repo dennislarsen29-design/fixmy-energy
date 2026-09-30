@@ -242,7 +242,16 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
     return opt.participate_price != null ? opt.participate_price : Math.round((opt.price||0) * PARTICIPATE_DISCOUNT);
   }
   function participateIsEstimate(opt){ return opt.participate_price == null; }
-  function financingAvailable(opt){ return (opt.price||0) > 0; }
+  // 2026-09-30, per Dennis reviewing Becky Phan's two-option proposal — the Patricia
+  // fix above (price>0 alone) is still correct for a real product sale, but this
+  // pipeline can now ALSO carry a plain service-labor option (e.g. an RMA swap alone,
+  // no battery/panel/inverter product, no dealer-cost basis) sitting right next to a
+  // real one in the SAME proposal. Lease-to-own financing on a bare labor invoice
+  // makes no business sense — opt.redline is the same signal sendProposal() itself
+  // already uses to decide "is this option a real commissioned sale" (it's the ONLY
+  // thing rep_commission/gross_commission are ever computed from), so reusing it here
+  // costs nothing new and can't drift from that decision.
+  function financingAvailable(opt){ return (opt.price||0) > 0 && opt.redline != null; }
 
   function financeScenarios(opt){
     var hasSdcp = (opt.sdcp_rebate||0) > 0;
@@ -476,9 +485,24 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
       if (cashSdcp) {
         rows += '<div class="compare-row"><div class="lbl">SDCP incentive<span class="sub">applied to price below</span></div><div class="amt neg">&minus;'+moneyRound(opt.sdcp_rebate)+'</div></div>';
       }
-      totalLbl = 'Price With Participate'+(cashSdcp?'<span class="applied-badge">&#10003; SDCP</span>':'');
-      totalAmt = money(broadcastPrice);
-      deltaHtml = '<div class="starting">Starting cash price: <strong>'+money(rawCashPrice)+'</strong> without Participate</div>';
+      // ⚠️ 2026-09-30, found reviewing Becky Phan's 2-option proposal — this branch took
+      // a hasParticipate PARAMETER but never actually checked it: it unconditionally
+      // broadcast the 30%-off Participate price as "Price With Participate" even for an
+      // option where Participate doesn't apply at all (e.g. a plain RMA-swap service
+      // invoice, no dealer-cost basis to finance). That would have shown a fake
+      // "discounted" price with a misleading strikethrough on a real labor bill. Now
+      // shows the real price, plainly labeled, with no discount framing when
+      // hasParticipate is false — same cashSdcp math either way, since SDCP is a real
+      // incentive independent of Participate.
+      if (hasParticipate) {
+        totalLbl = 'Price With Participate'+(cashSdcp?'<span class="applied-badge">&#10003; SDCP</span>':'');
+        totalAmt = money(broadcastPrice);
+        deltaHtml = '<div class="starting">Starting cash price: <strong>'+money(rawCashPrice)+'</strong> without Participate</div>';
+      } else {
+        totalLbl = 'Price'+(cashSdcp?'<span class="applied-badge">&#10003; SDCP</span>':'');
+        totalAmt = money(rawCashPrice);
+        cashPriceForFoot = rawCashPrice;
+      }
     }
 
     var footParts = [];
