@@ -26,6 +26,41 @@
 // A no-match PATCH is a clean no-op, so calling this on every 'paid' write is
 // idempotent and safe.
 
+// ── Standard Diagnostic COGS auto-seed (2026-10-XX, per Dennis — "why are we
+// doing manual redline updates... if we sold a diagnostic, the cost is $300")
+// ─────────────────────────────────────────────────────────────────────────
+// portal.html already has this exact idempotent auto-seed (_seedDiagnosticCogs,
+// added 2026-09-19 after Will Barrera/Becky Phan showed the same $0-redline
+// symptom) — but it only ever fires from CLIENT-side editor saves. This
+// function IS the promotion path for every payment recorded purely
+// SERVER-side (GHL webhook, the nightly reconcile sweep, a GHL status
+// trigger) — Stefano Palminteri's $623 diagnostic converted through exactly
+// this path with nobody ever opening his editor afterward, so the client-side
+// seed never ran and his Jobs card showed Redline $0 / Gross Commission
+// overstated. Same fix, same idempotent shape (check-then-insert against
+// job_costs, never stomping a real or already-corrected Sub Sheet entry),
+// just the server-side mirror of it — this is the gap, not a formula bug.
+// ⚠️ Deliberately scoped to 'diagnostic' only, same as the client-side
+// version — RMA ($350) and Service Fee (scope-of-work, variable) have no
+// single standard figure a server-side payment event can safely guess.
+const DIAG_STANDARD_COGS = 300;
+async function seedDiagnosticCogs(restUrl, headers, customerId) {
+  try {
+    const existingResp = await fetch(restUrl + '/job_costs?customer_id=eq.' + encodeURIComponent(customerId) + '&select=id&limit=1', { headers });
+    const existing = await existingResp.json().catch(() => []);
+    if (Array.isArray(existing) && existing.length) return; // already has cost lines — never overwrite
+    await fetch(restUrl + '/job_costs', {
+      method: 'POST',
+      headers: { ...headers, Prefer: 'return=minimal' },
+      body: JSON.stringify({ customer_id: customerId, label: 'Diagnostic — COGS', amount: DIAG_STANDARD_COGS, status: 'pending', created_by: 'auto-diag-convert' })
+    });
+    console.log('promote-paid-lead: auto-seeded $' + DIAG_STANDARD_COGS + ' diagnostic COGS for', customerId);
+  } catch (e) {
+    // Never let a failed COGS seed break the promotion or the payment write it rides along with.
+    console.warn('promote-paid-lead: seedDiagnosticCogs failed for', customerId, e.message);
+  }
+}
+
 async function promotePaidLeadToDiagnostic(restUrl, headers, customerId, paidAtIso) {
   if (!customerId) return { promoted: false, reason: 'no customer id' };
   try {
@@ -49,7 +84,10 @@ async function promotePaidLeadToDiagnostic(restUrl, headers, customerId, paidAtI
     }
     const rows = await resp.json().catch(() => []);
     const promoted = Array.isArray(rows) && rows.length > 0;
-    if (promoted) console.log('promote-paid-lead: converted lead', customerId, 'to sold_type=diagnostic');
+    if (promoted) {
+      console.log('promote-paid-lead: converted lead', customerId, 'to sold_type=diagnostic');
+      await seedDiagnosticCogs(restUrl, headers, customerId);
+    }
     return { promoted };
   } catch (e) {
     // Never let the promotion break the payment write it rides along with.

@@ -137,6 +137,29 @@ exports.handler = async function(event) {
     if (!ledgerResp.ok) console.warn('sign-complete: ledger insert failed', ledgerResp.status, (await ledgerResp.text()).slice(0, 200));
   } catch(e) { console.warn('sign-complete: ledger insert error —', e.message); }
 
+  // Auto-seed the standard $300 Diagnostic COGS the moment THIS write is what
+  // actually converts the lead (c.sold_type was falsy before the PATCH above —
+  // an already-sold lead, e.g. an existing battery_retrofit job, must never get
+  // a diagnostic COGS line stomped onto it). Mirrors portal.html's client-side
+  // _seedDiagnosticCogs and lib/promote-paid-lead.js's server-side copy — a
+  // Sign & Pay conversion is a THIRD path that sets sold_type but never seeded
+  // the COGS that makes it (same "manual redline" gap reported for Stefano
+  // Palminteri, who converted through one of these other two paths). Idempotent
+  // (check-then-insert), non-fatal — the payment is already captured either way.
+  if (!c.sold_type) {
+    try {
+      const existingResp = await fetch(SUPA_URL + '/rest/v1/job_costs?customer_id=eq.' + customerId + '&select=id&limit=1', { headers: supaHeaders });
+      const existingCosts = await existingResp.json().catch(function(){ return []; });
+      if (!(Array.isArray(existingCosts) && existingCosts.length)) {
+        await fetch(SUPA_URL + '/rest/v1/job_costs', {
+          method: 'POST',
+          headers: { ...supaHeaders, 'Prefer': 'return=minimal' },
+          body: JSON.stringify({ customer_id: customerId, label: 'Diagnostic — COGS', amount: 300, status: 'pending', created_by: 'auto-diag-convert' })
+        });
+      }
+    } catch(e) { console.warn('sign-complete: auto-seed diagnostic COGS error —', e.message); }
+  }
+
   // Server-side Meta Conversions API — this is the real dollar-value
   // conversion (a paid, signed diagnostic), and the one worth optimizing ad
   // spend against. Uses the same event id as the client-side fbq('Purchase')
