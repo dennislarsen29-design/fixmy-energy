@@ -341,7 +341,14 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
   // max). Missing data means an honest "can't estimate yet" message, never an inflated guess.
   function annualBatteryKwhFor(opt){
     var pd = opt.prod_data;
-    return (pd && pd.batteryArbitrageKwh > 0) ? pd.batteryArbitrageKwh : null;
+    if (pd && pd.batteryArbitrageKwh > 0) return pd.batteryArbitrageKwh;
+    // No saved production data: fall back to a rep-entered annual usage (PROP.usage_kwh), capped
+    // at 60% of usage exactly like the builder's own math — never an uncapped theoretical max.
+    var units = powerwallUnitCountFor(opt);
+    if (PROP && PROP.usage_kwh > 0 && units != null) {
+      return Math.round(Math.min(units * 13.5 * 1.5 * 365, 0.6 * PROP.usage_kwh));
+    }
+    return null;
   }
 
   // Powerwall-equivalent unit count, derived from prod_data.storageKwh (already-trusted
@@ -352,8 +359,14 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
   var POWERWALL_UNIT_KWH = 13.5;
   function powerwallUnitCountFor(opt){
     var pd = opt.prod_data;
-    if (!pd || !(pd.storageKwh > 0)) return null;
-    return Math.max(1, Math.round(pd.storageKwh / POWERWALL_UNIT_KWH));
+    if (pd && pd.storageKwh > 0) return Math.max(1, Math.round(pd.storageKwh / POWERWALL_UNIT_KWH));
+    // Older/partial proposals carry no prod_data — count Powerwall line items instead.
+    var n = 0;
+    (opt.line_items || []).forEach(function(li){
+      var nm = String(li.name||'').toLowerCase();
+      if (/powerwall|pw3/.test(nm) && !/expansion/.test(nm)) n += Math.max(1, parseInt(li.qty||li.quantity||1,10)||1);
+    });
+    return n > 0 ? n : (hasPowerwall(opt) ? 1 : null);
   }
 
   // "Ongoing Performance Value" — layers 3/4 of Dennis's 4-layer model (2026-09-22, revised
@@ -414,7 +427,7 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
   }
 
   function ongoingValueHtml(opt){
-    if (!((opt.sdcp_rebate||0) > 0)) return ''; // not SDCP-eligible at all -> nothing to offer here
+    if (!hasPowerwall(opt) && !((opt.sdcp_rebate||0) > 0)) return ''; // no battery and not SDCP-eligible -> nothing to offer
     var kind = requiredPerfKindFor(finSub);
     var checked = perfIncentive === kind;
     var row;
@@ -463,7 +476,7 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
   function compareCardHtml(opt, hasParticipate, financeMode, financeMonthly, sdcpApplied, perfCreditMonthly, perfLabel, touDeltaMonthly){
     perfCreditMonthly = perfCreditMonthly || 0;
     touDeltaMonthly = touDeltaMonthly || 0;
-    var billToday = parseFloat(CUST.monthly_bill) || 0;
+    var billToday = PROP && PROP.hide_bill ? 0 : (parseFloat(CUST.monthly_bill) || 0);
     var mod = opt.savings && opt.savings.moderate;
     var monthlySavings = (mod && mod.monthly > 0) ? mod.monthly : 0;
     var rows = '', totalLbl, totalAmt, totalSuffix = '', deltaHtml = '', footHtml = '';
@@ -489,7 +502,7 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
       if (touDeltaMonthly) {
         rows += '<div class="compare-row"><div class="lbl">Time-of-Use rate adjustment<span class="sub">vs. the standard $0.31/kWh assumption</span></div><div class="amt'+(touDeltaMonthly>0?' neg':'')+'">'+(touDeltaMonthly>=0?'&minus;':'+')+moneyRound(Math.abs(touDeltaMonthly))+'/mo</div></div>';
       }
-      totalLbl = 'Your new average monthly cost';
+      totalLbl = (PROP && PROP.hide_bill) ? 'Your monthly payment' : 'Your new average monthly cost';
       var newTotal = Math.max(0, financeMonthly + (estGridBill||0) - perfCreditMonthly - touDeltaMonthly);
       totalAmt = moneyRound(newTotal);
       totalSuffix = '<small>/mo</small>';
@@ -632,7 +645,9 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
     var annual = touSavingsAnnualFor(opt, touRate);
     var amtHtml = annual != null
       ? '<span class="ov-amt">~'+moneyRound(annual)+'/yr <span style="font-weight:500;color:var(--muted);">(~'+moneyRound(annual/12)+'/mo)</span></span>'
-      : '<span class="ov-amt muted">Needs usage data to estimate</span>';
+      : '<span class="ov-amt muted">'+(CUSTOMER_MODE?'Confirmed in your usage review':'Needs usage data to estimate')+'</span>';
+    var usageCtl = (!CUSTOMER_MODE && !(opt.prod_data && opt.prod_data.batteryArbitrageKwh > 0))
+      ? '<div class="ov-note">Annual home usage (kWh) from the bill: <input type="number" min="0" step="100" value="'+(PROP.usage_kwh||'')+'" onchange="setUsageKwh(this.value)" style="width:90px;background:var(--white);border:1px solid var(--line);border-radius:6px;padding:3px 6px;"/> <span class="muted">(caps battery shifting at 60% of usage)</span></div>' : '';
     return '<div class="ov-section">'+
       '<div class="ov-title">Time-of-Use Savings</div>'+
       '<div class="ov-check" style="cursor:default;border-top:none;">'+
@@ -640,7 +655,34 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
         amtHtml+
       '</div>'+
       '<div class="ov-note">Quoya&rsquo;s arbitrage rate: <input type="number" id="touRateInput" value="'+touRate.toFixed(2)+'" step="0.01" min="0" style="width:58px;background:var(--white);border:1px solid var(--line);border-radius:5px;padding:2px 5px;font-size:0.72rem;font-family:inherit;" onchange="setTouRate(this.value)"/> $/kWh shifted (standard: $'+BATTERY_TOU_RATE_DEFAULT.toFixed(2)+') &mdash; adjust live if this account&rsquo;s real peak/off-peak spread differs. Already reflected in the finance-mode monthly total above; a one-time cash price has no recurring figure for it to reduce.</div>'+
-    '</div>';
+    usageCtl+'</div>';
+  }
+
+
+  // ── Page-level presentation settings, saved on customers.proposal so the customer view honors them ──
+  async function savePropField(patch){
+    var r = await client.from('customers').select('proposal').eq('id', custId).limit(1);
+    var cur = r.data && r.data[0] && r.data[0].proposal;
+    cur = cur ? (typeof cur === 'string' ? JSON.parse(cur) : cur) : {};
+    Object.assign(cur, patch);
+    Object.assign(PROP, patch);
+    var u = await client.from('customers').update({ proposal: cur }).eq('id', custId);
+    if (u.error) throw u.error;
+  }
+  async function setHideBill(hide){
+    try { await savePropField({ hide_bill: !!hide }); } catch(e) { alert('Could not save: '+e.message); }
+    renderPanel(); renderBottomBar();
+  }
+  async function setUsageKwh(v){
+    var n = parseFloat(v);
+    try { await savePropField({ usage_kwh: (isFinite(n) && n > 0) ? n : 0 }); } catch(e) { alert('Could not save: '+e.message); }
+    renderPanel();
+  }
+  window.setHideBill = setHideBill; window.setUsageKwh = setUsageKwh;
+  function billToggleHtml(){
+    if (CUSTOMER_MODE) return '';
+    return '<label class="ov-check" style="margin:0 0 14px;border:1px dashed var(--line);border-radius:10px;padding:10px 12px;"><input type="checkbox" '+(PROP.hide_bill?'':'checked')+' onchange="setHideBill(!this.checked)"/>'+
+      '<span>Show previous-bill comparison<small>Turn off when the upgrade isn&rsquo;t about saving on the bill &mdash; hides &ldquo;your bill today / after&rdquo; from the customer</small></span></label>';
   }
 
   function setPayMode(mode){
@@ -807,6 +849,7 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
         '<div class="fine-print">This estimate is preliminary and for illustration only — final pricing is confirmed after a full site evaluation. Not a bid for work or a binding agreement.</div>';
     }
     financeBlock += touSavingsHtml(opt) + ongoingValueHtml(opt);
+    financeBlock = billToggleHtml() + financeBlock;
 
     // Option list always reflects the price for the CURRENTLY ACTIVE pay mode — this was
     // the actual bug in the report: it showed the Participate price even while the Cash tab's
