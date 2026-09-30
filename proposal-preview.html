@@ -141,6 +141,17 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
 .status-msg{width:100%;text-align:center;font-size:0.8rem;padding-bottom:8px;}
 .status-msg.ok{color:#3f6b16;}
 .status-msg.err{color:#a13c2a;}
+
+/* Diagnostic Report — leads the page once the tech's write-up exists */
+.report{max-width:1180px;margin:0 auto 28px;background:var(--cream);border:1px solid var(--line);border-radius:14px;padding:28px 32px;}
+.report .r-kicker{font-size:0.66rem;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:#3f6b16;margin-bottom:6px;}
+.report h2{font-family:'Playfair Display',serif;font-weight:500;font-size:1.7rem;margin:0 0 4px;}
+.report .r-meta{font-size:0.78rem;color:var(--muted);margin-bottom:18px;}
+.report .r-body{font-size:0.92rem;line-height:1.85;color:#2c2925;white-space:pre-wrap;}
+.report .r-jump{margin-top:18px;display:inline-block;padding:12px 24px;background:var(--dark);color:var(--cream);border-radius:100px;font-weight:700;font-size:0.84rem;text-decoration:none;}
+.top-link{float:right;font-size:0.78rem;color:var(--muted);text-decoration:none;margin-top:4px;}
+.accepted-banner{max-width:1180px;margin:0 auto 20px;background:rgba(141,198,63,0.14);border:1px solid rgba(141,198,63,0.5);border-radius:12px;padding:16px 22px;font-size:0.9rem;}
+@media(max-width:700px){.report{padding:20px 18px;margin:0 0 20px;border-radius:0;}}
 </style>
 </head>
 <body>
@@ -163,6 +174,8 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
   };
   var qs = new URLSearchParams(location.search);
   var custId = qs.get('id');
+  var CUSTOMER_MODE = qs.get('view') === 'customer'; // customer-facing: no rep actions, Accept instead of Send
+  var REPORT_PATH = '';
   var client = supabase.createClient(SUPA_URL, SUPA_KEY);
   var CUST = null, PROP = null, OPTS = [];
   var selIdx = 0, payMode = null, finSub = null; // payMode: 'cash'|'finance'; finSub: 'sdcp'|'standard'|'consolidate'
@@ -239,6 +252,9 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
   // categorically different from guessing an unknown number; it's the documented rate.
   var PARTICIPATE_DISCOUNT = 0.70;
   function participatePriceFor(opt){
+    // Plain service/labor options (no redline — e.g. an RMA swap) are never Participate-discounted;
+    // they were being shown at 70% of their real price on the Cash tab and in the option list.
+    if (!financingAvailable(opt)) return opt.price || 0;
     return opt.participate_price != null ? opt.participate_price : Math.round((opt.price||0) * PARTICIPATE_DISCOUNT);
   }
   function participateIsEstimate(opt){ return opt.participate_price == null; }
@@ -708,7 +724,7 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
     var partPrice = participatePriceFor(opt);
     var partIsEstimate = participateIsEstimate(opt);
     var hasSdcp = (opt.sdcp_rebate||0) > 0;
-    var estimateNote = partIsEstimate ? ' <em>(estimated at the standard 30% Participate rate — ask your rep to confirm the exact price)</em>' : '';
+    var estimateNote = partIsEstimate ? (CUSTOMER_MODE ? ' <em>(estimated at the standard 30% Participate rate — your final price is confirmed in your agreement)</em>' : ' <em>(estimated at the standard 30% Participate rate — ask your rep to confirm the exact price)</em>') : '';
 
     // The checked Ongoing Performance Value program's dollar/mo value — computed once here
     // (from the CURRENT perfIncentive state, itself synced to this tab by syncPerfIncentiveDefault
@@ -852,7 +868,11 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
       '<div class="bottombar-in">'+
         '<div class="bb-left"><div class="ot">'+esc(optDisplayName(opt))+'</div><div class="os">'+bbSub+'</div></div>'+
         '<div class="bb-price">'+priceHtml+'</div>'+
-        '<button id="sendBtn" class="cta-btn" onclick="send()">Send to Customer &mdash; Start Paperwork</button>'+
+        (CUSTOMER_MODE
+          ? (PROP.status === 'accepted'
+              ? '<button class="cta-btn" disabled>Accepted &#10003;</button>'
+              : '<button id="sendBtn" class="cta-btn" onclick="acceptSelected()">Accept this option</button>')
+          : '<button id="sendBtn" class="cta-btn" onclick="send()">Send to Customer &mdash; Start Paperwork</button>')+
       '</div>'+
       '<div id="sendStatus" class="status-msg"></div>';
   }
@@ -921,6 +941,66 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
   }
   window.send = send;
 
+  // ── Customer acceptance — same record shape portal.html's acceptProposal writes, so the
+  // portal's accepted view, the admin Jobs/lead cards and the GHL event all keep working.
+  var FIN_CODE = { standard:'wheelhouse', sdcp:'wheelhouse_sdcp', consolidate:'wheelhouse_reallocation' };
+  async function acceptSelected(){
+    var opt = OPTS[selIdx];
+    var fin = (payMode === 'finance' && financingAvailable(opt)) ? (FIN_CODE[finSub] || 'wheelhouse') : 'cash';
+    var term = fin === 'cash' ? null : WHEELHOUSE_TERM_YEARS;
+    var sdcpOn = finSub === 'sdcp' && (opt.sdcp_rebate||0) > 0;
+    var part = participatePriceFor(opt);
+    var shown = fin === 'cash' ? (sdcpOn ? Math.max(0, part - opt.sdcp_rebate) : part)
+      : fin === 'wheelhouse_reallocation' ? opt.price
+      : (sdcpOn ? Math.max(0, part - opt.sdcp_rebate) : part);
+    var monthlyTxt = fin === 'cash' ? '' : ' (about '+moneyRound(wheelhouseMonthly(financeScenarios(opt)[finSub === 'sdcp' && sdcpOn ? 'sdcp' : finSub === 'consolidate' ? 'consolidate' : 'standard'].principal))+'/mo)';
+    if (!confirm('Accept "'+optDisplayName(opt)+'"?\n\n'+(fin==='cash'?'Pay in full':'Finance through Wheelhouse CU, '+term+' years')+monthlyTxt+'\n\nOur team will contact you within 24 hours to confirm next steps. No payment is taken on this page.')) return;
+    var btn = document.getElementById('sendBtn'), status = document.getElementById('sendStatus');
+    btn.disabled = true; btn.textContent = 'Saving…'; status.className = 'status-msg'; status.textContent = '';
+    try {
+      var fresh = await client.from('customers').select('proposal,notes').eq('id', custId).limit(1);
+      var row = fresh.data && fresh.data[0];
+      var prop = row && row.proposal ? (typeof row.proposal === 'string' ? JSON.parse(row.proposal) : row.proposal) : null;
+      if (!prop || prop.status === 'accepted') throw new Error(prop ? 'This proposal was already accepted.' : 'Proposal not found.');
+      prop.status = 'accepted'; prop.accepted_option = opt.id; prop.financing = fin; prop.loan_term = term;
+      prop.accepted_via = 'customer_self_service'; prop.accepted_at = new Date().toISOString();
+      prop.accepted_pay_mode = payMode; prop.accepted_display_price = shown;
+      var up = await client.from('customers').update({ proposal: prop }).eq('id', custId);
+      if (up.error) throw up.error;
+      // Activity note so the lead editor shows it (best-effort — the acceptance itself is already saved).
+      try {
+        var arr = []; try { arr = row.notes ? JSON.parse(row.notes) : []; } catch(e) { arr = []; }
+        if (!Array.isArray(arr)) arr = [];
+        arr.push({ ts: new Date().toISOString(), by: 'Customer (proposal page)', text: 'Accepted "'+optDisplayName(opt)+'" — '+(fin==='cash'?'cash':'Wheelhouse '+term+'-yr financing')+', displayed '+money(shown)+'.' });
+        await client.from('customers').update({ notes: JSON.stringify(arr) }).eq('id', custId);
+      } catch(e) {}
+      fetch('/.netlify/functions/ghl-webhook-relay', { method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ dest:'proposal', payload:{ type:'proposal_accepted',
+          email: CUST.email||'', phone: CUST.phone||'', first_name: CUST.first_name||'', last_name: CUST.last_name||'',
+          full_name: ((CUST.first_name||'')+' '+(CUST.last_name||'')).trim(), proposal_option: opt.id, proposal_label: optDisplayName(opt),
+          proposal_amount: shown, financing: fin, loan_term: term, accepted_via: 'customer_self_service' } }) }).catch(function(){});
+      PROP = prop;
+      renderBottomBar();
+      var app = document.getElementById('app');
+      app.insertAdjacentHTML('afterbegin', '<div class="accepted-banner"><strong>&#9989; Thank you, '+esc(CUST.first_name||'')+'!</strong> You accepted '+esc(optDisplayName(opt))+'. Our team will reach out within 24 hours to confirm next steps.</div>');
+      window.scrollTo({top:0,behavior:'smooth'});
+    } catch(e) {
+      btn.disabled = false; btn.textContent = 'Accept this option';
+      status.className = 'status-msg err'; status.textContent = 'Could not save: ' + (e.message || e) + ' — please call (619) 777-6527.';
+    }
+  }
+  window.acceptSelected = acceptSelected;
+
+  function reportHtml(){
+    var txt = CUST.diagnostic_findings && String(CUST.diagnostic_findings).trim();
+    if (!txt || ((parseInt(CUST.step)||1) < 3 && !CUST.sold_type)) return '';
+    return '<div class="report" id="diagReport"><div class="r-kicker">Diagnostic Report</div>'+
+      '<h2>What we found at your home</h2>'+
+      '<div class="r-meta">'+esc(CUST.address||'')+'</div>'+
+      '<div class="r-body">'+esc(txt)+'</div>'+
+      '<a class="r-jump" href="#configurator">See your options &darr;</a></div>';
+  }
+
   async function boot(){
     var app = document.getElementById('app');
     if (!custId) { app.innerHTML = '<div class="state">No customer specified. Open this page from a lead’s Proposal Tools.</div>'; return; }
@@ -931,9 +1011,25 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
     if (!PROP || !PROP.options || !PROP.options.length) {
       app.innerHTML = '<div class="state">No proposal has been built for this lead yet.</div>'; return;
     }
-    OPTS = PROP.options.slice().sort(function(a,b){ return (b.price||0)-(a.price||0); });
+    if (CUSTOMER_MODE) {
+      // Customers only ever see a proposal that was actually sent, and must arrive with their
+      // portal access code (their phone digits by default) — the same credential the portal uses.
+      var code = (qs.get('code')||'').replace(/\s/g,'');
+      var okCode = code && (code === String(CUST.access_code||'') || code === String(CUST.phone||'').replace(/\D/g,''));
+      if (!okCode || (PROP.status !== 'sent' && PROP.status !== 'accepted')) {
+        app.innerHTML = '<div class="state">This proposal link isn&rsquo;t valid. Please open it from your Solar Review portal, or call (619) 777-6527.</div>'; return;
+      }
+      var portalHref = CUST.email ? ('/portal?email='+encodeURIComponent(CUST.email)+'&code='+encodeURIComponent(code)) : '/portal';
+      document.querySelector('header').insertAdjacentHTML('beforeend', '<a class="top-link" href="'+portalHref+'">&larr; Back to my portal</a>');
+    }
+    // Keep the options in the order the rep built them (Option 1, Option 2) — customer-facing
+    // "Option 1 / Option 2" references in the write-up must line up. Preview keeps price order.
+    OPTS = CUSTOMER_MODE ? PROP.options.slice() : PROP.options.slice().sort(function(a,b){ return (b.price||0)-(a.price||0); });
 
     app.innerHTML =
+      (CUSTOMER_MODE && PROP.status === 'accepted' ? '<div class="accepted-banner"><strong>&#9989; Accepted.</strong> Our team will reach out within 24 hours to confirm next steps.</div>' : '')+
+      reportHtml()+
+      '<div id="configurator"></div>'+
       '<div class="configurator-grid">'+
         '<div class="hero-col"><div class="stage" id="stage"></div><div class="situation-block" id="situationBlock"></div></div>'+
         '<div class="panel" id="panel"></div>'+
