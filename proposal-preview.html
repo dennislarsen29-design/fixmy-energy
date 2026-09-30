@@ -811,15 +811,20 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
     // (export credits are low), so it keeps the production x rate model below.
     out.nem = nemVersion();
     if (sk > 0 && billMo > 0 && out.nem !== 3) {
+      // The saved post-fix bill ($9-21 from her true-up history) is the bill with the FULL system running,
+      // battery shifting included. Without a battery (Option 2) she still buys the evening-peak energy a
+      // Powerwall would have shifted, so that option's remaining bill = anchor + the shift value.
       var anchor = Math.max(MIN_MONTHLY_CHARGE, postfixBillFor());
-      out.solarMonthly = Math.max(0, Math.round(billMo - anchor));
-      // A battery can only shave what is left above the $10 minimum charge. Option 2 (no battery)
-      // stays at the anchor; Option 1 gets the extra headroom, and the rest of the battery's value
-      // (backup, VPP) is shown elsewhere rather than inflating the bill math.
-      out.touValueFull = out.touMonthly;
-      out.touMonthly = Math.max(0, Math.min(out.touMonthly, Math.round(anchor - MIN_MONTHLY_CHARGE)));
-      out.remaining = anchor - out.touMonthly;
-      out.batteryCapped = out.touValueFull > out.touMonthly;
+      var useYr = PROP && PROP.usage_kwh > 0 ? PROP.usage_kwh : 0;
+      var shiftKwh = out.touKwh;
+      if (!(shiftKwh > 0) && useYr > 0) shiftKwh = Math.round(Math.min(1 * 13.5 * 1.5 * 365, 0.6 * Math.max(0, useYr - sk)));
+      var shiftMo = Math.round((shiftKwh || 0) * BATTERY_TOU_RATE_DEFAULT / 12);
+      var noBattRemaining = Math.min(Math.max(billMo - 1, anchor), anchor + shiftMo);
+      out.solarMonthly = Math.max(0, Math.round(billMo - noBattRemaining));
+      if (hasPowerwall(opt)) { out.touMonthly = Math.max(0, Math.round(noBattRemaining - anchor)); out.touKwh = shiftKwh; }
+      else { out.touMonthly = 0; out.touKwh = 0; }
+      out.remaining = hasPowerwall(opt) ? anchor : noBattRemaining;
+      out.batteryCapped = false;
       out.totalMonthly = out.solarMonthly + out.touMonthly;
       return out;
     }
@@ -845,7 +850,7 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
       '<label><input type="checkbox" '+(PROP.inverter_down?'checked':'')+' onchange="setImpField(\'inverter_down\',this.checked)"/> inverter currently down</label> &middot; '+
       'current working battery <input type="number" step="0.5" min="0" value="'+(PROP.current_battery_kwh||'')+'" onchange="setImpField(\'current_battery_kwh\',this.value)"/> kWh &middot; '+
       'NEM <select onchange="setImpField(\'nem_version\',this.value)">'+[1,2,3].map(function(n){return '<option value="'+n+'"'+(nemVersion()===n?' selected':'')+'>'+n+'.0</option>';}).join('')+'</select> &middot; '+
-      'bill after fix (NEM 1/2) $<input type="number" step="1" min="0" value="'+postfixBillFor()+'" onchange="setImpField(\'postfix_monthly_bill\',this.value)"/>/mo</div>';
+      'bill with full system + battery (NEM 1/2) $<input type="number" step="1" min="0" value="'+postfixBillFor()+'" onchange="setImpField(\'postfix_monthly_bill\',this.value)"/>/mo</div>';
     return '<div class="improve-card"><div class="im-title">What this upgrade changes for you</div>'+rows+
       '<div class="im-total"><span>Estimated reduction in your monthly grid cost</span><span>~'+moneyRound(im.totalMonthly)+'/mo</span></div>'+
       '<div class="im-assume">Estimates from your bill and system size &mdash; confirmed in your usage review.</div>'+assume+'</div>';
