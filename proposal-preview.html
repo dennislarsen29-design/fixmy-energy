@@ -181,6 +181,17 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
 .credit-card .cc-row.credit{color:#3d6b12;font-weight:700;}
 .credit-card .cc-row.total{border-top:1px solid #cfe0a8;margin-top:6px;padding-top:8px;font-weight:800;font-size:0.98rem;}
 .credit-card .cc-note{font-size:0.72rem;color:var(--muted);margin-top:6px;}
+
+.improve-card{border:1.5px solid var(--line);background:var(--white);border-radius:14px;padding:16px 18px;margin-bottom:16px;}
+.improve-card .im-title{font-size:0.68rem;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);margin-bottom:10px;}
+.im-row{padding:10px 0;border-top:1px solid var(--line);}
+.im-row:first-of-type{border-top:none;padding-top:0;}
+.im-row .im-h{display:flex;justify-content:space-between;gap:12px;font-weight:700;font-size:0.9rem;}
+.im-row .im-h .im-amt{color:#3d6b12;white-space:nowrap;}
+.im-row .im-d{font-size:0.78rem;color:var(--muted);margin-top:3px;line-height:1.55;}
+.im-total{display:flex;justify-content:space-between;border-top:2px solid var(--dark);margin-top:8px;padding-top:10px;font-weight:800;}
+.im-assume{font-size:0.7rem;color:var(--muted);margin-top:8px;}
+.im-assume input[type=number]{width:70px;background:var(--white);border:1px solid var(--line);border-radius:6px;padding:3px 6px;}
 </style>
 </head>
 <body>
@@ -492,12 +503,9 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
     var billToday = PROP && PROP.hide_bill ? 0 : (parseFloat(CUST.monthly_bill) || 0);
     var mod = opt.savings && opt.savings.moderate;
     var monthlySavings = (mod && mod.monthly > 0) ? mod.monthly : 0;
-    // No saved savings scenario (older proposal): fall back to the battery's Time-of-Use shifting
-    // at the standard rate, so the "already reflected in your monthly total" note is actually true.
-    if (!(monthlySavings > 0)) {
-      var _tk = annualBatteryKwhFor(opt);
-      if (_tk != null) monthlySavings = Math.round((_tk * BATTERY_TOU_RATE_DEFAULT) / 12);
-    }
+    // No saved savings scenario (older proposal): use the improvements model (restored solar +
+    // battery load shifting) so the bill comparison reflects what the upgrade actually changes.
+    if (!(monthlySavings > 0)) monthlySavings = improvementsFor(opt).totalMonthly;
     var rows = '', totalLbl, totalAmt, totalSuffix = '', deltaHtml = '', footHtml = '';
     var cashPriceForFoot = opt.price;
 
@@ -723,6 +731,72 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
       '<div class="cc-note">The diagnostic fee you already paid is applied toward this work.</div></div>';
   }
 
+  // ── What the upgrade actually changes: restored solar production + battery upgrade ──
+  // 2026-09-30, per Dennis (Becky Phan): a downed inverter means the array produces ~nothing, so
+  // replacing it brings production — and a large cut in grid use — back; and replacing a dead 5 kWh
+  // battery with a 13.5 kWh Powerwall lets her shift on-peak use to solar/super-off-peak. Both must
+  // be calculated, not just narrated. Every input is explicit and editable on the page (system kW,
+  // inverter down?, current working battery kWh) and saved on the proposal; nothing is invented —
+  // a missing input hides that line rather than guessing.
+  var SOLAR_KWH_PER_KW_YR = 1600; // same constant the builder's production math uses
+  function effectiveRate(){
+    var bill = parseFloat(CUST.monthly_bill) || 0;
+    var use = PROP && PROP.usage_kwh > 0 ? PROP.usage_kwh : 0;
+    return (bill > 0 && use > 0) ? (bill * 12) / use : 0;
+  }
+  function improvementsFor(opt){
+    var out = { solarKwh:0, solarMonthly:0, touKwh:0, touMonthly:0, totalMonthly:0, rate:effectiveRate(), kw:0, from:0, to:0, units:0 };
+    var use = PROP && PROP.usage_kwh > 0 ? PROP.usage_kwh : 0;
+    var kw = PROP && parseFloat(PROP.system_kw) > 0 ? parseFloat(PROP.system_kw) : 0;
+    out.kw = kw;
+    var hasInv = /inverter/.test(componentText(opt));
+    if (hasInv && PROP && PROP.inverter_down && kw > 0 && out.rate > 0) {
+      out.solarKwh = Math.round(Math.min(kw * SOLAR_KWH_PER_KW_YR, use * 0.9));
+      out.solarMonthly = Math.round(out.solarKwh * out.rate / 12);
+    }
+    if (hasPowerwall(opt)) {
+      var units = powerwallUnitCountFor(opt) || 1;
+      out.units = units;
+      out.to = units * POWERWALL_UNIT_KWH;
+      out.from = PROP && parseFloat(PROP.current_battery_kwh) > 0 ? parseFloat(PROP.current_battery_kwh) : 0;
+      var k = annualBatteryKwhFor(opt);
+      if (k != null) { out.touKwh = k; out.touMonthly = Math.round(k * BATTERY_TOU_RATE_DEFAULT / 12); }
+    }
+    out.totalMonthly = out.solarMonthly + out.touMonthly;
+    // The upgrade can't remove more than the customer pays today.
+    var billMo = parseFloat(CUST.monthly_bill) || 0;
+    if (billMo > 0 && out.totalMonthly > billMo) out.totalMonthly = Math.round(billMo);
+    return out;
+  }
+  function improvementsHtml(opt){
+    var im = improvementsFor(opt);
+    var rows = '';
+    if (im.solarMonthly > 0) {
+      rows += '<div class="im-row"><div class="im-h"><span>Solar production restored</span><span class="im-amt">~'+moneyRound(im.solarMonthly)+'/mo</span></div>'+
+        '<div class="im-d">Your '+im.kw+' kW system isn&rsquo;t producing while the inverter is down. Replacing it brings back roughly '+im.solarKwh.toLocaleString()+' kWh a year (~'+Math.round(im.solarKwh/12).toLocaleString()+' kWh/mo) that you&rsquo;re now buying from the grid at about '+('$'+im.rate.toFixed(2))+'/kWh.</div></div>';
+    }
+    if (im.touMonthly > 0) {
+      rows += '<div class="im-row"><div class="im-h"><span>Battery upgrade &mdash; load shifting</span><span class="im-amt">~'+moneyRound(im.touMonthly)+'/mo</span></div>'+
+        '<div class="im-d">'+(im.from > 0 ? 'Storage goes from '+im.from+' kWh (not working) to '+im.to+' kWh' : 'You gain '+im.to+' kWh of working storage')+
+        '. It holds midday solar and super-off-peak power and covers the 4&ndash;9 PM peak, shifting about '+im.touKwh.toLocaleString()+' kWh a year off the most expensive rates.</div></div>';
+    }
+    if (!rows) return '';
+    var assume = CUSTOMER_MODE ? '' :
+      '<div class="im-assume">Assumptions (saved on this proposal): system <input type="number" step="0.1" min="0" value="'+(PROP.system_kw||'')+'" onchange="setImpField(\'system_kw\',this.value)"/> kW &middot; '+
+      '<label><input type="checkbox" '+(PROP.inverter_down?'checked':'')+' onchange="setImpField(\'inverter_down\',this.checked)"/> inverter currently down</label> &middot; '+
+      'current working battery <input type="number" step="0.5" min="0" value="'+(PROP.current_battery_kwh||'')+'" onchange="setImpField(\'current_battery_kwh\',this.value)"/> kWh</div>';
+    return '<div class="improve-card"><div class="im-title">What this upgrade changes for you</div>'+rows+
+      '<div class="im-total"><span>Estimated reduction in your monthly grid cost</span><span>~'+moneyRound(im.totalMonthly)+'/mo</span></div>'+
+      '<div class="im-assume">Estimates from your bill and system size &mdash; confirmed in your usage review.</div>'+assume+'</div>';
+  }
+  async function setImpField(k, v){
+    var val = (k === 'inverter_down') ? !!v : (parseFloat(v) > 0 ? parseFloat(v) : 0);
+    var patch = {}; patch[k] = val;
+    try { await savePropField(patch); } catch(e) { alert('Could not save: '+e.message); }
+    renderPanel(); renderBottomBar();
+  }
+  window.setImpField = setImpField;
+
   function setPayMode(mode){
     payMode = mode;
     finSub = defaultFinSubFor(mode, OPTS[selIdx]);
@@ -887,7 +961,7 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
         '<div class="fine-print">This estimate is preliminary and for illustration only — final pricing is confirmed after a full site evaluation. Not a bid for work or a binding agreement.</div>';
     }
     financeBlock += touSavingsHtml(opt) + ongoingValueHtml(opt);
-    financeBlock = billToggleHtml() + creditMathHtml(opt) + financeBlock;
+    financeBlock = billToggleHtml() + creditMathHtml(opt) + improvementsHtml(opt) + financeBlock;
 
     // Option list always reflects the price for the CURRENTLY ACTIVE pay mode — this was
     // the actual bug in the report: it showed the Participate price even while the Cash tab's
