@@ -2564,6 +2564,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           closerAmt: closerAmt, setterAmt: setterAmt, companyAmt: companyAmt,
           closerLocked: !!closerRow, setterLocked: !!setterRow,
           closerPaid: !!(closerRow && closerRow.status==='paid'), setterPaid: !!(setterRow && setterRow.status==='paid'),
+          // ⚠️ closerNm was computed right above for the split-percentage math but never
+          // actually stored here — found 2026-09-30 while giving _commLineHtml real
+          // names instead of the generic "closer"/"setter" labels; without this, every
+          // FixMy job card would have silently fallen back to the word "Rep" regardless
+          // of who the real tech was. _axiaCommCache (_nsCalcCommission) already stores
+          // it correctly — this was the one cache missing it.
+          closerNm: closerNm,
           setterName: setterName, hasSetter: hasSetter, repId: c.rep_id||'',
           setterCompPlan: (!setterRow && _setterPlanApplied) ? _setterPlanApplied : null,
           earned: (c.step||1) >= 9, net: net,
@@ -2674,16 +2681,37 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (!d) return '';
     var m = function(n){ return '$'+(n||0).toLocaleString(undefined,{maximumFractionDigits:0}); };
     var stripeColor = d.earned ? COMM_COLOR_EARNED : COMM_COLOR_POTENTIAL;
+    // ⚠️ 2026-09-30, per Dennis — "change Tech to the name of the actual tech, change
+    // Setter to the name of the setter." The hero line used to label each amount with
+    // the generic role word ("closer"/"setter") even though the real name was already
+    // sitting right there in d.closerNm/d.setterName (computed by _nsCalcCommission /
+    // _loadFixmyJobCommissions) — never used here. Every job has exactly one real
+    // closer and at most one real setter, so a name is always unambiguous at this
+    // per-job level (unlike the dashboard's aggregate Pending Payouts tiles below,
+    // which sum across many different jobs/people and genuinely can't show one name).
+    var closerLabel = esc(d.closerNm || 'Rep');
+    var setterLabel = esc(d.setterName || 'Setter');
     var heroHtml;
     if (d.repId && !d.hasSetter) {
       heroHtml = '<div style="font-family:'+COMM_MONO+';font-size:1.35rem;font-weight:800;color:'+COMM_COLOR_GOLD+';">'+m(d.closerAmt)+'</div>'+
-        '<div style="font-size:0.7rem;color:#888;margin-top:1px;">Net Commission &middot; '+_splitReason(d,'closer')+(d.closerLocked?(d.closerPaid?' &middot; &#10003;paid':' &middot; sold'):' &middot; est.')+'</div>';
+        '<div style="font-size:0.7rem;color:#888;margin-top:1px;"><b style="color:#ccc;">'+closerLabel+'</b> &middot; Net Commission &middot; '+_splitReason(d,'closer')+(d.closerLocked?(d.closerPaid?' &middot; &#10003;paid':' &middot; sold'):' &middot; est.')+'</div>';
     } else {
       var rows = [];
-      if (d.repId) rows.push('<div style="margin-bottom:5px;"><span style="font-family:'+COMM_MONO+';font-size:1.05rem;font-weight:800;color:'+COMM_COLOR_GOLD+';">'+m(d.closerAmt)+'</span> <span style="font-size:0.68rem;color:#888;">closer &middot; '+_splitReason(d,'closer')+(d.closerLocked?(d.closerPaid?' &#10003;paid':' sold'):' est.')+'</span></div>');
-      if (d.hasSetter) rows.push('<div><span style="font-family:'+COMM_MONO+';font-size:1.05rem;font-weight:800;color:'+COMM_COLOR_GOLD+';">'+m(d.setterAmt)+'</span> <span style="font-size:0.68rem;color:#888;">setter &middot; '+_splitReason(d,'setter')+(d.setterLocked?(d.setterPaid?' &#10003;paid':' sold'):' est.')+'</span></div>');
+      if (d.repId) rows.push('<div style="margin-bottom:5px;"><span style="font-family:'+COMM_MONO+';font-size:1.05rem;font-weight:800;color:'+COMM_COLOR_GOLD+';">'+m(d.closerAmt)+'</span> <span style="font-size:0.68rem;color:#888;"><b style="color:#ccc;">'+closerLabel+'</b> &middot; closer &middot; '+_splitReason(d,'closer')+(d.closerLocked?(d.closerPaid?' &#10003;paid':' sold'):' est.')+'</span></div>');
+      if (d.hasSetter) rows.push('<div><span style="font-family:'+COMM_MONO+';font-size:1.05rem;font-weight:800;color:'+COMM_COLOR_GOLD+';">'+m(d.setterAmt)+'</span> <span style="font-size:0.68rem;color:#888;"><b style="color:#ccc;">'+setterLabel+'</b> &middot; setter &middot; '+_splitReason(d,'setter')+(d.setterLocked?(d.setterPaid?' &#10003;paid':' sold'):' est.')+'</span></div>');
       heroHtml = rows.join('');
     }
+    // ⚠️ 2026-09-30, per Dennis — "Put company margin in the top of the pages since
+    // that's the highlight for that POV in Admin." It used to sit at the very bottom
+    // of the card, below the status badge, pay bubble, and the full Revenue/Redline
+    // math — the least visible spot on a long card. Now a hero-level stat at the TOP,
+    // ahead of the rep/setter breakdown, matching what Admin actually opens this card
+    // to see first. The full math block (still below) is now purely supporting detail
+    // for a number that's already visible at a glance.
+    var marginHeroHtml = '<div style="padding:8px 11px;margin-bottom:9px;background:rgba(167,137,217,0.12);border:1px solid rgba(167,137,217,0.4);border-radius:9px;">'+
+      '<div style="font-family:'+COMM_MONO+';font-size:1.3rem;font-weight:800;color:'+COMM_COLOR_MARGIN+';">'+m(d.companyAmt)+'</div>'+
+      '<div style="font-size:0.66rem;color:'+COMM_COLOR_MARGIN+';font-weight:700;opacity:0.85;">&#127970; Company Margin <span style="text-transform:uppercase;font-weight:600;opacity:0.7;">&middot; admin only</span></div>'+
+    '</div>';
     // Admin's Jobs-page card shows the FULL breakdown always visible — no "See the
     // math" click required (2026-09-XX, per Dennis: "I want to see the total
     // commissions (before splits), Setter (if applicable), Tech (if applicable)...
@@ -2696,6 +2724,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return '<div style="display:flex;margin-top:10px;border-radius:10px;overflow:hidden;border:1px solid rgba(255,255,255,0.08);">'+
       '<div style="width:4px;flex-shrink:0;background:'+stripeColor+';"></div>'+
       '<div style="flex:1;padding:10px 12px;background:rgba(255,255,255,0.02);min-width:0;">'+
+        marginHeroHtml+
         heroHtml+
         '<div style="margin-top:6px;font-size:0.68rem;color:#999;">'+statusBadgeHtml+'</div>'+
         _payBubbleHtml(d)+
@@ -2703,7 +2732,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#666;margin-bottom:5px;">&#128202; Full Math (Admin)</div>'+
           _revCostLineHtml(d)+
           _waterfallBarHtml(d)+
-          '<div style="margin-top:8px;padding:6px 10px;background:rgba(167,137,217,0.1);border:1px solid rgba(167,137,217,0.3);border-radius:8px;font-size:0.68rem;color:'+COMM_COLOR_MARGIN+';font-weight:700;">Company Margin <span style="opacity:0.65;font-weight:600;text-transform:uppercase;font-size:0.6rem;">admin only</span>: '+m(d.companyAmt)+'</div>'+
         '</div>'+
       '</div>'+
     '</div>';
@@ -3016,7 +3044,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // Day added 2026-09-14, per Dennis (Daily/Weekly/Monthly/Quarterly/Annually reporting).
   var JOBS_COMM_RANGES = [['day','Day'],['week','Week'],['month','Month'],['quarter','Quarter'],['year','Year'],['life','Total']];
   var _jobsCommRange = 'month';
-  var _jobsCommOpen = { fixmy:false, new_solar:false };
+  // 2026-09-30, per Dennis — "Dashboard should show at the top of the jobs page
+  // automatically." Was collapsed by default, so the historical-trends/pending-money
+  // view Admin actually opens the Jobs tab to see required an extra tap every time.
+  var _jobsCommOpen = { fixmy:true, new_solar:true };
   var _jobsCommLoading = { fixmy:false, new_solar:false };
   // 'tiles' (roll-up totals) | 'report' — a spreadsheet-style, one-row-per-job list
   // with Gross Commission / Tech's Commission / Setter's Commission each their own
@@ -3076,8 +3107,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (_jobsCommLoading[cat]) return '<div style="margin-bottom:14px;">'+head+rangeBar+viewToggle+'<div style="font-size:0.72rem;color:#666;">Loading&hellip;</div></div>';
     var scoped = _jobsScopedForCat(cat);
     var cache = cat==='new_solar' ? _axiaCommCache : _fixmyCommCache;
-    var rev=0, cost=0, net=0, marg=0, count=0, missing=0, pendSetter=0, pendTech=0, pendOps=0;
+    var rev=0, cost=0, net=0, marg=0, count=0, missing=0, pendSetter=0, pendTech=0, pendOps=0, owedToUs=0, owedToUsCount=0;
     scoped.forEach(function(c){
+      // 2026-09-30, per Dennis — "upcoming payments that haven't been paid to Solar
+      // Review yet." The Pending Payouts section below is the opposite direction
+      // (money Solar Review owes OUT to reps/setters) — this is money Solar Review is
+      // itself owed and hasn't collected. Computed independently of the commission
+      // cache (it's a real invoice_status/invoice_amount fact about the customer row,
+      // not a commission-math derivation), so a job still missing from `cache` doesn't
+      // silently drop it — only Axia/QCells is excluded, since Solar Review never
+      // invoices those customers directly (the solar provider bills them).
+      if (cat!=='new_solar' && ['sent','pending','overdue'].indexOf(c.invoice_status)>=0 && c.invoice_amount) {
+        owedToUs += parseFloat(c.invoice_amount)||0; owedToUsCount++;
+      }
       var d = cache[c.id];
       if (!d) { missing++; return; }
       count++;
@@ -3102,12 +3144,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var pendRows = [['Setter', pendSetter, '#4a9eff'], ['Tech', pendTech, '#9b6de8']];
     if (cat!=='new_solar') pendRows.push(['Ops', pendOps, '#f97316']);
     var pendHtml = '<div style="margin-top:10px;">'+
-      '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;margin-bottom:6px;">Pending Payouts &mdash; not yet paid</div>'+
+      '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;margin-bottom:6px;">Pending Payouts &mdash; owed BY Solar Review, not yet paid</div>'+
       '<div style="display:flex;gap:8px;flex-wrap:wrap;">'+pendRows.map(function(r){
         return '<div style="flex:1;min-width:110px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:8px 10px;">'+
           '<div style="font-size:0.6rem;color:'+r[2]+';font-weight:700;">'+r[0]+'</div>'+
           '<div style="font-size:0.85rem;font-weight:700;color:#ddd;">'+m(r[1])+'</div></div>';
       }).join('')+'</div></div>';
+    // 2026-09-30, per Dennis — "upcoming payments that haven't been paid to Solar
+    // Review yet." The opposite direction from Pending Payouts above: real sent/
+    // pending/overdue invoices (almost always the diagnostic fee) that Solar Review
+    // is still waiting to collect. FixMy only — Axia/QCells customers are never
+    // invoiced by Solar Review directly.
+    var owedToUsHtml = (cat!=='new_solar') ? '<div style="margin-top:10px;padding:10px 12px;background:rgba(240,180,41,0.08);border:1px solid rgba(240,180,41,0.35);border-radius:10px;">'+
+      '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:'+COMM_COLOR_GOLD+';margin-bottom:3px;">&#128179; Owed TO Solar Review &mdash; not yet collected</div>'+
+      '<div style="font-family:'+COMM_MONO+';font-size:1.05rem;font-weight:800;color:#fff;">'+m(owedToUs)+'</div>'+
+      '<div style="font-size:0.64rem;color:#999;margin-top:1px;">'+owedToUsCount+' unpaid invoice'+(owedToUsCount===1?'':'s')+' (sent / pending / overdue)</div>'+
+    '</div>' : '';
     // Axia/QCells has no "Revenue collected" or "Redline job cost" concept — those
     // are FixMy-only terms (2026-09-15 fix, same root cause as _grossCommissionOf
     // above: Redline/DC Bonus are already netted into the per-watt price before
@@ -3115,22 +3167,26 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // showing the rep payout pool mislabeled as a cost). Axia gets its own honest
     // 3-tile set instead of FixMy's 4, rather than a caption trying to explain away
     // mismatched labels.
+    // ⚠️ 2026-09-30, per Dennis — "Put company margin in the top of the pages since
+    // that's the highlight for that POV in Admin." Company Margin now leads BOTH
+    // tile sets (was last) — same reasoning as the per-job card change in
+    // _commLineHtml above: it's the number this whole dashboard exists to show Admin.
     var tilesHtml, captionHtml;
     if (cat==='new_solar') {
       captionHtml = 'Scoped to Axia/QCells jobs sold in this range &middot; '+count+' job'+(count===1?'':'s')+' &middot; Gross Commission = Net PPW &times; System Size (Redline &amp; DC Bonus already netted into the per-watt price).';
-      tilesHtml = tile('Gross Commission', net, COMM_COLOR_GOLD)+
-        tile('Payout Pool (Setter/Tech)', cost, '#4a9eff')+
-        tile('Company Margin', marg, COMM_COLOR_MARGIN);
+      tilesHtml = tile('Company Margin', marg, COMM_COLOR_MARGIN)+
+        tile('Gross Commission', net, COMM_COLOR_GOLD)+
+        tile('Payout Pool (Setter/Tech)', cost, '#4a9eff');
     } else {
       captionHtml = 'Scoped to FixMy jobs sold in this range &middot; '+count+' job'+(count===1?'':'s')+' &middot; Revenue = collected payments, Redline = Sub Sheet job costs.';
-      tilesHtml = tile('Revenue', rev, '#4a9eff')+
+      tilesHtml = tile('Company Margin', marg, COMM_COLOR_MARGIN)+
+        tile('Revenue', rev, '#4a9eff')+
         tile('Redline', cost, COMM_COLOR_REDLINE)+
-        tile('Gross Commission', net, COMM_COLOR_GOLD)+
-        tile('Company Margin', marg, COMM_COLOR_MARGIN);
+        tile('Gross Commission', net, COMM_COLOR_GOLD);
     }
     var bodyHtml = viewMode==='report'
       ? _jobsCommReportHtml(cat, scoped, cache, color)
-      : '<div style="display:flex;gap:10px;flex-wrap:wrap;">'+tilesHtml+'</div>'+pendHtml;
+      : '<div style="display:flex;gap:10px;flex-wrap:wrap;">'+tilesHtml+'</div>'+owedToUsHtml+pendHtml;
     return '<div style="margin-bottom:14px;">'+head+rangeBar+viewToggle+
       _installTimelineStripHtml(cat)+
       '<div style="font-size:0.6rem;color:#666;margin-bottom:8px;">'+captionHtml+'</div>'+
