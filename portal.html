@@ -9520,6 +9520,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         monthly_amount_paid: out.monthly_amount_paid, annual_amount_paid: out.annual_amount_paid,
         care: !!out.care, fera: !!out.fera, medical_baseline: !!out.medical_baseline,
         source: out.source, confidence: out.confidence, notes: out.notes || '',
+        // 2026-09-30 — the "show the math" build. Read-only, not individually
+        // rep-editable (unlike the fields above), so it's always overwritten wholesale
+        // on a re-read rather than tracked in `edited` — nothing for a rep to correct
+        // per-month, it's Quoya's own reasoning made visible, not a data-entry field.
+        reading_method: out.reading_method || 'none',
+        monthly_breakdown: Array.isArray(out.monthly_breakdown) ? out.monthly_breakdown : [],
         analyzed_at: new Date().toISOString(), edited: prevEdited
       };
       Object.keys(prevEdited).forEach(function(f){ if (prevEdited[f] && f in prev) merged[f] = prev[f]; });
@@ -10426,6 +10432,58 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return h;
   }
 
+  // "Show the math" — a shared per-month breakdown table used by BOTH the FixMy bill
+  // card (_evBillAnalysisHtml, source: ba.monthly_breakdown) and the Axia/QCells one
+  // (_axBillAnalysisHtml, source: ba.monthly_usage) so the two can't drift into two
+  // different renderings of the same idea. 2026-09-30, per Dennis (Jacob Stein's real
+  // bill — a genuinely readable, gridline-labeled "Electric Usage History" chart that
+  // Quoya had been declining to transcribe): "want Quoya to do reps job and then show
+  // the math to build credibility in the tool." This renders a proportional mini-bar per
+  // month, colored to match the bill's own On-Peak/Off-Peak/Super-Off-Peak legend, so a
+  // rep can visually compare Quoya's read against the real chart on the bill rather than
+  // trust a single black-box annual number.
+  // `months` is normalized to [{month, total, onPeak, offPeak, superOffPeak, estimated}].
+  function _billMonthlyTableHtml(months, readingMethod) {
+    if (!months || !months.length) return '';
+    var methodCaption = {
+      table_exact: 'Read directly from an exact usage table printed on your bill.',
+      chart_estimated: 'Estimated by reading the bill’s own usage-history chart against its labeled axis gridlines — the same way a rep would read it by eye.',
+      single_month_only: '',
+      none: ''
+    }[readingMethod] || '';
+    var maxTotal = months.reduce(function(m, x){ return Math.max(m, x.total || 0); }, 0) || 1;
+    var h = '<div style="margin:2px 0 12px;">';
+    h += '<label style="display:block;font-size:0.68rem;color:#888;margin-bottom:2px;">Monthly Consumption (read from your bill)</label>';
+    if (methodCaption) h += '<div style="font-size:0.66rem;color:#9b6de8;margin-bottom:8px;line-height:1.4;">' + esc(methodCaption) + '</div>';
+    h += '<div style="background:rgba(0,0,0,0.2);border-radius:10px;padding:10px 12px;">';
+    months.forEach(function(m){
+      var hasPeakSplit = (m.onPeak != null || m.offPeak != null || m.superOffPeak != null);
+      var barW = Math.max(3, Math.round((m.total || 0) / maxTotal * 100));
+      h += '<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-top:1px solid rgba(255,255,255,0.05);">';
+      h += '<div style="width:52px;flex-shrink:0;font-size:0.68rem;color:#aaa;">' + esc(m.month) + '</div>';
+      h += '<div style="flex:1;min-width:0;height:9px;border-radius:5px;overflow:hidden;background:rgba(255,255,255,0.05);display:flex;">';
+      if (hasPeakSplit) {
+        var segs = [['#f5a05a', m.onPeak], ['#5ab4e8', m.offPeak], ['#2a6fb5', m.superOffPeak]];
+        var segTotal = (m.onPeak||0) + (m.offPeak||0) + (m.superOffPeak||0);
+        segs.forEach(function(s){
+          if (!s[1]) return;
+          var pct = segTotal ? (s[1] / segTotal * barW) : 0;
+          h += '<div style="width:' + pct + '%;background:' + s[0] + ';"></div>';
+        });
+      } else {
+        h += '<div style="width:' + barW + '%;background:#9b6de8;"></div>';
+      }
+      h += '</div>';
+      h += '<div style="width:70px;flex-shrink:0;text-align:right;font-size:0.72rem;color:#ddd;font-weight:600;">' + (m.total != null ? m.total.toLocaleString() + ' kWh' : '—') + '</div>';
+      h += '<div style="width:14px;flex-shrink:0;text-align:center;font-size:0.62rem;color:' + (m.estimated ? '#ffaa00' : '#8DC63F') + ';" title="' + (m.estimated ? 'Estimated from the chart' : 'Exact figure from the bill') + '">' + (m.estimated ? '~' : '✓') + '</div>';
+      h += '</div>';
+    });
+    h += '</div>';
+    h += '<div style="font-size:0.6rem;color:#666;margin-top:5px;">~ estimated from chart &nbsp;&middot;&nbsp; ✓ exact figure printed on bill</div>';
+    h += '</div>';
+    return h;
+  }
+
   // Quoya Assist — bill analysis card (2026-08-27). Renders under the bill upload slot
   // the moment a Utility Bill lands, showing what Quoya read off it as editable fields
   // so the rep can verify/correct rather than trust it blind — same "purple border,
@@ -10476,6 +10534,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           : 'Could not tell what kind of statement this is.')
         + (ba.confidence ? ' Confidence: ' + esc(ba.confidence) + '.' : '') + '</div>';
       if (ba.notes) h += '<div style="font-size:0.7rem;color:#ffaa00;margin-bottom:12px;line-height:1.5;">&#128161; ' + esc(ba.notes) + '</div>';
+    }
+    if (Array.isArray(ba.monthly_breakdown) && ba.monthly_breakdown.length) {
+      h += _billMonthlyTableHtml(ba.monthly_breakdown.map(function(m){
+        return { month: m.month, total: m.total_kwh, onPeak: m.on_peak_kwh, offPeak: m.off_peak_kwh, superOffPeak: m.super_off_peak_kwh, estimated: m.estimated };
+      }), ba.reading_method);
     }
     h += _evBillNumField(ba, 'annual_kwh', 'Annual Consumption', '', 'kWh/yr', 1);
     h += _evBillNumField(ba, 'avg_rate_per_kwh', 'Average Rate', '$', '/kWh', 0.01);
@@ -10780,6 +10843,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         avg_rate_per_kwh: out.avg_rate_per_kwh,
         avg_monthly_bill: out.avg_monthly_bill,
         monthly_usage: out.monthly_usage || [],
+        reading_method: out.reading_method || 'none',
         care: !!out.care, fera: !!out.fera, medical_baseline: !!out.medical_baseline,
         source: out.source, confidence: out.confidence, notes: out.notes || '',
         analyzed_at: new Date().toISOString(), edited: prevEdited
@@ -10890,20 +10954,38 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // Simple hand-rolled CSS bar chart — no chart library is guaranteed loaded outside
   // Finance (Chart.js there is lazy-loaded via finLoadChartJs), and a dozen bars is
   // well within what plain flex/divs can render cleanly.
-  function _axMonthlyChartHtml(rows) {
+  function _axMonthlyChartHtml(rows, readingMethod) {
     if (!rows || !rows.length) {
       return '<div style="font-size:0.7rem;color:#777;margin-bottom:12px;line-height:1.5;">No month-by-month bar chart or NEM summary table was found on this bill &mdash; only the annual total below.</div>';
     }
     var max = Math.max.apply(null, rows.map(function(r){ return Number(r.kwh) || 0; })) || 1;
     var h = '<div style="margin-bottom:14px;">';
-    h += '<label style="display:block;font-size:0.68rem;color:#888;margin-bottom:8px;">Month-by-Month Usage</label>';
+    h += '<label style="display:block;font-size:0.68rem;color:#888;margin-bottom:2px;">Month-by-Month Usage</label>';
+    // "Show the math" (2026-09-30, per Dennis) — same reading-method caption FixMy's
+    // _billMonthlyTableHtml shows, so a rep sees whether this came off an exact table or
+    // was read by eye against chart gridlines, rather than trusting a bare bar chart.
+    var caption = { table_exact: 'Read directly from an exact usage table printed on your bill.', chart_estimated: 'Estimated by reading the bill’s own usage-history chart against its labeled axis gridlines.' }[readingMethod];
+    if (caption) h += '<div style="font-size:0.62rem;color:#8dbfff;margin-bottom:8px;line-height:1.4;">' + esc(caption) + '</div>';
     h += '<div style="display:flex;align-items:flex-end;gap:3px;height:90px;padding:0 2px;">';
     rows.forEach(function(r){
       var kwh = Number(r.kwh) || 0;
       var pct = Math.max(4, Math.round((kwh / max) * 100));
-      h += '<div title="' + esc(String(r.month)) + ': ' + kwh + ' kWh" style="flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;">'
-        + '<div style="width:100%;height:' + pct + '%;background:linear-gradient(180deg,#4a9eff,#2c6bc7);border-radius:3px 3px 0 0;"></div>'
-        + '</div>';
+      var hasSplit = (r.on_peak_kwh != null || r.off_peak_kwh != null || r.super_off_peak_kwh != null);
+      var barInner = '<div style="width:100%;height:' + pct + '%;border-radius:3px 3px 0 0;overflow:hidden;display:flex;flex-direction:column-reverse;">';
+      if (hasSplit) {
+        var segTotal = (r.on_peak_kwh||0) + (r.off_peak_kwh||0) + (r.super_off_peak_kwh||0);
+        [['#2a6fb5', r.super_off_peak_kwh], ['#5ab4e8', r.off_peak_kwh], ['#f5a05a', r.on_peak_kwh]].forEach(function(s){
+          if (!s[1]) return;
+          var segPct = segTotal ? Math.round(s[1] / segTotal * 100) : 0;
+          barInner += '<div style="width:100%;height:' + segPct + '%;background:' + s[0] + ';"></div>';
+        });
+      } else {
+        barInner += '<div style="width:100%;height:100%;background:linear-gradient(180deg,#4a9eff,#2c6bc7);"></div>';
+      }
+      barInner += '</div>';
+      var tipSuffix = r.estimated === false ? ' (exact, from bill)' : ' (estimated from chart)';
+      h += '<div title="' + esc(String(r.month)) + ': ' + kwh + ' kWh' + tipSuffix + '" style="flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;">'
+        + barInner + '</div>';
     });
     h += '</div>';
     h += '<div style="display:flex;gap:3px;padding:0 2px;margin-top:4px;">';
@@ -11000,7 +11082,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // #1/#5: who the bill is for
     h += _axTextField(ba, 'account_holder_name', 'Account Holder Name (on bill)');
     // #2: month-by-month usage
-    h += _axMonthlyChartHtml(ba.monthly_usage || []);
+    h += _axMonthlyChartHtml(ba.monthly_usage || [], ba.reading_method);
     // #3: annual usage total
     h += _axNumField(ba, 'annual_kwh', 'Annual Usage Total', '', 'kWh/yr', 1);
 

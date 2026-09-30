@@ -63,12 +63,16 @@ const TOOL = {
       period_kwh: { type: 'number', description: 'Electricity consumption in kWh for that SAME billing period as period_generation_delivery_charges (not the annual total).' },
       annual_kwh: { type: 'number', description: 'Total annual electricity consumption in kWh. Prefer a True-Up/12-month usage total if present. If only a single monthly bill is shown, estimate the annual figure from that one month (accounting for typical seasonal swings if a usage history graph is visible) and say so in notes.' },
       monthly_usage: {
-        type: 'array', description: 'Month-by-month kWh usage, read from a usage bar chart or a NEM (Net Energy Metering) summary table if either appears on the document — common on SDG&E/SCE bills and True-Up statements. List every month shown, in chronological order, using the exact figures in the chart/table. If NEITHER a chart nor a table is present anywhere on the document, return an empty array — do not invent monthly figures by dividing the annual total.',
+        type: 'array', description: 'Month-by-month kWh usage, read from a usage bar chart or a NEM (Net Energy Metering) summary table if either appears on the document — common on SDG&E/SCE bills and True-Up statements. List every month shown, in chronological order. A bar chart with labeled y-axis gridlines but no printed number on each bar is STILL READABLE — see the system prompt below for how. If NEITHER a chart nor a table is present anywhere on the document, return an empty array — do not invent monthly figures by dividing the annual total.',
         items: {
           type: 'object',
           properties: {
             month: { type: 'string', description: 'Short label exactly as shown, e.g. "Jan 2026" or "January".' },
-            kwh: { type: 'number' }
+            kwh: { type: 'number' },
+            on_peak_kwh: { type: 'number', description: 'Null/omit if the chart has no On-Peak/Off-Peak/Super-Off-Peak color breakdown for this month.' },
+            off_peak_kwh: { type: 'number' },
+            super_off_peak_kwh: { type: 'number' },
+            estimated: { type: 'boolean', description: 'True if this month came from visually reading a bar against chart gridlines (no exact printed number for that bar). False if an exact number was printed (e.g. in a usage table).' }
           },
           required: ['month', 'kwh']
         }
@@ -77,6 +81,7 @@ const TOOL = {
       fera: { type: 'boolean', description: 'True only if the bill explicitly shows FERA (Family Electric Rate Assistance) discount enrollment.' },
       medical_baseline: { type: 'boolean', description: 'True only if the bill explicitly shows a Medical Baseline allowance/adjustment.' },
       source: { type: 'string', enum: ['true_up', 'monthly_bill', 'unknown'], description: 'true_up = a 12-month True-Up/annual statement was read (most accurate annual figures). monthly_bill = only a single month\'s bill was available (annual figures are an estimate). unknown = could not tell.' },
+      reading_method: { type: 'string', enum: ['table_exact', 'chart_estimated', 'single_month_only', 'none'], description: 'table_exact = an exact numeric usage table was printed and read directly. chart_estimated = monthly_usage was derived by visually reading a bar chart against its labeled axis gridlines — expected and normal, not a fallback. single_month_only = no history chart or table at all, just the current billing period. none = no usable monthly data found.' },
       confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
       notes: { type: 'string', description: 'Anything the rep should know before trusting these numbers: illegible sections, which figures are estimated vs. actual, an unusual rate schedule, multiple accounts/meters on one bill, etc. Empty string if nothing to flag.' }
     },
@@ -90,10 +95,12 @@ What to look for:
 - The account holder's name, printed on the bill (usually near the top, on the mailing address block or account-summary section).
 - "Total kWh" / usage figures FOR THE CURRENT BILLING PERIOD, separate from any annual/True-Up total.
 - The bill's ELECTRIC charges for that same period — Generation + Delivery combined. If the bill also carries gas service, gas has its OWN separate subtotal on most CA combined bills (SDG&E in particular) — do not include it.
-- A 12-month usage HISTORY (a bar chart, or a NEM/Net Energy Metering summary table with one row per month) — SDG&E/SCE True-Up statements usually carry this. A single monthly bill usually does not. If you see one, transcribe every month's kWh exactly as shown.
+- A usage HISTORY (a bar chart, or a NEM/Net Energy Metering summary table with one row per month) — most SDG&E/SCE bills carry an "Electric Usage History" chart even on a single monthly bill, not just True-Up statements. If you see one, transcribe every month's kWh.
 - Discount program lines: "CARE", "California Alternate Rates for Energy", "FERA", "Family Electric Rate Assistance", or "Medical Baseline" — these are usually called out explicitly near the rate schedule or account summary, not something to infer.
 
-Never guess a number that is not supported by the document. If a figure genuinely cannot be determined, leave it null (or the monthly_usage array empty) and say why in notes rather than inventing a plausible-looking value — a wrong number handed to a rep as fact is worse than a blank field.
+Reading a monthly usage-history bar chart: many bills print a labeled y-axis (gridlines such as 0, 148, 296, 444, 592, 740 kWh) but do NOT print a number on each individual bar. This is still real, readable data — a bar whose top sits roughly a third of the way between the 444 and 592 gridlines is about 444 + (592-444)/3 ≈ 493 kWh. Read every visible bar this way, splitting it into On-Peak/Off-Peak/Super-Off-Peak by the color legend when the chart has one, and mark estimated:true. This is expected, ordinary work — the same thing a rep would do by eye standing at the customer's kitchen table — not a reason to leave monthly_usage empty. Only skip a specific month if its bar is genuinely too small or obscured to place against the gridlines; only return an empty array if no bars are visible at all. When an exact numeric usage table is ALSO printed, prefer its exact numbers over eyeballing the chart for those months and mark estimated:false.
+
+Never guess a number that is not supported by the document. If a figure genuinely cannot be determined at all (not merely requiring a visual estimate against labeled gridlines, which you should do), leave it null (or the monthly_usage array empty) and say why in notes rather than inventing a plausible-looking value — a wrong number handed to a rep as fact is worse than a blank field.
 
 Call report_axia_bill_analysis exactly once.`;
 
@@ -180,7 +187,15 @@ exports.handler = async function (event) {
       ? out.monthly_usage
           .filter(function (m) { return m && typeof m.kwh === 'number' && m.month; })
           .slice(0, 24)
-          .map(function (m) { return { month: String(m.month).slice(0, 20), kwh: m.kwh }; })
+          .map(function (m) {
+            return {
+              month: String(m.month).slice(0, 20), kwh: m.kwh,
+              on_peak_kwh: typeof m.on_peak_kwh === 'number' ? m.on_peak_kwh : null,
+              off_peak_kwh: typeof m.off_peak_kwh === 'number' ? m.off_peak_kwh : null,
+              super_off_peak_kwh: typeof m.super_off_peak_kwh === 'number' ? m.super_off_peak_kwh : null,
+              estimated: m.estimated !== false
+            };
+          })
       : [];
 
     return reply(200, {
@@ -197,7 +212,8 @@ exports.handler = async function (event) {
       medical_baseline: !!out.medical_baseline,
       source: ['true_up', 'monthly_bill', 'unknown'].indexOf(out.source) >= 0 ? out.source : 'unknown',
       confidence: ['high', 'medium', 'low'].indexOf(out.confidence) >= 0 ? out.confidence : 'low',
-      notes: typeof out.notes === 'string' ? out.notes.slice(0, 500) : ''
+      notes: typeof out.notes === 'string' ? out.notes.slice(0, 500) : '',
+      reading_method: ['table_exact', 'chart_estimated', 'single_month_only', 'none'].indexOf(out.reading_method) >= 0 ? out.reading_method : (monthlyUsage.length ? 'chart_estimated' : 'none')
     });
   } catch (e) {
     console.error('axia-bill-analysis failed:', e.message);

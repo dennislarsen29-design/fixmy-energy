@@ -24,12 +24,30 @@
 //
 // POST { billUrl, utility, lead: { address } }
 // → { readable, utility_detected, annual_kwh, avg_rate_per_kwh, monthly_amount_paid,
-//     annual_amount_paid, care, fera, medical_baseline, source, confidence, notes }
+//     annual_amount_paid, care, fera, medical_baseline, source, confidence, notes,
+//     monthly_breakdown, reading_method }
 // utility_detected (2026-09-28, per Dennis — "the select Utility feature is not
 // necessary, if Quoya can pull the data from the bill they should read the name and
 // select the correct utility") lets the Eval Wizard auto-fill which utility this is,
 // read straight off the bill's own header, instead of requiring the rep to pick one
 // manually before uploading.
+//
+// monthly_breakdown + reading_method (2026-09-30, per Dennis — "I don't know how it's
+// coming up with annual consumption so showing each month is helpful... want Quoya to
+// do reps job and then show the math to build credibility in the tool"). Real bill
+// example that surfaced this: Jacob Stein's SDG&E bill has a genuinely readable
+// "Electric Usage History" stacked bar chart — labeled y-axis gridlines at
+// 0/148/296/444/592/740 kWh, On-Peak/Off-Peak/Super-Off-Peak color legend, 8 real
+// monthly bars — but the model returned annual_kwh as a single-month extrapolation and
+// explicitly said in notes it "could not transcribe reliable per-month figures" because
+// individual bars carry no printed number. That's the wrong call: a labeled-gridline bar
+// chart IS readable, the same way a rep standing at the kitchen table would read it — by
+// eye, against the gridlines. The SYSTEM prompt below now instructs exactly that instead
+// of permitting the punt, and monthly_breakdown is what makes the reasoning visible to a
+// rep afterward (rendered as a table in the Eval Wizard) rather than a black-box annual
+// number nobody can check. reading_method tells the UI (and the rep) how each figure was
+// sourced — an exact printed table beats an eyeballed chart beats a single-month-only
+// bill, and the UI shows that distinction rather than presenting all three the same way.
 //
 // ENV vars required: ANTHROPIC_KEY.
 
@@ -65,7 +83,7 @@ const TOOL = {
     properties: {
       readable: { type: 'boolean', description: 'False ONLY if the document could not be read at all — wrong file type, blank page, totally illegible. A bill that is readable but missing some figures is still readable=true; just leave those fields null.' },
       utility_detected: { type: 'string', enum: ['sdge', 'sce', 'ladwp', 'other', 'unknown'], description: 'Which utility issued this bill, read from the logo/header/company name printed on the document itself (e.g. "San Diego Gas & Electric" / "SDG&E" -> sdge, "Southern California Edison" -> sce, "Los Angeles Department of Water and Power" / "LADWP" -> ladwp). "other" if it is clearly a different CA utility (PG&E, SMUD, etc.) by name. "unknown" ONLY if the issuing utility genuinely cannot be identified from the document — never guess from a hint the rep may have typed elsewhere.' },
-      annual_kwh: { type: 'number', description: 'Total annual electricity consumption in kWh. Prefer a True-Up/12-month usage total if present. If only a single monthly bill is shown, estimate the annual figure from that one month (accounting for typical seasonal swings if a usage history graph is visible) and say so in notes.' },
+      annual_kwh: { type: 'number', description: 'Total annual electricity consumption in kWh. If monthly_breakdown covers 12 real months, this should be their sum. If monthly_breakdown covers fewer months (e.g. the homeowner recently moved in and only 6-8 months of real usage exist), still produce a best-effort full-year estimate by extrapolating the available months\' seasonal pattern, and say in notes that it is extrapolated from partial-year data. If no usage-history chart or table exists at all, estimate from the single month shown and say so in notes.' },
       avg_rate_per_kwh: { type: 'number', description: 'Blended average price paid per kWh in dollars for the billing period shown (total electric charges divided by total kWh), e.g. 0.42. Not the highest tier rate — the effective blended average.' },
       monthly_amount_paid: { type: 'number', description: 'The dollar amount owed/charged on the most recent single billing period shown (before any true-up credit is applied).' },
       annual_amount_paid: { type: 'number', description: 'Total dollars paid/owed over the trailing 12 months. Prefer the True-Up statement\'s annual total if shown; otherwise estimate as monthly_amount_paid x 12 (adjust for known seasonal swings if visible) and say so in notes.' },
@@ -74,7 +92,24 @@ const TOOL = {
       medical_baseline: { type: 'boolean', description: 'True only if the bill explicitly shows a Medical Baseline allowance/adjustment.' },
       source: { type: 'string', enum: ['true_up', 'monthly_bill', 'unknown'], description: 'true_up = a 12-month True-Up/annual statement was read (most accurate annual figures). monthly_bill = only a single month\'s bill was available (annual figures are an estimate). unknown = could not tell.' },
       confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
-      notes: { type: 'string', description: 'Anything the rep should know before trusting these numbers: illegible sections, which figures are estimated vs. actual, an unusual rate schedule, multiple accounts/meters on one bill, etc. Empty string if nothing to flag.' }
+      notes: { type: 'string', description: 'Anything the rep should know before trusting these numbers: illegible sections, which figures are estimated vs. actual, an unusual rate schedule, multiple accounts/meters on one bill, etc. Empty string if nothing to flag.' },
+      reading_method: { type: 'string', enum: ['table_exact', 'chart_estimated', 'single_month_only', 'none'], description: 'table_exact = an exact numeric usage table (e.g. a NEM True-Up summary table) was printed and read directly, no eyeballing needed. chart_estimated = monthly_breakdown was derived by visually reading a bar chart against its labeled axis gridlines — this is expected and normal, not a fallback to apologize for. single_month_only = this bill shows only the current billing period, no history chart or table at all. none = no usable monthly usage data found anywhere on the document.' },
+      monthly_breakdown: {
+        type: 'array',
+        description: 'One entry per real month visible in a usage-history chart (e.g. "Electric Usage History") or table on this bill. A stacked bar chart with labeled y-axis gridlines (e.g. 0/148/296/444/592/740) but no printed number on each individual bar is STILL READABLE — estimate each bar\'s total height, and each color segment\'s share of it, by eye against the nearest gridlines, exactly the way a rep standing at the customer\'s kitchen table would read the printed chart. Do this for every month with a visible bar. Only omit a month if its bar is genuinely too small or obscured to place against the gridlines at all — do not fabricate a month with no bar. Leave this array empty only when reading_method is single_month_only or none.',
+        items: {
+          type: 'object',
+          properties: {
+            month: { type: 'string', description: 'e.g. "Jan 2026" — read from the chart\'s x-axis label or the table\'s row label.' },
+            total_kwh: { type: 'number' },
+            on_peak_kwh: { type: 'number', description: 'Null/omit if the chart has no On-Peak/Off-Peak/Super-Off-Peak color breakdown for this month.' },
+            off_peak_kwh: { type: 'number' },
+            super_off_peak_kwh: { type: 'number' },
+            estimated: { type: 'boolean', description: 'True if this month\'s figure was visually read against chart gridlines (no exact printed number for that specific bar). False only if an exact number was printed for this month (e.g. in a usage table).' }
+          },
+          required: ['month', 'total_kwh', 'estimated']
+        }
+      }
     },
     required: ['readable']
   }
@@ -84,12 +119,16 @@ const SYSTEM = `You are Quoya, reading a California residential utility bill (SD
 
 What to look for:
 - Which utility issued the bill — the company name/logo printed in the header. Read it off the document; do not assume it matches whatever utility hint (if any) is passed in context, since that hint may be wrong or unset.
-- "Total kWh" / usage figures, and a 12-month usage history graph or table if present (SDG&E/SCE True-Up statements carry these; a single monthly bill usually does not).
+- "Total kWh" / usage figures, and a monthly usage-history graph or table if present — most SDG&E/SCE bills (not just True-Up statements) carry an "Electric Usage History" bar chart even on a single monthly bill.
 - The bill's total dollar amount for the period, and any annual True-Up total if this is a NEM/true-up statement.
 - Discount program lines: "CARE", "California Alternate Rates for Energy", "FERA", "Family Electric Rate Assistance", or "Medical Baseline" — these are usually called out explicitly near the rate schedule or account summary, not something to infer.
 - Tiered rate schedules (Tier 1/2/3, Baseline/Non-Baseline, Peak/Off-Peak on a TOU plan) — compute the BLENDED average ($/kWh), not any single tier's rate.
 
-Never guess a number that is not supported by the document. If a figure genuinely cannot be determined, leave it null and say why in notes rather than inventing a plausible-looking value — a wrong number handed to a rep as fact is worse than a blank field.
+Reading a monthly usage-history bar chart: many bills print a labeled y-axis (gridlines such as 0, 148, 296, 444, 592, 740 kWh) but do NOT print a number on each individual bar. This is still real, readable data — a bar whose top sits roughly a third of the way between the 444 and 592 gridlines is about 444 + (592-444)/3 ≈ 493 kWh. Read every visible bar this way, splitting it into On-Peak/Off-Peak/Super-Off-Peak by the color legend when the chart has one. This is expected, ordinary work — the same thing a rep would do by eye standing at the customer's kitchen table — not a reason to skip the chart or leave monthly_breakdown empty. Only skip a specific month if its bar is genuinely too small or obscured to place against the gridlines; only skip the whole chart if no bars are visible at all. When an exact numeric usage table is ALSO printed (common on True-Up statements), prefer its exact numbers over eyeballing the chart for those months.
+
+If the bill covers a homeowner who recently moved in (the chart shows real bars for only some months, with earlier months blank or absent), report only the real months in monthly_breakdown, say so plainly in notes, and still produce a reasonable full-year annual_kwh estimate by extrapolating the visible months' seasonal pattern — never silently pass off a partial year as a confident full year without saying so.
+
+Never guess a number that is not supported by the document. If a figure genuinely cannot be determined at all (not merely requiring a visual estimate against labeled gridlines, which you should do), leave it null and say why in notes rather than inventing a plausible-looking value — a wrong number handed to a rep as fact is worse than a blank field.
 
 Call report_bill_analysis exactly once.`;
 
@@ -164,6 +203,21 @@ exports.handler = async function (event) {
     if (!call) return reply(200, { readable: false, notes: 'Quoya did not return a readable result.' });
 
     const out = call.input || {};
+    // Sanitize monthly_breakdown defensively — this renders directly as a table in the
+    // Eval Wizard, so a malformed entry from the model must never reach the UI raw.
+    const monthlyBreakdown = Array.isArray(out.monthly_breakdown)
+      ? out.monthly_breakdown.slice(0, 24).map(function (m) {
+          m = m || {};
+          return {
+            month: typeof m.month === 'string' ? m.month.slice(0, 20) : '',
+            total_kwh: typeof m.total_kwh === 'number' ? m.total_kwh : null,
+            on_peak_kwh: typeof m.on_peak_kwh === 'number' ? m.on_peak_kwh : null,
+            off_peak_kwh: typeof m.off_peak_kwh === 'number' ? m.off_peak_kwh : null,
+            super_off_peak_kwh: typeof m.super_off_peak_kwh === 'number' ? m.super_off_peak_kwh : null,
+            estimated: m.estimated !== false
+          };
+        }).filter(function (m) { return m.month && typeof m.total_kwh === 'number'; })
+      : [];
     return reply(200, {
       readable: out.readable !== false,
       utility_detected: ['sdge', 'sce', 'ladwp', 'other', 'unknown'].indexOf(out.utility_detected) >= 0 ? out.utility_detected : 'unknown',
@@ -176,7 +230,9 @@ exports.handler = async function (event) {
       medical_baseline: !!out.medical_baseline,
       source: ['true_up', 'monthly_bill', 'unknown'].indexOf(out.source) >= 0 ? out.source : 'unknown',
       confidence: ['high', 'medium', 'low'].indexOf(out.confidence) >= 0 ? out.confidence : 'low',
-      notes: typeof out.notes === 'string' ? out.notes.slice(0, 500) : ''
+      notes: typeof out.notes === 'string' ? out.notes.slice(0, 500) : '',
+      reading_method: ['table_exact', 'chart_estimated', 'single_month_only', 'none'].indexOf(out.reading_method) >= 0 ? out.reading_method : (monthlyBreakdown.length ? 'chart_estimated' : 'none'),
+      monthly_breakdown: monthlyBreakdown
     });
   } catch (e) {
     console.error('eval-bill-analysis failed:', e.message);
