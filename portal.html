@@ -10552,10 +10552,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     _axRender();
   };
 
+  // ⚠️ 2026-09-30, per Dennis — "The continue in proposal tools button should populate
+  // the same Aurora link. It's a dead end." It was: closed the wizard and did nothing
+  // else, leaving the rep to go find the Aurora button themselves elsewhere in the
+  // editor. Starting the Aurora project IS the natural next step once the Site
+  // Evaluation is done, so this now fires the same hand-off _propOpenAurora already
+  // does everywhere else instead of just promising it in the button's own label.
   window.closeAxiaEvalWizard = function() {
+    var rec = _axRec; // capture before clearing — the wizard is closing either way
     var s = document.getElementById('editorSlot');
     if (s) s.innerHTML = '';
     _axId = null; _axRec = null; _axRow = null; _axBillAnalyzing = false;
+    if (rec && window._propOpenAurora) {
+      window._propOpenAurora({ address: rec.address || '', firstName: rec.first_name || '', lastName: rec.last_name || '', email: rec.email || '', customerId: rec.id || '' });
+    }
   };
 
   window.axUpload = async function(inputEl) {
@@ -20910,12 +20920,40 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (w && w.document) {
       try { w.document.write('<!doctype html><title>Opening Aurora…</title><body style="font-family:-apple-system,sans-serif;background:#111;color:#8DC63F;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;font-size:1rem;">Creating Aurora project…</body>'); } catch(e){}
     }
+    // ⚠️ 2026-09-30, per Dennis — "The link for Aurora should tell the user that the
+    // address has been copied." It already tried to, via _propToast — but that toast
+    // renders in THIS (original) tab/window, and window.open() above already shifted
+    // the rep's view to the NEW tab by the time it fires, so it was effectively
+    // invisible. Also, navigator.clipboard.writeText() is unreliable on iOS Safari once
+    // called from inside an async .then()/.catch() (loses the synchronous user-gesture
+    // context the clipboard API requires) — the old code claimed "copied" unconditionally
+    // regardless of whether the write actually succeeded. Fixed by writing the
+    // confirmation — AND the address itself, as selectable plain text, a working
+    // fallback if the automatic copy silently failed — directly into the new tab the rep
+    // is actually looking at, with a short pause before redirecting to Aurora so it's
+    // actually readable rather than flashing past.
+    function showCopiedThenGo(url){
+      if (w && w.document) {
+        try {
+          w.document.open();
+          w.document.write('<!doctype html><title>Aurora</title><body style="font-family:-apple-system,sans-serif;background:#111;color:#eee;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;margin:0;padding:24px;text-align:center;box-sizing:border-box;">'
+            + '<div style="font-size:1.6rem;color:#8DC63F;margin-bottom:6px;">&#10003;</div>'
+            + '<div style="font-size:1rem;font-weight:700;color:#8DC63F;margin-bottom:14px;">Address copied</div>'
+            + (addr ? '<div style="font-size:0.95rem;color:#fff;background:#1a1a1a;border:1px solid #333;border-radius:10px;padding:12px 16px;margin-bottom:14px;max-width:320px;user-select:all;-webkit-user-select:all;">' + esc(addr) + '</div>' : '')
+            + '<div style="font-size:0.8rem;color:#999;max-width:280px;line-height:1.5;">Paste it into Aurora’s project address field. Opening Aurora now&hellip;</div>'
+            + '</body>');
+          w.document.close();
+        } catch(e){}
+      }
+      setTimeout(function(){
+        if (w) { try { w.location.href = url; } catch(e){ window.open(url, '_blank'); } }
+        else { window.open(url, '_blank'); }
+      }, addr ? 1600 : 0);
+      if (window._propToast) _propToast(addr ? '✓ Address copied — paste into Aurora' : 'Opening Aurora…');
+    }
     function fallback(){
       if (addr) { try { navigator.clipboard.writeText(addr).catch(function(){}); } catch(e){} }
-      var fbUrl = 'https://v2.aurorasolar.com/new-project';
-      if (w) { try { w.location.href = fbUrl; } catch(e){ window.open(fbUrl, '_blank'); } }
-      else { window.open(fbUrl, '_blank'); }
-      if (window._propToast) _propToast(addr ? '✓ Address copied — paste into Aurora' : 'Opening Aurora…');
+      showCopiedThenGo('https://v2.aurorasolar.com/new-project');
     }
     if (!addr) { fallback(); return; }
     fetch('/.netlify/functions/aurora-create-project', {
