@@ -13,11 +13,19 @@ const SUPA_REST = SUPA_URL + '/rest/v1';
 const { sendAgentNotification } = require('./lib/push');
 
 async function supaGet(path, key) {
-  const resp = await fetch(SUPA_REST + path, {
-    headers: { apikey: key, Authorization: 'Bearer ' + key, Accept: 'application/json' }
-  });
-  if (!resp.ok) throw new Error('Supabase GET failed: ' + resp.status + ' ' + await resp.text());
-  return resp.json();
+  // Retry transient gateway errors (502/503/504/429) — a single Supabase hiccup used to
+  // fail the whole nightly run and file an "urgent" error report.
+  let lastErr;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const resp = await fetch(SUPA_REST + path, {
+      headers: { apikey: key, Authorization: 'Bearer ' + key, Accept: 'application/json' }
+    });
+    if (resp.ok) return resp.json();
+    lastErr = new Error('Supabase GET failed: ' + resp.status + ' ' + await resp.text());
+    if ([429, 502, 503, 504].indexOf(resp.status) === -1) throw lastErr;
+    await new Promise(r => setTimeout(r, 1500 * Math.pow(2, attempt)));
+  }
+  throw lastErr;
 }
 
 async function supaInsert(table, row, key) {
