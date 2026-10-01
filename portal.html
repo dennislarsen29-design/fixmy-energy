@@ -5579,6 +5579,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           listHtml += '<span style="font-size:0.65rem;font-weight:700;padding:3px 8px;border-radius:20px;background:'+tc+'22;color:'+tc+';border:1px solid '+tc+'44;">'+a.type+'</span>';
           if (isPast) listHtml += '<span style="font-size:0.62rem;color:#ef4444;font-weight:700;">Past</span>';
           listHtml += '<button onclick="quickReschedule(\''+c.id+'\',\''+df+'\',\''+name+'\',\''+(c[df]||'')+'\',\''+(c.arrival_end||'')+'\')" style="font-size:0.68rem;padding:4px 10px;background:rgba(74,158,255,0.1);color:#4a9eff;border-radius:8px;border:1px solid rgba(74,158,255,0.25);cursor:pointer;font-weight:700;">&#128197; Reschedule</button>';
+          if (a.type!=='Install'&&a.type!=='NS Install') listHtml += _checkinBtnHtml(c);
           listHtml += '<button onclick="openLeadEditor(\''+c.id+'\')" style="font-size:0.68rem;padding:4px 10px;background:rgba(255,255,255,0.06);color:#aaa;border-radius:8px;border:1px solid rgba(255,255,255,0.1);cursor:pointer;font-weight:700;">&#9998; Full Edit</button>';
           if (c.phone) listHtml += '<a href="tel:'+c.phone.replace(/\D/g,'')+'" style="font-size:0.68rem;padding:4px 10px;background:rgba(141,198,63,0.1);color:#8DC63F;border-radius:8px;border:1px solid rgba(141,198,63,0.2);text-decoration:none;font-weight:700;">&#128222; Call</a>';
           listHtml += '</div></div>';
@@ -8760,6 +8761,81 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // APPROXIMATE means Google fell back to a city or zip centroid, which would be worse
   // than what's already stored.
   function _addrHasZip(a) { return /\b\d{5}(-\d{4})?\s*$/.test(String(a || '').trim()); }
+
+
+  // ── Appointment Check-In (accountability) ──────────────────────────────────────
+  // Button is live from 30 min BEFORE the arrival window starts until it starts (diagnostic_date).
+  // Tapping geotags the rep, drops a satellite map (home pin + rep pin) into the lead's notes,
+  // and records minutes-before-start, accuracy and distance from the address.
+  var CHECKIN_OPEN_MIN = 30;
+  function _checkinNoteFor(c) {
+    if (!c || !c.diagnostic_date) return null;
+    var es = _parseNotes(c.notes || '');
+    for (var i = es.length - 1; i >= 0; i--) {
+      if ((es[i].by || '').indexOf('Check-in') > -1 && (es[i].text || '').indexOf('Appt ' + c.diagnostic_date) > -1) return es[i];
+    }
+    return null;
+  }
+  function _checkinBtnHtml(c) {
+    if (!c || !c.diagnostic_date || c.sold_type === 'new_solar') return '';
+    var done = _checkinNoteFor(c);
+    if (done) return '<span style="font-size:0.66rem;padding:4px 10px;background:rgba(141,198,63,0.12);color:#8DC63F;border-radius:8px;border:1px solid rgba(141,198,63,0.3);font-weight:700;">&#9989; Checked in</span>';
+    var mins = (new Date(c.diagnostic_date).getTime() - Date.now()) / 60000;
+    if (isNaN(mins) || mins > CHECKIN_OPEN_MIN || mins < 0) return '';
+    return '<button id="ci_' + c.id + '" onclick="apptCheckIn(\'' + c.id + '\')" style="font-size:0.72rem;padding:6px 12px;background:#8DC63F;color:#1A1A1A;border-radius:8px;border:none;cursor:pointer;font-weight:800;">&#128205; Check In</button>';
+  }
+  window.apptCheckIn = async function(id) {
+    var btn = document.getElementById('ci_' + id);
+    function fail(m) { if (btn) { btn.disabled = false; btn.innerHTML = '&#128205; Check In'; } alert(m); }
+    try {
+      if (!navigator.geolocation) return fail('Location is not available on this device.');
+      if (btn) { btn.disabled = true; btn.textContent = 'Locating…'; }
+      var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var cr = await client.from('customers').select('id,first_name,last_name,address,notes,diagnostic_date,lat,lng').eq('id', id).limit(1);
+      var c = cr.data && cr.data[0];
+      if (!c || !c.diagnostic_date) return fail('Could not load this appointment.');
+      var mins = (new Date(c.diagnostic_date).getTime() - Date.now()) / 60000;
+      if (mins > CHECKIN_OPEN_MIN || mins < 0) return fail('Check-in is only open 30 minutes before the arrival window until it starts.');
+      var pos = await new Promise(function(res, rej) {
+        navigator.geolocation.getCurrentPosition(res, rej, { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
+      }).catch(function(e) { return { err: e }; });
+      if (pos.err) return fail('Could not get your location (' + (pos.err.message || 'denied') + '). Allow location access for this site and try again.');
+      var rl = pos.coords.latitude, rg = pos.coords.longitude, acc = Math.round(pos.coords.accuracy || 0);
+      // Home coordinates: stored lat/lng when present, else geocode the address.
+      var hl = parseFloat(c.lat), hg = parseFloat(c.lng);
+      if (isNaN(hl) || isNaN(hg)) {
+        var g = c.address ? await _geocodeFull(c.address).catch(function() { return null; }) : null;
+        if (g && g.status === 'OK') { hl = g.lat; hg = g.lng; } else { hl = NaN; hg = NaN; }
+      }
+      var hasHome = !isNaN(hl) && !isNaN(hg);
+      var dist = null;
+      if (hasHome) {
+        var R = 3958.8, dLa = (hl - rl) * Math.PI / 180, dLo = (hg - rg) * Math.PI / 180;
+        var a = Math.sin(dLa / 2) * Math.sin(dLa / 2) + Math.cos(rl * Math.PI / 180) * Math.cos(hl * Math.PI / 180) * Math.sin(dLo / 2) * Math.sin(dLo / 2);
+        dist = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      }
+      var map = 'https://maps.googleapis.com/maps/api/staticmap?size=640x400&scale=2&maptype=hybrid'
+        + '&markers=' + encodeURIComponent('color:blue|label:R|' + rl + ',' + rg)
+        + (hasHome ? '&markers=' + encodeURIComponent('color:red|label:H|' + hl + ',' + hg) : '')
+        + '&key=' + GKEY;
+      var apptLbl = new Date(c.diagnostic_date).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+      var text = 'Appt ' + c.diagnostic_date + ' (' + apptLbl + ') | Checked in ' + Math.round(mins) + ' min before arrival window'
+        + ' | GPS ' + rl.toFixed(5) + ', ' + rg.toFixed(5) + ' (±' + acc + ' m)'
+        + (dist != null ? ' | ' + (dist < 0.1 ? Math.round(dist * 5280) + ' ft' : dist.toFixed(1) + ' mi') + ' from the address' + (dist > 0.5 ? ' ⚠ NOT at the address yet' : '') : ' | Address could not be located')
+        + ' | https://maps.google.com/?q=' + rl + ',' + rg + ' | ' + map;
+      var who = (typeof bbRepName === 'function' ? bbRepName() : 'Rep');
+      var fresh = await client.from('customers').select('notes').eq('id', id).limit(1);
+      var newNotes = _appendNote(fresh.data && fresh.data[0] ? fresh.data[0].notes : c.notes, '📍 Check-in — ' + who, text);
+      var up = await client.from('customers').update({ notes: newNotes }).eq('id', id).select('id');
+      if (up.error || !up.data || !up.data.length) return fail('Check-in could not be saved' + (up.error ? ': ' + up.error.message : '') + '. Try again.');
+      [typeof adminCustomers !== 'undefined' ? adminCustomers : [], (typeof allRecords !== 'undefined' ? allRecords : [])].forEach(function(arr) {
+        (arr || []).forEach(function(r) { if (r.id === id) r.notes = newNotes; });
+      });
+      try { client.from('lead_activity').insert({ customer_id: id, channel: 'checkin', outcome: null, note: text.split(' | ')[1], rep_id: bbRepId(), rep_name: who }).then(function() {}, function() {}); } catch (e) {}
+      alert('✅ Checked in' + (dist != null && dist > 0.5 ? ' — but you appear to be ' + dist.toFixed(1) + ' mi from the address.' : '.'));
+      if (typeof window.salesRefresh === 'function' && CURRENT_ROLE !== 'admin') window.salesRefresh(); else if (CURRENT_ROLE === 'admin') renderAdminView(adminView);
+    } catch (e) { fail('Check-in failed: ' + (e.message || e)); }
+  };
 
   async function _geocodeFull(address) {
     var r = await fetch('https://maps.googleapis.com/maps/api/geocode/json?address='
@@ -27513,6 +27589,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var delBtn = opts.deletable ? '<button onclick="deleteEditorNote(\''+opts.custId+'\','+_origIdx+')" title="Delete this note" style="margin-left:auto;background:none;border:none;color:#888;cursor:pointer;font-size:0.95rem;line-height:1;padding:0 2px;flex-shrink:0;">&#10005;</button>' : '';
       var dateStr = e.ts ? new Date(e.ts).toLocaleString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'}) : 'Prior to log';
       var by = e.by || 'Unknown';
+      // Check-in notes carry a Static Map URL — render it as a thumbnail, not raw text.
+      var _txt = e.text || '', _mapImg = '';
+      var _mapM = _txt.match(/https:\/\/maps\.googleapis\.com\/maps\/api\/staticmap\?[^\s|]+/);
+      if (_mapM) { _txt = _txt.replace(_mapM[0], '').replace(/\s*\|\s*$/, ''); _mapImg = '<a href="' + _mapM[0].replace(/"/g,'&quot;') + '" target="_blank" rel="noopener"><img src="' + _mapM[0].replace(/"/g,'&quot;') + '" alt="Check-in map" style="margin-top:8px;max-width:100%;border-radius:8px;display:block;"/></a>'; }
       var isDialer = by.indexOf('Dialer') > -1;
       var isKnock = by.indexOf('Knock') > -1;
       var isAdmin = by.toLowerCase().indexOf('admin') > -1;
@@ -27525,7 +27605,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '<span style="color:#444;font-size:0.68rem;">'+dateStr+'</span>'+
           delBtn+
         '</div>'+
-        '<div style="color:'+textColor+';font-size:0.82rem;line-height:1.65;white-space:pre-wrap;">'+e.text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/ \| /g,'\n')+'</div>'+
+        '<div style="color:'+textColor+';font-size:0.82rem;line-height:1.65;white-space:pre-wrap;">'+_txt.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/ \| /g,'\n')+'</div>'+_mapImg+
       '</div>';
     }).join('');
   }
@@ -30302,6 +30382,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
               h += '<span style="font-size:0.65rem;font-weight:700;padding:3px 8px;border-radius:20px;background:'+tcS+'22;color:'+tcS+';border:1px solid '+tcS+'44;">'+a.type+'</span>';
               if (isPastS) h += '<span style="font-size:0.62rem;color:#ef4444;font-weight:700;">Past</span>';
               h += '<button onclick="quickReschedule(\''+c.id+'\',\''+dfS+'\',\''+nameS+'\',\''+(c[dfS]||'')+'\',\''+(c.arrival_end||'')+'\')" style="font-size:0.68rem;padding:4px 10px;background:rgba(74,158,255,0.1);color:#4a9eff;border-radius:8px;border:1px solid rgba(74,158,255,0.25);cursor:pointer;font-weight:700;">&#128197; Reschedule</button>';
+              if (a.type!=='Install'&&a.type!=='NS Install') h += _checkinBtnHtml(c);
               if (c.phone) h += '<a href="tel:'+c.phone.replace(/\D/g,'')+'" style="font-size:0.68rem;padding:4px 10px;background:rgba(141,198,63,0.1);color:#8DC63F;border-radius:8px;border:1px solid rgba(141,198,63,0.2);text-decoration:none;font-weight:700;">&#128222; Call</a>';
               if (c.address) h += '<a href="https://maps.apple.com/?q='+encodeURIComponent(c.address)+'" target="_blank" style="font-size:0.68rem;padding:4px 10px;background:rgba(255,255,255,0.06);color:#aaa;border-radius:8px;border:1px solid rgba(255,255,255,0.1);text-decoration:none;font-weight:700;">&#128506; Directions</a>';
               h += '</div></div>';
