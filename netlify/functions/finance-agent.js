@@ -248,6 +248,7 @@ exports.handler = async function () {
   const key = process.env.SUPA_SERVICE_KEY;
   if (!process.env.ANTHROPIC_KEY || !key) {
     console.error('[finance-agent] Missing ANTHROPIC_KEY or SUPA_SERVICE_KEY');
+    try { if (key) await supaInsert('agent_reports', { agent: 'finance', priority: 'urgent', title: 'Finance Agent Error — ANTHROPIC_KEY is not set in Netlify', body: 'The nightly advisor could not run because ANTHROPIC_KEY is missing.', action_url: null }, key); } catch (e) {}
     return { statusCode: 200, body: 'Missing required env vars' };
   }
 
