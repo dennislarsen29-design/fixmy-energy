@@ -169,6 +169,7 @@ exports.handler = async function(event) {
     address:         address,
     access_code:     digits    || null,
     step:            1,
+    rep_id:          'tech4', // auto-assign to Dennis while the team is small
     lead_category:   'fixmy',
     lead_source:     'inbound_web',
     // Someone who typed their name and address into a booking form is not a cold lead.

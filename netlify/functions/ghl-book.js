@@ -265,6 +265,7 @@ exports.handler = async function(event) {
           diagnostic_date: startISO,
           arrival_window:  arrivalWindow,
           step:            1,
+          rep_id:          'tech4', // auto-assign to Dennis while the team is small
           lead_category:   'fixmy',
           lead_source:     'inbound_web',
           lead_temp:       'warm',
