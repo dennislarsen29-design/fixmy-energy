@@ -810,7 +810,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     try { localStorage.removeItem('fmUser'); localStorage.removeItem('fmUserExp'); } catch(e){}
     try { sessionStorage.removeItem('user'); } catch(e){}
   }
-  function signOut() { _clearUser(); sessionStorage.clear(); location.reload(); }
+  function signOut() {
+    _clearUser(); try { sessionStorage.clear(); } catch(e){}
+    // Navigate to the bare path (NOT location.reload): a magic link's ?email=&code= params would
+    // otherwise re-authenticate the customer instantly, making sign-out impossible.
+    location.replace(location.pathname);
+  }
 
   function _renderSubSheetHTML() {
     function ssRow(label, val) {
@@ -29224,6 +29229,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           if (new URLSearchParams(location.search).get('reset_tour') === '1') {
             localStorage.removeItem('portalOnboard_' + c.id);
           }
+          try { history.replaceState(null, '', location.pathname); } catch(e) {} // strip magic-link params so Sign Out sticks
           loadCustomerDashboard(c);
 
         } catch(e) {
@@ -29530,8 +29536,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         // Limit raised from 10: training certs now share this table, and a rep with
         // several module certs plus a re-cert could otherwise push their actual
         // agreement out of the window and look unsigned.
-        var agrRes = await agc.from('rep_agreements').select('id,agreement_version,signed_at,source')
-          .eq('rep_id', person.id).order('signed_at', { ascending: false }).limit(50);
+        // Retry transient failures before falling back to localStorage (empty after a history clear).
+        var agrRes = null;
+        for (var _agTry = 0; _agTry < 3; _agTry++) {
+          try {
+            agrRes = await agc.from('rep_agreements').select('id,agreement_version,signed_at,source')
+              .eq('rep_id', person.id).order('signed_at', { ascending: false }).limit(50);
+          } catch(_agE) { agrRes = { data: null, error: _agE }; }
+          if (!agrRes.error) break;
+          await new Promise(function(r){ setTimeout(r, 600 * (_agTry + 1)); });
+        }
         bbSetCertsFromRows(agrRes.data);
         // Filter sub-sheet acks client-side rather than with .neq(): `source <> 'x'` is
         // NULL for a NULL source in SQL, so a server-side neq would silently drop every
