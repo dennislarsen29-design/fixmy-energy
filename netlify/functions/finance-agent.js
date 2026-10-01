@@ -67,13 +67,15 @@ async function callClaude(messages, tools, system, toolChoice) {
 function monthKey(d) { return String(d || '').slice(0, 7); }
 
 async function buildBooks(key) {
-  const [pays, comms, costs, expenses, marketing] = await Promise.all([
+  // Two small batches instead of five parallel heavy reads — the big parallel burst is what
+  // tripped Supabase's gateway (504). supaGet also retries transient gateway errors.
+  const [pays, comms, costs] = await Promise.all([
     supaGet('/payments?select=amount,paid_at,category,customer_id&limit=5000', key),
     supaGet('/commissions?select=amount,status,kind,payee,payee_name,line,sold_at,paid_at&limit=5000', key),
-    supaGet('/job_costs?select=amount,status,label,paid_at,created_at,customer_id&limit=5000', key),
-    supaGet('/expense_transactions?select=txn_date,description,merchant,amount,account_name,review_status&limit=10000', key).catch(() => []),
-    supaGet('/marketing_expenses?select=*&limit=2000', key).catch(() => [])
+    supaGet('/job_costs?select=amount,status,label,paid_at,created_at,customer_id&limit=5000', key)
   ]);
+  const expenses = await supaGet('/expense_transactions?select=txn_date,description,merchant,amount,account_name,review_status&limit=10000', key).catch(() => []);
+  const marketing = await supaGet('/marketing_expenses?select=*&limit=2000', key).catch(() => []);
   return { pays, comms, costs, expenses, marketing };
 }
 
