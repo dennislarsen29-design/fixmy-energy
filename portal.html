@@ -9892,12 +9892,30 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       } catch (e) { failMsg = failMsg || 'Couldn\'t reach Quoya — enter the figures manually below.'; return null; }
     }
     var reads = (await Promise.all(sorted.map(readOne))).filter(Boolean);
+    // 2026-10-02 (Mohan — Aug 2026 away-from-home bill + Apr 2025 at-home bill): several bills can
+    // tell very different stories, and upload order is not bill order. Newest STATEMENT DATE wins
+    // by default; undated reads keep upload order after the dated ones. The rep is shown every bill.
+    reads = reads.map(function(x, i){ x._i = i; return x; }).sort(function(a, b){
+      var ad = a.statement_period_end || '', bd = b.statement_period_end || '';
+      if (ad && bd && ad !== bd) return bd.localeCompare(ad);
+      if (ad && !bd) return -1;
+      if (!ad && bd) return 1;
+      return a._i - b._i;
+    });
+    var _billsRead = reads.map(function(x){ return { period_end: x.statement_period_end || null, source: x.source, annual_kwh: x.annual_kwh, monthly_amount_paid: x.monthly_amount_paid }; });
     // Annual figures: prefer a true-up statement (real 12-month numbers), else the newest read.
     // Monthly figure: the newest read that is a regular monthly bill — a true-up's "monthly"
     // number is only the net-metering charge, not what the household actually pays a month.
     var out = null;
     if (reads.length) {
-      var tu = reads.filter(function(x){ return x.source === 'true_up'; })[0];
+      // A True-Up only beats the newest bill for annual figures when it is reasonably current
+      // (within ~6 months of the newest bill) — an old one must not override the latest picture.
+      var tu = reads.filter(function(x){
+        if (x.source !== 'true_up') return false;
+        var n = reads[0].statement_period_end, t = x.statement_period_end;
+        if (n && t && x !== reads[0] && (new Date(n) - new Date(t)) > 183 * 86400000) return false;
+        return true;
+      })[0];
       var mb = reads.filter(function(x){ return x.source !== 'true_up' && x.monthly_amount_paid > 0; })[0];
       out = Object.assign({}, tu || reads[0]);
       if (mb) {
@@ -9926,6 +9944,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         // per-month, it's Quoya's own reasoning made visible, not a data-entry field.
         reading_method: out.reading_method || 'none',
         monthly_breakdown: Array.isArray(out.monthly_breakdown) ? out.monthly_breakdown : [],
+        bills_read: _billsRead, primary_period_end: reads[0].statement_period_end || null,
         analyzed_at: new Date().toISOString(), edited: prevEdited
       };
       Object.keys(prevEdited).forEach(function(f){ if (prevEdited[f] && f in prev) merged[f] = prev[f]; });
@@ -10983,6 +11002,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           : 'Could not tell what kind of statement this is.')
         + (ba.confidence ? ' Confidence: ' + esc(ba.confidence) + '.' : '') + '</div>';
       if (ba.notes) h += '<div style="font-size:0.7rem;color:#ffaa00;margin-bottom:12px;line-height:1.5;">&#128161; ' + esc(ba.notes) + '</div>';
+    }
+    if (Array.isArray(ba.bills_read) && ba.bills_read.length > 1) {
+      var _fmtP = function(d){ return d ? new Date(d + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', year: 'numeric' }) : 'undated'; };
+      h += '<div style="background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.3);border-radius:10px;padding:10px 12px;margin-bottom:12px;font-size:0.7rem;color:#e8c27a;line-height:1.55;">'
+        + '&#128209; <b>' + ba.bills_read.length + ' bills on file.</b> The numbers below come from the most recent one (' + _fmtP(ba.primary_period_end) + '). '
+        + 'Bills from different seasons or from times the household was home more or less will differ a lot &mdash; ask the homeowner which period looks like a normal year before quoting.'
+        + '<div style="margin-top:6px;color:#ccc;">'
+        + ba.bills_read.map(function(b, i){
+            return (i === 0 ? '&#9989; ' : '&#9898; ') + _fmtP(b.period_end)
+              + (b.monthly_amount_paid ? ' &middot; $' + Math.round(b.monthly_amount_paid) + '/mo' : '')
+              + (b.annual_kwh ? ' &middot; ' + Math.round(b.annual_kwh).toLocaleString() + ' kWh/yr est.' : '')
+              + (i === 0 ? ' <i>(used)</i>' : '');
+          }).join('<br/>')
+        + '</div></div>';
     }
     if (Array.isArray(ba.monthly_breakdown) && ba.monthly_breakdown.length) {
       h += _billMonthlyTableHtml(ba.monthly_breakdown.map(function(m){
