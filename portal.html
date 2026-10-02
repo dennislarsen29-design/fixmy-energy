@@ -24011,6 +24011,39 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // Manual Dealer Cost — same shape/reason as _propSetPriceManual above, for the redline
   // side of the commission math. Needed whenever the deal isn't (fully) built from catalog
   // items with a known default_price, e.g. a custom line item — see _propRecalcRedline.
+  // Rep commission box (2026-10-02): the rep types the commission they want and the System
+  // Price is derived (price = redline + commission / 40%) — no separate "how much margin"
+  // math. Switches the price back to auto-follow-the-redline mode with this target.
+  window._propSetCommission = function(optIdx, val) {
+    var build = _propBuilds[optIdx];
+    if (!build) return;
+    build.commissionTarget = Math.max(0, parseFloat(val) || 0);
+    build.priceManual = false;
+    window._propUpdateTotal(optIdx);
+    _propRenderBuilds();
+  };
+  window._propToolsToggle = function(optIdx, open) { window._propToolsOpen = window._propToolsOpen || {}; window._propToolsOpen[optIdx] = !!open; };
+  // Manual SDCP include/exclude for zips we can't auto-confirm (mixed pockets like 92026, or
+  // outside SDCP entirely). Pre-fills the CARE-tier amount when the bill shows CARE/FERA/MB.
+  window._propToggleSdcpManual = function(optIdx) {
+    var build = _propBuilds[optIdx];
+    if (!build) return;
+    build.sdcpTouched = true;
+    if (build.sdcpQualified) { build.sdcpQualified = false; }
+    else {
+      var _careQ = !!(_propBillAnalysis && (_propBillAnalysis.care || _propBillAnalysis.fera || _propBillAnalysis.medical_baseline));
+      if (!(build.sdcpRebate > 0)) build.sdcpRebate = _careQ ? CARE_SDCP_REBATE : 3375;
+      build.sdcpQualified = true;
+    }
+    _propRenderBuilds();
+  };
+  // Strict-SDCP zip + a battery on the build => include the incentive by default (still
+  // switchable). Skipped once the rep has touched the toggle themselves.
+  function _propAutoSdcp(build, strictZip) {
+    if (!build || build.sdcpTouched || !strictZip) return;
+    var hasBat = build.lineItems.some(function(li){ return li.id === 'pw3_retrofit' || li.id === 'pw3_expansion_pack' || /powerwall|pw3/i.test(li.name||''); });
+    if (hasBat && build.sdcpRebate > 0) build.sdcpQualified = true;
+  }
   window._propSetRedlineManual = function(optIdx, val) {
     var build = _propBuilds[optIdx];
     if (!build) return;
@@ -24584,10 +24617,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // ── PROPOSAL MENU BUILDER HELPERS ─────────────────────────────────────────
 
   function _propInitBuild() {
-    return { lineItems: [], price: 0, basePrice: 0, priceManual: false, deposit: 0, participate: false, partPrice: null, teslaRebate: 0, sdcpRebate: 0, sdcpQualified: false, redline: 0, baseDealerCost: 0, dealerCostManual: false, auroraImg: '', auroraPortal: '', nonExport: false, restoreArray: false, arrayOutputPct: 25, reroof: null, rr: null };
+    return { lineItems: [], price: 0, basePrice: 0, priceManual: false, deposit: 0, participate: true, partPrice: null, teslaRebate: 0, sdcpRebate: 0, sdcpQualified: false, redline: 0, baseDealerCost: 0, dealerCostManual: false, auroraImg: '', auroraPortal: '', nonExport: false, restoreArray: false, arrayOutputPct: 25, reroof: null, rr: null };
   }
   // Reroof squares from surface area (100 sq ft = 1 square). Cost is a fixed $700/sq
   // (the sub-sheet rate); the charge-per-square is the editable retail the rep sets.
+  // 2026-10-02, per Dennis: a new build defaults to a $1,600 rep commission (40% of a $4,000
+  // margin over redline) so the rep never has to work out how much margin to add.
+  var DEFAULT_REP_COMMISSION = 1600;
+  function _propMarginFromCommission(c){ return Math.round((parseFloat(c)||0) / 0.40); }
   var REROOF_COST_PER_SQ = 700;
   function _reroofSquares(build){
     if (!build || !build.reroof || !build.reroof.on) return 0;
@@ -24638,8 +24675,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var isFirst = !build.lineItems.some(function(li){ return !li.isCustom; });
     if (isFirst) {
       build.deposit     = parseFloat(row.deposit_amount) || 0;
-      build.participate = !!row.participate;
-      build.partPrice   = row.default_participate_price != null ? parseFloat(row.default_participate_price) : null;
+      build.participate = true;   // 2026-10-02, per Dennis: Participate is auto-enabled on every option (rep can still turn it off)
+      build.partPrice   = null;   // auto-tracks 70% of System Price (_propUpdateTotal) unless the rep overrides it
       build.teslaRebate = 0; // Tesla Visa gift card promo expired 2026-07 — no longer pulled from catalog (was row.tesla_rebate)
       // SDCP rebate only if customer zip is in SDCP territory.
       // ⚠️ 2026-09-03, real bug: a bare `\b(\d{5})\b` with no /g flag returns the FIRST
@@ -24659,6 +24696,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         ? (_careQualifies ? CARE_SDCP_REBATE : (parseFloat(row.sdcp_rebate)||0)) : 0;
     }
     build.lineItems.push({ id: row.option_key, name: row.title, subtitle: row.subtitle||'', description: row.description||'', price: parseFloat(row.default_price)||0, isCustom: false });
+    var _zAuto = extractZip(((adminCustomers ? (adminCustomers.find(function(x){ return x.id===_propPropId; })||{}) : {}).address)||'');
+    _propAutoSdcp(build, !!(_zAuto && typeof SDCP_ZIPS!=='undefined' && SDCP_ZIPS.has(_zAuto)));
     window._propUpdateTotal(optIdx);
     window._propRenderBuilds();
   };
@@ -24701,7 +24740,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // the "it wasn't adding appropriately" report. The manual value is stored as a base
     // that EXCLUDES the add-ons, so the field keeps showing exactly what was typed while
     // squares and panels continue to add on top of it.
-    var base = build.priceManual ? (parseFloat(build.basePrice) || 0) : lineSum;
+    var _tgtComm = (build.commissionTarget != null) ? build.commissionTarget : DEFAULT_REP_COMMISSION;
+    var base = build.priceManual ? (parseFloat(build.basePrice) || 0) : (dealerBase > 0 ? dealerBase + _propMarginFromCommission(_tgtComm) : lineSum);
     build.price = base + _propAddonCharge(build);
   }
 
@@ -24941,8 +24981,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '</div>';
       }
 
-      // Workflow action buttons
-      h += '<div style="display:flex;gap:6px;margin-bottom:8px;">';
+      // Workflow action buttons — collapsed (2026-10-02, per Dennis): Aurora / Imgur / Site Map + image URL
+      var _toolsOpen = !!((window._propToolsOpen||{})[optIdx]) || !!(_propSolarData && !_propSolarData.error);
+      h += '<details'+(_toolsOpen?' open':'')+' ontoggle="_propToolsToggle('+optIdx+',this.open)" style="margin-bottom:8px;"><summary style="cursor:pointer;font-size:0.72rem;font-weight:700;color:#888;padding:6px 2px;">&#128295; Tools &amp; roof image (Aurora &middot; Imgur &middot; Site Map)</summary>';
+      h += '<div style="display:flex;gap:6px;margin:6px 0 8px;">';
       var _buildAuroraArgs = JSON.stringify({ address: _propBuildCust.address||'', firstName: _propBuildCust.first_name||'', lastName: _propBuildCust.last_name||'', email: _propBuildCust.email||'', customerId: _propPropId||'' }).replace(/"/g,'&quot;');
       h += '<button onclick="_propOpenAurora('+_buildAuroraArgs+')" style="flex:1;padding:8px 6px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.3);border-radius:8px;color:#4a9eff;cursor:pointer;font-size:0.72rem;font-weight:700;">&#9728; Aurora</button>';
       h += '<button onclick="window.open(\'https://imgur.com/upload\',\'_blank\')" style="flex:1;padding:8px 6px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:#aaa;cursor:pointer;font-size:0.72rem;font-weight:700;">&#128247; Imgur</button>';
@@ -24962,6 +25004,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '<button onclick="_propGenSolarSite(\''+_propBuildAddr+'\')" style="'+_solarBtnStyle+'">'+_solarBtnLabel+'</button>';
       }
       h += '</div>';
+      h += '<div><label style="font-size:0.6rem;color:#555;display:block;margin-bottom:2px;">Image URL (Imgur)</label>';
+      h += '<input type="url" id="propAuroraImg_'+optIdx+'" value="'+(build.auroraImg||'')+'" placeholder="https://imgur.com/…" style="width:100%;background:#0e0e0e;border:1px solid rgba(255,255,255,0.09);border-radius:6px;color:#bbb;padding:5px 7px;font-size:0.68rem;box-sizing:border-box;"/></div>';
+      h += '</details>';
 
       // Solar site map visualization (when generated)
       if (_propSolarData && !_propSolarData.loading) {
@@ -24994,21 +25039,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         }
       }
 
-      // Image URL + System Price (2-column)
-      h += '<div style="display:grid;grid-template-columns:2fr 1fr;gap:6px;margin-bottom:10px;">';
-      h += '<div><label style="font-size:0.6rem;color:#555;display:block;margin-bottom:2px;">Image URL (Imgur)</label>';
-      h += '<input type="url" id="propAuroraImg_'+optIdx+'" value="'+(build.auroraImg||'')+'" placeholder="https://imgur.com/…" style="width:100%;background:#0e0e0e;border:1px solid rgba(255,255,255,0.09);border-radius:6px;color:#bbb;padding:5px 7px;font-size:0.68rem;box-sizing:border-box;"/></div>';
-      h += '<div><label style="font-size:0.6rem;color:#8DC63F;display:block;margin-bottom:2px;">System Price ($)</label>';
-      h += '<input type="number" id="propManualPrice_'+optIdx+'" value="'+Math.round(build.price)+'" step="1" onchange="_propSetPriceManual('+optIdx+',this.value)" style="width:100%;background:#0e0e0e;border:1px solid rgba(141,198,63,0.2);border-radius:6px;color:#8DC63F;font-weight:700;padding:5px 7px;font-size:0.78rem;box-sizing:border-box;"/></div>';
+      // Price / Redline / Commission — three clear boxes (2026-10-02, per Dennis). The rep edits
+      // any one: Commission drives the System Price (price = redline + commission / 40%).
+      var _marginAmt = Math.max(0, Math.round(build.price - build.redline));
+      var _commNow = build.redline > 0 ? Math.round(Math.max(0, build.price - build.redline) * 0.40) : 0;
+      var _bx = 'width:100%;background:#0e0e0e;border-radius:6px;font-weight:800;padding:8px 9px;font-size:0.92rem;box-sizing:border-box;';
+      h += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:6px;">';
+      h += '<div><label style="font-size:0.62rem;color:#8DC63F;display:block;margin-bottom:3px;font-weight:700;">System Price ($)</label>';
+      h += '<input type="number" id="propManualPrice_'+optIdx+'" value="'+Math.round(build.price)+'" step="1" onchange="_propSetPriceManual('+optIdx+',this.value)" style="'+_bx+'border:1px solid rgba(141,198,63,0.3);color:#8DC63F;"/></div>';
+      h += '<div><label style="font-size:0.62rem;color:#ccc;display:block;margin-bottom:3px;font-weight:700;">Redline / Dealer Cost ($)'+(build.dealerCostManual?' <span style="color:#f59e0b;">manual</span>':'')+'</label>';
+      h += '<input type="number" id="propManualRedline_'+optIdx+'" value="'+Math.round(build.redline)+'" step="1" onchange="_propSetRedlineManual('+optIdx+',this.value)" style="'+_bx+'border:1px solid rgba(255,255,255,0.22);color:#fff;"/></div>';
+      h += '<div><label style="font-size:0.62rem;color:#ffaa00;display:block;margin-bottom:3px;font-weight:700;">Your Commission ($)</label>';
+      h += '<input type="number" id="propCommission_'+optIdx+'" value="'+_commNow+'" step="1" onchange="_propSetCommission('+optIdx+',this.value)" style="'+_bx+'border:1px solid rgba(255,170,0,0.4);color:#ffaa00;"/></div>';
       h += '</div>';
-
-      // Dealer Cost (redline) — editable. Catalog items already carry a known dealer cost
-      // (auto-summed below), but a custom line item carries none, so without this a proposal
-      // built from one shows Rep commission stuck at $0 no matter the System Price.
-      h += '<div style="display:grid;grid-template-columns:1fr auto;gap:6px;align-items:end;margin-bottom:10px;">';
-      h += '<div><label style="font-size:0.6rem;color:#888;display:block;margin-bottom:2px;">Dealer Cost / Redline ($)'+(build.dealerCostManual?' <span style="color:#f59e0b;">&mdash; manual</span>':' <span style="color:#555;">&mdash; auto from catalog</span>')+'</label>';
-      h += '<input type="number" id="propManualRedline_'+optIdx+'" value="'+Math.round(build.redline)+'" step="1" onchange="_propSetRedlineManual('+optIdx+',this.value)" style="width:100%;background:#0e0e0e;border:1px solid rgba(255,255,255,0.12);border-radius:6px;color:#ccc;font-weight:700;padding:5px 7px;font-size:0.78rem;box-sizing:border-box;"/></div>';
-      if (build.dealerCostManual) h += '<button onclick="_propResetRedlineAuto('+optIdx+')" style="width:auto;padding:6px 10px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:6px;color:#888;font-size:0.66rem;font-weight:700;cursor:pointer;white-space:nowrap;">&#8635; Auto</button>';
+      h += '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:0.62rem;color:#666;margin-bottom:10px;">';
+      h += '<span>Margin over redline: <b style="color:#999;">$'+_marginAmt.toLocaleString('en-US')+'</b> &middot; you earn 40% of it. Edit commission and the price follows.</span>';
+      if (build.dealerCostManual) h += '<button onclick="_propResetRedlineAuto('+optIdx+')" style="width:auto;padding:4px 9px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:6px;color:#888;font-size:0.62rem;font-weight:700;cursor:pointer;white-space:nowrap;">&#8635; Auto redline</button>';
       h += '</div>';
       if (!build.lineItems.some(function(li){ return !li.isCustom; }) && !build.dealerCostManual) {
         h += '<div style="font-size:0.62rem;color:#ef4444;margin-top:-6px;margin-bottom:10px;">&#9888; No catalog item selected — dealer cost is $0 and Rep commission will show $0. Type the real dealer cost above, or add a catalog item.</div>';
@@ -25044,7 +25090,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '</div>';
         h += '<div style="font-size:0.62rem;color:#555;margin-top:5px;">'+(build.partPriceManual ? 'Manual override &mdash; no longer tracking 70% of System Price.' : 'Auto-tracks 70% of System Price &mdash; edit to override.')+'</div>';
       }
-      if (_isSdcpZip) {
+      var _zipMixed = !!(_zipCode2 && typeof SDCP_MIXED_ZIPS !== 'undefined' && SDCP_MIXED_ZIPS.has(_zipCode2));
+      var _showSdcp = _isSdcpZip || build.sdcpQualified || build.sdcpRebate > 0 && build.sdcpTouched;
+      if (!_showSdcp) {
+        h += '<div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.06);display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">';
+        h += '<div style="font-size:0.66rem;color:'+(_zipMixed?'#f59e0b':'#777')+';">&#9889; '+(_zipMixed?'SDCP? Zip '+_zipCode2+' is only partly SDCP territory &mdash; check the bill.':'Not auto-detected as SDCP territory.')+'</div>';
+        h += '<button onclick="_propToggleSdcpManual('+optIdx+')" style="width:auto;padding:6px 12px;border-radius:100px;font-size:0.7rem;font-weight:800;cursor:pointer;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.4);color:#4a9eff;">+ Add SDCP incentive</button>';
+        h += '</div>';
+      }
+      if (_showSdcp) {
         // ⚠️ 2026-09-02, per Dennis ("add in SDCP's incentives on the battery... Abhay's
         // bill is Care and he'll likely qualify... $4,275"): the dollar amount was never
         // editable — it only ever displayed whatever flat number sat on the catalog row
@@ -25065,7 +25119,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           _propBillAnalysis.medical_baseline ? 'Medical Baseline' : null
         ].filter(Boolean).join(' / ') : '';
         h += '<div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.06);">';
-        h += '<div style="font-size:0.68rem;color:#4a9eff;font-weight:600;margin-bottom:6px;">&#9889; SDCP territory (zip '+_zipCode2+') &mdash; battery incentive may apply once a Powerwall is added</div>';
+        h += '<div style="font-size:0.68rem;color:#4a9eff;font-weight:600;margin-bottom:6px;">&#9889; '+(_isSdcpZip?'SDCP territory (zip '+_zipCode2+')':'SDCP incentive (added manually)')+' &mdash; battery incentive'+(_isSdcpZip?' auto-included with a Powerwall':'')+'</div>';
         if (_careOn) {
           h += '<div style="font-size:0.66rem;color:#ffaa00;background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.25);border-radius:6px;padding:7px 9px;margin-bottom:8px;line-height:1.55;">&#9888; Quoya\'s Bill Analysis shows <strong>'+_careLbl+'</strong> on file &mdash; pre-filled at $4,725, SDCP\'s income-qualified rate (confirmed by Dennis, 2026-09-22), instead of the $3,375 standard rate. Still confirm the real amount with SDCP before sending.</div>';
         }
@@ -25075,8 +25129,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '</div>';
         h += '<div style="font-size:0.64rem;color:#888;line-height:1.5;margin-bottom:6px;">Eligible only if the system is close to net-zero or net-positive to the grid, AND upon SDCP\'s own qualification &mdash; territory alone is not enough.</div>';
         h += '<label style="display:flex;align-items:center;gap:7px;cursor:pointer;">'+
-               '<input type="checkbox" '+(build.sdcpQualified?'checked':'')+' onchange="_propToggleSdcpQualified('+optIdx+')" style="width:15px;height:15px;accent-color:#4a9eff;cursor:pointer;"/>'+
-               '<span style="font-size:0.68rem;color:'+(build.sdcpQualified?'#4a9eff':'#aaa')+';font-weight:700;">Confirmed &mdash; include as pending SDCP qualification</span>'+
+               '<input type="checkbox" '+(build.sdcpQualified?'checked':'')+' onchange="_propToggleSdcpManual('+optIdx+')" style="width:15px;height:15px;accent-color:#4a9eff;cursor:pointer;"/>'+
+               '<span style="font-size:0.68rem;color:'+(build.sdcpQualified?'#4a9eff':'#aaa')+';font-weight:700;">Included in proposal (pending SDCP qualification)</span>'+
              '</label>';
         h += '</div>';
       }
@@ -25268,6 +25322,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       build.sdcpRebate = 0;
       build.sdcpQualified = false;
     }
+    var _zs2 = extractZip(((adminCustomers ? (adminCustomers.find(function(x){ return x.id===_propPropId; })||{}) : {}).address)||'');
+    _propAutoSdcp(build, !!(_zs2 && typeof SDCP_ZIPS!=='undefined' && SDCP_ZIPS.has(_zs2)));
     _propUpdateTotal(optIdx);
     _propRenderBuilds();
   };
