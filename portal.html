@@ -27697,6 +27697,24 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       body.innerHTML = '<span style="font-size:0.75rem;color:#ef4444;">Lookup error: ' + (e.message||'unknown') + '</span>';
       return;
     }
+    // Fallback (2026-10-02): the live parcel services can't name CA owners (state law), and the
+    // paid Regrid token is currently rejected (401). Our own database already holds county-roll
+    // owners for ~19k San Diego addresses, so try an exact street+zip match there before giving up.
+    if (!owner) {
+      try {
+        var _m = String(address).match(/^\s*(\d+)\s+([^,]+)/);
+        if (_m) {
+          var _zip = extractZip(address) || '';
+          var _c = supabase.createClient(SUPA_URL, SUPA_KEY);
+          var _q = await _c.from('customers').select('title_owner,apn,address').not('title_owner','is',null)
+            .ilike('address', _m[1] + ' ' + _m[2].trim().split(' ')[0] + '%').limit(20);
+          var _sk = function(a){ var SUF={LANE:'LN',ROAD:'RD',STREET:'ST',DRIVE:'DR',AVENUE:'AVE',COURT:'CT',PLACE:'PL',BOULEVARD:'BLVD',CIRCLE:'CIR',TERRACE:'TER',TRAIL:'TRL',PARKWAY:'PKWY',HIGHWAY:'HWY'}; return String(a||'').split(',')[0].toUpperCase().replace(/[^A-Z0-9 ]/g,'').replace(/\s+/g,' ').trim().split(' ').map(function(w){ return SUF[w]||w; }).join(' '); };
+          var _want = _sk(address);
+          var _hit = ((_q && _q.data) || []).find(function(r){ return _sk(r.address) === _want && (!_zip || extractZip(r.address) === _zip); });
+          if (_hit && _hit.title_owner) { owner = _hit.title_owner; apn = _hit.apn || null; sourceLabel = 'County roll (our records)'; }
+        }
+      } catch(eFb) {}
+    }
     if (owner) {
       document.getElementById('nlTitleOwner').value = owner;
       document.getElementById('nlTitleApn').value   = apn || '';
@@ -27715,7 +27733,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             'style="width:100%;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:8px 10px;color:#F3EDE3;font-size:0.78rem;outline:none;"/>' +
         '</div>';
     } else {
-      body.innerHTML = '<span style="font-size:0.75rem;color:#666;">No parcel record found — verify manually with <a href="https://landglide.com" target="_blank" style="color:#4a9eff;">LandGlide</a>.</span>'+(debugInfo?'<div style="margin-top:6px;font-size:0.62rem;color:#444;word-break:break-all;">'+debugInfo+'</div>':'');
+      body.innerHTML = '<span style="font-size:0.75rem;color:#666;">No parcel record found — verify manually with <a href="https://landglide.com" target="_blank" style="color:#4a9eff;">LandGlide</a>.</span>'+((debugInfo && CURRENT_ROLE==='admin')?'<div style="margin-top:6px;font-size:0.62rem;color:#444;word-break:break-all;">'+(/regrid[a-z_]*:401/.test(debugInfo)?'<b style="color:#f59e0b;">Regrid API token is invalid/expired (401) — update REGRID_KEY in Netlify.</b> ':'')+debugInfo+'</div>':'');
     }
   }
   async function nlManualTitleLookup() {
