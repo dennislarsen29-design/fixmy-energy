@@ -9944,6 +9944,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         // per-month, it's Quoya's own reasoning made visible, not a data-entry field.
         reading_method: out.reading_method || 'none',
         monthly_breakdown: Array.isArray(out.monthly_breakdown) ? out.monthly_breakdown : [],
+        generation_provider: (reads.filter(function(x){ return x.generation_provider && x.generation_provider !== 'unknown'; })[0] || {}).generation_provider || 'unknown',
         bills_read: _billsRead, primary_period_end: reads[0].statement_period_end || null,
         analyzed_at: new Date().toISOString(), edited: prevEdited
       };
@@ -24040,6 +24041,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // Strict-SDCP zip + a battery on the build => include the incentive by default (still
   // switchable). Skipped once the rep has touched the toggle themselves.
   function _propAutoSdcp(build, strictZip) {
+    var _bs = !!(_propBillAnalysis && _propBillAnalysis.generation_provider === 'sdcp');
+    var _bn = !!(_propBillAnalysis && ['cea','utility','other_cca'].indexOf(_propBillAnalysis.generation_provider) >= 0);
+    if (_bn) strictZip = false;
+    if (_bs) { strictZip = true; if (!(build.sdcpRebate > 0)) build.sdcpRebate = (_propBillAnalysis.care || _propBillAnalysis.fera || _propBillAnalysis.medical_baseline) ? CARE_SDCP_REBATE : 3375; }
     if (!build || build.sdcpTouched || !strictZip) return;
     var hasBat = build.lineItems.some(function(li){ return li.id === 'pw3_retrofit' || li.id === 'pw3_expansion_pack' || /powerwall|pw3/i.test(li.name||''); });
     if (hasBat && build.sdcpRebate > 0) build.sdcpQualified = true;
@@ -25073,7 +25078,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // number happens to be exactly 5 digits, even in confirmed SDCP territory.
       // extractZip() already exists to get this right (global match, last group).
       var _zipCode2 = extractZip(_propBuildCust.address||'');
-      var _isSdcpZip = !!(_zipCode2 && typeof SDCP_ZIPS !== 'undefined' && SDCP_ZIPS.has(_zipCode2));
+      var _billSdcp = !!(_propBillAnalysis && _propBillAnalysis.generation_provider === 'sdcp');   // Quoya read it off the bill — beats zip guessing
+      var _billNotSdcp = !!(_propBillAnalysis && (_propBillAnalysis.generation_provider === 'cea' || _propBillAnalysis.generation_provider === 'utility' || _propBillAnalysis.generation_provider === 'other_cca'));
+      var _isSdcpZip = _billSdcp || (!_billNotSdcp && !!(_zipCode2 && typeof SDCP_ZIPS !== 'undefined' && SDCP_ZIPS.has(_zipCode2)));
       h += '<div style="border:1px solid '+(_partOn?'rgba(141,198,63,0.55)':'rgba(141,198,63,0.25)')+';background:'+(_partOn?'rgba(141,198,63,0.09)':'rgba(141,198,63,0.03)')+';border-radius:10px;padding:12px;margin-bottom:10px;">';
       h += '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">';
       h += '<div onclick="_propTogglePart('+optIdx+')" style="cursor:pointer;user-select:none;flex:1;min-width:180px;">';
@@ -25090,11 +25097,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '</div>';
         h += '<div style="font-size:0.62rem;color:#555;margin-top:5px;">'+(build.partPriceManual ? 'Manual override &mdash; no longer tracking 70% of System Price.' : 'Auto-tracks 70% of System Price &mdash; edit to override.')+'</div>';
       }
-      var _zipMixed = !!(_zipCode2 && typeof SDCP_MIXED_ZIPS !== 'undefined' && SDCP_MIXED_ZIPS.has(_zipCode2));
+      var _zipMixed = !_billNotSdcp && !!(_zipCode2 && typeof SDCP_MIXED_ZIPS !== 'undefined' && SDCP_MIXED_ZIPS.has(_zipCode2));
       var _showSdcp = _isSdcpZip || build.sdcpQualified || build.sdcpRebate > 0 && build.sdcpTouched;
       if (!_showSdcp) {
         h += '<div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.06);display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">';
-        h += '<div style="font-size:0.66rem;color:'+(_zipMixed?'#f59e0b':'#777')+';">&#9889; '+(_zipMixed?'SDCP? Zip '+_zipCode2+' is only partly SDCP territory &mdash; check the bill.':'Not auto-detected as SDCP territory.')+'</div>';
+        h += '<div style="font-size:0.66rem;color:'+(_zipMixed?'#f59e0b':'#777')+';">&#9889; '+(_billNotSdcp?'The bill shows a different electricity provider (not SDCP).':_zipMixed?'SDCP? Zip '+_zipCode2+' is only partly SDCP territory &mdash; upload/read the bill to confirm.':'Not auto-detected as SDCP territory.')+'</div>';
         h += '<button onclick="_propToggleSdcpManual('+optIdx+')" style="width:auto;padding:6px 12px;border-radius:100px;font-size:0.7rem;font-weight:800;cursor:pointer;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.4);color:#4a9eff;">+ Add SDCP incentive</button>';
         h += '</div>';
       }
@@ -25119,7 +25126,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           _propBillAnalysis.medical_baseline ? 'Medical Baseline' : null
         ].filter(Boolean).join(' / ') : '';
         h += '<div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.06);">';
-        h += '<div style="font-size:0.68rem;color:#4a9eff;font-weight:600;margin-bottom:6px;">&#9889; '+(_isSdcpZip?'SDCP territory (zip '+_zipCode2+')':'SDCP incentive (added manually)')+' &mdash; battery incentive'+(_isSdcpZip?' auto-included with a Powerwall':'')+'</div>';
+        h += '<div style="font-size:0.68rem;color:#4a9eff;font-weight:600;margin-bottom:6px;">&#9889; '+(_billSdcp?'SDCP confirmed on the customer\'s bill':_isSdcpZip?'SDCP territory (zip '+_zipCode2+')':'SDCP incentive (added manually)')+' &mdash; battery incentive'+(_isSdcpZip?' auto-included with a Powerwall':'')+'</div>';
         if (_careOn) {
           h += '<div style="font-size:0.66rem;color:#ffaa00;background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.25);border-radius:6px;padding:7px 9px;margin-bottom:8px;line-height:1.55;">&#9888; Quoya\'s Bill Analysis shows <strong>'+_careLbl+'</strong> on file &mdash; pre-filled at $4,725, SDCP\'s income-qualified rate (confirmed by Dennis, 2026-09-22), instead of the $3,375 standard rate. Still confirm the real amount with SDCP before sending.</div>';
         }
