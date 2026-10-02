@@ -164,16 +164,23 @@ async function executeTool(name, input, key, cache) {
         if (!m) return;
         (byMerchant[m] = byMerchant[m] || []).push({ month: monthKey(e.txn_date), amount: parseFloat(e.amount) || 0 });
       });
-      const recurring = [];
+      const recurring = [], irregular = [];
       Object.entries(byMerchant).forEach(([m, hits]) => {
         const months = new Set(hits.map(h => h.month));
-        if (months.size >= 2) {
-          const avg = hits.reduce((t, h) => t + h.amount, 0) / hits.length;
+        if (months.size < 2) return;
+        const amts = hits.map(h => h.amount);
+        const avg = amts.reduce((t, x) => t + x, 0) / amts.length;
+        const sd = Math.sqrt(amts.reduce((t, x) => t + Math.pow(x - avg, 2), 0) / amts.length);
+        // A true subscription repeats at a near-identical amount. Wildly varying amounts are
+        // pay-as-you-go purchases (e.g. skip-trace credits) — never annualize those.
+        if (months.size >= 3 && avg > 0 && sd / avg < 0.25) {
           recurring.push({ merchant: m, monthsSeen: months.size, avgCharge: Math.round(avg * 100) / 100, estAnnualCost: Math.round(avg * 12) });
+        } else {
+          irregular.push({ merchant: m, charges: hits.length, total: Math.round(amts.reduce((t, x) => t + x, 0) * 100) / 100, note: 'irregular amounts — purchases, not a subscription; do NOT annualize' });
         }
       });
       recurring.sort((a, c) => c.estAnnualCost - a.estAnnualCost);
-      return JSON.stringify({ recurring: recurring.slice(0, 30), note: 'Known external recurring costs not on card statements may include: CPA bookkeeping $145/mo.' });
+      return JSON.stringify({ recurring: recurring.slice(0, 30), irregularPurchases: irregular.slice(0, 15), note: 'Known vendors: "IN *ARTISTS BUSINESS MANAGEMENT GROUP" (Carlsbad) is the company bookkeeper/CPA (Accounting) — expected, not waste, not personal. TRACERFY.COM is skip-trace credit purchases bought as needed — not a subscription. CPA bookkeeping may also appear off-card.' });
     }
 
     case 'get_commissions_summary': {
@@ -187,7 +194,7 @@ async function executeTool(name, input, key, cache) {
         byPayee[p] = byPayee[p] || { sold: 0, paid: 0 };
         byPayee[p][c.status === 'paid' ? 'paid' : 'sold'] += parseFloat(c.amount) || 0;
       });
-      return JSON.stringify({ owedToReps: sum(owedReps), overrideIncomeDueToSRC: sum(owedSRC), totalPaidOut: sum(paid.filter(c => c.payee !== 'solar_review_corp')), byPayee });
+      return JSON.stringify({ owedToReps: sum(owedReps), overrideIncomeDueToSRC: sum(owedSRC), caveat: 'Rows with status sold are LOCKED-IN commissions on jobs that may not be installed yet — not payable until the job is installed/PTO. Do not describe all of owedToReps as cash due now.', totalPaidOut: sum(paid.filter(c => c.payee !== 'solar_review_corp')), byPayee });
     }
 
     case 'get_cash_position': {
@@ -203,7 +210,7 @@ async function executeTool(name, input, key, cache) {
       });
       const unpaidCosts = b.costs.filter(c => c.status === 'pending').reduce((t, c) => t + (parseFloat(c.amount) || 0), 0);
       const owedReps = b.comms.filter(c => c.status === 'sold' && c.payee !== 'solar_review_corp').reduce((t, c) => t + (parseFloat(c.amount) || 0), 0);
-      return JSON.stringify({ customerBalancesOutstanding: Math.round(outstanding * 100) / 100, customersWithBalance: outstandingCount, unpaidJobCosts: unpaidCosts, commissionsOwedToReps: owedReps });
+      return JSON.stringify({ customerBalancesOutstanding: Math.round(outstanding * 100) / 100, customersWithBalance: outstandingCount, unpaidJobCosts: unpaidCosts, commissionsOwedToReps: owedReps, caveat: 'commissionsOwedToReps includes locked-in commissions on not-yet-installed jobs, which are not payable yet; the owner draws his own auto-paid commission, so it is not a cash obligation.' });
     }
 
     case 'get_recent_reports': {
