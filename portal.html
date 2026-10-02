@@ -8777,14 +8777,36 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
     return null;
   }
+  // Window: 30 min before the arrival window starts until it ENDS (arrival_end, else start + 2h).
+  // Checking in after the start is allowed but recorded as LATE (2026-10-02 — Margarett's 9–11
+  // appointment, rep arrived 9:10: the old cutoff at the window start hid the button entirely).
+  function _checkinWindow(c) {
+    var st = new Date(c.diagnostic_date).getTime();
+    var en = c.arrival_end ? new Date(c.arrival_end).getTime() : NaN;
+    if (isNaN(en) || en <= st) en = st + 120 * 60000;
+    var now = Date.now();
+    return { open: !isNaN(st) && now >= st - CHECKIN_OPEN_MIN * 60000 && now <= en, minsToStart: (st - now) / 60000, late: now > st };
+  }
+  // Big banner for the top of a lead editor so the prompt is on the lead itself.
+  function _checkinBannerHtml(c) {
+    if (!c || !c.diagnostic_date || c.sold_type === 'new_solar' || c.lead_category === 'new_solar') return '';
+    if (_checkinNoteFor(c)) return '';
+    var w = _checkinWindow(c);
+    if (!w.open) return '';
+    var tm = new Date(c.diagnostic_date).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+    return '<div style="background:rgba(141,198,63,0.12);border:2px solid #8DC63F;border-radius:12px;padding:12px 14px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">'
+      + '<div><div style="font-weight:800;color:#8DC63F;font-size:0.9rem;">&#128205; ' + (w.late ? 'Appointment started — check in now' : 'Appointment at ' + tm + ' — check in when you arrive') + '</div>'
+      + '<div style="font-size:0.7rem;color:#aaa;margin-top:2px;">Geotags your arrival on this lead.' + (w.late ? ' Recorded as late.' : '') + '</div></div>'
+      + _checkinBtnHtml(c) + '</div>';
+  }
   function _checkinBtnHtml(c) {
     if (!c || !c.diagnostic_date || c.sold_type === 'new_solar') return '';
     var done = _checkinNoteFor(c);
     if (done) return '<span style="font-size:0.66rem;padding:4px 10px;background:rgba(141,198,63,0.12);color:#8DC63F;border-radius:8px;border:1px solid rgba(141,198,63,0.3);font-weight:700;">&#9989; Checked in</span>';
-    var mins = (new Date(c.diagnostic_date).getTime() - Date.now()) / 60000;
-    if (isNaN(mins) || mins > CHECKIN_OPEN_MIN || mins < 0) return '';
+    if (!_checkinWindow(c).open) return '';
     return '<button id="ci_' + c.id + '" onclick="apptCheckIn(\'' + c.id + '\')" style="font-size:0.72rem;padding:6px 12px;background:#8DC63F;color:#1A1A1A;border-radius:8px;border:none;cursor:pointer;font-weight:800;">&#128205; Check In</button>';
   }
+  window._checkinBtnHtml = _checkinBtnHtml; window._checkinBannerHtml = _checkinBannerHtml; window._checkinNoteFor = _checkinNoteFor;
   window.apptCheckIn = async function(id) {
     var btn = document.getElementById('ci_' + id);
     function fail(m) { if (btn) { btn.disabled = false; btn.innerHTML = '&#128205; Check In'; } alert(m); }
@@ -8792,11 +8814,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (!navigator.geolocation) return fail('Location is not available on this device.');
       if (btn) { btn.disabled = true; btn.textContent = 'Locating…'; }
       var client = supabase.createClient(SUPA_URL, SUPA_KEY);
-      var cr = await client.from('customers').select('id,first_name,last_name,address,notes,diagnostic_date,lat,lng').eq('id', id).limit(1);
+      var cr = await client.from('customers').select('id,first_name,last_name,address,notes,diagnostic_date,arrival_end,lat,lng').eq('id', id).limit(1);
       var c = cr.data && cr.data[0];
       if (!c || !c.diagnostic_date) return fail('Could not load this appointment.');
-      var mins = (new Date(c.diagnostic_date).getTime() - Date.now()) / 60000;
-      if (mins > CHECKIN_OPEN_MIN || mins < 0) return fail('Check-in is only open 30 minutes before the arrival window until it starts.');
+      var _cw = _checkinWindow(c);
+      var mins = _cw.minsToStart;
+      if (!_cw.open) return fail('Check-in is open from 30 minutes before the arrival window until it ends.');
       var pos = await new Promise(function(res, rej) {
         navigator.geolocation.getCurrentPosition(res, rej, { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
       }).catch(function(e) { return { err: e }; });
@@ -8820,7 +8843,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         + (hasHome ? '&markers=' + encodeURIComponent('color:red|label:H|' + hl + ',' + hg) : '')
         + '&key=' + GKEY;
       var apptLbl = new Date(c.diagnostic_date).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-      var text = 'Appt ' + c.diagnostic_date + ' (' + apptLbl + ') | Checked in ' + Math.round(mins) + ' min before arrival window'
+      var text = 'Appt ' + c.diagnostic_date + ' (' + apptLbl + ') | ' + (_cw.late ? '⏰ LATE check-in — ' + Math.round(-mins) + ' min after the arrival window started' : 'Checked in ' + Math.round(mins) + ' min before arrival window')
         + ' | GPS ' + rl.toFixed(5) + ', ' + rg.toFixed(5) + ' (±' + acc + ' m)'
         + (dist != null ? ' | ' + (dist < 0.1 ? Math.round(dist * 5280) + ' ft' : dist.toFixed(1) + ' mi') + ' from the address' + (dist > 0.5 ? ' ⚠ NOT at the address yet' : '') : ' | Address could not be located')
         + ' | https://maps.google.com/?q=' + rl + ',' + rg + ' | ' + map;
@@ -8833,7 +8856,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         (arr || []).forEach(function(r) { if (r.id === id) r.notes = newNotes; });
       });
       try { client.from('lead_activity').insert({ customer_id: id, channel: 'checkin', outcome: null, note: text.split(' | ')[1], rep_id: bbRepId(), rep_name: who }).then(function() {}, function() {}); } catch (e) {}
-      alert('✅ Checked in' + (dist != null && dist > 0.5 ? ' — but you appear to be ' + dist.toFixed(1) + ' mi from the address.' : '.'));
+      alert((_cw.late ? '⏰ Checked in (late)' : '✅ Checked in') + (dist != null && dist > 0.5 ? ' — but you appear to be ' + dist.toFixed(1) + ' mi from the address.' : '.'));
       if (typeof window.salesRefresh === 'function' && CURRENT_ROLE !== 'admin') window.salesRefresh(); else if (CURRENT_ROLE === 'admin') renderAdminView(adminView);
     } catch (e) { fail('Check-in failed: ' + (e.message || e)); }
   };
@@ -9965,6 +9988,21 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     _evLocal.answers[qid] = val;
     _evSave({ answers: _evLocal.answers });
     _evRender();
+    // No existing solar → the lead moves to Axia/QCells automatically and the Axia
+    // evaluation opens right away (2026-10-02, per Dennis — no button, no re-opening).
+    if (qid === 'has_solar' && val === 'no') window.evMoveToAxia(true);
+  };
+
+  // Brief on-screen update that fades on its own (not a modal, nothing to click).
+  window._flashUpdate = function(msg, undoFn) {
+    var old = document.getElementById('flashUpdate'); if (old) old.remove();
+    var d = document.createElement('div');
+    d.id = 'flashUpdate';
+    d.style.cssText = 'position:fixed;top:18px;left:50%;transform:translateX(-50%);z-index:99999;background:#8DC63F;color:#1A1A1A;padding:14px 22px;border-radius:100px;font-size:0.9rem;font-weight:800;box-shadow:0 6px 24px rgba(0,0,0,0.5);max-width:92vw;text-align:center;transition:opacity .5s;';
+    d.innerHTML = msg + (undoFn ? ' <button id="flashUndo" style="width:auto;margin:0 0 0 10px;padding:4px 12px;background:#1A1A1A;color:#8DC63F;border:none;border-radius:100px;font-size:0.75rem;font-weight:800;cursor:pointer;">Undo</button>' : '');
+    document.body.appendChild(d);
+    if (undoFn) { var u = document.getElementById('flashUndo'); if (u) u.onclick = function(){ d.remove(); undoFn(); }; }
+    setTimeout(function(){ d.style.opacity = '0'; setTimeout(function(){ d.remove(); }, 600); }, undoFn ? 6000 : 3500);
   };
 
   // Fires the analysis as a Netlify background function (up to 15 min budget, vs. the
@@ -10321,7 +10359,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       h += '<div style="background:rgba(255,170,0,0.07);border:1px solid rgba(255,170,0,0.35);border-radius:14px;padding:15px;margin-bottom:10px;">';
       h += '<div style="font-size:0.86rem;font-weight:800;color:#ffaa00;margin-bottom:5px;">&#9728;&#65039; No existing system &mdash; this is a new-solar lead</div>';
       h += '<div style="font-size:0.76rem;color:#ccc;line-height:1.55;margin-bottom:12px;">There is nothing to diagnose. Move this lead to the Axia/QCells pipeline so it gets worked as a new install instead of a FixMy evaluation.</div>';
-      h += '<button onclick="evMoveToAxia()" style="width:100%;margin:0;padding:13px;background:#ffaa00;border:none;color:#1A1A1A;border-radius:100px;font-size:0.86rem;font-weight:800;cursor:pointer;">&#10132; Move to Axia/QCells</button>';
+      h += '<div style="font-size:0.76rem;color:#ffaa00;font-weight:700;">Moving to Axia/QCells&hellip; <button onclick="evMoveToAxia(true)" style="width:auto;margin:0 0 0 8px;padding:4px 12px;background:transparent;border:1px solid rgba(255,170,0,0.5);color:#ffaa00;border-radius:100px;font-size:0.7rem;font-weight:700;cursor:pointer;">Retry</button></div>';
       h += '</div>';
       return h;
     }
@@ -10373,14 +10411,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // (.select — a zero-row "success" counts as failure, same rule as everywhere else in
   // this file) and refused for a sold job: recategorizing real sold money silently is
   // never a wizard's call.
-  window.evMoveToAxia = async function() {
+  window.evMoveToAxia = async function(auto) {
     if (!_evRec || !_evId) return;
     if (_evRec.sold_type) {
       alert('This lead is already a sold job (' + _evRec.sold_type + ') — moving it between pipelines is an admin decision, not something to change from the eval. Ask Dennis.');
       return;
     }
     var nm = ((_evRec.first_name || '') + ' ' + (_evRec.last_name || '')).trim() || 'this lead';
-    if (!confirm('Move ' + nm + ' to the Axia/QCells pipeline? It leaves the FixMy eval flow and shows up under Axia/QCells instead.')) return;
+    if (_evRec.lead_category === 'new_solar') { var _i0 = _evId; window.closeEvalWizard(); window.openAxiaEvalWizard(_i0); return; }
+    var prior = { lead_category: _evRec.lead_category || 'fixmy', solar_status: _evRec.solar_status || null };
     var updates = { lead_category: 'new_solar', solar_status: _evRec.solar_status || 'ns_eval_booked' };
     try {
       var c = supabase.createClient(SUPA_URL, SUPA_KEY);
@@ -10398,8 +10437,18 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     try { bbLogActivity(_evId, 'note', null, 'Moved to Axia/QCells from the Site Evaluation — homeowner has no existing solar.'); } catch (e) {}
     var id = _evId;
     window.closeEvalWizard();
-    alert('Moved to Axia/QCells. It now shows under the Axia/QCells pipeline.');
-    try { if (CURRENT_ROLE === 'admin' && typeof renderAdminView === 'function') renderAdminView(adminView); else if (typeof window.salesRefresh === 'function') window.salesRefresh(); } catch (e) {}
+    window._flashUpdate('&#9728; ' + nm + ' moved to Axia/QCells — starting the Axia evaluation', async function(){
+      try {
+        var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+        await c2.from('customers').update(prior).eq('id', id);
+        var ac2 = (adminCustomers || []).find(function(x){ return x.id === id; });
+        if (ac2) Object.assign(ac2, prior);
+      } catch (e) {}
+      window._flashUpdate('Moved back to FixMy');
+      try { window.openEvalWizard(id); } catch (e) {}
+    });
+    try { await window.openAxiaEvalWizard(id); } catch (e) {}
+    try { if (typeof window.salesRefresh === 'function' && CURRENT_ROLE !== 'admin') { /* keep the wizard on screen; list refreshes when it closes */ } } catch (e) {}
   };
 
   // ── Power Cycle — the on-site restart procedure for a downed system (2026-09-18,
@@ -26086,6 +26135,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // Info → Activity Log (collapsed) → Progress & Scheduling → Administration Tab
       // (now also holding Lead Category, Assignment, Ops Advice/Bid) → Proposal Tools →
       // Diagnostic Assessment → Photos.
+      _checkinBannerHtml(c)+
       _startEvalButtonHtml(c, isNSEdit)+
       '<div id="edSolarPanel_'+c.id+'" style="margin:4px 0 16px;"></div>'+
       '<div class="editor-section-title">Customer Info</div>'+
@@ -31082,6 +31132,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<div class="editor-header"><div style="font-weight:700;color:#8DC63F;">✏ Edit Lead: '+(l.first_name||'')+' '+(l.last_name||'')+'</div>'+
         '<button onclick="document.getElementById(\'editorSlot\').innerHTML=\'\'" style="background:none;border:none;color:#666;cursor:pointer;font-size:1.1rem;">&#10005;</button></div>'+
         '<input type="hidden" id="seId" value="'+l.id+'"/>'+
+        _checkinBannerHtml(l)+
         _startEvalButtonHtml(l, isNS)+
         // In-editor quick actions (Magic Link here; Proposal Tools cluster below — closers only)
         '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;">'+
