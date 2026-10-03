@@ -874,6 +874,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '<div style="font-size:0.7rem;color:#888;margin-bottom:4px;font-style:italic;">Redlines below already include the Domestic Content credit.</div>';
     h += ssRow('EnFin Redline', '$2.40 / W less $0.45 Domestic Content = $1.95 / W net');
     h += ssRow('Lightreach Redline', '$2.30 / W less $0.25 Domestic Content = $2.05 / W net');
+    h += ssRow('Axia/QCells payment timing', 'Payment 1: Friday after Install Completed &middot; Domestic Content Bonus: Friday after PTO');
     h += ssRow('Participate Redline', '$2.19 / W');
     h += ssRow('Cash / Loan Redline', '$2.19 / W');
     h += ssRow('Tech Commission — Company Tools & Leads', '50% of Gross Comm.');
@@ -1049,7 +1050,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     document.body.appendChild(modal);
   };
 
-  var SUB_SHEET_VERSION = '2026-10-03';   // Cash/Loan corrected from "no redline" to the real $2.19/W rate (same as Participate); added a Participate row that was missing from this card
+  var SUB_SHEET_VERSION = '2026-10-03b';   // Cash/Loan corrected from "no redline" to the real $2.19/W rate (same as Participate); added a Participate row that was missing from this card
 
   // Bump this whenever the Sales Rep Agreement text materially changes (buildRepAgreementHTML) —
   // reps who already signed an older version are gated back into the signing screen on next
@@ -1066,7 +1067,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // look like the newest "agreement" at the wrong version and force a re-sign.
   var SUB_SHEET_ACK_SOURCE = 'sub_sheet_ack';
   // One-line "what changed" shown in the login popup (no re-signing — a one-tap acknowledge). Update with each version bump; set '' for none.
-  var SUB_SHEET_NOTICE = 'Axia/QCells redlines now list the Domestic Content Bonus separately: EnFin $2.40/W less $0.45 = $1.95/W net; Lightreach $2.30/W less $0.25 = $2.05/W net (was $2.10). The Domestic Content Bonus is paid at Permission to Operate, so commission estimates before PTO do not include it.';
+  var SUB_SHEET_NOTICE = 'Axia/QCells redlines now list the Domestic Content Bonus separately: EnFin $2.40/W less $0.45 = $1.95/W net; Lightreach $2.30/W less $0.25 = $2.05/W net (was $2.10). Axia/QCells now pays in two parts: Payment 1 (commission on the full redline) is paid the Friday after the install is marked completed; the Domestic Content Bonus portion is paid the Friday after Permission to Operate. Estimates before PTO do not include the bonus.';
   // ⚠️ rep_agreements is a shared ledger: the signed rep agreement, sub-sheet
   // acknowledgements, and (now) training certifications all live in it, told apart by
   // `source`. The login gate reads "the newest agreement" out of this table and compares
@@ -2360,7 +2361,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (Date.now() - _installDurationFetchedAt < INSTALL_DURATION_TTL_MS && _installDurationFetchedAt) return;
     try {
       var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
-      var { data } = await pc.from('customers').select('sold_type,lead_category,sold_at,install_date,installed_at,ns_pto_at').not('sold_at', 'is', null);
+      var { data } = await pc.from('customers').select('sold_type,lead_category,sold_at,install_date,installed_at,ns_pto_at,install_completed_at').not('sold_at', 'is', null);
       var bySoldType = {};
       (data || []).forEach(function(r) {
         var isNS = r.lead_category === 'new_solar';
@@ -2371,7 +2372,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         // diagnostic bucket's real duration data has to come from diagnostic_date (the new
         // manual field, see _installDateBlockHtml below), never install_date, which a
         // diagnostic job has no reason to ever carry a value in.
-        var doneAt = isNS ? (r.install_date || r.ns_pto_at)
+        var doneAt = isNS ? (r.install_completed_at || r.install_date || r.ns_pto_at)
           : (key === 'diagnostic' ? (r.diagnostic_date || r.installed_at) : (r.install_date || r.installed_at));
         if (!doneAt) return;
         var days = (new Date(doneAt) - new Date(r.sold_at)) / 86400000;
@@ -2439,13 +2440,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   function _installTimelineStatus(c) {
     var isNSJob = c.lead_category === 'new_solar';
     var isDiag = !isNSJob && c.sold_type === 'diagnostic';
+    // Axia/QCells (2026-10-03, per Dennis): "Install Completed" is its own date — Payment 1 (M2)
+    // pays the Friday after it; the Domestic Content Bonus waits for PTO.
+    if (isNSJob && (c.install_completed_at || c.solar_status === 'ns_pto')) {
+      var _doneD = new Date(c.install_completed_at || c.ns_pto_at || Date.now());
+      var _doneS = _doneD.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      var _p1 = _payDateShort(_payFridayAfter(_doneD));
+      var _tail = c.solar_status === 'ns_pto' ? ' &middot; PTO reached' : ' &middot; awaiting inspection / PTO';
+      return { text: '&#9989; Install completed ' + _doneS + ' &middot; Payment 1 pays ' + _p1 + _tail, color: COMM_COLOR_EARNED };
+    }
     var dateVal = isDiag ? c.diagnostic_date : c.install_date;
     if (!dateVal) return null;
     var inst = new Date(dateVal); if (isNaN(inst.getTime())) return null;
     var today = new Date(); today.setHours(0, 0, 0, 0);
     var instDay = new Date(inst); instDay.setHours(0, 0, 0, 0);
     var diffDays = Math.round((instDay - today) / 86400000);
-    var earned = isNSJob ? c.solar_status === 'ns_pto' : (c.step || 1) >= 9;
+    var earned = isNSJob ? false : (c.step || 1) >= 9; // Axia completed state returned above
     var elapsedFromSale = null;
     if (c.sold_at) { var soldDay = new Date(c.sold_at); soldDay.setHours(0, 0, 0, 0); elapsedFromSale = Math.round((instDay - soldDay) / 86400000); }
     var shortDate = inst.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
@@ -2464,11 +2474,21 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var dateVal = isDiag ? c.diagnostic_date : c.install_date;
     var val = dateVal ? String(dateVal).slice(0, 10) : '';
     var label = isDiag ? 'Scheduled Date' : 'Install Date';
+    var completedRow = '';
+    // Admin only: marking an install completed starts the pay clock, so a rep can't self-mark it.
+    if (isNSJob && typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE === 'admin') {
+      var cval = c.install_completed_at ? String(c.install_completed_at).slice(0, 10) : '';
+      completedRow = '<div style="margin-top:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;" onclick="event.stopPropagation();">' +
+        '<label style="font-size:0.62rem;font-weight:700;color:#888;white-space:nowrap;">&#9989; Install Completed</label>' +
+        '<input type="date" value="' + cval + '" onchange="window._saveInstallCompleted(\'' + c.id + '\', this.value)" style="width:auto;padding:4px 8px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.04);color:#ddd;font-size:0.72rem;"/>' +
+        (cval ? '' : '<button type="button" onclick="window._saveInstallCompleted(\'' + c.id + '\', \'today\')" style="width:auto;padding:4px 10px;border-radius:20px;border:1px solid rgba(141,198,63,0.4);background:rgba(141,198,63,0.1);color:#8DC63F;font-size:0.68rem;font-weight:700;cursor:pointer;">Mark completed today</button>') +
+      '</div>';
+    }
     return '<div style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;" onclick="event.stopPropagation();">' +
       '<label style="font-size:0.62rem;font-weight:700;color:#888;white-space:nowrap;">&#128197; ' + label + '</label>' +
       '<input type="date" value="' + val + '" onchange="window._saveInstallDate(\'' + c.id + '\', this.value, ' + (isDiag ? 'true' : 'false') + ')" style="width:auto;padding:4px 8px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.04);color:#ddd;font-size:0.72rem;"/>' +
-      (status ? '<span style="font-size:0.68rem;color:' + status.color + ';font-weight:700;">' + status.text + '</span>' : '') +
-    '</div>';
+      (status && !(isNSJob && (c.install_completed_at || c.solar_status === 'ns_pto')) ? '<span style="font-size:0.68rem;color:' + status.color + ';font-weight:700;">' + status.text + '</span>' : '') +
+    '</div>' + completedRow + (status && isNSJob && (c.install_completed_at || c.solar_status === 'ns_pto') ? '<div style="margin-top:4px;font-size:0.68rem;color:' + status.color + ';font-weight:700;" onclick="event.stopPropagation();">' + status.text + '</div>' : '');
   }
   // Writes straight to Supabase (a scheduling field, same trust level as every other
   // direct customers.update() a rep already makes elsewhere in this file), updates
@@ -2495,6 +2515,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // never copies), so one mutation here is visible everywhere, admin or rep.
       var idx = (adminCustomers || []).findIndex(function(x) { return x.id === id; });
       if (idx > -1) adminCustomers[idx][field] = iso;
+      if (typeof adminView !== 'undefined' && adminView === 'jobs') renderJobsView();
+      else if (typeof salesView !== 'undefined' && salesView === 'jobs' && typeof renderSales === 'function') renderSales();
+    } catch (e) { alert('Could not save date: ' + e.message); }
+  };
+  // Axia/QCells "Install Completed" (2026-10-03) — drives Payment 1 (M2). 'today' = one-tap mark.
+  window._saveInstallCompleted = async function(id, val) {
+    try {
+      var cl = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var iso = null;
+      if (val === 'today') iso = new Date().toISOString();
+      else if (val) iso = new Date(val + 'T12:00:00').toISOString();
+      var resp = await cl.from('customers').update({ install_completed_at: iso }).eq('id', id);
+      if (resp.error) { alert('Could not save Install Completed: ' + resp.error.message); return; }
+      var idx = (adminCustomers || []).findIndex(function(x) { return x.id === id; });
+      if (idx > -1) adminCustomers[idx].install_completed_at = iso;
+      delete _axiaCommCache[id];
       if (typeof adminView !== 'undefined' && adminView === 'jobs') renderJobsView();
       else if (typeof salesView !== 'undefined' && salesView === 'jobs' && typeof renderSales === 'function') renderSales();
     } catch (e) { alert('Could not save date: ' + e.message); }
@@ -2851,20 +2887,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   function _nsIsBlackBoxSourced(c) {
     return !!(c && (c.black_box === true || c.lead_source === 'orphaned_list' || c.lead_source === 'direct_mail' || c.lead_source === 'smith_ai' || c.lead_source === 'inbound_web'));
   }
+  // ⚠️ 2026-10-03, per Dennis — Axia/QCells pays in TWO stages:
+  //   Payment 1 (M2) — commission on the FULL redline (no Domestic Content Bonus), paid the Friday
+  //                    after the week the install is marked COMPLETED (customers.install_completed_at).
+  //   Payment 2      — the Domestic Content Bonus portion, paid the Friday after PTO (ns_pto_at).
+  // The primary fields below (closerAmt/setterAmt/companyAmt/revenue) are what is payable/visible NOW:
+  // stage 1 until PTO, stage 1 + DC after PTO. closerAmt1/setterAmt1/companyAmt1 are always stage 1
+  // (what "Lock in" records as Payment 1); dcCloserAmt/dcSetterAmt/dcCompanyAmt are the DC top-up
+  // (full − stage 1), recorded at PTO as separate commissions rows tagged note='dc_bonus'.
   function _nsCalcCommission(c) {
     c = c || {};
     var basePpw = parseFloat(c.ns_base_ppw) || 0;
     var redline = parseFloat(c.ns_redline_ppw) || 0;
     var dcBonus = parseFloat(c.ns_dc_bonus_ppw) || 0;
-    // 2026-10-03, per Dennis: the Domestic Content Bonus is paid at Permission to Operate, so until PTO
-    // every figure (estimate, split, card) is computed on the FULL redline — a rep must never see a
-    // higher commission at Install than they will actually be paid. At PTO the bonus is applied.
-    var _isPto = c.solar_status === 'ns_pto';
-    var dcApplied = _isPto ? dcBonus : 0;
-    var netRedline = redline - dcApplied;
-    var netPpw = basePpw - netRedline;
     var watts = Math.round((parseFloat(c.system_size) || 0) * 1000);
-    var gross = Math.max(0, Math.round(netPpw * watts * 100) / 100);
     var isBlackBox = _nsIsBlackBoxSourced(c);
     var poolPct = isBlackBox ? 0.50 : 0.70;
     var setterName = (c.setter_name || '').trim();
@@ -2876,30 +2912,43 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var _splitPcts = _repSplitPcts(c.rep_id, setterName, hasSetter, poolPct, { rondaAdditive: true });
     var closerPct = _splitPcts.closerPct;
     var setterPct = _splitPcts.setterPct;
-    var closerAmt = c.rep_id ? Math.round(gross*closerPct*100)/100 : 0;
-    var setterAmt = hasSetter ? Math.round(gross*setterPct*100)/100 : 0;
-    // Setter Comp Plan election (2026-09-18) — Axia/QCells is always an eligible line;
-    // the closer's own amount above never changes because of it (Solar Review absorbs
-    // the difference). Ronda is excluded inside _setterCompOverride itself, so her
-    // additive rule above is never touched by this.
     var _nsSetterPlanApplied = null;
-    if (hasSetter) {
-      var _nsOvr = _setterCompOverride(setterName, gross, true);
-      if (_nsOvr !== null) { setterAmt = _nsOvr; _nsSetterPlanApplied = _setterCompPlanFor(setterName); }
+    function core(dcApplied) {
+      var netRedline = redline - dcApplied;
+      var netPpw = basePpw - netRedline;
+      var gross = Math.max(0, Math.round(netPpw * watts * 100) / 100);
+      var closerAmt = c.rep_id ? Math.round(gross*closerPct*100)/100 : 0;
+      var setterAmt = hasSetter ? Math.round(gross*setterPct*100)/100 : 0;
+      // Setter Comp Plan election (2026-09-18) — Axia/QCells is always an eligible line;
+      // the closer's own amount above never changes because of it (Solar Review absorbs
+      // the difference). Ronda is excluded inside _setterCompOverride itself.
+      if (hasSetter) {
+        var _nsOvr = _setterCompOverride(setterName, gross, true);
+        if (_nsOvr !== null) { setterAmt = _nsOvr; _nsSetterPlanApplied = _setterCompPlanFor(setterName); }
+      }
+      var companyAmt = Math.max(0, gross - closerAmt - setterAmt);
+      return { netRedline:netRedline, netPpw:netPpw, gross:gross, closerAmt:closerAmt, setterAmt:setterAmt, companyAmt:companyAmt };
     }
-    var companyAmt = Math.max(0, gross - closerAmt - setterAmt);
+    var installDoneAt = c.install_completed_at || (c.solar_status === 'ns_pto' ? (c.ns_pto_at || null) : null);
+    var installDone = !!installDoneAt || c.solar_status === 'ns_pto';
+    var ptoDone = c.solar_status === 'ns_pto';
+    var s1 = core(0);
+    var full = core(dcBonus);
+    var cur = ptoDone ? full : s1;
+    var r2 = function(n){ return Math.round(n*100)/100; };
     return {
-      basePpw:basePpw, redline:redline, dcBonus:dcBonus, dcApplied:dcApplied, dcPending:(!_isPto && dcBonus>0), dcExtraGross:Math.round(dcBonus*watts*100)/100, netRedline:netRedline, netPpw:netPpw, watts:watts,
+      basePpw:basePpw, redline:redline, dcBonus:dcBonus, dcApplied:(ptoDone?dcBonus:0), dcPending:(!ptoDone && dcBonus>0), dcExtraGross:Math.round(dcBonus*watts*100)/100, netRedline:cur.netRedline, netPpw:cur.netPpw, watts:watts,
       isBlackBox:isBlackBox, poolPct:poolPct, closerPct:closerPct, setterPct:setterPct,
       setterName:setterName, hasSetter:hasSetter, closerNm:closerNm, repId:c.rep_id||'',
-      closerAmt:closerAmt, setterAmt:setterAmt, companyAmt:companyAmt,
+      closerAmt:cur.closerAmt, setterAmt:cur.setterAmt, companyAmt:cur.companyAmt,
+      // Payment 1 (always the no-DC figures) and the DC top-up paid at PTO.
+      grossAmt1:s1.gross, closerAmt1:s1.closerAmt, setterAmt1:s1.setterAmt, companyAmt1:s1.companyAmt,
+      dcCloserAmt:r2(Math.max(0, full.closerAmt - s1.closerAmt)), dcSetterAmt:r2(Math.max(0, full.setterAmt - s1.setterAmt)), dcCompanyAmt:r2(Math.max(0, full.companyAmt - s1.companyAmt)),
       setterCompPlan: _nsSetterPlanApplied,
-      revenue: gross, costs: Math.round((closerAmt+setterAmt)*100)/100,
+      revenue: cur.gross, costs: r2(cur.closerAmt+cur.setterAmt),
       hasInputs: basePpw>0 && watts>0,
-      // Earned = reached Permission to Operate — the same finish line the admin
-      // "complete" filter elsewhere in this file already treats as done for Axia/
-      // QCells (there's no literal "Installed" step on this pipeline).
-      earned: c.solar_status === 'ns_pto'
+      // Earned (Payment 1) = the install is marked COMPLETED. PTO is Payment 2 only.
+      earned: installDone, earnedAt: installDoneAt, ptoDone: ptoDone, ptoAt: c.ns_pto_at || null
     };
   }
   // Same async-cache pattern as _loadFixmyJobCommissions, but every formula input already
@@ -2912,7 +2961,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     try {
       await window.bbLoadSetterCompPlans();
       var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
-      var commRes = await pc.from('commissions').select('customer_id,kind,amount,status').in('customer_id', need).eq('line','new_solar');
+      var commRes = await pc.from('commissions').select('customer_id,kind,amount,status,note').in('customer_id', need).eq('line','new_solar');
       var commByC = {};
       (commRes.data||[]).forEach(function(x){ (commByC[x.customer_id]=commByC[x.customer_id]||[]).push(x); });
       need.forEach(function(id){
@@ -2920,13 +2969,25 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           || (typeof allRecords !== 'undefined' ? (allRecords||[]).find(function(x){ return x.id===id; }) : null) || {};
         var calc = _nsCalcCommission(c);
         var comms = commByC[id]||[];
-        var closerRow = comms.find(function(x){ return x.kind==='rep_commission'; });
-        var setterRow = comms.find(function(x){ return x.kind==='setter_commission'; });
-        var companyRow = comms.find(function(x){ return x.kind==='override'; });
-        var closerAmt = closerRow ? (parseFloat(closerRow.amount)||0) : calc.closerAmt;
-        var setterAmt = setterRow ? (parseFloat(setterRow.amount)||0) : calc.setterAmt;
-        var companyAmt = companyRow ? (parseFloat(companyRow.amount)||0) : calc.companyAmt;
+        // Payment 1 rows (no note) vs. the Domestic Content top-up rows (note='dc_bonus', recorded at PTO).
+        var p1 = comms.filter(function(x){ return x.note !== 'dc_bonus'; });
+        var dcr = comms.filter(function(x){ return x.note === 'dc_bonus'; });
+        var closerRow = p1.find(function(x){ return x.kind==='rep_commission'; });
+        var setterRow = p1.find(function(x){ return x.kind==='setter_commission'; });
+        var companyRow = p1.find(function(x){ return x.kind==='override'; });
+        var dcCloserRow = dcr.find(function(x){ return x.kind==='rep_commission'; });
+        var dcSetterRow = dcr.find(function(x){ return x.kind==='setter_commission'; });
+        var dcCompanyRow = dcr.find(function(x){ return x.kind==='override'; });
+        var closerBase = closerRow ? (parseFloat(closerRow.amount)||0) : calc.closerAmt1;
+        var setterBase = setterRow ? (parseFloat(setterRow.amount)||0) : calc.setterAmt1;
+        var companyBase = companyRow ? (parseFloat(companyRow.amount)||0) : calc.companyAmt1;
+        // DC top-up counts once PTO is reached (locked row wins over the live estimate).
+        var closerAmt = closerBase + (dcCloserRow ? (parseFloat(dcCloserRow.amount)||0) : (calc.ptoDone ? calc.dcCloserAmt : 0));
+        var setterAmt = setterBase + (dcSetterRow ? (parseFloat(dcSetterRow.amount)||0) : (calc.ptoDone ? calc.dcSetterAmt : 0));
+        var companyAmt = companyBase + (dcCompanyRow ? (parseFloat(dcCompanyRow.amount)||0) : (calc.ptoDone ? calc.dcCompanyAmt : 0));
+        closerAmt = Math.round(closerAmt*100)/100; setterAmt = Math.round(setterAmt*100)/100; companyAmt = Math.round(companyAmt*100)/100;
         _axiaCommCache[id] = Object.assign({}, calc, {
+          revenue: Math.round((closerAmt+setterAmt+companyAmt)*100)/100,
           closerAmt: closerAmt, setterAmt: setterAmt, companyAmt: companyAmt,
           costs: Math.round((closerAmt+setterAmt)*100)/100,
           // A locked row already has its real, historical amount — don't relabel it
@@ -2935,7 +2996,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           closerLocked: !!closerRow, setterLocked: !!setterRow, companyLocked: !!companyRow,
           closerPaid: !!(closerRow && closerRow.status==='paid'), setterPaid: !!(setterRow && setterRow.status==='paid'),
           companyPaid: !!(companyRow && companyRow.status==='paid'),
-          soldAt: c.sold_at||null, earnedAt: c.ns_pto_at||null, durationKey: 'new_solar'
+          soldAt: c.sold_at||null, earnedAt: calc.earnedAt||null, installDoneAt: calc.earnedAt||null, ptoAt: calc.ptoAt||null, durationKey: 'new_solar'
         });
       });
       _loadInstallDurationStats(); // fire-and-forget, same shared cache the FixMy loader refreshes
@@ -2969,22 +3030,25 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     await window.bbLoadSetterCompPlans(true);
     var calc = _nsCalcCommission(rec);
     if (!calc.hasInputs) { alert('Enter Base PPW and set System Size (kW) on the lead first — Gross Commission is $0 without them.'); return; }
-    // The Domestic Content Bonus is part of the real payout but is only paid at PTO. Locking now would
-    // freeze the lower pre-PTO amounts (locked rows always win), underpaying the rep forever.
-    if (calc.dcPending) { alert('This deal has a Domestic Content Bonus, which is paid at Permission to Operate.\n\nLock in the commission split once the job reaches PTO so the full amount is recorded.'); return; }
     try {
-      var commRes = await pc.from('commissions').select('kind').eq('customer_id', cid).eq('line','new_solar');
-      var have = {}; (commRes.data||[]).forEach(function(x){ have[x.kind] = true; });
+      var commRes = await pc.from('commissions').select('kind,note').eq('customer_id', cid).eq('line','new_solar');
+      var have = {}, haveDc = {};
+      (commRes.data||[]).forEach(function(x){ if (x.note === 'dc_bonus') haveDc[x.kind] = true; else have[x.kind] = true; });
       var rows = [];
-      if (!have.rep_commission && calc.repId && calc.closerAmt > 0) rows.push(_stampAutoPaidIfDennis({ customer_id:cid, line:'new_solar', kind:'rep_commission', payee:calc.repId, payee_name:calc.closerNm, amount:calc.closerAmt, status:'sold' }));
-      if (calc.hasSetter && !have.setter_commission && calc.setterAmt > 0) {
-        var sid = _repIdByName(calc.setterName);
-        rows.push(_stampAutoPaidIfDennis({ customer_id:cid, line:'new_solar', kind:'setter_commission', payee: sid || calc.setterName, payee_name: calc.setterName, amount: calc.setterAmt, status:'sold' }));
+      var sid = calc.hasSetter ? _repIdByName(calc.setterName) : null;
+      // Payment 1 (M2) — commission on the full redline, no Domestic Content Bonus.
+      if (!have.rep_commission && calc.repId && calc.closerAmt1 > 0) rows.push(_stampAutoPaidIfDennis({ customer_id:cid, line:'new_solar', kind:'rep_commission', payee:calc.repId, payee_name:calc.closerNm, amount:calc.closerAmt1, status:'sold' }));
+      if (calc.hasSetter && !have.setter_commission && calc.setterAmt1 > 0) rows.push(_stampAutoPaidIfDennis({ customer_id:cid, line:'new_solar', kind:'setter_commission', payee: sid || calc.setterName, payee_name: calc.setterName, amount: calc.setterAmt1, status:'sold' }));
+      if (!have.override && calc.companyAmt1 > 0) rows.push({ customer_id:cid, line:'new_solar', kind:'override', payee:'solar_review_corp', payee_name:'Solar Review Corp', amount: calc.companyAmt1, status:'sold' });
+      // Payment 2 — the Domestic Content Bonus top-up, recorded only once the job is at PTO.
+      if (calc.ptoDone && calc.dcBonus > 0) {
+        if (!haveDc.rep_commission && calc.repId && calc.dcCloserAmt > 0) rows.push(_stampAutoPaidIfDennis({ customer_id:cid, line:'new_solar', kind:'rep_commission', payee:calc.repId, payee_name:calc.closerNm, amount:calc.dcCloserAmt, status:'sold', note:'dc_bonus' }));
+        if (calc.hasSetter && !haveDc.setter_commission && calc.dcSetterAmt > 0) rows.push(_stampAutoPaidIfDennis({ customer_id:cid, line:'new_solar', kind:'setter_commission', payee: sid || calc.setterName, payee_name: calc.setterName, amount: calc.dcSetterAmt, status:'sold', note:'dc_bonus' }));
+        if (!haveDc.override && calc.dcCompanyAmt > 0) rows.push({ customer_id:cid, line:'new_solar', kind:'override', payee:'solar_review_corp', payee_name:'Solar Review Corp', amount: calc.dcCompanyAmt, status:'sold', note:'dc_bonus' });
       }
-      if (!have.override && calc.companyAmt > 0) rows.push({ customer_id:cid, line:'new_solar', kind:'override', payee:'solar_review_corp', payee_name:'Solar Review Corp', amount: calc.companyAmt, status:'sold' });
       if (!rows.length) { alert('Nothing to record — already locked in, or no commissionable amount yet.'); return; }
       var m = function(n){ return '$'+n.toLocaleString(undefined,{maximumFractionDigits:2}); };
-      var summary = rows.map(function(r){ return (r.kind==='override'?'Solar Review Net':(r.kind==='setter_commission'?'Setter · '+r.payee_name:'Tech · '+r.payee_name))+': '+m(r.amount); }).join('\n');
+      var summary = rows.map(function(r){ return (r.kind==='override'?'Solar Review Net':(r.kind==='setter_commission'?'Setter · '+r.payee_name:'Tech · '+r.payee_name))+(r.note==='dc_bonus'?' (Domestic Content, paid at PTO)':' (Payment 1)')+': '+m(r.amount); }).join('\n');
       if (!confirm('Lock in Axia/QCells commission split?\n\n'+(calc.isBlackBox?'Company lead — '+Math.round(calc.poolPct*100)+'% pool':'Self-Gen — '+Math.round(calc.poolPct*100)+'% pool')+'\n\n'+summary)) return;
       var { error } = await pc.from('commissions').insert(rows);
       if (error) throw error;
@@ -18390,7 +18454,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var r = '<div style="display:flex;gap:8px;align-items:center;font-size:0.72rem;color:#aaa;padding:5px 0;border-top:1px solid rgba(255,255,255,0.05);flex-wrap:wrap;">'+
         '<span style="color:#777;">'+(lineLbl[x.line]||x.line)+'</span>'+
         '<span style="color:#ccc;">'+esc(finCustName(x.customer_id))+'</span>'+
-        '<span style="color:#888;">'+(x.kind==='travel_reimbursement'?'travel':x.kind==='setter_commission'?'setter split':'commission')+'</span>'+
+        '<span style="color:#888;">'+(x.kind==='travel_reimbursement'?'travel':x.kind==='setter_commission'?'setter split':'commission')+(x.note==='dc_bonus'?' &middot; <span style="color:#f59e0b;">Domestic Content (PTO)</span>':'')+'</span>'+
         '<span style="color:#ddd;font-weight:700;">'+money(x.amount)+'</span>'+
         (d ? '<button class="no-print" onclick="toggleCommMath(\''+mathId+'\')" style="padding:2px 9px;background:rgba(74,158,255,0.08);border:1px solid rgba(74,158,255,0.3);border-radius:100px;color:#4a9eff;font-size:0.6rem;font-weight:700;cursor:pointer;">See the math <span id="'+mathId+'_arrow">&#9662;</span></button>' : '')+
         (x.status==='paid'
@@ -18452,6 +18516,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // so treating a cache miss the same as Top Tier would quietly resurrect it).
       if (x.line !== 'fixmy' && x.line !== 'new_solar') return new Date(x.sold_at);
       var d = _cacheFor(x);
+      // Axia pays in two stages: the Domestic Content top-up (note='dc_bonus') is earned at PTO;
+      // Payment 1 is earned when the install is marked completed.
+      if (x.line === 'new_solar' && x.note === 'dc_bonus') return (d && d.ptoAt) ? new Date(d.ptoAt) : null;
       return (d && d.earned && d.earnedAt) ? new Date(d.earnedAt) : null;
     }
     function _fridayLabel(d) {
@@ -26654,28 +26721,36 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 12px;">';
         h += '<div style="font-size:0.66rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#9b6de8;margin-bottom:6px;">&#129297; Commission Split</div>';
         if (setterNm) h += '<div style="font-size:0.68rem;color:#4a9eff;margin-bottom:4px;">Setter on file: <b>'+esc(setterNm)+'</b></div>';
-        var closerRowNs = comms.find(function(x){ return x.kind==='rep_commission'; });
-        var setterRowNs = comms.find(function(x){ return x.kind==='setter_commission'; });
-        var companyRowNs = comms.find(function(x){ return x.kind==='override'; });
+        var _p1Ns = comms.filter(function(x){ return x.note !== 'dc_bonus'; });
+        var _dcNs = comms.filter(function(x){ return x.note === 'dc_bonus'; });
+        var closerRowNs = _p1Ns.find(function(x){ return x.kind==='rep_commission'; });
+        var setterRowNs = _p1Ns.find(function(x){ return x.kind==='setter_commission'; });
+        var companyRowNs = _p1Ns.find(function(x){ return x.kind==='override'; });
         var _pill2 = function(status){ return '<span style="margin-left:6px;padding:2px 9px;border-radius:100px;font-size:0.62rem;font-weight:700;text-transform:uppercase;'+(status==='paid'?'background:rgba(141,198,63,0.1);color:#8DC63F;border:1px solid rgba(141,198,63,0.4);':'background:rgba(255,170,0,0.08);color:#ffaa00;border:1px solid rgba(255,170,0,0.4);')+'">'+(status==='paid'?'PAID':'SOLD — unpaid')+'</span>'; };
         if (!calc.repId) {
           h += '<div style="font-size:0.72rem;color:#777;">Tech: no rep assigned yet — set Assigned Rep to record their split.</div>';
         } else if (closerRowNs) {
           h += '<div style="font-size:0.74rem;color:#ddd;">'+esc(calc.closerNm)+' (Tech '+Math.round(calc.closerPct*100)+'%): <b>'+m2(closerRowNs.amount)+'</b>'+_pill2(closerRowNs.status)+'</div>';
-        } else if (calc.closerAmt > 0) {
-          h += '<div style="font-size:0.74rem;color:#ddd;">'+esc(calc.closerNm)+' (Tech '+Math.round(calc.closerPct*100)+'%): <b style="color:#9b6de8;">'+m2(calc.closerAmt)+'</b> <span style="color:#666;font-size:0.68rem;">(accruing)</span></div>';
+        } else if (calc.closerAmt1 > 0) {
+          h += '<div style="font-size:0.74rem;color:#ddd;">'+esc(calc.closerNm)+' (Tech '+Math.round(calc.closerPct*100)+'%): <b style="color:#9b6de8;">'+m2(calc.closerAmt1)+'</b> <span style="color:#666;font-size:0.68rem;">(Payment 1 &middot; accruing)</span></div>';
         }
         if (calc.hasSetter) {
           if (setterRowNs) h += '<div style="font-size:0.74rem;color:#ddd;margin-top:2px;">'+esc(setterNm)+' (Setter '+Math.round(calc.setterPct*100)+'%): <b>'+m2(setterRowNs.amount)+'</b>'+_pill2(setterRowNs.status)+'</div>';
-          else if (calc.setterAmt > 0) h += '<div style="font-size:0.74rem;color:#ddd;margin-top:2px;">'+esc(setterNm)+' (Setter '+Math.round(calc.setterPct*100)+'%): <b style="color:#4a9eff;">'+m2(calc.setterAmt)+'</b> <span style="color:#666;font-size:0.68rem;">(accruing)</span></div>';
+          else if (calc.setterAmt1 > 0) h += '<div style="font-size:0.74rem;color:#ddd;margin-top:2px;">'+esc(setterNm)+' (Setter '+Math.round(calc.setterPct*100)+'%): <b style="color:#4a9eff;">'+m2(calc.setterAmt1)+'</b> <span style="color:#666;font-size:0.68rem;">(Payment 1 &middot; accruing)</span></div>';
         }
         if (companyRowNs) h += '<div style="font-size:0.74rem;color:#ddd;margin-top:2px;">Solar Review Net: <b>'+m2(companyRowNs.amount)+'</b>'+_pill2(companyRowNs.status)+'</div>';
-        else if (calc.companyAmt > 0) h += '<div style="font-size:0.74rem;color:#ddd;margin-top:2px;">Solar Review Net: <b style="color:#8DC63F;">'+m2(calc.companyAmt)+'</b> <span style="color:#666;font-size:0.68rem;">(accruing)</span></div>';
-        var _needCloserNs = !closerRowNs && calc.repId && calc.closerAmt>0;
-        var _needSetterNs = calc.hasSetter && !setterRowNs && calc.setterAmt>0;
-        var _needCoNs = !companyRowNs && calc.companyAmt>0;
-        if (_needCloserNs || _needSetterNs || _needCoNs) {
-          h += '<button onclick="edRecordAxiaSplit(\''+cid+'\')" style="margin-top:7px;padding:6px 13px;background:rgba(155,109,232,0.1);border:1px solid rgba(155,109,232,0.35);border-radius:100px;color:#9b6de8;font-size:0.7rem;font-weight:700;cursor:pointer;">Lock in as Sold &#8594; Payroll</button>';
+        else if (calc.companyAmt1 > 0) h += '<div style="font-size:0.74rem;color:#ddd;margin-top:2px;">Solar Review Net: <b style="color:#8DC63F;">'+m2(calc.companyAmt1)+'</b> <span style="color:#666;font-size:0.68rem;">(Payment 1 &middot; accruing)</span></div>';
+        // Domestic Content top-up rows (Payment 2, recorded at PTO)
+        _dcNs.forEach(function(x){
+          var who = x.kind==='override' ? 'Solar Review Net' : (x.kind==='setter_commission' ? esc(x.payee_name||'Setter')+' (Setter)' : esc(x.payee_name||calc.closerNm)+' (Tech)');
+          h += '<div style="font-size:0.72rem;color:#f59e0b;margin-top:2px;">&#10133; Domestic Content &mdash; '+who+': <b>'+m2(x.amount)+'</b>'+_pill2(x.status)+'</div>';
+        });
+        var _needCloserNs = !closerRowNs && calc.repId && calc.closerAmt1>0;
+        var _needSetterNs = calc.hasSetter && !setterRowNs && calc.setterAmt1>0;
+        var _needCoNs = !companyRowNs && calc.companyAmt1>0;
+        var _needDcNs = calc.ptoDone && calc.dcBonus>0 && ( (calc.repId && calc.dcCloserAmt>0 && !_dcNs.some(function(x){return x.kind==='rep_commission';})) || (calc.hasSetter && calc.dcSetterAmt>0 && !_dcNs.some(function(x){return x.kind==='setter_commission';})) || (calc.dcCompanyAmt>0 && !_dcNs.some(function(x){return x.kind==='override';})) );
+        if (_needCloserNs || _needSetterNs || _needCoNs || _needDcNs) {
+          h += '<button onclick="edRecordAxiaSplit(\''+cid+'\')" style="margin-top:7px;padding:6px 13px;background:rgba(155,109,232,0.1);border:1px solid rgba(155,109,232,0.35);border-radius:100px;color:#9b6de8;font-size:0.7rem;font-weight:700;cursor:pointer;">'+((_needDcNs && !(_needCloserNs||_needSetterNs||_needCoNs)) ? 'Record Domestic Content Bonus &#8594; Payroll' : 'Lock in Payment 1 &#8594; Payroll')+'</button>';
         }
         h += '</div>';
       } else {
