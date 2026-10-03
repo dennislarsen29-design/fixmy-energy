@@ -70,6 +70,20 @@ exports.handler = async function(event) {
     const taxDelinquent = f.tax_delinquent != null
       ? (String(f.tax_delinquent).toUpperCase() === 'Y' || f.tax_delinquent === true)
       : null;
+    // Sanity check (2026-10-03): never trust the first feature Regrid returns. A free/trial token
+    // returned "INLINE NETWORK INTEGRATION LLC" (APN 99190319330000000) for 12712 Via Donada, Del
+    // Mar — a different parcel entirely (true owner on the county roll: SMITH ARMISTEAD B III TR,
+    // APN 3010911500) — and the form offered it with a "Confirmed on Title" button. Reject a feature
+    // whose situs house number differs from the address we asked about, or that isn't in CA.
+    if (owner) {
+      const wantNum = (String(address).match(/^\s*(\d+)/) || [])[1];
+      const situs = String(f.address || ((f.saddno || '') + ' ' + (f.saddstr || ''))).trim();
+      const st = String(f.state2 || f.sstate || '').trim().toUpperCase();
+      if ((wantNum && situs && !new RegExp('(^|\\D)' + wantNum + '(\\D|$)').test(situs)) || (st && st !== 'CA')) {
+        tried.push('regrid:rejected_wrong_parcel(' + String(owner).slice(0, 24) + ' @ ' + (situs || st).slice(0, 30) + ')');
+        return null;
+      }
+    }
     return owner ? { owner, apn, assessed_value: assessedValue, tax_delinquent: taxDelinquent } : null;
   }
 
