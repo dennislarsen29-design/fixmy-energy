@@ -18641,6 +18641,52 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       });
     }
 
+    // Pending payouts by person: everything a rep will be owed that isn't payable yet — locked rows
+    // awaiting install/PTO PLUS estimates for sold jobs whose commission was never locked in.
+    try {
+      var sj = await pc.from('customers').select('*').not('sold_type','is',null).limit(600);
+      var soldJobs = (sj.data||[]).filter(function(c){ return !c.archived; });
+      var sFix = [], sAx = [];
+      soldJobs.forEach(function(c){
+        var i=(adminCustomers||[]).findIndex(function(x){return x.id===c.id;});
+        if (i>-1) adminCustomers[i]=Object.assign({},adminCustomers[i],c); else if (adminCustomers) adminCustomers.push(c);
+        (c.lead_category==='new_solar'?sAx:sFix).push(c.id);
+      });
+      sFix.forEach(function(id){ delete _fixmyCommCache[id]; }); sAx.forEach(function(id){ delete _axiaCommCache[id]; });
+      await Promise.all([ _loadFixmyJobCommissions(sFix), _loadAxiaJobCommissions(sAx) ]);
+      var pend = {};
+      function addPend(name, amt, cust, role, state){
+        if (!name || !(amt>0)) return;
+        if (/dennis/i.test(name)) return;
+        (pend[name] = pend[name] || []).push({cust:cust, amt:amt, role:role, state:state});
+      }
+      owedRepsPending.forEach(function(x){
+        addPend(x.payee_name||repName(x.payee), parseFloat(x.amount)||0, finCustName(x.customer_id), x.kind==='setter_commission'?'Setter':'Closer',
+          x.note==='dc_bonus'?'locked · waiting on PTO':'locked · waiting on install');
+      });
+      soldJobs.forEach(function(c){
+        var d = c.lead_category==='new_solar' ? _axiaCommCache[c.id] : _fixmyCommCache[c.id];
+        if (!d) return;
+        var nm = ((c.first_name||'')+' '+(c.last_name||'')).trim();
+        var st = d.earned ? 'installed · not locked in yet' : 'estimate · not installed yet';
+        if (!d.closerLocked && d.repId) addPend(repName(d.repId), d.closerAmt1!=null?d.closerAmt1:d.closerAmt, nm, 'Closer', st);
+        if (d.hasSetter && !d.setterLocked) addPend(d.setterName, d.setterAmt1!=null?d.setterAmt1:d.setterAmt, nm, 'Setter', st);
+      });
+      var names = Object.keys(pend).sort();
+      if (names.length) {
+        h += '<div style="font-size:0.9rem;font-weight:800;color:#a78bfa;margin:22px 0 2px;">&#128197; Pending payouts by person</div>';
+        h += '<div style="font-size:0.72rem;color:#888;margin-bottom:8px;">Everything each person will be owed once their jobs are installed &mdash; including jobs not locked in yet (estimates). Dennis excluded.</div>';
+        names.forEach(function(n){
+          var rows = pend[n], tot = rows.reduce(function(t,r){return t+r.amt;},0);
+          h += '<div class="fin-card" style="padding:0;overflow:hidden;"><div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:rgba(255,255,255,0.03);"><div style="font-size:0.95rem;font-weight:800;color:#fff;">'+esc(n)+' <span style="font-size:0.68rem;color:#888;font-weight:500;">&middot; '+rows.length+' job'+(rows.length===1?'':'s')+' pending</span></div><div style="font-size:1.15rem;font-weight:800;color:#a78bfa;">'+money(tot)+'</div></div>';
+          rows.forEach(function(r){
+            h += '<div style="display:flex;justify-content:space-between;gap:8px;padding:7px 14px;border-top:1px solid rgba(255,255,255,0.06);font-size:0.75rem;"><span style="color:#ddd;">'+esc(r.cust)+' <span style="color:#777;">&middot; '+r.role+'</span><div style="font-size:0.66rem;color:#fb923c;">'+r.state+'</div></span><b style="color:#eee;">'+money(r.amt)+'</b></div>';
+          });
+          h += '</div>';
+        });
+      }
+    } catch(e) {}
+
     // Dennis's own commission — always auto-paid at creation (_stampAutoPaidIfDennis),
     // so it never enters the "Unpaid — by pay Friday" section above. Kept visible and
     // math-checkable here rather than mixed into "the company commission splits" the
