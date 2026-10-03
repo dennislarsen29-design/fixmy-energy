@@ -2,6 +2,7 @@
 // ENV vars required: STRIPE_SECRET_KEY, SUPA_SERVICE_KEY, GHL_API_KEY
 
 const { sendMetaEvent } = require('./lib/meta-capi');
+const sigAudit = require('./lib/sig-audit');
 
 const SUPA_URL        = 'https://kbtobyoumvbcxfbugsid.supabase.co';
 const GHL_LOCATION_ID = 'gXWwbOVymY0iRfj7c1It';
@@ -29,17 +30,26 @@ exports.handler = async function(event) {
     return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Invalid JSON' }) };
   }
 
-  const { token, paymentIntentId, signature, signedAt, repairAuthInitial, signingLocation, fbp, fbc } = body;
+  const { token, paymentIntentId, signature, repairAuthInitial, signingLocation, fbp, fbc } = body;
   if (!token || !paymentIntentId || !signature) {
     return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'token, paymentIntentId and signature required' }) };
   }
 
-  // Capture signing IP and user-agent server-side (for audit trail / legal enforceability)
-  const signingIp = (event.headers['x-forwarded-for'] || '').split(',')[0].trim()
-                 || event.headers['client-ip']
-                 || 'unknown';
-  const signingUserAgent = event.headers['user-agent'] || 'unknown';
-  const actualSignedAt = signedAt || new Date().toISOString();
+  // The drawn / typed-style signature mark (same shape as the portal's document signing).
+  // Optional only so a page cached from before this deploy still works; the typed printed
+  // name in `signature` is always required. A malformed mark is rejected outright.
+  let signatureData = null;
+  if (body.signatureData != null) {
+    signatureData = sigAudit.validateSignatureData(body.signatureData);
+    if (!signatureData) return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Invalid signature' }) };
+  }
+
+  // Audit trail captured SERVER-side — values the browser cannot choose. The signing time is
+  // the server clock; the old code trusted a client-supplied `signedAt`, which let a client
+  // back- or forward-date its own signature (and so pick which version of the terms applied).
+  const signingIp = sigAudit.clientIp(event);
+  const signingUserAgent = sigAudit.userAgent(event);
+  let actualSignedAt = new Date().toISOString();
 
   // Verify Stripe PaymentIntent succeeded
   const piResp = await fetch('https://api.stripe.com/v1/payment_intents/' + paymentIntentId, {
@@ -68,13 +78,20 @@ exports.handler = async function(event) {
   };
 
   // Fetch customer record
-  const cResp = await fetch(SUPA_URL + '/rest/v1/customers?id=eq.' + customerId + '&select=id,first_name,last_name,email,phone,address,invoice_amount,sold_type,sold_at&limit=1', {
+  const cResp = await fetch(SUPA_URL + '/rest/v1/customers?id=eq.' + customerId + '&select=id,first_name,last_name,email,phone,address,invoice_amount,sold_type,sold_at,agreement_signed_at,agreement_audit&limit=1', {
     headers: supaHeaders
   });
   const cRows = await cResp.json();
   const c = Array.isArray(cRows) && cRows[0];
   if (!c) {
     return { statusCode: 404, headers: cors, body: JSON.stringify({ error: 'Customer not found' }) };
+  }
+
+  // Idempotent retries: the client retries this call after cold starts / dropped responses. If THIS
+  // PaymentIntent was already recorded, keep the original signing time instead of re-stamping it.
+  if (c.agreement_audit && c.agreement_audit.payment_intent === paymentIntentId && c.agreement_signed_at) {
+    const prior = new Date(c.agreement_signed_at);
+    if (!isNaN(prior.getTime())) actualSignedAt = prior.toISOString();
   }
 
   // Mark as paid + signed, record audit trail, clear sign token
@@ -91,6 +108,17 @@ exports.handler = async function(event) {
     repair_auth_initial: repairAuthInitial || null,
     agreement_ip: signingIp,
     agreement_user_agent: signingUserAgent,
+    agreement_signature_data: signatureData,
+    agreement_audit: (function () {
+      const terms = sigAudit.diagTermsFingerprint(actualSignedAt);
+      return {
+        method: 'card', signed_at: actualSignedAt, ip: signingIp, user_agent: signingUserAgent,
+        location: signingLocation || null, printed_name: String(signature).slice(0, 120),
+        terms_sha256: terms.sha256, repair_cap: terms.cap,
+        signature_sha256: signatureData ? sigAudit.signatureFingerprint(signatureData) : null,
+        payment_intent: paymentIntentId
+      };
+    })(),
   };
 
   // The payment is already captured in Stripe at this point. If this DB write

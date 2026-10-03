@@ -1,3 +1,4 @@
+const sigAudit = require('./lib/sig-audit');
 // Sign & Pay resilience: called by sign.html when the card path fails.
 // Two actions:
 //
@@ -67,21 +68,35 @@ exports.handler = async function(event) {
 
   // ── action: agreement_only — capture signature, queue GHL invoice ──
   if (action === 'agreement_only') {
-    const { signature, repairAuthInitial, signedAt } = body;
+    const { signature, repairAuthInitial } = body;
     if (!signature || String(signature).trim().length < 2) {
       return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'signature required' }) };
     }
-    const signingIp = (event.headers['x-forwarded-for'] || '').split(',')[0].trim() || 'unknown';
+    let signatureData = null;
+    if (body.signatureData != null) {
+      signatureData = sigAudit.validateSignatureData(body.signatureData);
+      if (!signatureData) return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Invalid signature' }) };
+    }
+    const signingIp = sigAudit.clientIp(event);
+    const signingUa = sigAudit.userAgent(event);
+    const signedNow = new Date().toISOString(); // server clock — never the client's
+    const terms = sigAudit.diagTermsFingerprint(signedNow);
 
     const patch = await fetch(SUPA_URL + '/rest/v1/customers?id=eq.' + c.id, {
       method: 'PATCH', headers: { ...H, Prefer: 'return=minimal' },
       body: JSON.stringify({
         agreement_status: 'signed',
-        agreement_signed_at: signedAt || new Date().toISOString(),
+        agreement_signed_at: signedNow,
         agreement_signature: signature,
         repair_auth_initial: repairAuthInitial || null,
         agreement_ip: signingIp,
-        agreement_user_agent: event.headers['user-agent'] || 'unknown',
+        agreement_user_agent: signingUa,
+        agreement_signature_data: signatureData,
+        agreement_audit: {
+          method: String(body.paymentMethod || 'invoice').slice(0, 20), signed_at: signedNow, ip: signingIp, user_agent: signingUa,
+          printed_name: String(signature).slice(0, 120), terms_sha256: terms.sha256, repair_cap: terms.cap,
+          signature_sha256: signatureData ? sigAudit.signatureFingerprint(signatureData) : null
+        },
         invoice_status: 'sent'   // fee owed — GHL invoice on its way
       })
     });

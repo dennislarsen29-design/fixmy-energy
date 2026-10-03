@@ -28,6 +28,7 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
     }
   </script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+  <script src="/assets/signature-capture.js"></script>
   <title>Solar Review — Customer Portal</title>
   <style>
     * { box-sizing:border-box; margin:0; padding:0; }
@@ -21914,7 +21915,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (btn) { btn.disabled = true; btn.innerHTML = 'Preparing&hellip;'; }
       var client = supabase.createClient(SUPA_URL, SUPA_KEY);
       var resp = await client.from('customers')
-        .select('id,first_name,last_name,address,invoice_amount,agreement_status,agreement_signature,agreement_signed_at,repair_auth_initial,agreement_ip')
+        .select('id,first_name,last_name,address,invoice_amount,agreement_status,agreement_signature,agreement_signature_data,agreement_audit,agreement_signed_at,repair_auth_initial,agreement_ip')
         .eq('id', customerId).limit(1);
       if (resp.error) throw resp.error;
       var c = resp.data && resp.data[0];
@@ -22368,13 +22369,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   //   'draw' — draw with finger/mouse on a real signature pad (canvas)
   // Result shape, stored in deal_documents.data (jsonb, pre-existing/unused column —
   // no migration needed): {type:'typed', text, fontFamily} or {type:'drawn', dataUrl}.
-  var SIG_FONTS = [
-    { label: 'Elegant', family: "'Brush Script MT','Segoe Script',cursive" },
-    { label: 'Flowing', family: "'Lucida Handwriting','Apple Chancery',cursive" },
-    { label: 'Bold', family: "'Segoe Print','Comic Sans MS',cursive" },
-    { label: 'Formal', family: "'Bradley Hand','Herculanum',cursive" }
-  ];
-  var _sigState = {}; // key ('rep_<cid>_<doc>' or 'cust_<cid>_<doc>') -> capture state
+  // 2026-10-03 — the capture modal itself (draw / type-and-pick-style) now lives in
+  // assets/signature-capture.js so the Sign & Pay page uses the IDENTICAL component. These are
+  // thin wrappers that keep this file's _sigState[key].result contract (read by the rep
+  // Proceed gate, the customer submit gate and both field renderers) unchanged.
+  var _sigState = {}; // key ('rep_<cid>_<doc>' or 'cust_<cid>_<doc>') -> { result, context }
 
   function _sigDefaultName(context) {
     try {
@@ -22385,140 +22384,26 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   }
 
   window._sigOpen = function(key, context) {
-    var existing = _sigState[key];
-    _sigState[key] = existing || { mode:'pick', text: _sigDefaultName(context), fontIdx:0, hasDrawn:false, result: existing ? existing.result : null };
+    if (!window.SigCapture) { alert('Signature pad could not load \u2014 refresh the page and try again.'); return; }
+    _sigState[key] = _sigState[key] || { result: null };
     _sigState[key].context = context;
-    var overlay = document.createElement('div');
-    overlay.id = 'sigModalOverlay';
-    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:11000;display:flex;align-items:center;justify-content:center;padding:16px;overflow-y:auto;';
-    overlay.innerHTML = '<div id="sigModalBody" style="background:#1a1c17;border-radius:14px;padding:20px;max-width:520px;width:100%;color:#F3EDE3;"></div>';
-    document.body.appendChild(overlay);
-    _sigRenderModalBody(key);
-  };
-
-  function _sigRenderModalBody(key) {
-    var st = _sigState[key];
-    var body = document.getElementById('sigModalBody');
-    if (!body || !st) return;
-    var h = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">'+
-      '<div style="font-size:0.95rem;font-weight:800;">&#9997;&#65039; Sign</div>'+
-      '<button type="button" onclick="_sigCancel()" style="width:auto;background:none;border:none;color:#888;font-size:1.3rem;cursor:pointer;line-height:1;">&times;</button>'+
-    '</div>'+
-    '<div style="display:flex;gap:8px;margin-bottom:14px;">'+
-      '<button type="button" onclick="_sigSwitchMode(\''+key+'\',\'pick\')" style="flex:1;padding:9px;border-radius:8px;border:1px solid '+(st.mode==='pick'?'#8DC63F':'rgba(255,255,255,0.15)')+';background:'+(st.mode==='pick'?'rgba(141,198,63,0.14)':'transparent')+';color:'+(st.mode==='pick'?'#8DC63F':'#aaa')+';font-size:0.76rem;font-weight:700;cursor:pointer;">Type &amp; Choose Style</button>'+
-      '<button type="button" onclick="_sigSwitchMode(\''+key+'\',\'draw\')" style="flex:1;padding:9px;border-radius:8px;border:1px solid '+(st.mode==='draw'?'#8DC63F':'rgba(255,255,255,0.15)')+';background:'+(st.mode==='draw'?'rgba(141,198,63,0.14)':'transparent')+';color:'+(st.mode==='draw'?'#8DC63F':'#aaa')+';font-size:0.76rem;font-weight:700;cursor:pointer;">Draw</button>'+
-    '</div>';
-
-    if (st.mode === 'pick') {
-      h += '<input type="text" id="sigTextInput" value="'+esc(st.text||'')+'" oninput="_sigSetText(\''+key+'\',this.value)" placeholder="Type your full name" style="width:100%;padding:10px 12px;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#F3EDE3;font-size:0.85rem;box-sizing:border-box;margin-bottom:14px;outline:none;"/>'+
-        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">'+
-        SIG_FONTS.map(function(f, i) {
-          var active = st.fontIdx === i;
-          return '<button type="button" onclick="_sigPickFont(\''+key+'\','+i+')" style="padding:14px 8px;border-radius:8px;border:2px solid '+(active?'#8DC63F':'rgba(255,255,255,0.15)')+';background:#fff;cursor:pointer;text-align:center;">'+
-            '<div id="sigFontPreview_'+i+'" style="font-family:'+f.family+';font-size:1.3rem;color:#1a3a6b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'+esc(st.text||'Your Name')+'</div>'+
-            '<div style="font-size:0.6rem;color:#888;margin-top:4px;">'+f.label+(active?' &#10003;':'')+'</div>'+
-          '</button>';
-        }).join('')+
-        '</div>';
-    } else {
-      h += '<div style="font-size:0.68rem;color:#888;margin-bottom:8px;">Draw with your finger or mouse below.</div>'+
-        '<canvas id="sigCanvas" width="460" height="160" style="width:100%;height:160px;background:#fff;border-radius:8px;border:1px solid rgba(255,255,255,0.15);touch-action:none;display:block;"></canvas>'+
-        '<button type="button" onclick="_sigClearDraw(\''+key+'\')" style="width:auto;margin-top:8px;padding:6px 14px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);border-radius:100px;color:#aaa;font-size:0.7rem;cursor:pointer;">Clear</button>';
-    }
-
-    h += '<div style="display:flex;gap:8px;margin-top:18px;">'+
-      '<button type="button" onclick="_sigCancel()" style="flex:1;padding:11px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);border-radius:10px;color:#aaa;font-weight:700;font-size:0.8rem;cursor:pointer;">Cancel</button>'+
-      '<button type="button" onclick="_sigConfirm(\''+key+'\')" style="flex:1;padding:11px;background:#8DC63F;border:none;border-radius:10px;color:#000;font-weight:800;font-size:0.8rem;cursor:pointer;">Use This Signature</button>'+
-    '</div>';
-
-    body.innerHTML = h;
-    if (st.mode === 'draw') _sigWireCanvas(key);
-  }
-
-  window._sigSetText = function(key, val) {
-    if (!_sigState[key]) return;
-    _sigState[key].text = val;
-    // Update just the 4 font previews' text directly rather than re-rendering the
-    // whole modal — a full re-render on every keystroke would steal input focus.
-    for (var i = 0; i < SIG_FONTS.length; i++) {
-      var el = document.getElementById('sigFontPreview_'+i);
-      if (el) el.textContent = val || 'Your Name';
-    }
-  };
-
-  window._sigPickFont = function(key, idx) {
-    if (!_sigState[key]) return;
-    _sigState[key].fontIdx = idx;
-    _sigRenderModalBody(key);
-  };
-
-  window._sigSwitchMode = function(key, mode) {
-    if (!_sigState[key]) return;
-    _sigState[key].mode = mode;
-    _sigRenderModalBody(key);
-  };
-
-  function _sigWireCanvas(key) {
-    var canvas = document.getElementById('sigCanvas');
-    var st = _sigState[key];
-    if (!canvas || !st) return;
-    var ctx = canvas.getContext('2d');
-    ctx.strokeStyle = '#1a3a6b'; ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-    var drawing = false, last = null;
-    function pos(e) {
-      var rect = canvas.getBoundingClientRect();
-      return { x: (e.clientX - rect.left) * (canvas.width / rect.width), y: (e.clientY - rect.top) * (canvas.height / rect.height) };
-    }
-    canvas.addEventListener('pointerdown', function(e){ e.preventDefault(); drawing = true; last = pos(e); });
-    canvas.addEventListener('pointermove', function(e){
-      if (!drawing) return;
-      e.preventDefault();
-      var p = pos(e);
-      ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke();
-      last = p; st.hasDrawn = true;
+    SigCapture.open({
+      defaultName: _sigDefaultName(context),
+      initial: _sigState[key].result,
+      onDone: function(result) {
+        _sigState[key].result = result;
+        // Dispatch to whichever surface opened this — each re-renders only its own
+        // preview area, never the whole page.
+        if (context && context.kind === 'rep') _dealDocRepSigCaptured(key);
+        else if (context && context.kind === 'cust') _custDocSigCaptured(key);
+      }
     });
-    ['pointerup','pointerleave','pointercancel'].forEach(function(ev){ canvas.addEventListener(ev, function(){ drawing = false; last = null; }); });
-  }
-
-  window._sigClearDraw = function(key) {
-    var canvas = document.getElementById('sigCanvas');
-    if (canvas) canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
-    if (_sigState[key]) _sigState[key].hasDrawn = false;
   };
 
-  window._sigConfirm = function(key) {
-    var st = _sigState[key];
-    if (!st) return;
-    var result;
-    if (st.mode === 'pick') {
-      var text = (st.text||'').trim();
-      if (!text) { alert('Type your name to generate a signature style.'); return; }
-      result = { type:'typed', text: text, fontFamily: SIG_FONTS[st.fontIdx].family };
-    } else {
-      var canvas = document.getElementById('sigCanvas');
-      if (!st.hasDrawn || !canvas) { alert('Draw your signature before continuing.'); return; }
-      result = { type:'drawn', dataUrl: canvas.toDataURL('image/png') };
-    }
-    st.result = result;
-    var overlay = document.getElementById('sigModalOverlay'); if (overlay) overlay.remove();
-    // Dispatch to whichever surface opened this — each re-renders only its own
-    // preview area, never the whole page.
-    if (st.context && st.context.kind === 'rep') _dealDocRepSigCaptured(key);
-    else if (st.context && st.context.kind === 'cust') _custDocSigCaptured(key);
-  };
-
-  window._sigCancel = function() {
-    var overlay = document.getElementById('sigModalOverlay'); if (overlay) overlay.remove();
-  };
-
-  // Compact rendered preview of a captured signature — used both inside the modal's
-  // own confirm state (n/a here) and on the calling screen once captured.
+  // Compact rendered preview of a captured signature on the calling screen.
   function _sigPreviewHtml(key) {
     var st = _sigState[key];
-    var result = st && st.result;
-    if (!result) return '';
-    if (result.type === 'drawn') return '<img src="'+result.dataUrl+'" style="max-height:44px;background:#fff;border-radius:6px;padding:3px 8px;"/>';
-    return '<div style="font-family:'+result.fontFamily+';font-size:1.2rem;color:#1a3a6b;background:#fff;border-radius:6px;padding:5px 10px;display:inline-block;">'+esc(result.text)+'</div>';
+    return st && st.result && window.SigCapture ? SigCapture.previewHtml(st.result) : '';
   }
 
   // ── Guided signing navigation (2026-09-06, per Dennis — "Start button at the
@@ -23272,16 +23157,23 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var btn = document.getElementById('custDocSubmitBtn');
     if (btn) { btn.disabled = true; btn.textContent = 'Signing…'; }
     try {
-      var client = supabase.createClient(SUPA_URL, SUPA_KEY);
-      // Merge onto whatever data.* already exists (e.g. rep_signature, written when
-      // the rep signed earlier) — upsert replaces the whole jsonb column outright.
-      var existingData = (_dealDocsCache[customerId] && _dealDocsCache[customerId][docType] && _dealDocsCache[customerId][docType].data) || {};
-      var sigDisplayText = sig.type === 'typed' ? sig.text : name;
-      var payload = { customer_id: customerId, doc_type: docType, status:'signed',
-        initials: initials, signature: sigDisplayText, signed_by_name: name, signed_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(), data: Object.assign({}, existingData, { customer_signature: sig }) };
-      var resp = await client.from('deal_documents').upsert(payload, { onConflict:'customer_id,doc_type' });
-      if (resp.error) throw resp.error;
+      // 2026-10-03 — the customer's signature is recorded SERVER-SIDE (netlify/functions/doc-sign.js),
+      // never written from this browser: the server verifies it's really this customer, that the
+      // rep reviewed the document first, and stamps IP / user agent / server time / SHA-256
+      // fingerprints into deal_documents.data.audit. Nothing here can choose those values.
+      var _who = (typeof currentUser !== 'undefined' && currentUser && currentUser.id === customerId) ? currentUser : null;
+      if (!_who) throw new Error('Session expired \u2014 please refresh and sign in again.');
+      var signResp = await fetch('/.netlify/functions/doc-sign', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          customerId: customerId, docType: docType,
+          accessCode: _who.access_code || (_who.phone || '').replace(/\D/g, ''),
+          name: name, initials: initials, signatureData: sig
+        })
+      });
+      var signJson = {};
+      try { signJson = await signResp.json(); } catch(e) {}
+      if (!signResp.ok || !signJson.ok) throw new Error(signJson.error || 'Could not record your signature. Please try again.');
       await _dealDocsLoad(customerId);
       var _signedDef = DEAL_DOC_TYPES.find(function(d){ return d.id === docType; });
       var _signedCust = (typeof currentUser !== 'undefined' && currentUser && currentUser.id === customerId) ? currentUser : null;

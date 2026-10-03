@@ -61,7 +61,7 @@
 
   var FEE_NOTICE = "The diagnostic fee is non-refundable once the visit is completed. Cancellations must be requested at least 48 hours in advance. A **$50 rescheduling fee** applies to appointment changes requested less than 24 hours before the scheduled visit.";
 
-  var ESIGN = "By typing their full name, the Customer confirmed: (1) they are the Customer identified above, (2) they signed on their own personal device, and (3) they have read and agree to all terms of this agreement. This constitutes a legally binding electronic signature under the federal ESIGN Act and California UETA (Cal. Civ. Code § 1633.1 et seq.).";
+  var ESIGN = "By signing electronically, the Customer confirmed: (1) they are the Customer identified above, (2) they signed on their own personal device, and (3) they have read and agree to all terms of this agreement. This constitutes a legally binding electronic signature under the federal ESIGN Act and California UETA (Cal. Civ. Code § 1633.1 et seq.).";
 
   function fill(text, cap) { return String(text).replace(/\{\{CAP\}\}/g, money(cap)); }
 
@@ -92,7 +92,8 @@
 
   // ── PDF builder (pdf-lib, loaded separately from /assets/vendor/pdf-lib.min.js) ──────
   // c = customers row: first_name,last_name,address,invoice_amount,agreement_status,
-  //     agreement_signature,agreement_signed_at,repair_auth_initial,agreement_ip,id
+  //     agreement_signature,agreement_signature_data,agreement_audit,agreement_signed_at,
+  //     repair_auth_initial,agreement_ip,id
   // Returns a Uint8Array. Throws if PDFLib isn't loaded.
   root.buildDiagAgreementPdf = async function (c) {
     var PDFLib = root.PDFLib;
@@ -206,9 +207,29 @@
     if (signed) {
       textLine('Section 4 — On-site repair authorization initials (up to ' + money(cap) + '):  ' + (c.repair_auth_initial || '—'), reg, 9.5, ink);
       y -= 6;
-      need(40);
-      page.drawText(safe(ital, c.agreement_signature), { x: MX, y: y - 22, size: 24, font: ital, color: rgb(0.1, 0.2, 0.45) });
-      y -= 34;
+      need(80);
+      var sd = c.agreement_signature_data;
+      var drewImage = false;
+      if (sd && sd.type === 'drawn' && /^data:image\/png;base64,/.test(sd.dataUrl || '')) {
+        try {
+          var b64 = sd.dataUrl.slice('data:image/png;base64,'.length);
+          var bin = (typeof atob === 'function') ? atob(b64) : Buffer.from(b64, 'base64').toString('binary');
+          var bytes = new Uint8Array(bin.length);
+          for (var bi = 0; bi < bin.length; bi++) bytes[bi] = bin.charCodeAt(bi);
+          var png = await pdf.embedPng(bytes);
+          var sc = Math.min(240 / png.width, 64 / png.height);
+          page.drawImage(png, { x: MX, y: y - png.height * sc - 2, width: png.width * sc, height: png.height * sc });
+          y -= png.height * sc + 6;
+          drewImage = true;
+        } catch (e) { drewImage = false; }
+      }
+      if (!drewImage) {
+        // typed signature: the browser's cursive font can't be embedded, so render the typed text
+        // in the PDF's italic serif (the printed name + audit trail below carry the legal weight).
+        var typedText = (sd && sd.type === 'typed' && sd.text) ? sd.text : c.agreement_signature;
+        page.drawText(safe(ital, typedText), { x: MX, y: y - 22, size: 24, font: ital, color: rgb(0.1, 0.2, 0.45) });
+        y -= 34;
+      }
       page.drawLine({ start: { x: MX, y: y }, end: { x: MX + 260, y: y }, thickness: 0.5, color: ink });
       y -= 12;
       textLine('Signed electronically by ' + c.agreement_signature, reg, 9, mute);
@@ -216,7 +237,12 @@
         var d = new Date(c.agreement_signed_at);
         textLine('Signed ' + d.toLocaleString('en-US', { timeZone: 'America/Los_Angeles', dateStyle: 'long', timeStyle: 'short' }) + ' (Pacific)', reg, 9, mute);
       }
-      if (c.agreement_ip) textLine('IP address: ' + c.agreement_ip, reg, 9, mute);
+      var au = c.agreement_audit || {};
+      var ip = au.ip || c.agreement_ip;
+      if (ip) textLine('IP address: ' + ip, reg, 9, mute);
+      if (au.user_agent) wrap('Device: ' + String(au.user_agent).slice(0, 140), reg, 8, CW).forEach(function (l) { textLine(l, reg, 8, mute); });
+      if (au.terms_sha256) textLine('Terms fingerprint (SHA-256): ' + String(au.terms_sha256).slice(0, 32) + '\u2026', reg, 8, mute);
+      if (au.signature_sha256) textLine('Signature fingerprint (SHA-256): ' + String(au.signature_sha256).slice(0, 32) + '\u2026', reg, 8, mute);
       textLine('Reference: ' + String(c.id || '').replace(/-/g, '').slice(-10).toUpperCase(), reg, 9, mute);
       y -= 6;
       wrap(ESIGN, reg, 8, CW).forEach(function (l) { textLine(l, reg, 8, mute); });

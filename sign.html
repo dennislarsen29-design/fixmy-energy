@@ -247,6 +247,8 @@ label[for="sig-input"] {
 #sig-input:focus { border-color: var(--lime); }
 #sig-input::placeholder { color: var(--muted); font-style: italic; }
 .sig-hint { font-size: 0.68rem; color: var(--muted); line-height: 1.5; }
+.sig-box { display:flex; align-items:center; justify-content:center; width:100%; min-height:72px; margin:12px 0 10px; padding:10px; background:#fff; border:2px dashed var(--lime); border-radius:12px; color:#4A443C; font-size:0.95rem; font-weight:700; cursor:pointer; font-family:inherit; }
+.sig-box.signed { border-style:solid; }
 
 /* ── Stripe element ── */
 #card-element {
@@ -433,6 +435,7 @@ label[for="sig-input"] {
 }
 </style>
 <script src="/assets/diag-agreement.js"></script>
+<script src="/assets/signature-capture.js"></script>
 </head>
 <body>
 <noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-TSJVG2GT" height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
@@ -511,10 +514,11 @@ label[for="sig-input"] {
 
     <div class="card sig-card">
       <div class="card-title">Your Signature</div>
-      <div class="esign-statement">By typing your full name below, you confirm: <strong>(1)</strong> you are the Customer identified above, <strong>(2)</strong> you are signing on your own personal device, and <strong>(3)</strong> you have read and agree to all terms of this agreement. This constitutes a legally binding electronic signature under the federal ESIGN Act and California UETA (Cal. Civ. Code § 1633.1 et seq.).</div>
-      <label for="sig-input">Type your full name to sign</label>
+      <div class="esign-statement">By signing below, you confirm: <strong>(1)</strong> you are the Customer identified above, <strong>(2)</strong> you are signing on your own personal device, and <strong>(3)</strong> you have read and agree to all terms of this agreement. This constitutes a legally binding electronic signature under the federal ESIGN Act and California UETA (Cal. Civ. Code § 1633.1 et seq.).</div>
+      <label for="sig-input">Your full name</label>
       <input type="text" id="sig-input" placeholder="Your full name" autocomplete="name" autocorrect="off" spellcheck="false">
-      <div class="sig-hint">Your typed name serves as your legal electronic signature.</div>
+      <button type="button" id="sig-box" class="sig-box"><span id="sig-box-empty">&#9997;&#65039; Tap here to sign</span><span id="sig-box-preview" style="display:none"></span></button>
+      <div class="sig-hint">Sign with your finger or type your name in a signature style. Your signature, the time, and your device&rsquo;s IP address are recorded as your legal electronic signature.</div>
     </div>
 
     <div class="card payment-card">
@@ -706,8 +710,25 @@ label[for="sig-input"] {
   var payBtn      = document.getElementById('pay-btn');
   var errorMsg    = document.getElementById('error-msg');
 
+  // The signature mark itself (draw / type-and-pick-style) — same capture component the
+  // portal's document signing uses (assets/signature-capture.js). The typed name above is the
+  // printed name; this is the signature. Both are sent; the server records IP/time/hashes.
+  var sigResult = null;
+  var sigBox = document.getElementById('sig-box');
+  function _paintSigBox() {
+    var empty = document.getElementById('sig-box-empty'), prev = document.getElementById('sig-box-preview');
+    if (sigResult) { empty.style.display = 'none'; prev.style.display = 'block'; prev.innerHTML = SigCapture.previewHtml(sigResult, { maxHeight: 56 }) + '<div style="font-size:0.66rem;color:#888;margin-top:4px;font-weight:600;">Tap to change</div>'; sigBox.classList.add('signed'); }
+    else { empty.style.display = ''; prev.style.display = 'none'; sigBox.classList.remove('signed'); }
+  }
+  sigBox.addEventListener('click', function() {
+    SigCapture.open({
+      defaultName: sigInput.value.trim(), initial: sigResult,
+      onDone: function(r) { sigResult = r; _paintSigBox(); updateBtnState(); }
+    });
+  });
+
   function updateBtnState() {
-    var sigOk    = sigInput.value.trim().length >= 2;
+    var sigOk    = sigInput.value.trim().length >= 2 && !!sigResult;
     var repairOk = repairInput.value.trim().length >= 1;
     payBtn.disabled = !(sigOk && repairOk);
   }
@@ -752,7 +773,7 @@ label[for="sig-input"] {
     try {
       var r = await fetch('/.netlify/functions/sign-fallback', {
         method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ action:'agreement_only', token: token, signature: sig, repairAuthInitial: repair, signedAt: new Date().toISOString(), paymentMethod: payMethod })
+        body: JSON.stringify({ action:'agreement_only', token: token, signature: sig, signatureData: sigResult, repairAuthInitial: repair, paymentMethod: payMethod })
       });
       var d = await r.json();
       if (!r.ok || !d.ok) throw new Error(d.error || 'Could not record signature');
@@ -806,7 +827,8 @@ label[for="sig-input"] {
   payBtn.addEventListener('click', async function() {
     var sig    = sigInput.value.trim();
     var repair = repairInput.value.trim();
-    if (sig.length < 2)  { errorMsg.textContent = 'Please type your full name to sign.'; return; }
+    if (sig.length < 2)  { errorMsg.textContent = 'Please type your full name.'; return; }
+    if (!sigResult)      { errorMsg.textContent = 'Please tap the signature box and sign.'; return; }
     if (!repair)         { errorMsg.textContent = 'Please initial Section 4 to authorize on-site repairs.'; return; }
 
     payBtn.disabled = true;
@@ -857,8 +879,8 @@ label[for="sig-input"] {
                 body: JSON.stringify({
                   action: 'agreement_only', token: token,
                   signature: sigInput.value.trim(),
-                  repairAuthInitial: repairInput.value.trim(),
-                  signedAt: new Date().toISOString()
+                  signatureData: sigResult,
+                  repairAuthInitial: repairInput.value.trim()
                 })
               });
               var d = await r.json();
@@ -888,7 +910,6 @@ label[for="sig-input"] {
       var completeData = {};
       var recorded = false;
       var signingLocation = (geoData.city && geoData.region) ? geoData.city + ', ' + geoData.region : (geoData.city || '');
-      var signedAtISO = new Date().toISOString();
       for (var attempt = 0; attempt < 4 && !recorded; attempt++) {
         if (attempt > 0) await new Promise(function(r){ setTimeout(r, 1200 * attempt); });
         try {
@@ -899,9 +920,9 @@ label[for="sig-input"] {
               token: token,
               paymentIntentId: paymentIntent.id,
               signature: sig,
+              signatureData: sigResult,
               repairAuthInitial: repair,
               signingLocation: signingLocation,
-              signedAt: signedAtISO,
               fbp: _fbCookie('_fbp'),
               fbc: _fbCookie('_fbc')
             })
@@ -949,7 +970,8 @@ label[for="sig-input"] {
       document.getElementById('cert-details').innerHTML =
         (certEmail ? certEmail + '<br>' : '') +
         'Signed: ' + certTime;
-      document.getElementById('cert-sig-display').textContent = sig;
+      document.getElementById('cert-sig-display').innerHTML = sigResult ? SigCapture.previewHtml(sigResult, { maxHeight: 70 }) : '';
+      if (!sigResult) document.getElementById('cert-sig-display').textContent = sig;
       document.getElementById('cert-ip-detail').innerHTML =
         'IP address: ' + certIp + '<br>Location: ' + certLocation;
       document.getElementById('cert-completed').textContent = 'Document completed by all parties on ' + certTime;
