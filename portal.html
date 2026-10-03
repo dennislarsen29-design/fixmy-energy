@@ -18441,6 +18441,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (x.line==='fixmy') fixmyIds.push(x.customer_id);
       else if (x.line==='new_solar') axiaIds.push(x.customer_id);
     });
+    // Payroll must never show stale "awaiting install" state: refetch these jobs' rows and
+    // drop their cached entries so earned/install-completed dates are always current.
+    try {
+      var _allIds = fixmyIds.concat(axiaIds).filter(function(v,i,a){ return v && a.indexOf(v)===i; });
+      if (_allIds.length) {
+        var fr = await pc.from('customers').select('*').in('id', _allIds);
+        (fr.data||[]).forEach(function(r){
+          var i = (adminCustomers||[]).findIndex(function(x){ return x.id===r.id; });
+          if (i>-1) adminCustomers[i] = Object.assign({}, adminCustomers[i], r); else if (adminCustomers) adminCustomers.push(r);
+        });
+      }
+      fixmyIds.forEach(function(id){ delete _fixmyCommCache[id]; });
+      axiaIds.forEach(function(id){ delete _axiaCommCache[id]; });
+    } catch(e) {}
     await Promise.all([ _loadFixmyJobCommissions(fixmyIds), _loadAxiaJobCommissions(axiaIds) ]);
     function _cacheFor(x) {
       if (x.kind!=='rep_commission' && x.kind!=='setter_commission') return null;
@@ -18529,7 +18543,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (diffDays <= 14) return 'Next Friday';
       return null;
     }
-    h += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#9b6de8;margin-bottom:8px;">&#129297; Unpaid — by pay Friday</div>';
+    function _whatFor(x) {
+      var d = _cacheFor(x);
+      var who = x.kind==='setter_commission' ? 'Setter' : 'Closer';
+      var t = (x.note==='dc_bonus') ? 'Domestic Content bonus (paid after PTO)' : (x.line==='new_solar' ? 'Payment 1 — install completed' : 'Commission — job installed');
+      return who + ' · ' + t;
+    }
+    h += '<div style="font-size:0.95rem;font-weight:800;color:#fff;margin-bottom:2px;">&#129297; Who to pay</div>';
+    h += '<div style="font-size:0.72rem;color:#888;margin-bottom:12px;">Each card = one person, one payday. Check the math, pay them outside the portal, then tap <b>Mark paid</b>.</div>';
     var byFriday = {};
     var owedRepsPending = [];
     owedReps.forEach(function(x){
@@ -18539,50 +18560,61 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var key = fri.toISOString().slice(0,10);
       (byFriday[key] = byFriday[key] || { date: fri, rows: [] }).rows.push(x);
     });
-    if (!Object.keys(byFriday).length) h += '<div style="font-size:0.75rem;color:#666;margin-bottom:14px;">Nothing due yet. A commission appears here once its job actually reaches Installed (FixMy) or Permission to Operate (Axia/QCells).</div>';
+    if (!Object.keys(byFriday).length) h += '<div class="fin-card" style="font-size:0.78rem;color:#888;">Nobody is due yet. Someone appears here the moment a job they earned on is marked <b>Installed</b> (FixMy) or <b>Install Completed</b> (Axia/QCells) — they\'re paid the Friday after that week.</div>';
     Object.keys(byFriday).sort().forEach(function(key){
       var grp = byFriday[key];
       var groupTotal = grp.rows.reduce(function(t,x){ return t+(parseFloat(x.amount)||0); },0);
       var overdue = grp.date < new Date(new Date().setHours(0,0,0,0));
       var lbl = _fridayLabel(grp.date);
-      h += '<div class="fin-card" style="padding:0;overflow:hidden;'+(overdue?'border-color:rgba(239,68,68,0.35);':'')+'">';
-      h += '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:rgba(255,255,255,0.03);">';
-      h += '<div><span style="font-size:0.85rem;font-weight:800;color:'+(overdue?'#ef4444':'#eee')+';">'+(lbl||_payDateShort(grp.date))+'</span><span style="display:block;font-size:0.65rem;color:#666;">'+grp.date.toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'})+'</span></div>';
-      h += '<span style="font-size:0.9rem;font-weight:800;color:#9b6de8;">'+money(groupTotal)+'</span>';
-      h += '</div>';
+      var dateTxt = grp.date.toLocaleDateString(undefined,{weekday:'long',month:'short',day:'numeric'});
+      h += '<div style="display:flex;justify-content:space-between;align-items:baseline;margin:16px 0 6px;">';
+      h += '<div style="font-size:0.9rem;font-weight:800;color:'+(overdue?'#ef4444':'#eee')+';">'+(overdue?'&#9888; OVERDUE — ':'')+(lbl?lbl+' · ':'')+dateTxt+'</div>';
+      h += '<div style="font-size:0.8rem;color:#9b6de8;font-weight:800;">'+money(groupTotal)+' total</div></div>';
       var byPayeeInGroup = {};
       grp.rows.forEach(function(x){ (byPayeeInGroup[x.payee] = byPayeeInGroup[x.payee]||[]).push(x); });
       Object.keys(byPayeeInGroup).forEach(function(p){
         var rows = byPayeeInGroup[p];
         var sub = rows.reduce(function(t,x){ return t+(parseFloat(x.amount)||0); },0);
-        h += '<div style="padding:9px 14px;border-top:1px solid rgba(255,255,255,0.05);">';
-        // One checkbox per person, per week (2026-09-15, per Dennis — "as simple and
-        // automated as possible" for weekly payroll) — bulk-marks every commission
-        // row owed to THIS payee in THIS pay-Friday group paid in one tick, reusing
-        // the same finMarkPayrollGroupPaid the whole-week button below already uses,
-        // just scoped to this payee's own row ids instead of the whole group's.
-        h += '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:3px;">';
-        h += '<span style="font-size:0.8rem;font-weight:700;color:#ddd;">'+esc(rows[0].payee_name||repName(p))+' <span style="color:#9b6de8;font-weight:800;">'+money(sub)+'</span></span>';
-        h += '<label style="display:flex;align-items:center;gap:5px;font-size:0.68rem;font-weight:700;color:#8DC63F;cursor:pointer;white-space:nowrap;"><input type="checkbox" data-name="'+esc(rows[0].payee_name||repName(p))+'" onclick="if(this.checked){this.disabled=true;payrollMarkPersonWeekPaid(this,\''+rows.map(function(x){return x.id;}).join(',')+'\');}" style="cursor:pointer;width:15px;height:15px;"> Paid</label>';
+        var nm = rows[0].payee_name||repName(p);
+        var ids = rows.map(function(x){return x.id;}).join(',');
+        h += '<div class="fin-card" style="padding:0;overflow:hidden;border-color:'+(overdue?'rgba(239,68,68,0.45)':'rgba(141,198,63,0.3)')+';">';
+        h += '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:12px 14px;background:rgba(255,255,255,0.03);flex-wrap:wrap;">';
+        h += '<div><div style="font-size:1rem;font-weight:800;color:#fff;">Pay '+esc(nm)+'</div><div style="font-size:0.68rem;color:#888;">by '+dateTxt+' &middot; '+rows.length+' item'+(rows.length===1?'':'s')+'</div></div>';
+        h += '<div style="display:flex;align-items:center;gap:12px;"><span style="font-size:1.35rem;font-weight:800;color:#8DC63F;">'+money(sub)+'</span>';
+        h += '<button class="fin-btn no-print" data-name="'+esc(nm)+'" onclick="payrollMarkPersonWeekPaid(this,\''+ids+'\')" style="background:#8DC63F;color:#111;font-weight:800;">&#10003; Mark paid</button></div>';
         h += '</div>';
+        rows.forEach(function(x){
+          var d = _cacheFor(x), mathId = 'pmath_'+x.id;
+          h += '<div style="padding:9px 14px;border-top:1px solid rgba(255,255,255,0.06);">';
+          h += '<div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap;">';
+          h += '<div><div style="font-size:0.8rem;font-weight:700;color:#ddd;">'+esc(finCustName(x.customer_id))+' <span style="color:#666;font-weight:500;">&middot; '+(lineLbl[x.line]||x.line)+'</span></div><div style="font-size:0.68rem;color:#888;">'+_whatFor(x)+'</div></div>';
+          h += '<div style="display:flex;align-items:center;gap:8px;"><b style="color:#eee;">'+money(x.amount)+'</b>';
+          if (d) h += '<button class="no-print" onclick="toggleCommMath(\''+mathId+'\')" style="padding:2px 9px;background:rgba(74,158,255,0.08);border:1px solid rgba(74,158,255,0.3);border-radius:100px;color:#4a9eff;font-size:0.62rem;font-weight:700;cursor:pointer;">See the math <span id="'+mathId+'_arrow">&#9662;</span></button>';
+          h += '</div></div>';
+          if (d) h += '<div id="'+mathId+'" style="display:none;padding:8px 10px;margin-top:6px;background:rgba(255,255,255,0.02);border:1px dashed rgba(255,255,255,0.1);border-radius:8px;">'+_revCostLineHtml(d)+_waterfallBarHtml(d)+'</div>';
+          h += '</div>';
+        });
+        h += '</div>';
+      });
+    });
+
+    // Locked as sold but the job hasn't hit its trigger yet — say exactly what's missing.
+    if (owedRepsPending.length) {
+      h += '<div style="font-size:0.9rem;font-weight:800;color:#fb923c;margin:22px 0 2px;">&#9203; Not payable yet</div>';
+      h += '<div style="font-size:0.72rem;color:#888;margin-bottom:8px;">Locked in, but waiting on something. No pay date until it happens.</div>';
+      var pendByCust = {};
+      owedRepsPending.forEach(function(x){ (pendByCust[x.customer_id] = pendByCust[x.customer_id]||[]).push(x); });
+      Object.keys(pendByCust).forEach(function(cid){
+        var rows = pendByCust[cid], x0 = rows[0];
+        var need = x0.note==='dc_bonus' ? 'Waiting for <b>PTO</b> (Permission to Operate)'
+                 : x0.line==='new_solar' ? 'Waiting for <b>Install Completed</b> to be marked'
+                 : 'Waiting for the job to be marked <b>Installed</b>';
+        h += '<div class="fin-card">';
+        h += '<div style="font-size:0.85rem;font-weight:800;color:#ddd;">'+esc(finCustName(cid))+' <span style="color:#666;font-weight:500;">&middot; '+(lineLbl[x0.line]||x0.line)+'</span></div>';
+        h += '<div style="font-size:0.72rem;color:#fb923c;margin:2px 0 4px;">'+need+'</div>';
         rows.forEach(function(x){ h += _payrollLineHtml(x); });
         h += '</div>';
       });
-      h += '<div style="padding:9px 14px;border-top:1px solid rgba(255,255,255,0.08);">';
-      h += '<button class="fin-btn no-print" onclick="finMarkPayrollGroupPaid(\''+grp.rows.map(function(x){return x.id;}).join(',')+'\')">&#10003; Mark all paid for '+(lbl||'this week')+'</button>';
-      h += '</div></div>';
-    });
-
-    // Locked in as sold, but the job hasn't actually reached Installed/PTO yet — see
-    // the 2026-09-16 fix note above. Still owed, still math-checkable, just deliberately
-    // NOT given a pay-Friday (and left out of the whole-week "Mark all paid" buttons
-    // above) so it can never read as an imminent payday before the job is real.
-    if (owedRepsPending.length) {
-      h += '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#fb923c;margin:18px 0 8px;">&#9203; Sold — awaiting install / PTO (not yet payable)</div>';
-      h += '<div class="fin-card">';
-      h += '<div style="font-size:0.72rem;color:#888;margin-bottom:4px;">Locked in, but the job hasn\'t reached Installed (FixMy) or Permission to Operate (Axia/QCells) yet — no pay-Friday is assigned until it has.</div>';
-      owedRepsPending.forEach(function(x){ h += _payrollLineHtml(x); });
-      h += '</div>';
     }
 
     // Dennis's own commission — always auto-paid at creation (_stampAutoPaidIfDennis),
