@@ -21862,8 +21862,82 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // path first; openDealDoc's own honest "not confirmed yet" fallback still renders
       // this HTML-reproduction body below until Dennis places fields + confirms it.
       hasPdfTemplate: true,
-      body: function(c){ return _dealDocBodyTesla(c); } }
+      body: function(c){ return _dealDocBodyTesla(c); } },
+    // 2026-10-03, per Dennis — the Diagnostic Service Agreement (signed on Sign & Pay)
+    // lives with the rest of the documents and is downloadable as a PDF from the
+    // admin, tech AND customer portals. `virtual:true` = it has NO deal_documents row and
+    // NO document_templates row: its status comes straight off the customers row
+    // (agreement_status/agreement_signature/...) and the PDF is generated on demand from
+    // assets/diag-agreement.js — the same source sign.html renders its terms from.
+    // Every real-PDF code path filters on hasPdfTemplate / a specific id, so this entry
+    // is invisible to them by construction (do NOT add hasPdfTemplate here).
+    { id:'diagnostic_agreement', label:'Diagnostic Service Agreement', icon:'&#128221;', virtual:true,
+      appliesWhen: function(c){
+        return !!c && c.lead_category !== 'new_solar' &&
+          ['signed','sent','pending','declined'].indexOf(c.agreement_status) > -1;
+      },
+      statusFor: function(c){
+        if (c.agreement_status === 'signed') {
+          var when = c.agreement_signed_at ? ' '+new Date(c.agreement_signed_at).toLocaleDateString('en-US') : '';
+          return { key:'signed', color:'#8DC63F', label:'&#9989; Signed'+when };
+        }
+        if (c.agreement_status === 'declined') return { key:'declined', color:'#ef4444', label:'&#10060; Declined' };
+        return { key:'pending', color:'#ffaa00', label:'&#9203; Awaiting signature' };
+      },
+      initialsKeys: [],
+      body: function(){ return ''; } }
   ];
+
+  // Download the signed Diagnostic Service Agreement as a PDF — one function for every
+  // portal. Fetches a FRESH customers row by id (never trusts the in-memory copy: the
+  // admin list, the rep list and the customer session each select different columns),
+  // loads the vendored pdf-lib + shared terms on first use, builds, and saves the file.
+  var _diagPdfLibsPromise = null;
+  function _loadDiagPdfLibs() {
+    if (window.PDFLib && window.buildDiagAgreementPdf) return Promise.resolve(true);
+    if (_diagPdfLibsPromise) return _diagPdfLibsPromise;
+    function load(src) {
+      return new Promise(function(res, rej){
+        var sc = document.createElement('script');
+        sc.src = src; sc.onload = res; sc.onerror = function(){ rej(new Error('Could not load '+src)); };
+        document.head.appendChild(sc);
+      });
+    }
+    _diagPdfLibsPromise = load('/assets/vendor/pdf-lib.min.js').then(function(){ return load('/assets/diag-agreement.js'); })
+      .then(function(){ return true; })
+      .catch(function(e){ _diagPdfLibsPromise = null; throw e; });
+    return _diagPdfLibsPromise;
+  }
+  window.downloadDiagAgreement = async function(customerId, btn) {
+    var orig = btn ? btn.innerHTML : '';
+    try {
+      if (btn) { btn.disabled = true; btn.innerHTML = 'Preparing&hellip;'; }
+      var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var resp = await client.from('customers')
+        .select('id,first_name,last_name,address,invoice_amount,agreement_status,agreement_signature,agreement_signed_at,repair_auth_initial,agreement_ip')
+        .eq('id', customerId).limit(1);
+      if (resp.error) throw resp.error;
+      var c = resp.data && resp.data[0];
+      if (!c) throw new Error('Record not found');
+      if (c.agreement_status !== 'signed' || !c.agreement_signature) throw new Error('This agreement has not been signed yet.');
+      await _loadDiagPdfLibs();
+      var bytes = await window.buildDiagAgreementPdf(c);
+      var blob = new Blob([bytes], { type:'application/pdf' });
+      var fname = 'Diagnostic-Service-Agreement-' + (((c.first_name||'')+'-'+(c.last_name||'')).replace(/[^A-Za-z0-9]+/g,'-').replace(/^-+|-+$/g,'') || 'customer') + '.pdf';
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url; a.download = fname; a.rel = 'noopener';
+      document.body.appendChild(a); a.click();
+      setTimeout(function(){ a.remove(); URL.revokeObjectURL(url); }, 4000);
+    } catch(e) {
+      alert('Could not create the PDF: ' + (e && e.message || e));
+    } finally {
+      if (btn) { btn.disabled = false; btn.innerHTML = orig; }
+    }
+  };
+  function _diagDownloadBtnHtml(c, dark) {
+    return '<button onclick="downloadDiagAgreement(\''+c.id+'\', this)" style="width:auto;padding:6px 12px;background:'+(dark?'rgba(141,198,63,0.14)':'#8DC63F')+';border:'+(dark?'1px solid rgba(141,198,63,0.4)':'none')+';border-radius:100px;color:'+(dark?'#8DC63F':'#000')+';font-weight:700;font-size:0.72rem;cursor:pointer;white-space:nowrap;">&#11015; PDF</button>';
+  }
 
   // ── Self-service document types (2026-09-06, Document Signer) ──────────────────────
   // Any document_templates row that ISN'T one of the two hardcoded ids above came from
@@ -22271,9 +22345,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var meta = status==='signed' ? {color:'#8DC63F',label:'&#9989; Signed'}
         : status==='reviewed' ? {color:'#4a9eff',label:'&#128065; Reviewed'}
         : {color:'#ffaa00',label:'&#9203; Not Started'};
+      var dl = '';
+      if (d.virtual) { // status lives on the customer row; signed => PDF download
+        var vm = d.statusFor(c); meta = vm;
+        if (vm.key === 'signed') dl = _diagDownloadBtnHtml(c, true);
+      }
       return '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 0;">'+
         '<span style="font-size:0.75rem;color:#F3EDE3;">'+d.icon+' '+esc(d.label)+'</span>'+
-        '<span style="font-size:0.72rem;font-weight:700;color:'+meta.color+';">'+meta.label+'</span>'+
+        '<span style="display:flex;align-items:center;gap:8px;"><span style="font-size:0.72rem;font-weight:700;color:'+meta.color+';">'+meta.label+'</span>'+dl+'</span>'+
       '</div>';
     }).join('');
     return '<div id="docsStatusLine_'+c.id+'">'+rows+'</div>';
@@ -22927,7 +23006,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (!c) return '';
     var applicable = DEAL_DOC_TYPES.filter(function(d){ return d.appliesWhen(c); });
     if (!applicable.length) return '';
-    return '<div class="sect-label">Documents to Sign</div><div id="custDocsWrap" class="card"><div style="font-size:0.75rem;color:#888;">Loading…</div></div>';
+    return '<div class="sect-label">Your Documents</div><div id="custDocsWrap" class="card"><div style="font-size:0.75rem;color:#888;">Loading…</div></div>';
   }
 
   async function _custDocsLoad(c) {
@@ -22944,9 +23023,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         : status === 'reviewed' ? (d.hasPdfTemplate ? { color:'#4a9eff', label:'&#9997;&#65039; Ready for your signature' } : { color:'#4a9eff', label:'Reviewed — signing coming soon' })
         : { color:'#ffaa00', label:'&#9203; Not ready yet — check back soon' };
       var canSign = d.hasPdfTemplate && status === 'reviewed';
+      var dlBtn = '';
+      if (d.virtual) { // Diagnostic Service Agreement: status from the customer row; signed => download
+        meta = d.statusFor(c);
+        if (meta.key === 'signed') dlBtn = _diagDownloadBtnHtml(c, false);
+        else if (meta.key === 'pending') meta = { color:'#ffaa00', label:'&#9203; Awaiting your signature \u2014 use the Sign &amp; Pay link we sent' };
+      }
       return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 0;border-bottom:1px solid rgba(255,255,255,0.08);">'+
         '<div><div style="font-weight:700;font-size:0.85rem;">'+d.icon+' '+esc(d.label)+'</div>'+
           '<div style="font-size:0.72rem;color:'+meta.color+';margin-top:2px;">'+meta.label+'</div></div>'+
+        dlBtn+
         (canSign ? '<button onclick="openCustDocSign(\''+c.id+'\',\''+d.id+'\')" style="width:auto;padding:9px 18px;background:#8DC63F;border:none;border-radius:100px;color:#000;font-weight:700;font-size:0.78rem;cursor:pointer;">Sign</button>' : '')+
       '</div>';
     }).join('');
