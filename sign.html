@@ -841,17 +841,20 @@ label[for="sig-input"] {
     if (error) {
       payBtn.disabled = false;
       payBtn.innerHTML = 'Sign &amp; Pay ' + amountDisplay;
-      if (error.message && error.message.toLowerCase().includes('no such payment_intent')) {
-        errorMsg.textContent = 'Session expired — refreshing…';
-        setTimeout(function(){ window.location.reload(); }, 1800);
-      } else {
-        errorMsg.textContent = error.message;
+      {
+        // 2026-10-03: "No such payment_intent" used to be treated as an expired session — it reloaded
+        // the page and logged nothing, hiding the real cause. It means the PaymentIntent was created
+        // with a Stripe SECRET key from a different account than the PUBLISHABLE key in this browser
+        // (the live/test prefix check can't see that). Reloading just repeats it, so show a clear
+        // message, log it for the admin, and offer the invoice fallback instead.
+        var _noPi = !!(error.message && error.message.toLowerCase().includes('no such payment_intent'));
+        errorMsg.textContent = _noPi ? 'Card payments are temporarily unavailable. Please choose Bank / ACH or Check, or call (619) 777-6527.' : error.message;
         // Surface the failure to the admin inbox immediately (first failure only)
         window._payFailCount = (window._payFailCount || 0) + 1;
         if (window._payFailCount === 1) {
           fetch('/.netlify/functions/sign-fallback', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'log_error', token: token, message: error.message || 'card error' })
+            body: JSON.stringify({ action: 'log_error', token: token, message: (_noPi ? 'STRIPE KEY MISMATCH — STRIPE_SECRET_KEY and STRIPE_PUBLISHABLE_KEY in Netlify are from different Stripe accounts. ' : '') + (error.message || 'card error') })
           }).catch(function(){});
         }
         // After 2 failures, offer the invoice fallback so the sale never stalls
