@@ -142,12 +142,21 @@ exports.handler = async function(event) {
   const addrParts = addrUpper.split(' ').slice(0, 4).join(' ');
 
   // ── Helper: extract owner from any SANDAG-style attributes object ────────
+  // ⚠️ 2026-10-03: the live SANDAG hosted layer returns LOWERCASE field names (apn_8, parcelid,
+  // situs_building…), but these readers only looked for UPPERCASE keys — so the APN of every
+  // parcel it positively identified was silently dropped and the debug chain printed
+  // "ok_no_owner" with no apn. Lookup is now case-insensitive.
+  function _ci(attr, names) {
+    const m = {};
+    Object.keys(attr || {}).forEach(k => { m[k.toUpperCase()] = attr[k]; });
+    for (const n of names) { if (m[n] != null && String(m[n]).trim() !== '') return m[n]; }
+    return null;
+  }
   function parseSandagOwner(attr) {
-    return attr.OWN_NAME1 || attr.OWNER_NAME || attr.OWNER || attr.OWN_NAME ||
-           attr.OWNERNME1 || attr.OWN1 || attr.OWNER1 || attr.PARCEL_OWNER || null;
+    return _ci(attr, ['OWN_NAME1', 'OWNER_NAME', 'OWNER', 'OWN_NAME', 'OWNERNME1', 'OWN1', 'OWNER1', 'PARCEL_OWNER']);
   }
   function parseSandagApn(attr) {
-    return attr.APN_8 || attr.APN || attr.PARCEL_NBR || attr.ASSESSOR_PARCEL_NUMBER || null;
+    return _ci(attr, ['APN_8', 'APN', 'PARCELID', 'PARCEL_NBR', 'ASSESSOR_PARCEL_NUMBER']);
   }
 
   // ── San Diego County parcel services, run for ONE coordinate pair ─────────
