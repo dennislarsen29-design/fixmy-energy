@@ -1,3 +1,19 @@
+// Command Center health stamp (2026-10-03, per Dennis): when the paid Regrid source rejects our
+// token, post an action item in the Command Center instead of cluttering lead capture. Written
+// to pipeline_state (anon-readable, no secrets); cleared the next time Regrid answers successfully.
+async function stampRegridHealth(status, code) {
+  const k = process.env.SUPA_SERVICE_KEY;
+  if (!k) return;
+  try {
+    await fetch('https://kbtobyoumvbcxfbugsid.supabase.co/rest/v1/pipeline_state', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: k, Authorization: 'Bearer ' + k, Prefer: 'resolution=merge-duplicates' },
+      body: JSON.stringify({ key: 'regrid_health', value: JSON.stringify({ status, code: code || null, at: new Date().toISOString() }), updated_at: new Date().toISOString() }),
+      signal: AbortSignal.timeout(3000)
+    });
+  } catch (e) {}
+}
+
 exports.handler = async function(event) {
   if (event.httpMethod === 'OPTIONS') {
     return {
@@ -70,6 +86,7 @@ exports.handler = async function(event) {
                          data.results || data.features || [];
         const parsed = parseRegridFeature(Array.isArray(features) ? features[0] : null);
         if (parsed) {
+          await stampRegridHealth('ok');
           return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ ...parsed, lat, lng, source: 'regrid_latlon' }) };
         }
         tried.push('regrid_latlon:ok_no_data');
@@ -96,6 +113,7 @@ exports.handler = async function(event) {
                        data.results || data.features || [];
       const parsed = parseRegridFeature(Array.isArray(features) ? features[0] : null);
       if (parsed) {
+        await stampRegridHealth('ok');
         return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ ...parsed, lat: lat || null, lng: lng || null, source: 'regrid_search' }) };
       }
       tried.push('regrid_search:ok_no_data');
@@ -119,6 +137,7 @@ exports.handler = async function(event) {
       const results = data.results || [];
       const parsed = parseRegridFeature(Array.isArray(results) ? results[0] : null);
       if (parsed) {
+        await stampRegridHealth('ok');
         return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({ ...parsed, lat: lat || null, lng: lng || null, source: 'regrid_typeahead' }) };
       }
       tried.push('regrid_typeahead:ok_no_data');
@@ -290,6 +309,8 @@ exports.handler = async function(event) {
   // No owner name — but say WHY in a form the caller can act on, and hand back the APN
   // if we positively identified the parcel. "We found your house, the county just won't
   // publish the name" is a completely different problem from "we couldn't find it".
+  if (!key) await stampRegridHealth('bad', 'no_key');
+  else { const _m = tried.join(' | ').match(/regrid_[a-z]+:(401|403)/); if (_m) await stampRegridHealth('bad', _m[1]); }
   console.error('regrid-lookup: no owner found for "' + address.slice(0, 60) + '" — tried: ' + tried.join(' | '));
   return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({
     owner: null,
