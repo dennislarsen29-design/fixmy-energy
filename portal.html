@@ -18489,6 +18489,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (x.line==='new_solar') return _axiaCommCache[x.customer_id];
       return null; // Top Tier is manual-entry only — no formula to show
     }
+    function _peopleOf(d) {
+      if (!d) return '';
+      var t = d.closerNm || (d.repId ? repName(d.repId) : '');
+      var su = d.hasSetter ? d.setterName : '';
+      return (t ? 'Tech: <b>'+esc(t)+'</b>' : '') + (su ? (t?' &middot; ':'')+'Setter: <b>'+esc(su)+'</b>' : (t?' &middot; Setter: <i>same as tech</i>':''));
+    }
     function _payrollLineHtml(x) {
       var d = _cacheFor(x);
       var mathId = 'pmath_' + x.id;
@@ -18572,9 +18578,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
     function _whatFor(x) {
       var d = _cacheFor(x);
-      var who = x.kind==='setter_commission' ? 'Setter' : 'Closer';
+      var who = x.kind==='setter_commission' ? 'Setter' : 'Tech';
       var t = (x.note==='dc_bonus') ? 'Domestic Content bonus (paid after PTO)' : (x.line==='new_solar' ? 'Payment 1 — install completed' : 'Commission — job installed');
-      return who + ' · ' + t;
+      var pp = _peopleOf(d);
+      return who + ' · ' + t + (pp ? '<div style="font-size:0.64rem;color:#888;margin-top:1px;">'+pp+'</div>' : '');
     }
     h += '<div style="font-size:0.95rem;font-weight:800;color:#fff;margin-bottom:2px;">&#129297; Who to pay</div>';
     h += '<div style="font-size:0.72rem;color:#888;margin-bottom:12px;">Each card = one person, one payday. Check the math, pay them outside the portal, then tap <b>Mark paid</b>.</div>';
@@ -18640,6 +18647,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           var d = _axiaCommCache[c.id];
           var fri = _payFridayAfter(new Date(c.install_completed_at));
           h += '<div class="fin-card"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;"><div><div style="font-size:0.85rem;font-weight:800;color:#ddd;">'+esc(((c.first_name||'')+' '+(c.last_name||'')).trim())+' <span style="color:#666;font-weight:500;">&middot; Axia/QCells</span></div>';
+          h += '<div style="font-size:0.66rem;color:#888;">'+_peopleOf(d)+'</div>';
           h += '<div style="font-size:0.7rem;color:#888;">Install completed '+new Date(c.install_completed_at).toLocaleDateString()+' &middot; would pay '+fri.toLocaleDateString(undefined,{month:'short',day:'numeric'})+'</div></div>';
           if (d && d.hasInputs !== false) h += '<div style="font-size:0.72rem;color:#aaa;text-align:right;">Estimate: closer <b>'+money(d.closerAmt1!=null?d.closerAmt1:d.closerAmt)+'</b>'+(d.hasSetter?' &middot; setter <b>'+money(d.setterAmt1!=null?d.setterAmt1:d.setterAmt)+'</b>':'')+'</div>';
           h += '</div>';
@@ -18682,26 +18690,26 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       sFix.forEach(function(id){ delete _fixmyCommCache[id]; }); sAx.forEach(function(id){ delete _axiaCommCache[id]; });
       await Promise.all([ _loadFixmyJobCommissions(sFix), _loadAxiaJobCommissions(sAx) ]);
       var pend = {};
-      function addPend(name, amt, cust, role, state){
+      function addPend(name, amt, cust, role, state, ppl){
         if (!name || !(amt>0)) return;
         if (/dennis/i.test(name)) return;
-        (pend[name] = pend[name] || []).push({cust:cust, amt:amt, role:role, state:state});
+        (pend[name] = pend[name] || []).push({cust:cust, amt:amt, role:role, state:state, ppl:ppl||''});
       }
       owedRepsPending.forEach(function(x){
-        addPend(x.payee_name||repName(x.payee), parseFloat(x.amount)||0, finCustName(x.customer_id), x.kind==='setter_commission'?'Setter':'Closer',
-          x.note==='dc_bonus'?'locked · waiting on PTO':'locked · waiting on install');
+        addPend(x.payee_name||repName(x.payee), parseFloat(x.amount)||0, finCustName(x.customer_id), x.kind==='setter_commission'?'Setter':'Tech',
+          x.note==='dc_bonus'?'locked · waiting on PTO':'locked · waiting on install', _peopleOf(_cacheFor(x)));
       });
       soldJobs.forEach(function(c){
         var d = c.lead_category==='new_solar' ? _axiaCommCache[c.id] : _fixmyCommCache[c.id];
         if (!d) return;
         var nm = ((c.first_name||'')+' '+(c.last_name||'')).trim();
         var st = d.earned ? 'installed · not locked in yet' : 'estimate · not installed yet';
-        if (!d.closerLocked && d.repId) addPend(repName(d.repId), d.closerAmt1!=null?d.closerAmt1:d.closerAmt, nm, 'Closer', st);
-        if (d.hasSetter && !d.setterLocked) addPend(d.setterName, d.setterAmt1!=null?d.setterAmt1:d.setterAmt, nm, 'Setter', st);
+        if (!d.closerLocked && d.repId) addPend(repName(d.repId), d.closerAmt1!=null?d.closerAmt1:d.closerAmt, nm, 'Tech', st, _peopleOf(d));
+        if (d.hasSetter && !d.setterLocked) addPend(d.setterName, d.setterAmt1!=null?d.setterAmt1:d.setterAmt, nm, 'Setter', st, _peopleOf(d));
         // Company (Solar Review) margin still to come on this job
         var coAmt = d.companyAmt1!=null ? d.companyAmt1 : d.companyAmt;
         var coPending = (c.lead_category==='new_solar') ? !d.companyLocked : !d.earned;
-        if (coPending && coAmt>0) { (pend['\uffffSolar Review (Company)'] = pend['\uffffSolar Review (Company)'] || []).push({cust:nm, amt:coAmt, role:'Company margin', state:st}); }
+        if (coPending && coAmt>0) { (pend['\uffffSolar Review (Company)'] = pend['\uffffSolar Review (Company)'] || []).push({cust:nm, amt:coAmt, role:'Company margin', state:st, ppl:_peopleOf(d)}); }
       });
       var names = Object.keys(pend).sort();
       if (names.length) {
@@ -18711,7 +18719,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           var rows = pend[n], tot = rows.reduce(function(t,r){return t+r.amt;},0);
           h += '<div class="fin-card" style="padding:0;overflow:hidden;"><div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:rgba(255,255,255,0.03);"><div style="font-size:0.95rem;font-weight:800;color:#fff;">'+esc(n.replace('\uffff',''))+' <span style="font-size:0.68rem;color:#888;font-weight:500;">&middot; '+rows.length+' job'+(rows.length===1?'':'s')+' pending</span></div><div style="font-size:1.15rem;font-weight:800;color:#a78bfa;">'+money(tot)+'</div></div>';
           rows.forEach(function(r){
-            h += '<div style="display:flex;justify-content:space-between;gap:8px;padding:7px 14px;border-top:1px solid rgba(255,255,255,0.06);font-size:0.75rem;"><span style="color:#ddd;">'+esc(r.cust)+' <span style="color:#777;">&middot; '+r.role+'</span><div style="font-size:0.66rem;color:#fb923c;">'+r.state+'</div></span><b style="color:#eee;">'+money(r.amt)+'</b></div>';
+            h += '<div style="display:flex;justify-content:space-between;gap:8px;padding:7px 14px;border-top:1px solid rgba(255,255,255,0.06);font-size:0.75rem;"><span style="color:#ddd;">'+esc(r.cust)+' <span style="color:#777;">&middot; '+r.role+'</span><div style="font-size:0.66rem;color:#fb923c;">'+r.state+'</div>'+(r.ppl?'<div style="font-size:0.64rem;color:#888;">'+r.ppl+'</div>':'')+'</span><b style="color:#eee;">'+money(r.amt)+'</b></div>';
           });
           h += '</div>';
         });
