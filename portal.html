@@ -18444,6 +18444,122 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // into its own section, never mixed into "the company commission splits" the
   // other reps' rows show. Still the exact same split math for everyone — no
   // formula changes.
+  // ── Payroll → "By person" history (2026-10-03, per Dennis) ────────────────
+  // One card per person (every active rep/tech/setter/dialer + anyone who has
+  // ever had a commission row), click one to pull their full history.
+  window._payrollMode = window._payrollMode || 'weekly';
+  window._payrollPerson = window._payrollPerson || '';
+  window._payrollRange = window._payrollRange || 'all';
+  window.payrollSetMode = function(m){ window._payrollMode = m; window._payrollPerson = ''; renderTeamView('payroll'); };
+  window.payrollPickPerson = function(k){ window._payrollPerson = k; renderTeamView('payroll'); };
+  window.payrollSetRange = function(r){ window._payrollRange = r; renderTeamView('payroll'); };
+  function _payrollBarHtml() {
+    var m = window._payrollMode;
+    function b(key, label){
+      var on = m === key;
+      return '<button class="no-print" onclick="payrollSetMode(\''+key+'\')" style="padding:7px 16px;border-radius:100px;font-size:0.76rem;font-weight:800;cursor:pointer;width:auto;border:1px solid '+(on?'#8DC63F':'rgba(255,255,255,0.15)')+';background:'+(on?'rgba(141,198,63,0.15)':'transparent')+';color:'+(on?'#8DC63F':'#aaa')+';">'+label+'</button>';
+    }
+    return '<div style="display:flex;gap:8px;margin-bottom:14px;">'+b('weekly','&#128197; Weekly pay')+b('people','&#128101; By person (history)')+'</div>';
+  }
+  async function _payrollPeopleHtml(pc, comms) {
+    function money(n){ return '$'+(parseFloat(n)||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}); }
+    var lineLbl = { fixmy:'FixMy', top_tier:'Top Tier', new_solar:'Axia/QCells', other:'Other' };
+    var SRC = 'solar_review_corp';
+    // roster
+    var roster = [];
+    try {
+      var tr = await pc.from('team_members').select('id,name,role,active');
+      roster = (tr.data||[]).filter(function(t){ return ['rep','tech','setter','dialer'].indexOf(t.role) > -1; });
+    } catch(e) {}
+    var people = {}; // key → {key,name,active,rows:[]}
+    roster.forEach(function(t){ people[t.id] = { key:t.id, name:t.name, active:t.active!==false, rows:[] }; });
+    comms.forEach(function(x){
+      var k = x.payee || x.payee_name || 'unknown';
+      if (!people[k]) people[k] = { key:k, name: (k===SRC ? 'Solar Review (Company)' : (x.payee_name || repName(k) || k)), active:true, rows:[] };
+      people[k].rows.push(x);
+    });
+    // customer names for any rows not in adminCustomers
+    try {
+      var missing = [];
+      comms.forEach(function(x){ if (x.customer_id && !(adminCustomers||[]).some(function(c){ return c.id===x.customer_id; }) && missing.indexOf(x.customer_id)<0) missing.push(x.customer_id); });
+      if (missing.length) {
+        var cr = await pc.from('customers').select('id,first_name,last_name,address').in('id', missing.slice(0,300));
+        (cr.data||[]).forEach(function(r){ if (adminCustomers) adminCustomers.push(r); });
+      }
+    } catch(e) {}
+    function dateOf(x){ return new Date(x.status==='paid' ? (x.paid_at||x.sold_at) : x.sold_at); }
+    function inRange(x){
+      var r = window._payrollRange; if (r==='all') return true;
+      var d = dateOf(x), n = new Date();
+      if (r==='year') return d.getFullYear()===n.getFullYear();
+      if (r==='quarter') return d.getFullYear()===n.getFullYear() && Math.floor(d.getMonth()/3)===Math.floor(n.getMonth()/3);
+      if (r==='month') return d.getFullYear()===n.getFullYear() && d.getMonth()===n.getMonth();
+      return true;
+    }
+    function tot(rows, st){ return rows.filter(function(x){ return !st || x.status===st; }).reduce(function(t,x){ return t+(parseFloat(x.amount)||0); },0); }
+    var list = Object.keys(people).map(function(k){ return people[k]; });
+    list.sort(function(a,b){
+      if (!!b.rows.length !== !!a.rows.length) return b.rows.length ? 1 : -1;
+      return (a.name||'').localeCompare(b.name||'');
+    });
+    var kindLbl = function(x){
+      var base = x.kind==='setter_commission' ? 'Setter' : x.kind==='travel_reimbursement' ? 'Travel' : x.kind==='override' ? (x.payee===SRC ? 'Company revenue' : 'Override') : 'Tech';
+      if (x.note==='dc_bonus') base += ' · Domestic Content';
+      else if (x.note==='cosmic_sale') base = 'Cosmic payment (sale)';
+      else if (x.note==='cosmic_done') base = 'Cosmic payment (completion)';
+      return base;
+    };
+    var h = '<div class="fin-wrap">' + _payrollBarHtml();
+    var sel = window._payrollPerson && people[window._payrollPerson];
+    if (!sel) {
+      h += '<div style="font-size:0.95rem;font-weight:800;color:#fff;margin-bottom:2px;">&#128101; Everyone</div>';
+      h += '<div style="font-size:0.72rem;color:#888;margin-bottom:12px;">Tap a person to see every payout, past and pending.</div>';
+      h += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px;">';
+      list.forEach(function(p){
+        var paid = tot(p.rows,'paid'), owed = tot(p.rows,'sold');
+        h += '<div class="fin-card" onclick="payrollPickPerson(\''+String(p.key).replace(/'/g,"\\'")+'\')" style="cursor:pointer;margin:0;'+(p.active?'':'opacity:0.55;')+'">'+
+          '<div style="font-size:0.95rem;font-weight:800;color:#fff;">'+esc(p.name)+(p.active?'':' <span style="font-size:0.6rem;color:#888;">inactive</span>')+'</div>'+
+          '<div style="font-size:0.66rem;color:#777;margin-bottom:8px;">'+p.rows.length+' payout line'+(p.rows.length===1?'':'s')+'</div>'+
+          '<div style="display:flex;justify-content:space-between;font-size:0.74rem;"><span style="color:#8DC63F;">Paid <b>'+money(paid)+'</b></span><span style="color:#ffaa00;">Owed <b>'+money(owed)+'</b></span></div>'+
+        '</div>';
+      });
+      h += '</div></div>';
+      return h;
+    }
+    var rows = sel.rows.filter(inRange).sort(function(a,b){ return dateOf(b)-dateOf(a); });
+    var paidT = tot(rows,'paid'), owedT = tot(rows,'sold');
+    var rg = window._payrollRange;
+    function rb(key,label){ var on = rg===key; return '<button class="no-print" onclick="payrollSetRange(\''+key+'\')" style="padding:4px 12px;border-radius:100px;font-size:0.7rem;font-weight:700;cursor:pointer;width:auto;border:1px solid '+(on?'#4a9eff':'rgba(255,255,255,0.15)')+';background:'+(on?'rgba(74,158,255,0.15)':'transparent')+';color:'+(on?'#4a9eff':'#aaa')+';">'+label+'</button>'; }
+    finCsvStash.payrollPerson = { name:'payroll_'+String(sel.name).replace(/[^a-z0-9]+/gi,'_').toLowerCase(), header:['Date','Status','Paid date','Customer','Line','Type','Amount'],
+      rows: rows.map(function(x){ return [String(x.sold_at||'').slice(0,10), x.status, String(x.paid_at||'').slice(0,10), finCustName(x.customer_id), lineLbl[x.line]||x.line, kindLbl(x), (parseFloat(x.amount)||0).toFixed(2)]; }) };
+    h += '<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap;">'+
+      '<button class="no-print" onclick="payrollPickPerson(\'\')" style="padding:6px 14px;border-radius:100px;font-size:0.74rem;font-weight:700;cursor:pointer;width:auto;background:transparent;border:1px solid rgba(255,255,255,0.2);color:#ccc;">&larr; Everyone</button>'+
+      '<div style="font-size:1.15rem;font-weight:800;color:#fff;">'+esc(sel.name)+'</div>'+
+      '<button class="fin-btn no-print" style="margin-left:auto;" onclick="finExportStashed(\'payrollPerson\')">&#8681; Export CSV</button></div>';
+    h += '<div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap;">'+rb('all','All time')+rb('year','This year')+rb('quarter','This quarter')+rb('month','This month')+'</div>';
+    h += '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">'+
+      '<div class="fin-tile" style="flex:0 1 auto;"><div class="v" style="color:#8DC63F;">'+money(paidT)+'</div><div class="l">Paid</div></div>'+
+      '<div class="fin-tile" style="flex:0 1 auto;"><div class="v" style="color:#ffaa00;">'+money(owedT)+'</div><div class="l">Owed / pending</div></div>'+
+      '<div class="fin-tile" style="flex:0 1 auto;"><div class="v" style="color:#4a9eff;">'+money(paidT+owedT)+'</div><div class="l">Total</div></div>'+
+      '<div class="fin-tile" style="flex:0 1 auto;"><div class="v">'+rows.length+'</div><div class="l">Lines</div></div></div>';
+    if (sel.key === DEFAULT_CLOSER_ID) h += '<div style="font-size:0.7rem;color:#888;margin-bottom:10px;">Dennis&#39;s commission is auto-marked paid when locked in (it lands in the same company account).</div>';
+    if (!rows.length) { h += '<div class="fin-card" style="font-size:0.78rem;color:#888;">No payouts in this range.</div></div>'; return h; }
+    h += '<div class="fin-card" style="padding:0;overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:0.74rem;">'+
+      '<tr style="color:#777;text-align:left;"><th style="padding:9px 12px;">Date</th><th>Customer</th><th>Line</th><th>Type</th><th style="text-align:right;">Amount</th><th style="padding:0 12px;">Status</th></tr>';
+    rows.forEach(function(x){
+      var paid = x.status==='paid';
+      h += '<tr style="border-top:1px solid rgba(255,255,255,0.06);">'+
+        '<td style="padding:8px 12px;color:#aaa;white-space:nowrap;">'+dateOf(x).toLocaleDateString()+'</td>'+
+        '<td style="color:#ddd;">'+esc(finCustName(x.customer_id))+'</td>'+
+        '<td style="color:#888;">'+(lineLbl[x.line]||esc(x.line||''))+'</td>'+
+        '<td style="color:#888;">'+esc(kindLbl(x))+'</td>'+
+        '<td style="text-align:right;color:#eee;font-weight:700;">'+money(x.amount)+'</td>'+
+        '<td style="padding:0 12px;white-space:nowrap;"><span style="font-size:0.6rem;font-weight:700;text-transform:uppercase;color:'+(paid?'#8DC63F':'#ffaa00')+';">'+(paid?'paid':'owed')+'</span></td></tr>';
+    });
+    h += '</table></div></div>';
+    return h;
+  }
+
   async function _teamPayrollHtml() {
     finEnsureCss();
     var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
@@ -18455,6 +18571,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     } catch(e) {
       return '<div class="fin-wrap"><div style="padding:14px 16px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.2);border-radius:12px;font-size:0.78rem;color:#ef9b9b;">Accounting tables not found — run <code>20260707_accounting.sql</code> in the Supabase SQL Editor, then reload.</div></div>';
     }
+    if (window._payrollMode === 'people') return await _payrollPeopleHtml(pc, comms);
     function money(n){ return '$'+(parseFloat(n)||0).toLocaleString(undefined,{maximumFractionDigits:2}); }
     var lineLbl = { fixmy:'FixMy', top_tier:'Top Tier', new_solar:'Axia/QCells' };
 
@@ -18525,7 +18642,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     finCsvStash.payroll = { name:'solar_review_payroll', header:['Date','Payee','Line','Kind','Customer','Amount','Status'],
       rows: comms.map(function(x){ return [String(x.paid_at||x.sold_at).slice(0,10), x.payee_name||repName(x.payee)||x.payee, lineLbl[x.line]||x.line, x.kind, finCustName(x.customer_id), (parseFloat(x.amount)||0).toFixed(2), x.status]; }) };
 
-    var h = '<div class="fin-wrap">';
+    var h = '<div class="fin-wrap">' + _payrollBarHtml();
 
     var totalOwedReps = owedReps.reduce(function(t,x){ return t+(parseFloat(x.amount)||0); },0);
     var totalPaidReps = paidRepsOnly.reduce(function(t,x){ return t+(parseFloat(x.amount)||0); },0);
