@@ -115,26 +115,33 @@ exports.handler = async function (event) {
   let payload;
   try { payload = JSON.parse(event.body || '{}'); } catch (e) { return reply(400, { error: 'Invalid JSON' }); }
 
-  const billUrl = String(payload.billUrl || '');
-  if (!billUrl) return reply(400, { error: 'billUrl required' });
+  // Multi-page bills (2026-10-03): the rep uploads one photo per page, so accept up to 4 URLs and
+  // send them all as pages of ONE bill. `billUrl` (single) is still accepted for older callers.
+  const urls = (Array.isArray(payload.billUrls) ? payload.billUrls : [payload.billUrl])
+    .map(function (u) { return String(u || ''); }).filter(Boolean).slice(0, 4);
+  if (!urls.length) return reply(400, { error: 'billUrl required' });
   const address = String((payload.lead && payload.lead.address) || '').slice(0, 200);
 
-  let block;
+  const blocks = [];
+  let totalBytes = 0;
   try {
-    const r = await fetch(billUrl, { signal: AbortSignal.timeout(9000) });
-    if (!r.ok) return reply(200, { readable: false, notes: 'Could not fetch the uploaded bill (HTTP ' + r.status + ').' });
-    const ct = (r.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
-    const buf = Buffer.from(await r.arrayBuffer());
-    if (buf.length > MAX_FILE_BYTES) {
-      return reply(200, { readable: false, notes: 'The bill file is too large to read (' + Math.round(buf.length / 1024 / 1024) + 'MB).' });
-    }
-    const b64 = buf.toString('base64');
-    if (ct === 'application/pdf') {
-      block = { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } };
-    } else if (/^image\/(jpeg|png|gif|webp)$/.test(ct)) {
-      block = { type: 'image', source: { type: 'base64', media_type: ct, data: b64 } };
-    } else {
-      return reply(200, { readable: false, notes: 'Unsupported file type (' + (ct || 'unknown') + ') — re-upload as a PDF or a photo.' });
+    for (const billUrl of urls) {
+      const r = await fetch(billUrl, { signal: AbortSignal.timeout(9000) });
+      if (!r.ok) return reply(200, { readable: false, notes: 'Could not fetch the uploaded bill (HTTP ' + r.status + ').' });
+      const ct = (r.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+      const buf = Buffer.from(await r.arrayBuffer());
+      totalBytes += buf.length;
+      if (buf.length > MAX_FILE_BYTES || totalBytes > MAX_FILE_BYTES * 2) {
+        return reply(200, { readable: false, notes: 'The bill file(s) are too large to read (' + Math.round(totalBytes / 1024 / 1024) + 'MB).' });
+      }
+      const b64 = buf.toString('base64');
+      if (ct === 'application/pdf') {
+        blocks.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } });
+      } else if (/^image\/(jpeg|png|gif|webp)$/.test(ct)) {
+        blocks.push({ type: 'image', source: { type: 'base64', media_type: ct, data: b64 } });
+      } else {
+        return reply(200, { readable: false, notes: 'Unsupported file type (' + (ct || 'unknown') + ') — re-upload as a PDF or a photo.' });
+      }
     }
   } catch (e) {
     return reply(200, { readable: false, notes: 'Could not read the uploaded bill: ' + e.message });
@@ -142,6 +149,7 @@ exports.handler = async function (event) {
 
   const ctxLines = [];
   if (address) ctxLines.push('Property: ' + address);
+  if (blocks.length > 1) ctxLines.push('These ' + blocks.length + ' files are PAGES of the SAME bill (one photo per page, in no guaranteed order). Combine them: a figure may be on any page.');
   ctxLines.push('Read this utility bill and call report_axia_bill_analysis.');
 
   try {
@@ -158,7 +166,7 @@ exports.handler = async function (event) {
         system: SYSTEM,
         tools: [TOOL],
         tool_choice: { type: 'tool', name: 'report_axia_bill_analysis' },
-        messages: [{ role: 'user', content: [block, { type: 'text', text: ctxLines.join('\n') }] }]
+        messages: [{ role: 'user', content: blocks.concat([{ type: 'text', text: ctxLines.join('\n') }]) }]
       })
     });
 
