@@ -2665,8 +2665,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       return '<div style="font-size:0.7rem;color:#888;line-height:1.8;">'+
         '<div>Base PPW <b style="color:#ccc;font-family:'+COMM_MONO+';">'+ppw(d.basePpw)+'</b></div>'+
         '<div>Redline <b style="color:'+COMM_COLOR_REDLINE+';font-family:'+COMM_MONO+';">'+ppw(d.redline)+'</b></div>'+
-        '<div>DC Bonus <b style="color:'+COMM_COLOR_EARNED+';font-family:'+COMM_MONO+';">'+ppw(d.dcBonus)+'</b></div>'+
-        '<div style="margin-top:4px;padding-top:4px;border-top:1px dashed rgba(255,255,255,0.08);">Net PPW ('+ppw(d.basePpw)+' &minus; '+ppw(d.redline)+' + '+ppw(d.dcBonus)+') = <b style="color:#ddd;font-family:'+COMM_MONO+';">'+ppw(d.netPpw)+'</b></div>'+
+        '<div>DC Bonus <b style="color:'+COMM_COLOR_EARNED+';font-family:'+COMM_MONO+';">'+ppw(d.dcBonus)+'</b>'+(d.dcPending?' <span style="color:#f59e0b;">(paid at PTO &mdash; not in figures below yet)</span>':'')+'</div>'+
+        '<div style="margin-top:4px;padding-top:4px;border-top:1px dashed rgba(255,255,255,0.08);">Net PPW ('+ppw(d.basePpw)+' &minus; '+ppw(d.redline)+' + '+ppw(d.dcApplied!=null?d.dcApplied:d.dcBonus)+') = <b style="color:#ddd;font-family:'+COMM_MONO+';">'+ppw(d.netPpw)+'</b></div>'+
       '</div>'+
       '<div style="font-size:0.7rem;color:#888;margin-top:6px;">Net PPW <b style="color:#ddd;font-family:'+COMM_MONO+';">'+ppw(d.netPpw)+'</b> &times; System Size <b style="color:#ccc;font-family:'+COMM_MONO+';">'+watts.toLocaleString()+'W</b> = Gross Commission <b style="color:#ddd;font-family:'+COMM_MONO+';">'+m(_grossCommissionOf(d))+'</b></div>';
     }
@@ -2853,7 +2853,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var basePpw = parseFloat(c.ns_base_ppw) || 0;
     var redline = parseFloat(c.ns_redline_ppw) || 0;
     var dcBonus = parseFloat(c.ns_dc_bonus_ppw) || 0;
-    var netRedline = redline - dcBonus;
+    // 2026-10-03, per Dennis: the Domestic Content Bonus is paid at Permission to Operate, so until PTO
+    // every figure (estimate, split, card) is computed on the FULL redline — a rep must never see a
+    // higher commission at Install than they will actually be paid. At PTO the bonus is applied.
+    var _isPto = c.solar_status === 'ns_pto';
+    var dcApplied = _isPto ? dcBonus : 0;
+    var netRedline = redline - dcApplied;
     var netPpw = basePpw - netRedline;
     var watts = Math.round((parseFloat(c.system_size) || 0) * 1000);
     var gross = Math.max(0, Math.round(netPpw * watts * 100) / 100);
@@ -2881,7 +2886,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
     var companyAmt = Math.max(0, gross - closerAmt - setterAmt);
     return {
-      basePpw:basePpw, redline:redline, dcBonus:dcBonus, netRedline:netRedline, netPpw:netPpw, watts:watts,
+      basePpw:basePpw, redline:redline, dcBonus:dcBonus, dcApplied:dcApplied, dcPending:(!_isPto && dcBonus>0), dcExtraGross:Math.round(dcBonus*watts*100)/100, netRedline:netRedline, netPpw:netPpw, watts:watts,
       isBlackBox:isBlackBox, poolPct:poolPct, closerPct:closerPct, setterPct:setterPct,
       setterName:setterName, hasSetter:hasSetter, closerNm:closerNm, repId:c.rep_id||'',
       closerAmt:closerAmt, setterAmt:setterAmt, companyAmt:companyAmt,
@@ -2961,6 +2966,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     await window.bbLoadSetterCompPlans(true);
     var calc = _nsCalcCommission(rec);
     if (!calc.hasInputs) { alert('Enter Base PPW and set System Size (kW) on the lead first — Gross Commission is $0 without them.'); return; }
+    // The Domestic Content Bonus is part of the real payout but is only paid at PTO. Locking now would
+    // freeze the lower pre-PTO amounts (locked rows always win), underpaying the rep forever.
+    if (calc.dcPending) { alert('This deal has a Domestic Content Bonus, which is paid at Permission to Operate.\n\nLock in the commission split once the job reaches PTO so the full amount is recorded.'); return; }
     try {
       var commRes = await pc.from('commissions').select('kind').eq('customer_id', cid).eq('line','new_solar');
       var have = {}; (commRes.data||[]).forEach(function(x){ have[x.kind] = true; });
@@ -26093,7 +26101,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<div style="display:flex;justify-content:space-between;font-size:0.72rem;color:#888;margin-bottom:4px;"><span>Net PPW</span><span style="color:#ccc;">$'+calc.netPpw.toFixed(2)+'/W</span></div>'+
       '<div style="display:flex;justify-content:space-between;font-size:0.8rem;margin-bottom:4px;"><span style="color:#aaa;">Gross Commission</span><span style="font-weight:700;color:#fff;">$'+calc.revenue.toFixed(2)+'</span></div>'+
       '<div style="display:flex;justify-content:space-between;font-size:0.8rem;margin-bottom:8px;"><span style="color:#aaa;">Solar Review Net Commissions</span><span style="font-weight:700;color:#8DC63F;">$'+calc.companyAmt.toFixed(2)+'</span></div>'+
-      '<div style="border-top:1px solid rgba(255,255,255,0.08);padding-top:8px;font-size:0.72rem;color:#4a9eff;">'+srcLbl+'</div>'+
+      '<div style="border-top:1px solid rgba(255,255,255,0.08);padding-top:8px;font-size:0.72rem;color:#4a9eff;">'+srcLbl+'</div>'+(calc.dcPending?'<div style="font-size:0.68rem;color:#f59e0b;margin-top:6px;">Domestic Content Bonus is paid at Permission to Operate &mdash; not included above.</div>':'')+
       '<div style="font-size:0.72rem;color:#ccc;margin-top:2px;">'+splitLine+'</div>';
   };
   window.cancelAxiaCommModal = function() {
@@ -26636,6 +26644,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         if (!nsRec.system_size) h += '<div style="font-size:0.62rem;color:#ef4444;margin-bottom:6px;">&#9888; No System Size (kW) on file — Gross Commission needs it. Set it above.</div>';
         h += '<div style="font-size:0.72rem;color:#aaa;line-height:1.8;">Net PPW <b style="color:#8DC63F;">'+m2(calc.netPpw)+'</b> &times; '+calc.watts.toLocaleString()+' W = Gross Commission <b style="color:#4a9eff;">'+m2(calc.revenue)+'</b></div>';
         h += '<div style="font-size:0.68rem;margin-top:4px;">'+(calc.isBlackBox?'<span style="color:#f97316;">&#128230; Company lead &mdash; '+Math.round(calc.poolPct*100)+'% pool</span>':'<span style="color:#8DC63F;">&#127919; Self-Gen &mdash; '+Math.round(calc.poolPct*100)+'% pool</span>')+(calc.hasSetter?' &middot; split '+Math.round(calc.closerPct*100)+'/'+Math.round(calc.setterPct*100):'')+'</div>';
+        if (calc.dcPending) h += '<div style="font-size:0.66rem;margin-top:6px;color:#f59e0b;">&#9201; Domestic Content Bonus ('+m2(calc.dcExtraGross)+' more Gross Commission) is paid at Permission to Operate &mdash; not included above until then.</div>';
         h += '</div>';
 
         var setterNm = calc.setterName;
