@@ -2498,3 +2498,6 @@ Axia pays in two parts. **Payment 1 (M2)** = commission on the FULL redline (no 
 ### Jobs search + extra-panel margin (2026-10-03, per Dennis)
 - Admin Jobs tab has a search box (name/address/email/phone), `window._jobsSearch`, tab counts stay totals.
 - **Extra-panel margin:** Battery Retrofit jobs get `customers.br_panels` (count of additional 420W panels). `_panelExtraMargin(c)` = `(SUBSHEET_PANEL_PER_W − COSMIC_PANEL_COST_PER_W) × panels × 420`, added to **company margin only** (never the rep pool) in `_loadFixmyJobCommissions`. **`COSMIC_PANEL_COST_PER_W` is 2.19 (= Sub Sheet) until Dennis has Cosmic's official rate, so margin is $0 today** — change that one constant when he does.
+
+## Deploy batching (2026-10-03, per Dennis — save Netlify build credits)
+Every push to `main` (and to the feature branch, if branch deploys are on) triggers a Netlify build that costs credits. **Commit locally as you go, but only push when Dennis says "deploy"/"push it" or at the end of a clearly finished batch** — never one push per small change. When pushing, push once to `main` (skip the extra branch push unless asked). Keep a running list of what's committed-but-undeployed so the deploy message can summarize it.
