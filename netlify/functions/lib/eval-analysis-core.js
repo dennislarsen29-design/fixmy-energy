@@ -272,11 +272,39 @@ async function runEvalAnalysis(anthropicKey, body) {
       return { error: { message: 'Quoya analysis unavailable', detail: raw.slice(0, 300), code } };
     }
 
-    const data = await res.json();
-    const call = (data.content || []).find(b => b.type === 'tool_use' && b.name === 'report_evaluation');
+    let data = await res.json();
+    let call = (data.content || []).find(b => b.type === 'tool_use' && b.name === 'report_evaluation');
+    if (!call) {
+      // The research pass sometimes ends without reporting (token cap hit mid-search, a
+      // paused turn, or prose instead of the tool). Seen live on a real evaluation
+      // ("no tool call", 2026-10-04). Retry ONCE with the report tool forced and no web
+      // search/thinking, so the rep always gets a result instead of a dead end.
+      console.error('[eval-analysis] no tool call, retrying forced. stop_reason=' + data.stop_reason);
+      const research = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n').slice(0, 2000);
+      const retryBlocks = blocks.slice();
+      if (research) retryBlocks.push({ type: 'text', text: 'Your earlier research notes (use if helpful):\n' + research });
+      const res2 = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': anthropicKey, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({
+          model: MODEL,
+          max_tokens: 4000,
+          system: SYSTEM,
+          tools: [TOOL],
+          tool_choice: { type: 'tool', name: 'report_evaluation' },
+          messages: [{ role: 'user', content: retryBlocks }]
+        })
+      });
+      if (res2.ok) {
+        data = await res2.json();
+        call = (data.content || []).find(b => b.type === 'tool_use' && b.name === 'report_evaluation');
+      } else {
+        console.error('[eval-analysis] retry Anthropic ' + res2.status + ': ' + (await res2.text()).slice(0, 300));
+      }
+    }
     if (!call) {
       const text = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n').slice(0, 600);
-      console.error('[eval-analysis] no tool call. stop_reason=' + data.stop_reason);
+      console.error('[eval-analysis] no tool call after retry. stop_reason=' + data.stop_reason);
       return { error: { message: 'Quoya analysis unavailable', detail: text || 'no tool call', code: 'upstream' } };
     }
 
