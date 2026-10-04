@@ -87,6 +87,23 @@ exports.handler = async function(event) {
     return owner ? { owner, apn, assessed_value: assessedValue, tax_delinquent: taxDelinquent } : null;
   }
 
+  // ── 0. County assessor roll (parcel_owners, loaded from the SanGIS parcel file) ──
+  // The authoritative owner of record for San Diego County, free and instant. Matches only on
+  // zip + house number + street name, and only answers when unambiguous — a miss falls through
+  // to the paid/free services below exactly as before.
+  try {
+    const hit = await require('./lib/parcel-owner').lookup(address);
+    if (hit) {
+      return { statusCode: 200, headers: corsHeaders, body: JSON.stringify({
+        owner: hit.owner, apn: hit.apn, assessed_value: null, tax_delinquent: null,
+        lat: lat || hit.y || null, lng: lng || hit.x || null, source: 'county_roll'
+      }) };
+    }
+    tried.push('county_roll:no_match');
+  } catch (e) {
+    tried.push('county_roll:err:' + String(e.message).slice(0, 60));
+  }
+
   // ── 1. Regrid lat/lon — most precise ──────────────────────────────────────
   if (key && lat != null && lng != null) {
     try {

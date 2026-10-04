@@ -17460,11 +17460,173 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       + '<button onclick="bbRunParcelImport()" style="width:auto;margin-top:0;background:#4a9eff;color:#fff;border:none;border-radius:100px;padding:7px 18px;font-size:0.78rem;font-weight:800;cursor:pointer;">&#9889; Match &amp; Import</button>'
       + '<button onclick="bbShowParcelImport()" style="width:auto;margin-top:0;background:none;border:1px solid rgba(255,255,255,0.15);border-radius:100px;color:#888;font-size:0.75rem;cursor:pointer;padding:7px 16px;">Cancel</button>'
       + '</div>'
-      + '<div id="bbParcelStatus" style="font-size:0.7rem;color:#888;margin-top:8px;"></div>';
+      + '<div id="bbParcelStatus" style="font-size:0.7rem;color:#888;margin-top:8px;"></div>'
+      + '<div style="border-top:1px solid rgba(255,255,255,0.08);margin-top:14px;padding-top:12px;">'
+      + '<div style="font-size:0.75rem;font-weight:700;color:#8DC63F;margin-bottom:6px;">&#128269; Owner Lookup Table (every San Diego parcel)</div>'
+      + '<div style="font-size:0.68rem;color:#999;line-height:1.5;margin-bottom:8px;">Loads the whole county file into a locked, staff-only table so ANY San Diego address (new leads, doors, dialer) fills in its owner automatically. '
+      + 'Uses the CSV picked above. Takes ~15-20 min; safe to stop and resume. Needs the import password (Netlify setting PARCEL_IMPORT_KEY).</div>'
+      + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">'
+      + '<button onclick="bbRunParcelLoad()" style="width:auto;margin-top:0;background:#8DC63F;color:#111;border:none;border-radius:100px;padding:7px 18px;font-size:0.78rem;font-weight:800;cursor:pointer;">&#128228; Load Lookup Table</button>'
+      + '<span id="bbParcelLoadCount" style="font-size:0.7rem;color:#888;"></span></div>'
+      + '<div id="bbParcelLoadStatus" style="font-size:0.7rem;color:#888;margin-top:8px;"></div></div>';
     bar.appendChild(box);
+    fetch('/.netlify/functions/parcel-owner', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'stats' }) })
+      .then(function(r){ return r.json(); })
+      .then(function(d){ var el = document.getElementById('bbParcelLoadCount'); if (el && d && d.count != null) el.textContent = d.count.toLocaleString() + ' parcels loaded'; })
+      .catch(function(){});
   };
 
   window.bbStopParcelImport = function() { _bbParcelRunning = false; };
+
+  // Owner lookup table loader (2026-10-04, per Dennis). Reads the same county CSV locally in
+  // chunks and sends it to parcel-owner.js (service-role, import-key gated) in batches. The
+  // table is idempotent on APN, so Stop/resume and re-runs never duplicate. Resume skips rows
+  // already sent (localStorage parcelLoadRows) without re-sending them.
+  window.bbRunParcelLoad = async function() {
+    if (_bbParcelRunning) return;
+    var fileEl = document.getElementById('bbParcelFile');
+    var file = fileEl && fileEl.files && fileEl.files[0];
+    var statusEl = document.getElementById('bbParcelLoadStatus');
+    function say(msg) { if (statusEl) statusEl.innerHTML = msg; }
+    if (!file) { say('Pick the exported CSV above first.'); return; }
+    var importKey = '';
+    try { importKey = sessionStorage.getItem('parcelImportKey') || ''; } catch(e) {}
+    if (!importKey) {
+      importKey = (prompt('Import password (the PARCEL_IMPORT_KEY you set in Netlify):') || '').trim();
+      if (!importKey) { say('Cancelled — no password entered.'); return; }
+    }
+    var resumeFrom = 0;
+    try { resumeFrom = parseInt(localStorage.getItem('parcelLoadRows:' + file.name + ':' + file.size), 10) || 0; } catch(e) {}
+    if (resumeFrom > 0 && !confirm('Resume from row ' + resumeFrom.toLocaleString() + '? (Cancel = start over from the beginning)')) resumeFrom = 0;
+
+    _bbParcelRunning = true;
+    var keptAwake = await _bbAcquireWakeLock();
+    _bbEnrichOverlay('<div style="font-size:0.78rem;font-weight:800;color:#8DC63F;margin-bottom:4px;">&#128269; Loading owner lookup table</div>'
+      + '<div id="bbEnrichOvStatus" style="font-size:0.72rem;color:#bbb;">Starting&hellip;</div>');
+
+    var BATCH = 1000, CONC = 3;
+    var rows = 0, sent = 0, skipped = 0, failed = 0, offset = 0, remainder = '', cols = null;
+    var batch = [], group = [];
+
+    function parseLine(line) {
+      var out = [], cur = '', inQ = false;
+      for (var i = 0; i < line.length; i++) {
+        var ch = line[i];
+        if (ch === '"') { if (inQ && line[i+1] === '"') { cur += '"'; i++; } else inQ = !inQ; }
+        else if (ch === ',' && !inQ) { out.push(cur); cur = ''; }
+        else cur += ch;
+      }
+      out.push(cur);
+      return out;
+    }
+    function readSlice(start) {
+      return new Promise(function(resolve, reject) {
+        var fr = new FileReader();
+        fr.onload = function(){ resolve(fr.result); };
+        fr.onerror = function(){ reject(fr.error || new Error('read failed')); };
+        fr.readAsText(file.slice(start, start + PARCEL_CHUNK));
+      });
+    }
+    function progress() {
+      var pct = Math.min(100, Math.round(offset / file.size * 100));
+      var ov = document.getElementById('bbEnrichOverlay');
+      if (ov) ov.innerHTML = '<div style="font-size:0.75rem;color:#8DC63F;font-weight:700;margin-bottom:6px;">Loading owner lookup table&hellip; '
+        + rows.toLocaleString() + ' parcels read &mdash; ' + sent.toLocaleString() + ' saved</div>'
+        + '<div style="background:rgba(255,255,255,0.08);border-radius:100px;height:6px;overflow:hidden;"><div style="background:#8DC63F;height:6px;width:' + pct + '%;transition:width 0.3s;"></div></div>'
+        + '<div style="font-size:0.65rem;color:#555;margin-top:4px;">' + pct + '% &mdash; ' + (keptAwake ? 'screen kept awake &#9989;' : 'keep this tab open')
+        + ' &middot; <a href="#" onclick="bbStopParcelImport();return false;" style="color:#ff8a8a;">Stop</a></div>';
+      say(rows.toLocaleString() + ' read · ' + sent.toLocaleString() + ' saved');
+    }
+    async function post(rowsArr) {
+      for (var attempt = 0; attempt < 4; attempt++) {
+        try {
+          var r = await fetch('/.netlify/functions/parcel-owner', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-import-key': importKey },
+            body: JSON.stringify({ action: 'import', rows: rowsArr })
+          });
+          if (r.status === 401 || (r.status === 500 && (await r.clone().json().catch(function(){return {};})).error === 'import_key_not_configured')) {
+            var j = await r.json().catch(function(){ return {}; });
+            var e = new Error(j.error === 'bad_import_key' ? 'Wrong import password.' : 'PARCEL_IMPORT_KEY is not set in Netlify yet.');
+            e.fatal = true; throw e;
+          }
+          var d = await r.json();
+          if (r.ok && d.ok) { sent += d.written; skipped += d.skipped; return; }
+          if (attempt === 3) throw new Error(d.error || ('HTTP ' + r.status) + (d.detail ? ' — ' + d.detail : ''));
+        } catch(e) {
+          if (e.fatal || attempt === 3) throw e;
+        }
+        await new Promise(function(res){ setTimeout(res, 800 * (attempt + 1)); });
+      }
+    }
+    async function flushGroup(endRow) {
+      if (!group.length) return;
+      await Promise.all(group.map(post));
+      group = [];
+      try { localStorage.setItem('parcelLoadRows:' + file.name + ':' + file.size, String(endRow)); } catch(e) {}
+    }
+    function idx(h, names) {
+      for (var n = 0; n < names.length; n++) {
+        var k = h.indexOf(names[n]); if (k !== -1) return k;
+      }
+      return -1;
+    }
+
+    try {
+      while (offset < file.size && _bbParcelRunning) {
+        var text = remainder + (await readSlice(offset));
+        offset += PARCEL_CHUNK;
+        var lines = text.split(/\r?\n/);
+        remainder = (offset < file.size) ? lines.pop() : '';
+        for (var li = 0; li < lines.length && _bbParcelRunning; li++) {
+          var line = lines[li];
+          if (!line || !line.trim()) continue;
+          var vals = parseLine(line);
+          if (!cols) {
+            var H = vals.map(function(v){ return v.trim().toUpperCase().replace(/^"|"$/g, ''); });
+            cols = { apn: idx(H, ['APN']), o1: idx(H, ['OWN_NAME1','OWNNAME1']), o2: idx(H, ['OWN_NAME2','OWNNAME2']),
+                     no: idx(H, ['SITUS_ADDRESS','SITUSADDRESS']), st: idx(H, ['SITUS_STREET','SITUSSTREET']),
+                     z: idx(H, ['SITUS_ZIP','SITUSZIP']), x: idx(H, ['X']), y: idx(H, ['Y']) };
+            if (cols.apn < 0 || cols.o1 < 0 || cols.no < 0 || cols.st < 0 || cols.z < 0)
+              throw new Error('This CSV is missing a needed column (APN, OWN_NAME1, SITUS_ADDRESS, SITUS_STREET, SITUS_ZIP). Saw: ' + H.slice(0, 12).join(', '));
+            continue;
+          }
+          rows++;
+          if (rows <= resumeFrom) continue;
+          batch.push({ apn: vals[cols.apn], o1: vals[cols.o1], o2: cols.o2 >= 0 ? vals[cols.o2] : '', no: vals[cols.no],
+                       st: vals[cols.st], z: vals[cols.z], x: cols.x >= 0 ? vals[cols.x] : '', y: cols.y >= 0 ? vals[cols.y] : '' });
+          if (batch.length >= BATCH) {
+            group.push(batch); batch = [];
+            if (group.length >= CONC) { await flushGroup(rows); progress(); }
+          }
+        }
+        progress();
+        await new Promise(function(r){ setTimeout(r, 0); });
+      }
+      if (batch.length) { group.push(batch); batch = []; }
+      await flushGroup(rows);
+      try { sessionStorage.setItem('parcelImportKey', importKey); } catch(e) {}
+
+      var stopped = !_bbParcelRunning;
+      if (!stopped) { try { localStorage.removeItem('parcelLoadRows:' + file.name + ':' + file.size); } catch(e) {} }
+      _bbEnrichOverlay('<div style="font-size:0.78rem;font-weight:800;color:' + (stopped ? '#ffaa00' : '#8DC63F') + ';margin-bottom:5px;">'
+        + (stopped ? '&#9209; Stopped — tap Load again to resume' : '&#10003; Owner lookup table loaded') + '</div>'
+        + '<div style="font-size:0.72rem;color:#bbb;">' + rows.toLocaleString() + ' parcels read &middot; <b style="color:#8DC63F;">' + sent.toLocaleString()
+        + '</b> saved &middot; ' + skipped.toLocaleString() + ' skipped (mobile homes / no address or owner)</div>'
+        + '<div style="margin-top:8px;text-align:right;"><a href="#" onclick="_bbEnrichOverlayClose();return false;" style="color:#4a9eff;font-size:0.7rem;">Dismiss</a></div>');
+      say(stopped ? 'Stopped.' : 'Done — ' + sent.toLocaleString() + ' parcels saved.');
+    } catch(e) {
+      if (e && e.fatal) { try { sessionStorage.removeItem('parcelImportKey'); } catch(x) {} }
+      _bbEnrichOverlay('<div style="font-size:0.78rem;font-weight:800;color:#ff8a8a;margin-bottom:4px;">&#9888; Lookup table load failed</div>'
+        + '<div style="font-size:0.72rem;color:#bbb;">' + (e && e.message ? e.message : 'unknown error') + '</div>'
+        + '<div style="font-size:0.66rem;color:#888;margin-top:4px;">Progress is saved — tap Load again to resume.</div>'
+        + '<div style="margin-top:8px;text-align:right;"><a href="#" onclick="_bbEnrichOverlayClose();return false;" style="color:#4a9eff;font-size:0.7rem;">Dismiss</a></div>');
+      say('Failed: ' + (e && e.message ? e.message : 'unknown error'));
+    } finally {
+      _bbParcelRunning = false;
+      _bbReleaseWakeLock();
+    }
+  };
 
   window.bbRunParcelImport = async function() {
     if (_bbParcelRunning) return;
