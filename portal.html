@@ -1525,6 +1525,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       });
     }
 
+    var _lfPoolAdm = adminLeadCat === 'new_solar' ? nsLeads : fixmyLeads;
+    c = _lfApply(c, _lfState('admLeads', adminLeadCat), _lfPoolAdm);
     var total = c.length;
     var dayAgo = Date.now() - 24*60*60*1000;
     // rep_agreements is a shared ledger (real agreement + sub_sheet_ack + training_cert:*
@@ -1639,6 +1641,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (adminSearch) _checkArchivedMatches(adminSearch);
     }
     else { c.forEach(function(cust) { listHtml += buildLeadCard(cust); }); }
+    listHtml = _lfBarHtml('admLeads', adminLeadCat, _lfPoolAdm) + listHtml;
 
     // Pinned hot leads banner (from "Push to Routes" button in BB popup)
     var pinnedHtml = '';
@@ -2155,6 +2158,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       });
     }
 
+    var _lfPoolJobs = adminJobCat === 'new_solar' ? nsJobs : fixmyJobs;
+    jobs = _lfApply(jobs, _lfState('admJobs', adminJobCat), _lfPoolJobs);
     var catTabStyle = 'padding:7px 18px;border:none;border-radius:100px;font-size:0.78rem;font-weight:700;cursor:pointer;transition:all 0.15s;';
     var catTabs = '<div style="display:flex;gap:8px;margin-bottom:14px;">'+
       '<button onclick="adminJobCat=\'fixmy\';renderJobsView()" style="'+catTabStyle+'background:'+(adminJobCat==='fixmy'?'#8DC63F':'rgba(255,255,255,0.07)')+';color:'+(adminJobCat==='fixmy'?'#1A1A1A':'#888')+';">&#9889; FixMy.Energy Jobs ('+fixmyJobs.length+')</button>'+
@@ -2164,9 +2169,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
     var saleTypeLabel = {fixmy:'FixMy Job',new_solar:'Axia/QCells'};
     var saleTypeColor = {fixmy:'#8DC63F',new_solar:'#4a9eff'};
-    var listHtml = '';
+    var listHtml = _lfBarHtml('admJobs', adminJobCat, _lfPoolJobs);
     if (!jobs.length) {
-      listHtml = _jq ? '<div class="jobs-empty">No jobs match "'+String(window._jobsSearch).replace(/</g,'&lt;')+'".</div>' : '<div class="jobs-empty">'+(adminJobCat==='new_solar'?'No Axia/QCells jobs yet. A lead moves here when Welcome Call is marked Closed.':'No FixMy.Energy jobs yet. A lead moves here once marked as Sold.')+'</div>';
+      listHtml += _jq ? '<div class="jobs-empty">No jobs match "'+String(window._jobsSearch).replace(/</g,'&lt;')+'".</div>' : '<div class="jobs-empty">'+(adminJobCat==='new_solar'?'No Axia/QCells jobs yet. A lead moves here when Welcome Call is marked Closed.':'No FixMy.Energy jobs yet. A lead moves here once marked as Sold.')+'</div>';
     } else {
       jobs.forEach(function(c) {
         var isNSJob = c.lead_category === 'new_solar';
@@ -3190,6 +3195,58 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // Same D/Week/Month/Quarter/Year/Total range as the tile view — it's the identical
   // underlying data, just read as rows instead of summed into 3-4 numbers.
   var _jobsCommViewMode = { fixmy:'tiles', new_solar:'tiles' };
+  // ── Time travel (2026-10-04, per Dennis — "scroll back to previous Years, Qs, Months,
+  // Weeks") — one bounds helper shared by the Jobs report and the Record Board, so a
+  // period means exactly the same thing in both. off = 0 current, -1 previous, ...
+  var _jobsCommOffset = 0;
+  var _MONTHS_LONG = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  function _periodBounds(range, off) {
+    off = off || 0;
+    var now = new Date(), y = now.getFullYear(), m = now.getMonth(), d = now.getDate(), s, e, lbl;
+    if (range === 'day') {
+      s = new Date(y, m, d + off); e = new Date(s.getFullYear(), s.getMonth(), s.getDate() + 1);
+      lbl = off === 0 ? 'Today' : off === -1 ? 'Yesterday' : s.toLocaleDateString(undefined, {weekday:'short', month:'short', day:'numeric', year:'numeric'});
+    } else if (range === 'week') {
+      var dow = now.getDay(), diff = dow === 0 ? 6 : dow - 1;
+      s = new Date(y, m, d - diff + off * 7); e = new Date(s.getFullYear(), s.getMonth(), s.getDate() + 7);
+      lbl = (off === 0 ? 'This week' : 'Week of ' + s.toLocaleDateString(undefined, {month:'short', day:'numeric'}) + (s.getFullYear() !== y ? ', ' + s.getFullYear() : ''));
+    } else if (range === 'month') {
+      s = new Date(y, m + off, 1); e = new Date(y, m + off + 1, 1);
+      lbl = _MONTHS_LONG[s.getMonth()] + ' ' + s.getFullYear();
+    } else if (range === 'quarter') {
+      var q = Math.floor(m / 3) + off; s = new Date(y, q * 3, 1); e = new Date(y, q * 3 + 3, 1);
+      lbl = 'Q' + (Math.floor(s.getMonth() / 3) + 1) + ' ' + s.getFullYear();
+    } else if (range === 'year') {
+      s = new Date(y + off, 0, 1); e = new Date(y + off + 1, 0, 1); lbl = String(s.getFullYear());
+    } else return null; // total
+    return { start: s, end: e, label: lbl };
+  }
+  function _periodOffsetForDate(range, dt) {
+    var now = new Date(), y = now.getFullYear(), m = now.getMonth();
+    if (range === 'day') return Math.round((new Date(dt.getFullYear(), dt.getMonth(), dt.getDate()) - new Date(y, m, now.getDate())) / 86400000);
+    if (range === 'week') {
+      function mon(x){ var dw = x.getDay(), df = dw === 0 ? 6 : dw - 1; return new Date(x.getFullYear(), x.getMonth(), x.getDate() - df); }
+      return Math.round((mon(dt) - mon(now)) / (7 * 86400000));
+    }
+    if (range === 'month') return (dt.getFullYear() - y) * 12 + (dt.getMonth() - m);
+    if (range === 'quarter') return (dt.getFullYear() - y) * 4 + (Math.floor(dt.getMonth() / 3) - Math.floor(m / 3));
+    if (range === 'year') return dt.getFullYear() - y;
+    return 0;
+  }
+  // Shared ◀ label ▶ control. prev/next/today/jump are JS call strings (jump gets the
+  // picked date's value appended as the argument).
+  function _periodNavHtml(range, off, color, prevFn, nextFn, todayFn, jumpFn) {
+    var b = _periodBounds(range, off);
+    if (!b) return '<div style="font-size:0.7rem;color:#888;margin-bottom:10px;">All time</div>';
+    var btn = 'width:auto;padding:5px 12px;border-radius:100px;font-size:0.8rem;font-weight:800;cursor:pointer;border:1px solid rgba(255,255,255,0.14);background:rgba(255,255,255,0.05);color:#ddd;line-height:1;';
+    return '<div class="no-print" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;">'+
+      '<button onclick="'+prevFn+'" title="Previous" style="'+btn+'">&#9664;</button>'+
+      '<div style="min-width:130px;text-align:center;font-size:0.88rem;font-weight:800;color:'+color+';">'+esc(b.label)+'</div>'+
+      '<button onclick="'+nextFn+'" title="Next"'+(off >= 0 ? ' disabled' : '')+' style="'+btn+(off >= 0 ? 'opacity:0.3;cursor:default;' : '')+'">&#9654;</button>'+
+      (off !== 0 ? '<button onclick="'+todayFn+'" style="'+btn+'font-size:0.68rem;color:'+color+';">Today</button>' : '')+
+      '<label style="font-size:0.62rem;color:#777;display:flex;align-items:center;gap:5px;">Jump to <input type="date" max="'+new Date().toISOString().slice(0,10)+'" onchange="if(this.value){'+jumpFn+'(this.value)}" style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.14);color:#ddd;border-radius:8px;padding:3px 6px;font-size:0.7rem;"/></label>'+
+    '</div>';
+  }
   function _jobsCommRangeStart(range) {
     var now = new Date();
     if (range === 'day') { var d0 = new Date(now); d0.setHours(0,0,0,0); return d0; }
@@ -3201,8 +3258,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   }
   function _jobsScopedForCat(cat) {
     var jobs = (adminCustomers||[]).filter(function(c){ return _isRealJob(c) && (cat==='new_solar' ? c.lead_category==='new_solar' : c.lead_category!=='new_solar'); });
-    var start = _jobsCommRangeStart(_jobsCommRange);
-    if (!start) return jobs; // Total — every real job regardless of any date
+    var _pb = _periodBounds(_jobsCommRange, _jobsCommOffset);
+    if (!_pb) return jobs; // Total — every real job regardless of any date
     // Bug fixed 2026-09-15, per Dennis ("the reports aren't working on Axia/QCells") —
     // this used to scope on `created_at`, the LEAD's original capture date, which for
     // an Axia/QCells deal is almost always weeks/months before it ever reaches Welcome
@@ -3219,7 +3276,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // and hasn't been re-saved since — so it still shows up somewhere rather than
     // silently vanishing from every finite range, same "never let a new nullable column
     // erase old data from a report" rule used throughout this file.
-    return jobs.filter(function(c){ var anchor = c.sold_at || c.created_at; return anchor && new Date(anchor) >= start; });
+    return jobs.filter(function(c){ var anchor = c.sold_at || c.created_at; if (!anchor) return false; var t = new Date(anchor); return t >= _pb.start && t < _pb.end; });
   }
   function _jobsCommDashHtml(cat) {
     var open = _jobsCommOpen[cat];
@@ -3232,6 +3289,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var on = _jobsCommRange===r[0];
       return '<button onclick="window._jobsCommSetRange(\''+cat+'\',\''+r[0]+'\')" style="width:auto;padding:5px 13px;border-radius:100px;font-size:0.7rem;font-weight:700;cursor:pointer;border:1px solid '+(on?color+'80':'rgba(255,255,255,0.1)')+';background:'+(on?color+'22':'rgba(255,255,255,0.04)')+';color:'+(on?color:'#888')+';">'+r[1]+'</button>';
     }).join('')+'</div>';
+    rangeBar += _periodNavHtml(_jobsCommRange, _jobsCommOffset, color, "_jobsCommNav('"+cat+"',-1)", "_jobsCommNav('"+cat+"',1)", "_jobsCommNav('"+cat+"',0)", "_jobsCommJump.bind(null,'"+cat+"')");
     var viewMode = _jobsCommViewMode[cat] || 'tiles';
     var viewToggle = '<div style="display:flex;gap:6px;margin-bottom:10px;">'+['tiles','report'].map(function(vm){
       var on = viewMode===vm;
@@ -3416,6 +3474,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       return [r.name, _jobsCommReportDate(r.soldAt), r.earned?'Earned':'Potential', r.gross, r.techAmt||'', r.techName||'', r.techPaid||'', r.setterAmt||'', r.setterName||'', r.setterPaid||'', r.margin];
     });
     var rangeLbl = (JOBS_COMM_RANGES.find(function(x){ return x[0]===_jobsCommRange; })||['','all'])[1];
+    var _pbx = _periodBounds(_jobsCommRange, _jobsCommOffset); if (_pbx) rangeLbl += '_' + _pbx.label.replace(/[^A-Za-z0-9]+/g,'_');
     window.finExportCSV((cat==='new_solar'?'axia_qcells':'fixmy')+'_commission_report_'+rangeLbl.toLowerCase(), header, csvRows);
   };
   window._jobsCommToggle = function(cat) {
@@ -3424,8 +3483,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (slot) slot.innerHTML = _jobsCommDashHtml(cat);
     if (_jobsCommOpen[cat]) _loadJobsCommDashboard(cat);
   };
+  window._jobsCommNav = function(cat, delta) {
+    _jobsCommOffset = delta === 0 ? 0 : Math.min(0, _jobsCommOffset + delta);
+    _loadJobsCommDashboard(cat);
+  };
+  window._jobsCommJump = function(cat, val) {
+    var dt = new Date(val + 'T12:00:00'); if (isNaN(dt.getTime())) return;
+    _jobsCommOffset = Math.min(0, _periodOffsetForDate(_jobsCommRange, dt));
+    _loadJobsCommDashboard(cat);
+  };
   window._jobsCommSetRange = function(cat, r) {
-    _jobsCommRange = r;
+    _jobsCommRange = r; _jobsCommOffset = 0;
     var slot = document.getElementById('jobsCommDash');
     if (slot) slot.innerHTML = _jobsCommDashHtml(cat);
     _loadJobsCommDashboard(cat);
@@ -3447,77 +3515,118 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     });
   }
 
-  // ── Leaderboard (2026-09-14, per Dennis — "roll with all suggestions") — the one
-  // genuinely new screen from the Payout Redesign mockup, not just a relabeling. A
-  // well-worn solar-sales pattern (Sequifi calls it out by name as a built-in
-  // feature) this app had none of. Ranked by Net Commission this calendar month,
-  // FixMy + Axia/QCells combined, potential + earned together — this is meant to
-  // reflect current activity, not just money already fully paid out.
+  // ── Record Board (2026-10-04, per Dennis — "a record board for Commissions earned in
+  // the same increments — D, W, M, Q, Y = company, setter, Tech"). Replaces the old
+  // this-month-only leaderboard. Admin only (renderJobsView is behind _adminOnlyGuard).
+  // Period + basis: Earned = job installed/PTO'd inside the period (what becomes payable),
+  // Sold = job sold inside the period (the pipeline). FixMy + Axia/QCells combined.
   var _leaderboardOpen = false;
   var _leaderboardLoading = false;
-  var _leaderboardCache = null; // { rows: [{name, total}] }
-  function _leaderboardHtml() {
-    var head = '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:'+(_leaderboardOpen?'10px':'0')+';margin-top:10px;">'+
-      '<button onclick="window._leaderboardToggle()" style="width:auto;background:none;border:none;color:'+COMM_COLOR_GOLD+';font-size:0.8rem;font-weight:800;cursor:pointer;padding:0;display:flex;align-items:center;gap:6px;">'+(_leaderboardOpen?'&#9660;':'&#9654;')+' &#127942; Leaderboard'+'</button>'+
-      '</div>';
-    if (!_leaderboardOpen) return '<div style="margin-bottom:14px;">'+head+'</div>';
-    if (_leaderboardLoading || !_leaderboardCache) return '<div style="margin-bottom:14px;">'+head+'<div style="font-size:0.72rem;color:#666;">Loading&hellip;</div></div>';
-    var rows = _leaderboardCache.rows;
-    var m = function(n){ return '$'+(n||0).toLocaleString(undefined,{maximumFractionDigits:0}); };
-    if (!rows.length) return '<div style="margin-bottom:14px;">'+head+'<div style="font-size:0.75rem;color:#666;">No commission activity yet this month.</div></div>';
-    var maxTotal = rows[0].total || 1;
-    var body = rows.slice(0, 8).map(function(r, i) {
-      var first = i === 0;
-      var pct = Math.max(4, Math.round((r.total / maxTotal) * 100));
-      return '<div style="display:flex;align-items:center;gap:10px;padding:9px 12px;background:rgba(255,255,255,0.02);border:1px solid '+(first?'rgba(240,180,41,0.35)':'rgba(255,255,255,0.06)')+';border-radius:10px;margin-bottom:7px;">'+
-        '<div style="font-family:'+COMM_MONO+';font-size:0.85rem;font-weight:700;color:'+(first?COMM_COLOR_GOLD:'#666')+';width:16px;flex-shrink:0;">'+(i+1)+'</div>'+
-        '<div style="flex:1;min-width:0;"><div style="font-size:0.8rem;font-weight:700;color:#eee;">'+esc(r.name)+'</div>'+
-          '<div style="height:5px;background:rgba(255,255,255,0.06);border-radius:100px;margin-top:4px;overflow:hidden;"><div style="height:100%;width:'+pct+'%;background:'+(first?COMM_COLOR_GOLD:'#8DC63F')+';border-radius:100px;"></div></div></div>'+
-        '<div style="font-family:'+COMM_MONO+';font-weight:700;color:#ddd;font-size:0.82rem;flex-shrink:0;">'+m(r.total)+'</div>'+
-      '</div>';
-    }).join('');
-    return '<div style="margin-bottom:14px;">'+head+
-      '<div style="font-size:0.6rem;color:#666;margin-bottom:8px;">Net Commission this month &middot; FixMy + Axia/QCells combined &middot; potential + earned</div>'+
-      body+
-    '</div>';
+  var _rbRange = 'month', _rbOffset = 0, _rbBasis = 'earned';
+  var _rbJobs = null; // [{name:cust, tech, setter, closer, setterAmt, company, earnedAt, soldAt}]
+  function _rbDate(v) { if (!v) return null; var d = new Date(v); return isNaN(d.getTime()) ? null : d; }
+  function _rbInPeriod(dt, b) { return dt && (!b || (dt >= b.start && dt < b.end)); }
+  function _rbCompute() {
+    var b = _periodBounds(_rbRange, _rbOffset);
+    var people = {}, tot = { company: 0, tech: 0, setter: 0, jobs: 0 };
+    (_rbJobs || []).forEach(function(j) {
+      var dt = _rbBasis === 'earned' ? j.earnedAt : j.soldAt;
+      if (!_rbInPeriod(dt, b)) return;
+      tot.jobs++; tot.company += j.company || 0; tot.tech += j.closer || 0; tot.setter += j.setterAmt || 0;
+      function add(n, amt, role) { if (!n || !amt) return; var p = people[n] || (people[n] = { name: n, total: 0, tech: 0, setter: 0, jobs: 0 }); p.total += amt; p[role] += amt; p.jobs++; }
+      add(j.tech, j.closer, 'tech'); add(j.setter, j.setterAmt, 'setter');
+    });
+    var rows = Object.keys(people).map(function(k){ return people[k]; }).sort(function(x, y){ return y.total - x.total; });
+    return { tot: tot, rows: rows, b: b };
   }
+  function _rbRecords() {
+    // All-time, earned basis — best month / best week (company + reps combined), biggest
+    // single job, and the all-time top earner.
+    var months = {}, weeks = {}, people = {}, biggest = null;
+    (_rbJobs || []).forEach(function(j) {
+      if (!j.earnedAt) return;
+      var all = (j.company || 0) + (j.closer || 0) + (j.setterAmt || 0);
+      var mk = j.earnedAt.getFullYear() + '-' + (j.earnedAt.getMonth() + 1);
+      var wb = _periodBounds('week', _periodOffsetForDate('week', j.earnedAt));
+      var wk = wb.start.getTime();
+      var m = months[mk] || (months[mk] = { key: mk, label: _MONTHS_LONG[j.earnedAt.getMonth()] + ' ' + j.earnedAt.getFullYear(), amt: 0 }); m.amt += all;
+      var w = weeks[wk] || (weeks[wk] = { key: wk, label: wb.label, amt: 0 }); w.amt += all;
+      if (j.tech) people[j.tech] = (people[j.tech] || 0) + (j.closer || 0);
+      if (j.setter) people[j.setter] = (people[j.setter] || 0) + (j.setterAmt || 0);
+      if (!biggest || all > biggest.amt) biggest = { amt: all, label: j.name };
+    });
+    function best(o) { return Object.keys(o).map(function(k){ return o[k]; }).sort(function(x, y){ return y.amt - x.amt; })[0] || null; }
+    var topP = Object.keys(people).map(function(k){ return { name: k, amt: people[k] }; }).sort(function(x, y){ return y.amt - x.amt; })[0] || null;
+    return { month: best(months), week: best(weeks), biggest: biggest, person: topP };
+  }
+  function _leaderboardHtml() {
+    var head = '<div style="margin-top:10px;margin-bottom:'+(_leaderboardOpen?'10px':'14px')+';">'+
+      '<button onclick="window._leaderboardToggle()" style="width:auto;background:none;border:none;color:'+COMM_COLOR_GOLD+';font-size:0.8rem;font-weight:800;cursor:pointer;padding:0;display:flex;align-items:center;gap:6px;">'+(_leaderboardOpen?'&#9660;':'&#9654;')+' &#127942; Record Board</button></div>';
+    if (!_leaderboardOpen) return head;
+    if (_leaderboardLoading || !_rbJobs) return head+'<div style="font-size:0.72rem;color:#666;margin-bottom:14px;">Loading&hellip;</div>';
+    var m = function(n){ return '$'+(n||0).toLocaleString(undefined,{maximumFractionDigits:0}); };
+    var pill = function(active, fn, label) { return '<button onclick="'+fn+'" style="width:auto;padding:5px 13px;border-radius:100px;font-size:0.72rem;font-weight:800;cursor:pointer;border:1px solid '+(active?'rgba(240,180,41,0.6)':'rgba(255,255,255,0.12)')+';background:'+(active?'rgba(240,180,41,0.15)':'rgba(255,255,255,0.04)')+';color:'+(active?COMM_COLOR_GOLD:'#aaa')+';">'+label+'</button>'; };
+    var ranges = [['day','Day'],['week','Week'],['month','Month'],['quarter','Quarter'],['year','Year'],['total','Total']];
+    var bar = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;">'+ranges.map(function(r){ return pill(_rbRange===r[0], "_rbSet('range','"+r[0]+"')", r[1]); }).join('')+
+      '<span style="width:10px;"></span>'+pill(_rbBasis==='earned', "_rbSet('basis','earned')", 'Earned')+pill(_rbBasis==='sold', "_rbSet('basis','sold')", 'Sold')+'</div>';
+    bar += _periodNavHtml(_rbRange, _rbOffset, COMM_COLOR_GOLD, "_rbNav(-1)", "_rbNav(1)", "_rbNav(0)", "_rbJump");
+    var c = _rbCompute(), t = c.tot;
+    var tile = function(lbl, val, col) { return '<div style="flex:1;min-width:92px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:10px;padding:9px 11px;"><div style="font-size:0.58rem;color:#888;text-transform:uppercase;letter-spacing:0.06em;">'+lbl+'</div><div style="font-family:'+COMM_MONO+';font-weight:800;font-size:1.02rem;color:'+col+';margin-top:2px;">'+val+'</div></div>'; };
+    var tiles = '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">'+tile('Company', m(t.company), '#8DC63F')+tile('Tech / closer', m(t.tech), COMM_COLOR_GOLD)+tile('Setter', m(t.setter), '#5ba4ff')+tile('Jobs', String(t.jobs), '#ddd')+'</div>';
+    var medals = ['&#129351;','&#129352;','&#129353;'];
+    var maxTotal = c.rows.length ? c.rows[0].total : 1;
+    var board = c.rows.length ? c.rows.slice(0, 10).map(function(r, i) {
+      var pct = Math.max(4, Math.round((r.total / maxTotal) * 100));
+      return '<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:rgba(255,255,255,0.02);border:1px solid '+(i===0?'rgba(240,180,41,0.35)':'rgba(255,255,255,0.06)')+';border-radius:10px;margin-bottom:6px;">'+
+        '<div style="width:22px;text-align:center;font-size:'+(i<3?'1.05rem':'0.8rem')+';color:#666;font-family:'+COMM_MONO+';flex-shrink:0;">'+(i<3?medals[i]:(i+1))+'</div>'+
+        '<div style="flex:1;min-width:0;"><div style="font-size:0.8rem;font-weight:700;color:#eee;">'+esc(r.name)+' <span style="font-size:0.6rem;color:#777;font-weight:600;">'+(r.tech?'Tech '+m(r.tech):'')+(r.tech&&r.setter?' &middot; ':'')+(r.setter?'Setter '+m(r.setter):'')+'</span></div>'+
+        '<div style="height:5px;background:rgba(255,255,255,0.06);border-radius:100px;margin-top:4px;overflow:hidden;"><div style="height:100%;width:'+pct+'%;background:'+(i===0?COMM_COLOR_GOLD:'#8DC63F')+';border-radius:100px;"></div></div></div>'+
+        '<div style="font-family:'+COMM_MONO+';font-weight:800;color:#ddd;font-size:0.84rem;flex-shrink:0;">'+m(r.total)+'</div></div>';
+    }).join('') : '<div style="font-size:0.75rem;color:#666;margin-bottom:8px;">No commission '+(_rbBasis==='earned'?'earned':'sold')+' in this period.</div>';
+    var rec = _rbRecords();
+    var curMonthKey = new Date().getFullYear() + '-' + (new Date().getMonth() + 1);
+    var recTile = function(icon, lbl, val, sub, hot) { return '<div style="flex:1;min-width:130px;background:rgba(240,180,41,0.05);border:1px solid '+(hot?'rgba(240,180,41,0.55)':'rgba(240,180,41,0.18)')+';border-radius:10px;padding:9px 11px;"><div style="font-size:0.58rem;color:#b8962e;text-transform:uppercase;letter-spacing:0.06em;">'+icon+' '+lbl+(hot?' &middot; <b style="color:'+COMM_COLOR_GOLD+';">NEW RECORD!</b>':'')+'</div><div style="font-family:'+COMM_MONO+';font-weight:800;font-size:0.98rem;color:'+COMM_COLOR_GOLD+';margin-top:2px;">'+val+'</div><div style="font-size:0.62rem;color:#999;margin-top:1px;">'+esc(sub)+'</div></div>'; };
+    var recs = '<div style="font-size:0.62rem;color:#888;text-transform:uppercase;letter-spacing:0.07em;margin:12px 0 6px;">All-time records (earned)</div><div style="display:flex;gap:8px;flex-wrap:wrap;">'+
+      (rec.month ? recTile('&#127775;','Best month', m(rec.month.amt), rec.month.label, rec.month.key === curMonthKey) : '')+
+      (rec.week ? recTile('&#9889;','Best week', m(rec.week.amt), rec.week.label, false) : '')+
+      (rec.biggest ? recTile('&#128176;','Biggest job', m(rec.biggest.amt), rec.biggest.label, false) : '')+
+      (rec.person ? recTile('&#128081;','Top earner', m(rec.person.amt), rec.person.name, false) : '')+'</div>';
+    return head+'<div style="margin-bottom:14px;">'+bar+tiles+board+recs+
+      '<div style="font-size:0.58rem;color:#666;margin-top:8px;">Gross commission split (company + Tech + Setter) &middot; FixMy + Axia/QCells &middot; '+(_rbBasis==='earned'?'counted when the job is installed / PTO':'counted when the job is sold')+'</div></div>';
+  }
+  function _rbRepaint() { var slot = document.getElementById('leaderboardSlot'); if (slot) slot.innerHTML = _leaderboardHtml(); }
+  window._rbSet = function(k, v) { if (k === 'range') { _rbRange = v; _rbOffset = 0; } else _rbBasis = v; _rbRepaint(); };
+  window._rbNav = function(d) { _rbOffset = d === 0 ? 0 : Math.min(0, _rbOffset + d); _rbRepaint(); };
+  window._rbJump = function(val) { var dt = new Date(val + 'T12:00:00'); if (isNaN(dt.getTime())) return; _rbOffset = Math.min(0, _periodOffsetForDate(_rbRange, dt)); _rbRepaint(); };
   window._leaderboardToggle = function() {
     _leaderboardOpen = !_leaderboardOpen;
-    var slot = document.getElementById('leaderboardSlot');
-    if (slot) slot.innerHTML = _leaderboardHtml();
-    if (_leaderboardOpen && !_leaderboardCache) _loadLeaderboardData();
+    _rbRepaint();
+    if (_leaderboardOpen && !_rbJobs) _loadLeaderboardData();
   };
   async function _loadLeaderboardData() {
-    _leaderboardLoading = true;
-    var slot = document.getElementById('leaderboardSlot');
-    if (slot) slot.innerHTML = _leaderboardHtml();
+    _leaderboardLoading = true; _rbRepaint();
     try {
-      var monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
-      var jobsThisMonth = (adminCustomers||[]).filter(function(c){ return _isRealJob(c) && c.created_at && new Date(c.created_at) >= monthStart; });
-      var fixmyIds = jobsThisMonth.filter(function(c){ return c.lead_category !== 'new_solar'; }).map(function(c){ return c.id; });
-      var nsIds = jobsThisMonth.filter(function(c){ return c.lead_category === 'new_solar'; }).map(function(c){ return c.id; });
+      var jobs = (adminCustomers||[]).filter(_isRealJob);
+      var fixmyIds = jobs.filter(function(c){ return c.lead_category !== 'new_solar'; }).map(function(c){ return c.id; });
+      var nsIds = jobs.filter(function(c){ return c.lead_category === 'new_solar'; }).map(function(c){ return c.id; });
       await Promise.all([
         fixmyIds.length ? _loadFixmyJobCommissions(fixmyIds) : Promise.resolve(),
         nsIds.length ? _loadAxiaJobCommissions(nsIds) : Promise.resolve()
       ]);
-      var totals = {};
-      function add(name, amt) { if (!name || !amt) return; totals[name] = (totals[name]||0) + amt; }
-      fixmyIds.forEach(function(id){
-        var d = _fixmyCommCache[id]; if (!d) return;
-        if (d.repId) add(repName(d.repId), d.closerAmt);
-        if (d.hasSetter && d.setterName) add(d.setterName, d.setterAmt);
+      _rbJobs = [];
+      jobs.forEach(function(c) {
+        var d = (c.lead_category === 'new_solar' ? _axiaCommCache : _fixmyCommCache)[c.id]; if (!d) return;
+        _rbJobs.push({
+          name: ((c.first_name||'')+' '+(c.last_name||'')).trim() || 'Job',
+          tech: d.repId ? repName(d.repId) : '',
+          setter: d.hasSetter ? (d.setterName || '') : '',
+          closer: d.closerAmt || 0, setterAmt: d.hasSetter ? (d.setterAmt || 0) : 0, company: d.companyAmt || 0,
+          earnedAt: d.earned ? _rbDate(d.earnedAt) : null,
+          soldAt: _rbDate(d.soldAt || c.sold_at || c.created_at)
+        });
       });
-      nsIds.forEach(function(id){
-        var d = _axiaCommCache[id]; if (!d) return;
-        if (d.repId) add(repName(d.repId), d.closerAmt);
-        if (d.hasSetter && d.setterName) add(d.setterName, d.setterAmt);
-      });
-      var rows = Object.keys(totals).map(function(name){ return { name: name, total: totals[name] }; }).sort(function(a,b){ return b.total - a.total; });
-      _leaderboardCache = { rows: rows };
-    } catch(e) { _leaderboardCache = { rows: [] }; }
-    _leaderboardLoading = false;
-    var slot2 = document.getElementById('leaderboardSlot');
-    if (slot2) slot2.innerHTML = _leaderboardHtml();
+    } catch(e) { _rbJobs = []; }
+    _leaderboardLoading = false; _rbRepaint();
   }
 
   // ── Payout trend sparkline (2026-09-14) — the rep Payroll hero card's "last 6
@@ -22046,6 +22155,106 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     renderPhotoGrid();
   }
 
+  // ── Shared Sort / Filter bar (2026-10-04, per Dennis — "the sort and filter feature
+  // should be synonymous with each pipeline, and Lead/Job category"). ONE module drives
+  // admin Leads, admin Jobs, rep Leads and rep Jobs, for both pipelines. Default sort is
+  // most recently updated. "Canceled" replaces Archive as the everyday way to set a lead
+  // aside: FixMy step 7 (Not Sold/Dead) or an Axia dead status — hidden by default behind
+  // a toggle but still in the data (future email/newsletter recapture), unlike Archive.
+  var _LF_NS_CANCELED = ['ns_eval_canceled', 'ns_welcome_dead', 'ns_call_dead'];
+  var _LF_FIXMY_STEPS = {1:'Eval Booked',2:'Photos Uploaded',3:'Diagnostic Booked',4:'Analysis Done',5:'Proposal Sent',6:'Sold / Deposit',7:'Canceled / Not Sold',8:'Install Booked',9:'Installed',10:'Monitoring'};
+  var _lf = {};
+  window._lfState = function(scope, cat) { var k = scope + '_' + cat; return _lf[k] || (_lf[k] = { sort: 'updated', stage: '', tech: '', setter: '', source: '', showCanceled: false }); };
+  window._lfIsCanceled = function(c) {
+    return c.lead_category === 'new_solar' ? _LF_NS_CANCELED.indexOf(c.solar_status) > -1 : parseInt(c.step, 10) === 7;
+  };
+  function _lfStageKey(c) { return c.lead_category === 'new_solar' ? (c.solar_status || 'ns_eval_booked') : String(parseInt(c.step, 10) || 1); }
+  function _lfStageLabel(c) {
+    if (c.lead_category === 'new_solar') return (NS_STATUSES[c.solar_status || 'ns_eval_booked'] || {}).label || (c.solar_status || 'Eval Booked');
+    return _LF_FIXMY_STEPS[parseInt(c.step, 10) || 1] || 'Step ' + c.step;
+  }
+  function _lfT(v) { var t = new Date(v || 0).getTime(); return isNaN(t) ? 0 : t; }
+  // pool = the category's full list BEFORE any filtering (so option lists + counts are stable)
+  window._lfApply = function(list, st, pool) {
+    var out = list.filter(function(c) {
+      if (!st.showCanceled && _lfIsCanceled(c)) return false;
+      if (st.stage && _lfStageKey(c) !== st.stage) return false;
+      if (st.tech && (c.rep_id || '') !== st.tech) return false;
+      if (st.setter && (c.setter_name || '') !== st.setter) return false;
+      if (st.source && (c.lead_source || '') !== st.source) return false;
+      return true;
+    });
+    var sorters = {
+      updated: function(a, b) { return _lfT(b.updated_at || b.created_at) - _lfT(a.updated_at || a.created_at); },
+      added:   function(a, b) { return _lfT(b.created_at) - _lfT(a.created_at); },
+      name:    function(a, b) { return ((a.last_name || '') + (a.first_name || '')).toLowerCase().localeCompare(((b.last_name || '') + (b.first_name || '')).toLowerCase()); },
+      appt:    function(a, b) { var x = _lfT(a.diagnostic_date), y = _lfT(b.diagnostic_date); if (!x && !y) return 0; if (!x) return 1; if (!y) return -1; return x - y; }
+    };
+    return out.slice().sort(sorters[st.sort] || sorters.updated);
+  };
+  window._lfBarHtml = function(scope, cat, pool) {
+    var st = _lfState(scope, cat), isRep = scope.indexOf('rep') === 0;
+    var sel = 'background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);color:#F3EDE3;border-radius:8px;padding:6px 8px;font-size:0.7rem;outline:none;flex:1;min-width:104px;max-width:200px;';
+    var sc = "'" + scope + "','" + cat + "'";
+    var opt = function(v, l, cur) { return '<option value="' + esc(v) + '"' + (v === cur ? ' selected' : '') + '>' + esc(l) + '</option>'; };
+    var stages = {}, techs = {}, setters = {}, sources = {}, nCanceled = 0;
+    pool.forEach(function(c) {
+      stages[_lfStageKey(c)] = _lfStageLabel(c);
+      if (c.rep_id) techs[c.rep_id] = 1;
+      if (c.setter_name) setters[c.setter_name] = 1;
+      if (c.lead_source) sources[c.lead_source] = 1;
+      if (_lfIsCanceled(c)) nCanceled++;
+    });
+    var h = '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:0 0 12px;padding:9px 10px;background:rgba(255,255,255,0.025);border:1px solid rgba(255,255,255,0.07);border-radius:10px;">';
+    h += '<select title="Sort" onchange="_lfSet(' + sc + ',\'sort\',this.value)" style="' + sel + '">' +
+      opt('updated', '⇅ Recently updated', st.sort) + opt('added', '⇅ Recently added', st.sort) + opt('name', '⇅ Name A–Z', st.sort) + opt('appt', '⇅ Next appointment', st.sort) + '</select>';
+    var stageKeys = Object.keys(stages);
+    h += '<select title="Stage" onchange="_lfSet(' + sc + ',\'stage\',this.value)" style="' + sel + '"><option value="">All stages</option>' +
+      stageKeys.map(function(k) { return opt(k, stages[k], st.stage); }).join('') + '</select>';
+    if (!isRep && Object.keys(techs).length) h += '<select title="Tech" onchange="_lfSet(' + sc + ',\'tech\',this.value)" style="' + sel + '"><option value="">All Techs</option>' +
+      Object.keys(techs).map(function(k) { return opt(k, (typeof repName === 'function' && repName(k)) || k, st.tech); }).join('') + '</select>';
+    if (Object.keys(setters).length) h += '<select title="Setter" onchange="_lfSet(' + sc + ',\'setter\',this.value)" style="' + sel + '"><option value="">All Setters</option>' +
+      Object.keys(setters).map(function(k) { return opt(k, k, st.setter); }).join('') + '</select>';
+    if (Object.keys(sources).length) h += '<select title="Source" onchange="_lfSet(' + sc + ',\'source\',this.value)" style="' + sel + '"><option value="">All sources</option>' +
+      Object.keys(sources).map(function(k) { return opt(k, k.replace(/_/g, ' '), st.source); }).join('') + '</select>';
+    h += '<button onclick="_lfToggleCanceled(' + sc + ')" style="width:auto;padding:6px 11px;border-radius:100px;font-size:0.68rem;font-weight:800;cursor:pointer;border:1px solid ' + (st.showCanceled ? 'rgba(239,68,68,0.6)' : 'rgba(255,255,255,0.14)') + ';background:' + (st.showCanceled ? 'rgba(239,68,68,0.15)' : 'rgba(255,255,255,0.04)') + ';color:' + (st.showCanceled ? '#f87171' : '#aaa') + ';">' + (st.showCanceled ? 'Hide' : 'Show') + ' canceled (' + nCanceled + ')</button>';
+    if (st.stage || st.tech || st.setter || st.source) h += '<button onclick="_lfClear(' + sc + ')" style="width:auto;padding:6px 10px;background:none;border:none;color:#8DC63F;font-size:0.68rem;font-weight:700;cursor:pointer;">Clear filters</button>';
+    return h + '</div>';
+  };
+  function _lfRerender(scope) {
+    if (scope === 'admLeads') renderAdminView(adminView);
+    else if (scope === 'admJobs') renderJobsView();
+    else if (typeof window.salesRerender === 'function') window.salesRerender();
+  }
+  window._lfSet = function(scope, cat, key, val) { _lfState(scope, cat)[key] = val; _lfRerender(scope); };
+  window._lfToggleCanceled = function(scope, cat) { var st = _lfState(scope, cat); st.showCanceled = !st.showCanceled; _lfRerender(scope); };
+  window._lfClear = function(scope, cat) { var st = _lfState(scope, cat); st.stage = st.tech = st.setter = st.source = ''; _lfRerender(scope); };
+
+  // Cancel / Reopen — the card-level replacement for Archive. Keeps the record (and its
+  // contact info) in the data so a recapture campaign can find it later.
+  async function _lfSetCanceled(id, cancel) {
+    var rec = (adminCustomers || []).find(function(x) { return x.id === id; });
+    if (!rec) { alert('Could not find that lead — refresh and try again.'); return; }
+    var isNS = rec.lead_category === 'new_solar';
+    var name = ((rec.first_name || '') + ' ' + (rec.last_name || '')).trim() || 'this lead';
+    if (cancel && !confirm('Mark ' + name + ' as Canceled? They stay in the system (use "Show canceled" to see them) — they just leave your active list.')) return;
+    var upd = isNS ? { solar_status: cancel ? 'ns_eval_canceled' : 'ns_eval_booked' } : { step: cancel ? 7 : 1 };
+    try {
+      var sc = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var { data, error } = await sc.from('customers').update(upd).eq('id', id).select('id');
+      if (error) throw error;
+      if (!data || !data.length) throw new Error('No row was updated');
+      Object.assign(rec, upd);
+      rec.updated_at = new Date().toISOString();
+      try { if (typeof bbLogActivity === 'function') bbLogActivity(id, 'note', null, cancel ? 'Marked Canceled' : 'Reopened (moved back to ' + (isNS ? 'Eval Booked' : 'Eval Booked') + ')'); } catch (e) {}
+      if (typeof closeLeadEditor === 'function') closeLeadEditor();
+      if (typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE === 'admin') renderAdminView(adminView);
+      else if (typeof window.salesRerender === 'function') window.salesRerender();
+    } catch (e) { alert((cancel ? 'Cancel' : 'Reopen') + ' failed: ' + e.message); }
+  }
+  window.cancelLead = function(id) { return _lfSetCanceled(id, true); };
+  window.reopenLead = function(id) { return _lfSetCanceled(id, false); };
+
   // ── ADMIN HELPERS ──────────────────────────────────────────────────────────
   function adminStat(val, label, color, filter) {
     var active = adminFilter===filter?'active':'';
@@ -24026,7 +24235,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         (_pd ? '<a class="lead-btn ghost" href="tel:'+_pd+'" style="text-decoration:none;">&#128222; Call</a>' : '')+
         (_pd ? '<a class="lead-btn ghost" href="sms:'+_pd+'" style="text-decoration:none;">&#128172; Text</a>' : '')+
         (_navUrl ? '<a class="lead-btn ghost" href="'+_navUrl+'" target="_blank" rel="noopener" style="text-decoration:none;">&#128506; Nav</a>' : '')+
-        '<button class="lead-btn ghost" data-id="'+c.id+'" onclick="archiveLead(this.dataset.id)" style="color:#ffaa00;border-color:rgba(255,170,0,0.25);">&#128451; Archive</button>'+
+        (_lfIsCanceled(c)
+          ? '<button class="lead-btn ghost" data-id="'+c.id+'" onclick="reopenLead(this.dataset.id)" style="color:#8DC63F;border-color:rgba(141,198,63,0.3);">&#8617; Reopen</button>'
+          : '<button class="lead-btn ghost" data-id="'+c.id+'" onclick="cancelLead(this.dataset.id)" style="color:#f87171;border-color:rgba(239,68,68,0.3);">&#10005; Cancel</button>')+
       '</div></div>'+
       progressHtml+
     '</div>';
@@ -30754,6 +30965,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             return ((l.first_name||'')+(l.last_name||'')+(l.email||'')+(l.phone||'')+(l.address||'')).toLowerCase().indexOf(_salesSearchQ) > -1;
           });
         }
+        var _lfPoolRL = viewLeads;
+        viewLeads = _lfApply(viewLeads, _lfState('repLeads', salesLeadCat), _lfPoolRL);
+        h += _lfBarHtml('repLeads', salesLeadCat, _lfPoolRL);
         if (!viewLeads.length) {
           // Same "don't let a search-empty result read like the person doesn't exist"
           // rule as renderAdminView's _checkArchivedMatches — a search here can never find
@@ -30801,6 +31015,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       else if (salesView === 'jobs') {
         h += catSubTabs(salesJobCat, myFixmyJobs, myNSJobs, 'salesSetJobCat');
         var viewJobs = salesJobCat === 'new_solar' ? myNSJobs : myFixmyJobs;
+        var _lfPoolRJ = viewJobs;
+        viewJobs = _lfApply(viewJobs, _lfState('repJobs', salesJobCat), _lfPoolRJ);
+        h += _lfBarHtml('repJobs', salesJobCat, _lfPoolRJ);
         if (!viewJobs.length) {
           h += '<div style="text-align:center;padding:32px;color:#555;">No '+(salesJobCat==='new_solar'?'Axia/QCells':'FixMy.Energy')+' jobs yet.</div>';
         } else {
@@ -31924,6 +32141,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     };
     window.dismissWelcome = function(id) { try { sessionStorage.removeItem('showWelcome_'+id); } catch(e){} renderSales(); };
     window.renderSales = renderSales;
+    window.salesRerender = function() { renderSales(); };
     window.salesSetLeadCat = function(v) { salesLeadCat=v; try{sessionStorage.setItem('salesLeadCat_'+person.id,v);}catch(e){} renderSales(); };
     window.salesSetJobCat  = function(v) { salesJobCat=v;  try{sessionStorage.setItem('salesJobCat_'+person.id,v);}catch(e){}  renderSales(); };
     // Live search for the rep/tech Leads tab (2026-09-21) — same re-render-then-restore-
