@@ -30,7 +30,13 @@ exports.handler = async function(event) {
     return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Invalid JSON' }) };
   }
 
-  const { token, paymentIntentId, signature, repairAuthInitial, signingLocation, fbp, fbc } = body;
+  const { token, paymentIntentId, signature, signingLocation, fbp, fbc } = body;
+  let initialsData = null;
+  if (body.repairInitialData != null) {
+    initialsData = sigAudit.validateInitialsData(body.repairInitialData);
+    if (!initialsData) return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Invalid initials' }) };
+  }
+  const repairAuthInitial = sigAudit.initialsText(initialsData, body.repairAuthInitial);
   if (!token || !paymentIntentId || !signature) {
     return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'token, paymentIntentId and signature required' }) };
   }
@@ -116,6 +122,7 @@ exports.handler = async function(event) {
         location: signingLocation || null, printed_name: String(signature).slice(0, 120),
         terms_sha256: terms.sha256, repair_cap: terms.cap,
         signature_sha256: signatureData ? sigAudit.signatureFingerprint(signatureData) : null,
+        initials_mark: initialsData, initials_sha256: initialsData ? sigAudit.signatureFingerprint(initialsData) : null,
         payment_intent: paymentIntentId
       };
     })(),

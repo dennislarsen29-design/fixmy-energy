@@ -631,6 +631,28 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       body: JSON.stringify({ dest: dest, payload: payload })
     }).then(function(r) { return r.json().catch(function(){ return {ok:false}; }); });
   }
+  // 2026-10-04: customer-facing texts/emails go straight from OUR server (notify-customer.js →
+  // GHL Conversations API + Resend), never through a GHL workflow. Resolves to the REAL result
+  // {ok, sms:{ok,reason}, email:{ok,reason}, sent_to} — never an unconditional "sent".
+  function _notifyCustomer(type, customerId) {
+    return fetch('/.netlify/functions/notify-customer', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: type, customerId: customerId })
+    }).then(function(r){ return r.json().catch(function(){ return {ok:false, reason:'bad_response'}; }); })
+      .catch(function(){ return {ok:false, reason:'network'}; });
+  }
+  function _notifySummary(r) {
+    if (!r) return 'No result from the notification service.';
+    var parts = [];
+    if (r.sms && r.sms.ok) parts.push('texted ✓');
+    if (r.email && r.email.ok) parts.push('emailed ✓');
+    if (parts.length) return 'Customer ' + parts.join(' + ') + (r.sent_to ? ' (' + [r.sent_to.phone, r.sent_to.email].filter(Boolean).join(' / ') + ')' : '') + '.';
+    if (r.reason === 'rate_limited') return 'They were already notified a moment ago.';
+    if (r.reason === 'no_contact') return 'The customer was NOT notified — no phone or email on file.';
+    if (r.reason === 'network') return 'The customer was NOT notified — could not reach the server. Use Copy Link.';
+    var why = [r.sms && r.sms.reason, r.email && r.email.reason].filter(Boolean).join(' / ') || r.reason || 'unknown';
+    return 'The customer was NOT notified (' + why + '). Use Copy Link.';
+  }
   var GHL_DIAG_AGREEMENT_WEBHOOK = 'https://services.leadconnectorhq.com/hooks/gXWwbOVymY0iRfj7c1It/webhook-trigger/f17004a5-5956-4d13-b7f0-a11098bac586';
   var GHL_DIAG_INVOICE_WEBHOOK   = null; // placeholder — set to webhook URL when Stripe invoice flow is ready
   var GHL_DIAG_SCHEDULE_WEBHOOK  = null; // set when GHL diagnostic scheduling workflow is ready
@@ -23000,6 +23022,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     _sigState[key] = _sigState[key] || { result: null };
     _sigState[key].context = context;
     SigCapture.open({
+      kind: (context && context.initials) ? 'initials' : 'signature',
       defaultName: _sigDefaultName(context),
       initial: _sigState[key].result,
       onDone: function(result) {
@@ -23438,7 +23461,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // browser couldn't contact GHL at all, e.g. offline). Never claim "sent" when the
       // fetch never left the device — same "never let an untaken code path render
       // identically to a real negative" rule used throughout this codebase.
-      var _notifyState = 'skipped', _notifySkipReason = '';
+      var _notifyState = 'skipped', _notifySkipReason = '', _notifyDetail = '';
       if (!custRow) { _notifySkipReason = 'could not re-fetch the customer record'; }
       else if (!def || !def.hasPdfTemplate) { _notifySkipReason = 'this document has no customer-facing signing screen yet'; }
       else if (_otherAlreadyReady) { _notifySkipReason = 'another document is already waiting on the customer — they were already notified'; }
@@ -23448,18 +23471,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           ? 'https://fixmy.energy/portal?email=' + encodeURIComponent(custRow.email) + '&code=' + encodeURIComponent(custRow.access_code || (custRow.phone||'').replace(/\D/g,''))
           : null;
         try {
-          var _relayResult = await _ghlWebhookFire(GHL_PROPOSAL_WEBHOOK, {
-            type: 'document_ready', customer_id: customerId, doc_type: docType, doc_label: def ? def.label : docType,
-            email: custRow.email||'', phone: custRow.phone||'',
-            first_name: custRow.first_name||'', last_name: custRow.last_name||'',
-            full_name: ((custRow.first_name||'')+' '+(custRow.last_name||'')).trim(),
-            magic_link: _readyLink, rep_name: repName
-          });
-          // The relay reports GHL's REAL response now (not the opaque no-cors
-          // stand-in this used to be) — only report "sent" when GHL actually
-          // returned a 2xx, never just "the request left the device."
+          var _relayResult = await _notifyCustomer('document_ready', customerId);
+          _notifyDetail = _notifySummary(_relayResult);
           if (_relayResult && _relayResult.ok) { _notifyState = 'sent'; }
-          else { _notifyState = 'failed'; _notifySkipReason = 'GHL responded with status ' + (_relayResult && _relayResult.ghl_status) + ' — check the workflow'; }
+          else if (_relayResult && _relayResult.reason === 'rate_limited') { _notifyState = 'sent'; }
+          else { _notifyState = 'failed'; _notifySkipReason = _notifyDetail; }
         } catch(eNotify) { _notifyState = 'failed'; }
       }
       var c = adminCustomers.find(function(x){ return x.id === customerId; });
@@ -23468,11 +23484,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var m = document.getElementById('dealDocModal'); if (m) m.remove();
       var _notifyMsg;
       if (_notifyState === 'sent') {
-        _notifyMsg = 'A "ready to sign" notification was sent to ' + [custRow.phone, custRow.email].filter(Boolean).join(' / ') + '. That only confirms the trigger reached GHL, not that the text/email actually arrived — if they say they never got it, check GHL → Automations → "Solar Review - Customer Agreement Notifications" → Execution History for a document_ready run on this contact.';
+        _notifyMsg = _notifyDetail;
       } else if (_notifyState === 'failed') {
-        _notifyMsg = _notifySkipReason
-          ? ('The customer was NOT notified — ' + _notifySkipReason + '.')
-          : 'Could not reach the notification service from this device — the customer was NOT notified. Check your connection and try again, or text/email them the portal link directly.';
+        _notifyMsg = _notifySkipReason || 'Could not reach the notification service — the customer was NOT notified.';
       } else {
         _notifyMsg = 'No customer notification was sent (' + _notifySkipReason + ').';
       }
@@ -23533,6 +23547,36 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         (canSign ? '<button onclick="openCustDocSign(\''+c.id+'\',\''+d.id+'\')" style="width:auto;padding:9px 18px;background:#8DC63F;border:none;border-radius:100px;color:#000;font-weight:700;font-size:0.78rem;cursor:pointer;">Sign</button>' : '')+
       '</div>';
     }).join('');
+    _custPendingDocPrompt(c, applicable, docsCache);
+  }
+
+  // 2026-10-04, per Dennis — a document waiting for the customer's signature must be impossible
+  // to miss: a sticky banner while anything is pending, plus a once-per-session popup (tour style)
+  // that goes straight to the document. Dismissible ("Later"); the banner stays.
+  function _custPendingDocPrompt(c, applicable, docsCache) {
+    var pend = applicable.filter(function(d){ var r = docsCache[d.id]; return d.hasPdfTemplate && r && r.status === 'reviewed'; });
+    var oldB = document.getElementById('custDocBanner'); if (oldB) oldB.remove();
+    if (!pend.length) return;
+    var first = pend[0].id;
+    var b = document.createElement('div');
+    b.id = 'custDocBanner';
+    b.style.cssText = 'position:sticky;top:0;z-index:9000;background:#8DC63F;color:#000;padding:12px 16px;display:flex;align-items:center;justify-content:space-between;gap:10px;font-weight:700;font-size:0.9rem;box-shadow:0 2px 10px rgba(0,0,0,.35);';
+    b.innerHTML = '<span>&#9997;&#65039; ' + (pend.length > 1 ? pend.length + ' documents are' : 'A document is') + ' waiting for your signature</span>' +
+      '<button style="width:auto;padding:8px 16px;background:#000;color:#fff;border:0;border-radius:100px;font-weight:700;cursor:pointer;" onclick="openCustDocSign(\'' + c.id + '\',\'' + first + '\')">Sign now</button>';
+    var host = document.getElementById('dashBody') || document.body;
+    host.insertBefore(b, host.firstChild);
+    var seenKey = 'custDocPopup_' + c.id;
+    try { if (sessionStorage.getItem(seenKey)) return; sessionStorage.setItem(seenKey, '1'); } catch(e) {}
+    var o = document.createElement('div');
+    o.id = 'custDocPopup';
+    o.style.cssText = 'position:fixed;inset:0;z-index:99990;background:rgba(0,0,0,.78);display:flex;align-items:center;justify-content:center;padding:18px;';
+    o.innerHTML = '<div style="background:#111;color:#fff;border:2px solid #8DC63F;border-radius:16px;max-width:400px;width:100%;padding:26px;text-align:center;">' +
+      '<div style="font-size:2.2rem;">&#9997;&#65039;</div>' +
+      '<div style="font-size:1.25rem;font-weight:800;margin:8px 0;">' + (pend.length > 1 ? 'You have documents to sign' : 'You have a document to sign') + '</div>' +
+      '<div style="font-size:0.88rem;color:#ccc;margin-bottom:18px;">Your Solar Review team prepared ' + pend.map(function(d){ return esc(d.label); }).join(', ') + '. It takes about two minutes.</div>' +
+      '<button style="width:100%;padding:14px;background:#8DC63F;border:0;border-radius:10px;font-weight:800;font-size:1rem;cursor:pointer;" onclick="document.getElementById(\'custDocPopup\').remove();openCustDocSign(\'' + c.id + '\',\'' + first + '\')">Sign now</button>' +
+      '<div style="margin-top:12px;"><a href="#" style="color:#999;font-size:0.82rem;" onclick="document.getElementById(\'custDocPopup\').remove();return false;">Later</a></div></div>';
+    document.body.appendChild(o);
   }
 
   var _custDocState = null;
@@ -23695,7 +23739,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         return '<input type="checkbox" data-fid="'+esc(f.id)+'" '+(checked?'checked':'')+' onchange="_custDocSetVal(\''+f.id+'\', this.checked)" style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+size+'px;height:'+size+'px;accent-color:#8DC63F;cursor:pointer;"/>';
       }
       if (f.id === 'pg3_initials') {
-        return '<input type="text" data-fid="'+esc(f.id)+'" value="'+esc(val||'')+'" placeholder="Initials / N/A" oninput="_custDocSetVal(\''+f.id+'\', this.value)" onblur="if(this.value.trim())_docGuideNext(\'custDoc\',\'cust\',\'pg3_initials\')" style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+Math.max(h,20)+'px;background:rgba(141,198,63,0.14);border:1px solid #8DC63F;border-radius:4px;color:#111;font-size:0.75rem;text-align:center;padding:0;box-sizing:border-box;"/>';
+        // 2026-10-04: same pad as the signature (computer-generated in 4 styles from what they type,
+        // or drawn) — no more free-typed text box.
+        var inKey = 'custinit_' + _custDocState.customerId + '_' + _custDocState.docType;
+        var hasIn = val && typeof val === 'object';
+        var innerI = hasIn
+          ? (val.type === 'drawn'
+              ? '<img src="'+val.dataUrl+'" style="max-width:100%;max-height:100%;"/>'
+              : '<span style="font-family:'+(val.fontFamily||"'Brush Script MT',cursive")+';font-size:0.95rem;color:#1a3a6b;">'+esc(val.text||'')+'</span>')
+          : '<span style="font-size:0.62rem;color:#8DC63F;font-weight:700;">Tap to initial</span>';
+        return '<button type="button" data-fid="pg3_initials" onclick="_sigOpen(\''+inKey+'\',{kind:\'cust\',field:\'pg3_initials\',initials:true,customerId:\''+_custDocState.customerId+'\',docType:\''+_custDocState.docType+'\'})" style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+Math.max(w,64)+'px;height:'+Math.max(h,24)+'px;background:rgba(141,198,63,0.16);border:1.5px dashed #8DC63F;border-radius:4px;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0 4px;box-sizing:border-box;overflow:hidden;">'+innerI+'</button>';
       }
       if (f.id === 'cust_name') {
         return '<input type="text" data-fid="cust_name" value="'+esc(val||'')+'" oninput="_custDocSetVal(\'cust_name\', this.value)" style="position:absolute;left:'+left+'px;top:'+top+'px;width:'+w+'px;height:'+h+'px;background:rgba(141,198,63,0.14);border:1px solid #8DC63F;border-radius:4px;color:#111;font-size:0.75rem;padding:0 4px;box-sizing:border-box;"/>';
@@ -23734,15 +23787,59 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   window._custDocSigCaptured = function(key) {
     var st = _sigState[key];
     if (!st || !st.context || !_custDocState) return;
-    _custDocState.values['cust_signature'] = st.result;
-    var f = (_custDocState.template.fields||[]).find(function(x){ return x.id === 'cust_signature'; });
+    var fid = (st.context && st.context.field) || 'cust_signature';
+    _custDocState.values[fid] = st.result;
+    var f = (_custDocState.template.fields||[]).find(function(x){ return x.id === fid; });
     if (f) _custDocRenderFieldsForPage(f.page);
-    _docGuideNext('custDoc', 'cust', 'cust_signature');
+    _docGuideNext('custDoc', 'cust', fid);
   };
 
   window._custDocSetVal = function(fieldId, val) {
     if (!_custDocState) return;
     _custDocState.values[fieldId] = val;
+  };
+
+  // One-time signing code (anti-fraud, 2026-10-04): the portal link is also known to the rep, so
+  // signing needs a code sent to the phone/email on file. Resolves to the code, or null if cancelled.
+  window._custDocAskCode = function(customerId, docType, accessCode) {
+    return new Promise(function(resolve) {
+      var old = document.getElementById('custOtpModal'); if (old) old.remove();
+      var m = document.createElement('div');
+      m.id = 'custOtpModal';
+      m.style.cssText = 'position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;padding:16px;';
+      m.innerHTML = '<div style="background:#fff;color:#111;border-radius:14px;max-width:380px;width:100%;padding:22px;text-align:center;">' +
+        '<div style="font-size:1.1rem;font-weight:800;margin-bottom:6px;">Confirm it\'s you</div>' +
+        '<div id="otpMsg" style="font-size:0.85rem;color:#444;margin-bottom:12px;">Sending a 6-digit code to your phone and email on file\u2026</div>' +
+        '<input id="otpInput" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000" style="width:100%;font-size:1.6rem;letter-spacing:8px;text-align:center;padding:10px;border:2px solid #8DC63F;border-radius:8px;box-sizing:border-box;"/>' +
+        '<div id="otpErr" style="color:#c00;font-size:0.8rem;min-height:18px;margin:8px 0;"></div>' +
+        '<button id="otpOk" style="width:100%;padding:12px;background:#8DC63F;border:0;border-radius:8px;font-weight:800;font-size:1rem;cursor:pointer;">Confirm &amp; Sign</button>' +
+        '<div style="margin-top:10px;font-size:0.78rem;"><a href="#" id="otpResend" style="color:#2563eb;">Send a new code</a> &nbsp;·&nbsp; <a href="#" id="otpCancel" style="color:#666;">Cancel</a></div>' +
+        '<div style="margin-top:10px;font-size:0.72rem;color:#888;">Only you should enter this code. Never read it to anyone else.</div></div>';
+      document.body.appendChild(m);
+      var msg = m.querySelector('#otpMsg'), err = m.querySelector('#otpErr'), inp = m.querySelector('#otpInput');
+      function done(v) { m.remove(); resolve(v); }
+      function send() {
+        err.textContent = '';
+        fetch('/.netlify/functions/doc-sign', { method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ action: 'send_code', customerId: customerId, docType: docType, accessCode: accessCode }) })
+          .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })
+          .then(function(x){
+            if (x.ok && x.j.ok !== false) {
+              var via = [x.j.sms && x.j.sms.ok ? 'text' : '', x.j.email && x.j.email.ok ? 'email' : ''].filter(Boolean).join(' and ');
+              msg.textContent = 'We sent a 6-digit code by ' + (via || 'text/email') + '. Enter it below.';
+              inp.focus();
+            } else { msg.textContent = ''; err.textContent = (x.j && x.j.error) || 'Could not send the code.'; }
+          }).catch(function(){ msg.textContent = ''; err.textContent = 'Could not reach the server. Check your connection and tap "Send a new code".'; });
+      }
+      m.querySelector('#otpOk').onclick = function() {
+        var c = inp.value.replace(/\D/g, '');
+        if (c.length !== 6) { err.textContent = 'Enter the 6-digit code.'; return; }
+        done(c);
+      };
+      m.querySelector('#otpResend').onclick = function(e) { e.preventDefault(); send(); };
+      m.querySelector('#otpCancel').onclick = function(e) { e.preventDefault(); done(null); };
+      send();
+    });
   };
 
   window._custDocSubmit = async function(customerId, docType) {
@@ -23757,14 +23854,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (!sig || typeof sig !== 'object') { alert('Tap the signature box and sign before submitting.'); return; }
     var name = (vals.cust_name || '').trim();
     if (!name) { alert('Type your printed name before signing.'); return; }
-    var pg3 = (vals.pg3_initials || '').trim();
-    if (!pg3) { alert('Please initial (or write "N/A") on the False Claims page before signing.'); return; }
+    var pg3 = vals.pg3_initials;
+    if (!pg3 || typeof pg3 !== 'object') { alert('Tap the initials box on the False Claims page and add your initials before signing.'); return; }
 
     var initials = {};
     (_custDocState.template.fields||[]).forEach(function(f) {
       if (f.type === 'checkbox') initials[f.id] = vals[f.id] !== false;
     });
-    initials.pg3_initials = pg3;
+    var initialsData = { pg3_initials: pg3 };
 
     var btn = document.getElementById('custDocSubmitBtn');
     if (btn) { btn.disabled = true; btn.textContent = 'Signing…'; }
@@ -23775,12 +23872,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // fingerprints into deal_documents.data.audit. Nothing here can choose those values.
       var _who = (typeof currentUser !== 'undefined' && currentUser && currentUser.id === customerId) ? currentUser : null;
       if (!_who) throw new Error('Session expired \u2014 please refresh and sign in again.');
+      var _acc = _who.access_code || (_who.phone || '').replace(/\D/g, '');
+      var _otpCode = await _custDocAskCode(customerId, docType, _acc);
+      if (!_otpCode) { if (btn) { btn.disabled = false; btn.innerHTML = '&#9989; Sign &amp; Submit'; } return; }
       var signResp = await fetch('/.netlify/functions/doc-sign', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          customerId: customerId, docType: docType,
-          accessCode: _who.access_code || (_who.phone || '').replace(/\D/g, ''),
-          name: name, initials: initials, signatureData: sig
+          customerId: customerId, docType: docType, accessCode: _acc, code: _otpCode,
+          name: name, initials: initials, initialsData: initialsData, signatureData: sig
         })
       });
       var signJson = {};
@@ -23822,13 +23921,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var _doneLink = _signedCust.email
           ? 'https://fixmy.energy/portal?email=' + encodeURIComponent(_signedCust.email) + '&code=' + encodeURIComponent(_signedCust.access_code || (_signedCust.phone||'').replace(/\D/g,''))
           : null;
-        _ghlWebhookFire(GHL_PROPOSAL_WEBHOOK, {
-          type: 'all_documents_signed', customer_id: customerId,
-          email: _signedCust.email||'', phone: _signedCust.phone||'',
-          first_name: _signedCust.first_name||'', last_name: _signedCust.last_name||'',
-          full_name: ((_signedCust.first_name||'')+' '+(_signedCust.last_name||'')).trim(),
-          magic_link: _doneLink
-        }).catch(function(){});
+        _notifyCustomer('all_documents_signed', customerId);
         alert('All documents signed! Thank you — you can revisit this page anytime to see them.');
       } else {
         alert('Signed! Thank you.');
@@ -25186,22 +25279,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         ? 'https://fixmy.energy/portal?email=' + encodeURIComponent(custRec.email) + '&code=' + encodeURIComponent(custRec.access_code || (custRec.phone||'').replace(/\D/g,''))
         : null;
       var _topSendOpt = options[0] || {};
-      _ghlWebhookFire(GHL_PROPOSAL_WEBHOOK, {
-        type: 'proposal_sent',
-        email: (custRec && custRec.email) || '',
-        phone: (custRec && custRec.phone) || '',
-        first_name: (custRec && custRec.first_name) || '',
-        last_name: (custRec && custRec.last_name) || '',
-        full_name: ((custRec&&custRec.first_name)||'') + ' ' + ((custRec&&custRec.last_name)||''),
-        customer_id: id,
-        rep_name: (typeof person !== 'undefined' ? person.name : 'Rep'),
-        magic_link: _sendMagicLink,
-        option_count: options.length,
-        top_option_title: _topSendOpt.title || '',
-        top_option_price: _topSendOpt.participate_price || _topSendOpt.price || 0
-      }).catch(function(){});
-      if (statusEl) { statusEl.style.color = '#8DC63F'; statusEl.textContent = '✓ Sent — an SMS/email trigger fired (needs a GHL workflow to actually deliver it). Copy Link below to send it yourself as a backup.'; }
-      setTimeout(function(){ if (modal && modal.parentNode) modal.remove(); }, 2600);
+      if (statusEl) { statusEl.style.color = '#d97706'; statusEl.textContent = 'Saved — sending to the customer…'; }
+      var _psRes = await _notifyCustomer('proposal_sent', id);
+      var _psOk = !!(_psRes && (_psRes.ok || _psRes.reason === 'rate_limited'));
+      if (statusEl) { statusEl.style.color = _psOk ? '#8DC63F' : '#ef4444'; statusEl.textContent = (_psOk ? '✓ Saved. ' : '✗ Saved, but ') + _notifySummary(_psRes); }
+      setTimeout(function(){ if (modal && modal.parentNode) modal.remove(); }, _psOk ? 2600 : 6000);
       return true;
     } catch(e) {
       if (statusEl) { statusEl.style.color = '#ef4444'; statusEl.textContent = '✗ ' + e.message; }

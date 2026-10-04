@@ -1229,23 +1229,21 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
       var newProp = Object.assign({}, PROP, { status: 'sent' });
       var { error } = await client.from('customers').update({ proposal: newProp }).eq('id', custId);
       if (error) throw error;
-      var magicLink = CUST.email ? ('https://fixmy.energy/portal?email='+encodeURIComponent(CUST.email)+'&code='+encodeURIComponent(CUST.access_code||(CUST.phone||'').replace(/\D/g,''))) : null;
-      var topOpt = OPTS[0] || {};
-      fetch('/.netlify/functions/ghl-webhook-relay', {
+      var res = await fetch('/.netlify/functions/notify-customer', {
         method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ dest: 'proposal', payload: {
-          type: 'proposal_sent',
-          email: CUST.email || '', phone: CUST.phone || '',
-          first_name: CUST.first_name || '', last_name: CUST.last_name || '',
-          full_name: (CUST.first_name||'')+' '+(CUST.last_name||''),
-          customer_id: custId, rep_name: 'Rep',
-          magic_link: magicLink, option_count: OPTS.length,
-          top_option_title: optDisplayName(topOpt), top_option_price: topOpt.participate_price || topOpt.price || 0
-        }})
-      }).catch(function(){});
-      status.className = 'status-msg ok';
-      status.textContent = '✓ Sent — ' + (CUST.first_name||'your customer') + ' can now open their portal to review and start paperwork.';
-      btn.textContent = 'Sent ✓';
+        body: JSON.stringify({ type: 'proposal_sent', customerId: custId })
+      }).then(function(r){ return r.json(); }).catch(function(){ return {ok:false, reason:'network'}; });
+      var smsOk = res.sms && res.sms.ok, mailOk = res.email && res.email.ok;
+      var who = CUST.first_name || 'your customer';
+      if (smsOk || mailOk || res.reason === 'rate_limited') {
+        status.className = 'status-msg ok';
+        status.textContent = '✓ Saved. ' + who + ' was ' + [smsOk ? 'texted' : '', mailOk ? 'emailed' : ''].filter(Boolean).join(' and ') + '.' + (smsOk && mailOk ? '' : ' (The other channel did not go through.)');
+        btn.textContent = 'Sent ✓';
+      } else {
+        status.className = 'status-msg err';
+        status.textContent = 'Saved, but ' + who + ' was NOT notified (' + (res.reason === 'no_contact' ? 'no phone or email on file' : (res.reason || 'unknown')) + '). Copy their portal link and send it yourself.';
+        btn.disabled = false; btn.textContent = 'Try sending again';
+      }
     } catch(e) {
       btn.disabled = false; btn.textContent = 'Send to Customer — Start Paperwork';
       status.className = 'status-msg err';

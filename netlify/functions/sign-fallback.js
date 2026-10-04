@@ -68,7 +68,13 @@ exports.handler = async function(event) {
 
   // ── action: agreement_only — capture signature, queue GHL invoice ──
   if (action === 'agreement_only') {
-    const { signature, repairAuthInitial } = body;
+    const { signature } = body;
+    let initialsData = null;
+    if (body.repairInitialData != null) {
+      initialsData = sigAudit.validateInitialsData(body.repairInitialData);
+      if (!initialsData) return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Invalid initials' }) };
+    }
+    const repairAuthInitial = sigAudit.initialsText(initialsData, body.repairAuthInitial);
     if (!signature || String(signature).trim().length < 2) {
       return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'signature required' }) };
     }
@@ -95,7 +101,8 @@ exports.handler = async function(event) {
         agreement_audit: {
           method: String(body.paymentMethod || 'invoice').slice(0, 20), signed_at: signedNow, ip: signingIp, user_agent: signingUa,
           printed_name: String(signature).slice(0, 120), terms_sha256: terms.sha256, repair_cap: terms.cap,
-          signature_sha256: signatureData ? sigAudit.signatureFingerprint(signatureData) : null
+          signature_sha256: signatureData ? sigAudit.signatureFingerprint(signatureData) : null,
+          initials_mark: initialsData, initials_sha256: initialsData ? sigAudit.signatureFingerprint(initialsData) : null
         },
         invoice_status: 'sent'   // fee owed — GHL invoice on its way
       })

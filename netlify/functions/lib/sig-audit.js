@@ -55,6 +55,20 @@ function validateSignatureData(sd) {
   return null;
 }
 
+// Initials use the same marks as signatures (typed in a known style, or drawn) but typed text is
+// capped at 6 chars. Returns the normalized mark, or null.
+function validateInitialsData(sd) {
+  const v = validateSignatureData(sd);
+  if (!v) return null;
+  if (v.type === 'typed' && v.text.length > 6) return null;
+  return v;
+}
+// The short text stored in customers.repair_auth_initial (older readers/PDF line print it).
+function initialsText(v, fallback) {
+  if (v) return v.type === 'typed' ? v.text : '(drawn)';
+  return fallback ? String(fallback).trim().slice(0, 10) : null;
+}
+
 // Fingerprint of the exact Diagnostic Agreement text in force at signing time.
 function diagTermsFingerprint(signedAtIso) {
   const A = diag();
@@ -67,4 +81,4 @@ function signatureFingerprint(sd) {
   return sha256(sd.type === 'drawn' ? sd.dataUrl : sd.type + '|' + sd.text + '|' + sd.fontFamily);
 }
 
-module.exports = { sha256, clientIp, userAgent, validateSignatureData, diagTermsFingerprint, signatureFingerprint, FONT_ALLOW };
+module.exports = { sha256, clientIp, userAgent, validateSignatureData, validateInitialsData, initialsText, diagTermsFingerprint, signatureFingerprint, FONT_ALLOW };
