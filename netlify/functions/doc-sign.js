@@ -66,7 +66,7 @@ const OTP_MAX_FAILS = 5;
 const OTP_RESEND_MS = 45 * 1000;
 function otpSecret() { return process.env.SIGN_OTP_SECRET || crypto.createHash('sha256').update('doc-sign-otp|' + (process.env.SUPA_SERVICE_KEY || '')).digest('hex'); }
 function otpFor(customerId, docType, win) {
-  const h = crypto.createHmac('sha256', otpSecret()).update(customerId + '|' + docType + '|' + win).digest();
+  const h = crypto.createHmac('sha256', otpSecret()).update(customerId + '|' + win).digest();
   return String(h.readUInt32BE(0) % 1000000).padStart(6, '0');
 }
 function otpValid(customerId, docType, code, now) {

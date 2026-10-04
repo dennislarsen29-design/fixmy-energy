@@ -55,6 +55,17 @@ exports.handler = async function (event, context, deps) {
     }
   } catch (e) { /* never block a real send on the limiter */ }
 
+  // The portal rejects codes shorter than 10 chars. A customer with neither an access_code nor a
+  // 10-digit phone would get a dead link, so mint one (never overwrites an existing code).
+  if (!((c.access_code || '').length >= 10 || notify.digits(c.phone).length >= 10)) {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    const bytes = require('crypto').randomBytes(10);
+    let code = ''; for (let i = 0; i < 10; i++) code += chars[bytes[i] % chars.length];
+    try {
+      const pr = await doFetch(SUPA_URL + '/rest/v1/customers?id=eq.' + id, { method: 'PATCH', headers: Object.assign({}, H, { Prefer: 'return=minimal' }), body: JSON.stringify({ access_code: code }) });
+      if (pr.ok !== false) c.access_code = code;
+    } catch (e) { /* link falls back to what exists */ }
+  }
   const link = notify.magicLink(c);
   const first = (c.first_name || 'there').trim();
   let sms, mail;

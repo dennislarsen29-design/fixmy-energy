@@ -23429,6 +23429,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // by an earlier session) — upsert replaces the whole jsonb column, so writing
       // {rep_signature:...} alone would silently wipe out anything already there.
       var existingData = (_dealDocsCache[customerId] && _dealDocsCache[customerId][docType] && _dealDocsCache[customerId][docType].data) || {};
+      // Read the live row (the cache can be stale: the server writes contact_snapshot / code state
+      // into data) and never let a re-Proceed reopen a document the customer already signed.
+      try {
+        var _fresh = await client.from('deal_documents').select('status,data').eq('customer_id', customerId).eq('doc_type', docType).maybeSingle();
+        if (_fresh && _fresh.data) {
+          if (_fresh.data.status === 'signed') { alert('This document is already signed by the customer \u2014 nothing to re-send.'); return; }
+          existingData = _fresh.data.data || existingData;
+        }
+      } catch (e) { /* fall back to cache */ }
       var payload = { customer_id: customerId, doc_type: docType, status:'reviewed', reviewed_by_rep_id:repId, reviewed_by_rep_name:repName, reviewed_at:new Date().toISOString(), updated_at:new Date().toISOString(), data: Object.assign({}, existingData, { rep_signature: repSig }) };
       var resp = await client.from('deal_documents').upsert(payload, { onConflict:'customer_id,doc_type' });
       if (resp.error) { alert('Could not save: '+_dealDocFriendlyError(resp.error.message)); return; }
@@ -23873,7 +23882,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var _who = (typeof currentUser !== 'undefined' && currentUser && currentUser.id === customerId) ? currentUser : null;
       if (!_who) throw new Error('Session expired \u2014 please refresh and sign in again.');
       var _acc = _who.access_code || (_who.phone || '').replace(/\D/g, '');
-      var _otpCode = await _custDocAskCode(customerId, docType, _acc);
+      // The code is per customer (not per document): reuse a verified one for ~8 min so the
+      // auto-advance through several documents doesn't re-prompt each time.
+      window._custOtpVerified = window._custOtpVerified || {};
+      var _cached = window._custOtpVerified[customerId];
+      var _otpCode = (_cached && Date.now() - _cached.ts < 8 * 60000) ? _cached.code : await _custDocAskCode(customerId, docType, _acc);
       if (!_otpCode) { if (btn) { btn.disabled = false; btn.innerHTML = '&#9989; Sign &amp; Submit'; } return; }
       var signResp = await fetch('/.netlify/functions/doc-sign', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -23884,7 +23897,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       });
       var signJson = {};
       try { signJson = await signResp.json(); } catch(e) {}
-      if (!signResp.ok || !signJson.ok) throw new Error(signJson.error || 'Could not record your signature. Please try again.');
+      if (!signResp.ok || !signJson.ok) {
+        if (signJson.code_error) delete window._custOtpVerified[customerId];
+        throw new Error(signJson.error || 'Could not record your signature. Please try again.');
+      }
+      window._custOtpVerified[customerId] = { code: _otpCode, ts: Date.now() };
       await _dealDocsLoad(customerId);
       var _signedDef = DEAL_DOC_TYPES.find(function(d){ return d.id === docType; });
       var _signedCust = (typeof currentUser !== 'undefined' && currentUser && currentUser.id === customerId) ? currentUser : null;

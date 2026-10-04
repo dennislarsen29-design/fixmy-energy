@@ -2519,3 +2519,10 @@ Every push to `main` (and to the feature branch, if branch deploys are on) trigg
 
 ### Staff "opened / signed" alerts now carry the customer's name (2026-10-04)
 The internal texts "agreement has been opened/signed." came from the GHL workflow with an unresolved name merge field. `netlify/functions/notify-staff.js` now sends them (GHL Conversations API, same as notify-customer) to the assigned rep (`rep_id`, default tech4) and Dennis: "<Name> just opened / signed the <doc>." Server builds text + recipients; requires real document state; one alert per event per doc (`pipeline_state` key `staffalert_*`). Portal `_notifyStaff` replaced the `document_opened`/`document_signed` GHL fires — so the old GHL texts stop (no doubles). Needs team_members.phone for each rep.
+
+### Pipeline audit fixes (2026-10-04) — proposal → document → notifications end to end
+Full browser E2E (real portal.html + real handlers, emulated DB/GHL/Resend; 25/25) plus 26 server tests. Fixed:
+- **Signing code is per customer, not per document** (`doc-sign.js` HMAC = customer|window), and the portal caches the verified code ~8 min (`_custOtpVerified`, cleared on `code_error`), so the auto-advance through several documents asks once.
+- **`notify-customer.js` mints a 10-char `access_code`** when the customer has neither one nor a 10-digit phone (the portal rejects shorter codes → dead link for email-only customers). Never overwrites an existing code.
+- **Rep Proceed (`_dealDocMarkReviewed`) reads the live row first**: refuses on an already-signed document and preserves server-written `data.*` (contact snapshot, code state) instead of overwriting from a stale cache.
+- Still open: customer-present collusion, rep contact edits (flagged in audit, not blocked), `deal_documents` anon-writable for rep-side writes, Sign & Pay has no code step. Real GHL/Resend sends are unverified from the dev sandbox.
