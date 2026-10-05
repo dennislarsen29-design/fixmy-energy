@@ -9075,7 +9075,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return '<button id="ci_' + c.id + '" onclick="apptCheckIn(\'' + c.id + '\')" style="font-size:0.72rem;padding:6px 12px;background:#8DC63F;color:#1A1A1A;border-radius:8px;border:none;cursor:pointer;font-weight:800;">&#128205; Check In</button>';
   }
   window._checkinBtnHtml = _checkinBtnHtml; window._checkinBannerHtml = _checkinBannerHtml; window._checkinNoteFor = _checkinNoteFor;
-  window.apptCheckIn = async function(id) {
+  window.apptCheckIn = async function(id, keepOpen) {
     var btn = document.getElementById('ci_' + id);
     function fail(m) { if (btn) { btn.disabled = false; btn.innerHTML = '&#128205; Check In'; } alert(m); }
     try {
@@ -9125,6 +9125,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       });
       try { client.from('lead_activity').insert({ customer_id: id, channel: 'checkin', outcome: null, note: text.split(' | ')[1], rep_id: bbRepId(), rep_name: who }).then(function() {}, function() {}); } catch (e) {}
       alert((_cw.late ? '⏰ Checked in (late)' : '✅ Checked in') + (dist != null && dist > 0.5 ? ' — but you appear to be ' + dist.toFixed(1) + ' mi from the address.' : '.'));
+      if (keepOpen) { if (typeof _axRender === 'function') _axRender(); return; } // Axia wizard stays open
       if (typeof window.salesRefresh === 'function' && CURRENT_ROLE !== 'admin') window.salesRefresh(); else if (CURRENT_ROLE === 'admin') renderAdminView(adminView);
     } catch (e) { fail('Check-in failed: ' + (e.message || e)); }
   };
@@ -11521,20 +11522,62 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     _axRender();
   };
 
-  // ⚠️ 2026-09-30, per Dennis — "The continue in proposal tools button should populate
-  // the same Aurora link. It's a dead end." It was: closed the wizard and did nothing
-  // else, leaving the rep to go find the Aurora button themselves elsewhere in the
-  // editor. Starting the Aurora project IS the natural next step once the Site
-  // Evaluation is done, so this now fires the same hand-off _propOpenAurora already
-  // does everywhere else instead of just promising it in the button's own label.
+  // 2026-10-05, per Dennis — "When clicking analysis it immediately closes the lead and opens
+  // a tab to Aurora... the results disappear. Leave the lead open with the Quoya analysis done
+  // so the Tech can copy the data over to Aurora... also check in, disposition the appt ending,
+  // and type out commission details when appt closes... not bouncing around through the Portal."
+  // So the wizard is now the WHOLE appointment, start to finish, in one screen: Check in →
+  // bill + Quoya read → Open Aurora (a NEW TAB — this screen stays put with the numbers) →
+  // "Appointment ended" disposition → commission popup on a close. Closing (×) just closes.
   window.closeAxiaEvalWizard = function() {
-    var rec = _axRec; // capture before clearing — the wizard is closing either way
     var s = document.getElementById('editorSlot');
     if (s) s.innerHTML = '';
     _axId = null; _axRec = null; _axRow = null; _axBillAnalyzing = false; _axBillRerun = false;
-    if (rec && window._propOpenAurora) {
-      window._propOpenAurora({ address: rec.address || '', firstName: rec.first_name || '', lastName: rec.last_name || '', email: rec.email || '', customerId: rec.id || '' });
+  };
+  window.axOpenAurora = function() {
+    var rec = _axRec; if (!rec || !window._propOpenAurora) return;
+    window._propOpenAurora({ address: rec.address || '', firstName: rec.first_name || '', lastName: rec.last_name || '', email: rec.email || '', customerId: rec.id || '' });
+  };
+  window.axCopyField = function(txt, btn) {
+    try { navigator.clipboard.writeText(String(txt)); } catch (e) {}
+    if (btn) { var o = btn.textContent; btn.textContent = 'Copied'; setTimeout(function(){ btn.textContent = o; }, 1200); }
+  };
+  // Shared tail for every disposition: verified write, note, refresh whichever portal is
+  // underneath, close this screen. Zero matched rows counts as a failure.
+  async function _axApplyDisposition(updates, noteText) {
+    var rec = _axRec, id = _axId; if (!rec || !id) return;
+    var st = document.getElementById('axStatus');
+    try {
+      var sc = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var r = await sc.from('customers').update(updates).eq('id', id).select('id');
+      if (r.error) throw r.error;
+      if (!r.data || !r.data.length) throw new Error('No row was updated');
+      Object.assign(rec, updates); rec.updated_at = new Date().toISOString();
+      try { delete _axiaCommCache[id]; } catch (e) {}
+      try { if (typeof bbLogActivity === 'function') bbLogActivity(id, 'note', null, noteText); } catch (e) {}
+      window.closeAxiaEvalWizard();
+      if (typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE === 'admin') renderAdminView(adminView);
+      else if (typeof window.salesRefresh === 'function') window.salesRefresh();
+    } catch (e) { if (st) { st.style.color = '#ef4444'; st.textContent = 'Could not save: ' + e.message; } else alert('Could not save: ' + e.message); }
+  }
+  window.axDisposition = function(kind) {
+    var rec = _axRec, id = _axId; if (!rec || !id) return;
+    if (kind === 'closed') {
+      // Same popup the editor fires on Welcome Call Closed — System Size / Base PPW / TPO /
+      // split — so the commission is typed out right here at the end of the appointment.
+      var up = { solar_status: 'ns_welcome_closed', sold_type: 'new_solar' };
+      if (!rec.sold_at) up.sold_at = new Date().toISOString();
+      openAxiaCommModal(id, up, rec, function() {
+        try { if (typeof bbLogActivity === 'function') bbLogActivity(id, 'note', null, 'Appointment ended — Closed (Welcome Call Closed); commission details entered'); } catch (e) {}
+        window.closeAxiaEvalWizard();
+        if (typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE === 'admin') renderAdminView(adminView);
+        else if (typeof window.salesRefresh === 'function') window.salesRefresh();
+      });
+      return;
     }
+    if (kind === 'welcome') return _axApplyDisposition({ solar_status: 'ns_welcome_scheduled' }, 'Appointment ended — Welcome call scheduled');
+    if (kind === 'resched') return _axApplyDisposition({ solar_status: 'ns_eval_rescheduled' }, 'Appointment ended — Needs to be rescheduled');
+    if (kind === 'exit') { window.closeAxiaEvalWizard(); return window.openExitModal(id); }
   };
 
   window.axUpload = async function(inputEl) {
@@ -11892,6 +11935,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '<div style="font-size:0.95rem;font-weight:700;margin-bottom:2px;">' + esc(name) + '</div>';
     h += '<div style="font-size:0.72rem;color:#777;margin-bottom:16px;">' + esc(_axRec.address || '') + '</div>';
 
+    // ── Check in (geotagged arrival) — same apptCheckIn the Schedule card uses ──
+    if (_axRec.diagnostic_date) {
+      var _ciDone = (typeof _checkinNoteFor === 'function') ? _checkinNoteFor(_axRec) : null;
+      var _ciWin = (typeof _checkinWindow === 'function') ? _checkinWindow(_axRec) : { open: false };
+      var _apptTm = new Date(_axRec.diagnostic_date).toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+      h += '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:11px 13px;margin-bottom:16px;border-radius:12px;background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.3);">';
+      h += '<div style="font-size:0.78rem;color:#ddd;"><b>&#128205; Appointment ' + esc(_apptTm) + '</b></div>';
+      if (_ciDone) h += '<span style="font-size:0.7rem;padding:5px 11px;background:rgba(141,198,63,0.15);color:#8DC63F;border-radius:8px;font-weight:800;">&#9989; Checked in</span>';
+      else if (_ciWin.open) h += '<button id="ci_' + _axRec.id + '" onclick="apptCheckIn(\'' + _axRec.id + '\', true)" style="width:auto;margin:0;font-size:0.76rem;padding:8px 14px;background:#8DC63F;color:#1A1A1A;border-radius:8px;border:none;cursor:pointer;font-weight:800;">&#128205; Check In</button>';
+      else h += '<span style="font-size:0.68rem;color:#888;">Check-in opens 30 min before the appointment</span>';
+      h += '</div>';
+    }
+
     h += '<div style="font-size:1.05rem;font-weight:800;margin-bottom:4px;">&#128196; Utility Bill</div>';
     h += '<div style="font-size:0.76rem;color:#999;line-height:1.5;margin-bottom:16px;">Upload the homeowner&rsquo;s utility bill and Quoya reads it automatically.</div>';
 
@@ -11899,8 +11955,21 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '<div id="axStatus" style="font-size:0.72rem;min-height:16px;margin:8px 0;color:#4a9eff;"></div>';
     h += _axBillAnalysisHtml();
 
-    h += '<div style="display:flex;gap:8px;margin-top:20px;">';
-    h += '<button onclick="closeAxiaEvalWizard()" style="width:100%;margin:0;padding:13px 20px;background:#4a9eff;border:none;color:#0e1526;border-radius:100px;font-size:0.86rem;font-weight:800;cursor:pointer;">Done &#8594; Continue in Proposal Tools</button>';
+    // ── Next steps: Aurora (new tab, this screen stays open) → appointment-ended disposition ──
+    h += '<div style="margin-top:22px;padding:15px;border:1px solid rgba(74,158,255,0.3);border-radius:14px;background:rgba(74,158,255,0.05);">';
+    h += '<div style="font-size:0.7rem;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;color:#4a9eff;margin-bottom:8px;">Next: build the proposal</div>';
+    h += '<div style="font-size:0.74rem;color:#aaa;line-height:1.5;margin-bottom:10px;">Aurora opens in a new tab &mdash; this screen stays here with Quoya&rsquo;s numbers so you can copy them across.</div>';
+    h += '<button onclick="axOpenAurora()" style="width:100%;margin:0;padding:13px;background:#4a9eff;border:none;color:#0e1526;border-radius:100px;font-size:0.86rem;font-weight:800;cursor:pointer;">&#9728; Open Aurora</button>';
+    h += '</div>';
+
+    h += '<div style="margin-top:14px;padding:15px;border:1px solid rgba(255,255,255,0.12);border-radius:14px;background:rgba(255,255,255,0.03);">';
+    h += '<div style="font-size:0.7rem;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;color:#ddd;margin-bottom:4px;">Appointment ended &mdash; what happened?</div>';
+    h += '<div style="font-size:0.72rem;color:#888;line-height:1.5;margin-bottom:10px;">One tap. A close opens the commission details right here.</div>';
+    var _db = 'width:100%;margin:0 0 8px;padding:12px;border-radius:12px;font-size:0.82rem;font-weight:800;cursor:pointer;text-align:left;';
+    h += '<button onclick="axDisposition(\'closed\')" style="' + _db + 'background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.5);color:#8DC63F;">&#9989; Closed &mdash; they signed</button>';
+    h += '<button onclick="axDisposition(\'welcome\')" style="' + _db + 'background:rgba(155,109,232,0.12);border:1px solid rgba(155,109,232,0.4);color:#c4a3f0;">&#128222; Needs a Welcome call</button>';
+    h += '<button onclick="axDisposition(\'resched\')" style="' + _db + 'background:rgba(255,170,0,0.1);border:1px solid rgba(255,170,0,0.4);color:#ffaa00;">&#8635; Reschedule</button>';
+    h += '<button onclick="axDisposition(\'exit\')" style="' + _db + 'background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.35);color:#f87171;margin-bottom:0;">&#9208; Pause / Not interested / Dead</button>';
     h += '</div>';
     h += '</div>';
     wrap.innerHTML = h;
