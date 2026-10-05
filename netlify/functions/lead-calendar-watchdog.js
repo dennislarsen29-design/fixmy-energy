@@ -23,7 +23,7 @@ exports.handler = async function () {
     const since = new Date(now - LOOKBACK_DAYS * 864e5).toISOString();
     const before = new Date(now - GRACE_MIN * 60000).toISOString();
     const leads = await get('/customers?select=id,first_name,last_name,phone,address,rep_id,created_at,diagnostic_date'
-      + '&arrival_window=is.null&sold_type=is.null&step=lte.1&created_at=gte.' + since + '&created_at=lte.' + before
+      + '&arrival_window=is.null&sold_type=is.null&disposition_exit=is.null&step=lte.1&created_at=gte.' + since + '&created_at=lte.' + before
       + '&and=(or(archived.is.null,archived.eq.false),or(black_box.is.null,black_box.eq.false),or(partial_capture.is.null,partial_capture.eq.false),or(lead_category.is.null,lead_category.neq.new_solar))'
       + '&order=created_at.desc&limit=100');
 

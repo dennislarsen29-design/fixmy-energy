@@ -2013,10 +2013,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // client-side for leads whose GHL booking failed. Partials and Black Box rows are excluded.
     var _weekAgo = Date.now() - 14 * 24 * 60 * 60 * 1000;
     var offCal = (adminCustomers || []).filter(function(c){
-      return !c.archived && !c.black_box && !c.partial_capture && !c.sold_type &&
+      return !c.archived && !c.black_box && !c.partial_capture && !c.sold_type && !c.disposition_exit &&
         c.lead_category !== 'new_solar' && (parseInt(c.step) || 1) <= 1 &&
         !c.arrival_window && c.created_at && new Date(c.created_at).getTime() > _weekAgo;
     });
+    var _fuDue = (typeof window._followUpsDue === 'function') ? window._followUpsDue() : [];
+    if (_fuDue.length) {
+      actionItemsHtml += _cmdHealthRow('warn', '&#128172; Follow-ups due (' + _fuDue.length + ')', _fuDue.slice(0, 6).map(function(c){ return esc(((c.first_name || '') + ' ' + (c.last_name || '')).trim() || 'Unnamed'); }).join(', '), 'openFollowUps()');
+    }
     if (offCal.length) {
       actionItemsHtml += _cmdHealthRow('bad', '&#9888; NEW LEAD not yet on Calendar!' + (offCal.length > 1 ? ' (' + offCal.length + ')' : ''),
         offCal.slice(0, 6).map(function(c){ return esc(((c.first_name || '') + ' ' + (c.last_name || '')).trim() || c.address || 'Unnamed'); }).join(', ') + (offCal.length > 6 ? ' +' + (offCal.length - 6) + ' more' : ''),
@@ -22358,6 +22362,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   var _lf = {};
   window._lfState = function(scope, cat) { var k = scope + '_' + cat; return _lf[k] || (_lf[k] = { sort: 'updated', stage: '', tech: '', setter: '', source: '', showCanceled: false }); };
   window._lfIsCanceled = function(c) {
+    if (c.disposition_exit) return true; // Paused / Not interested / Dead (2026-10-05)
     return c.lead_category === 'new_solar' ? _LF_NS_CANCELED.indexOf(c.solar_status) > -1 : parseInt(c.step, 10) === 7;
   };
   function _lfStageKey(c) { return c.lead_category === 'new_solar' ? (c.solar_status || 'ns_eval_booked') : String(parseInt(c.step, 10) || 1); }
@@ -22409,7 +22414,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       Object.keys(setters).map(function(k) { return opt(k, k, st.setter); }).join('') + '</select>';
     if (Object.keys(sources).length) h += '<select title="Source" onchange="_lfSet(' + sc + ',\'source\',this.value)" style="' + sel + '"><option value="">All sources</option>' +
       Object.keys(sources).map(function(k) { return opt(k, k.replace(/_/g, ' '), st.source); }).join('') + '</select>';
-    h += '<button onclick="_lfToggleCanceled(' + sc + ')" style="width:auto;padding:6px 11px;border-radius:100px;font-size:0.68rem;font-weight:800;cursor:pointer;border:1px solid ' + (st.showCanceled ? 'rgba(239,68,68,0.6)' : 'rgba(255,255,255,0.14)') + ';background:' + (st.showCanceled ? 'rgba(239,68,68,0.15)' : 'rgba(255,255,255,0.04)') + ';color:' + (st.showCanceled ? '#f87171' : '#aaa') + ';">' + (st.showCanceled ? 'Hide' : 'Show') + ' canceled (' + nCanceled + ')</button>';
+    h += '<button onclick="_lfToggleCanceled(' + sc + ')" style="width:auto;padding:6px 11px;border-radius:100px;font-size:0.68rem;font-weight:800;cursor:pointer;border:1px solid ' + (st.showCanceled ? 'rgba(239,68,68,0.6)' : 'rgba(255,255,255,0.14)') + ';background:' + (st.showCanceled ? 'rgba(239,68,68,0.15)' : 'rgba(255,255,255,0.04)') + ';color:' + (st.showCanceled ? '#f87171' : '#aaa') + ';">' + (st.showCanceled ? 'Hide' : 'Show') + ' paused/canceled (' + nCanceled + ')</button>';
     if (st.stage || st.tech || st.setter || st.source) h += '<button onclick="_lfClear(' + sc + ')" style="width:auto;padding:6px 10px;background:none;border:none;color:#8DC63F;font-size:0.68rem;font-weight:700;cursor:pointer;">Clear filters</button>';
     return h + '</div>';
   };
@@ -22429,8 +22434,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (!rec) { alert('Could not find that lead — refresh and try again.'); return; }
     var isNS = rec.lead_category === 'new_solar';
     var name = ((rec.first_name || '') + ' ' + (rec.last_name || '')).trim() || 'this lead';
-    if (cancel && !confirm('Mark ' + name + ' as Canceled? They stay in the system (use "Show canceled" to see them) — they just leave your active list.')) return;
-    var upd = isNS ? { solar_status: cancel ? 'ns_eval_canceled' : 'ns_eval_booked' } : { step: cancel ? 7 : 1 };
+    if (cancel) { return window.openExitModal(id); }
+    var upd = isNS ? { solar_status: 'ns_eval_booked' } : { step: 1 };
+    upd.disposition_exit = null; upd.pause_reason = null; upd.paused_until = null; upd.recapture_next_at = null; upd.recapture_touches = 0; upd.recapture_sensitive = false;
     try {
       var sc = supabase.createClient(SUPA_URL, SUPA_KEY);
       var { data, error } = await sc.from('customers').update(upd).eq('id', id).select('id');
@@ -22444,6 +22450,155 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       else if (typeof window.salesRerender === 'function') window.salesRerender();
     } catch (e) { alert((cancel ? 'Cancel' : 'Reopen') + ' failed: ' + e.message); }
   }
+
+  // ── Dispositions: shared exits + recapture (2026-10-05, per Dennis) ─────────────────────────
+  // Three exits usable from any stage on BOTH pipelines. Paused leaves step/solar_status alone (it is
+  // hidden by disposition_exit); Not interested / Dead also set the existing canceled stage so every
+  // older report keeps working. Follow-ups are drafted by Quoya, edited + sent by the rep.
+  var _EXIT_REASONS = ['Bad timing', 'Family / medical', 'Needs to talk to spouse', 'Price concern', 'Using another company', 'Wrong number / unqualified', 'Other'];
+  var _EXIT_SENSITIVE = /medical|surgery|hospital|cancer|sick|ill|passed|death|funeral|divorce|job loss|laid off|hardship|procedure|family/i;
+  function _exitMoney() { return document.getElementById('exitModal'); }
+  window.openExitModal = function(id) {
+    var rec = (adminCustomers || []).find(function(x) { return x.id === id; });
+    if (!rec) { alert('Could not find that lead — refresh and try again.'); return; }
+    var name = ((rec.first_name || '') + ' ' + (rec.last_name || '')).trim() || 'this lead';
+    var m = _exitMoney(); if (m) m.remove();
+    var chips = _EXIT_REASONS.map(function(r) { return '<button type="button" class="exit-chip" onclick="exitPickReason(this)" style="width:auto;padding:6px 11px;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;border:1px solid rgba(255,255,255,0.18);background:rgba(255,255,255,0.05);color:#ddd;margin:0 6px 6px 0;">' + r + '</button>'; }).join('');
+    var presets = [['1 week', 7], ['2 weeks', 14], ['1 month', 30], ['2 months', 60]].map(function(p) { return '<button type="button" onclick="exitPickDate(' + p[1] + ')" style="width:auto;padding:6px 11px;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;border:1px solid rgba(141,198,63,0.4);background:rgba(141,198,63,0.08);color:#8DC63F;margin:0 6px 6px 0;">' + p[0] + '</button>'; }).join('');
+    var h = '<div id="exitModal" data-id="' + id + '" style="position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;padding:16px;">'
+      + '<div style="background:#1a1a1a;border:1px solid rgba(255,255,255,0.12);border-radius:14px;max-width:440px;width:100%;max-height:92vh;overflow:auto;padding:20px;color:#fff;">'
+      + '<div style="font-size:1rem;font-weight:800;margin-bottom:4px;">Set ' + esc(name) + ' aside</div>'
+      + '<div style="font-size:0.78rem;color:#aaa;margin-bottom:14px;">They stay in the system with their contact info. Pick what happened:</div>'
+      + '<div id="exitTypes" style="display:grid;gap:8px;margin-bottom:14px;">'
+      + '<button type="button" data-t="paused" onclick="exitPickType(\'paused\')" style="text-align:left;width:100%;padding:10px 12px;border-radius:10px;cursor:pointer;border:1px solid rgba(255,255,255,0.18);background:rgba(255,255,255,0.04);color:#fff;font-size:0.82rem;"><b>&#9208; Paused</b><br><span style="color:#aaa;font-size:0.72rem;">Still interested, just not now. We check in on the date you pick.</span></button>'
+      + '<button type="button" data-t="not_interested" onclick="exitPickType(\'not_interested\')" style="text-align:left;width:100%;padding:10px 12px;border-radius:10px;cursor:pointer;border:1px solid rgba(255,255,255,0.18);background:rgba(255,255,255,0.04);color:#fff;font-size:0.82rem;"><b>&#10005; Not interested</b><br><span style="color:#aaa;font-size:0.72rem;">Said no for now. We reach out only once or twice, much later.</span></button>'
+      + '<button type="button" data-t="dead" onclick="exitPickType(\'dead\')" style="text-align:left;width:100%;padding:10px 12px;border-radius:10px;cursor:pointer;border:1px solid rgba(255,255,255,0.18);background:rgba(255,255,255,0.04);color:#fff;font-size:0.82rem;"><b>&#9760; Dead</b><br><span style="color:#aaa;font-size:0.72rem;">Wrong number, do-not-contact or unqualified. Never contacted again.</span></button>'
+      + '</div>'
+      + '<div style="font-size:0.72rem;color:#aaa;margin-bottom:6px;">Reason</div><div>' + chips + '</div>'
+      + '<input id="exitReason" type="text" placeholder="One line — what did they say?" style="width:100%;margin-bottom:12px;">'
+      + '<div id="exitDateWrap" style="display:none;"><div style="font-size:0.72rem;color:#aaa;margin-bottom:6px;">Follow up on</div><div>' + presets + '</div><input id="exitDate" type="date" style="width:100%;margin-bottom:12px;"></div>'
+      + '<label id="exitSensWrap" style="display:none;font-size:0.75rem;color:#ddd;margin-bottom:12px;align-items:center;gap:8px;"><input id="exitSens" type="checkbox" style="width:auto;margin:0 8px 0 0;"> Sensitive (health / family / hardship) — we send one gentle note, nothing pushy</label>'
+      + '<div id="exitErr" style="color:#f87171;font-size:0.75rem;min-height:16px;margin-bottom:8px;"></div>'
+      + '<div style="display:flex;gap:8px;"><button type="button" onclick="document.getElementById(\'exitModal\').remove()" style="flex:1;padding:10px;border-radius:10px;cursor:pointer;border:1px solid rgba(255,255,255,0.18);background:transparent;color:#ccc;">Cancel</button>'
+      + '<button type="button" id="exitSave" onclick="exitSave()" style="flex:1;padding:10px;border-radius:10px;cursor:pointer;border:0;background:#8DC63F;color:#111;font-weight:800;">Save</button></div>'
+      + '</div></div>';
+    document.body.insertAdjacentHTML('beforeend', h);
+    window._exitType = null;
+  };
+  window.exitPickType = function(t) {
+    window._exitType = t;
+    document.querySelectorAll('#exitTypes button').forEach(function(b) { var on = b.dataset.t === t; b.style.borderColor = on ? '#8DC63F' : 'rgba(255,255,255,0.18)'; b.style.background = on ? 'rgba(141,198,63,0.12)' : 'rgba(255,255,255,0.04)'; });
+    document.getElementById('exitDateWrap').style.display = t === 'paused' ? 'block' : 'none';
+    document.getElementById('exitSensWrap').style.display = t === 'dead' ? 'none' : 'flex';
+  };
+  window.exitPickReason = function(btn) {
+    var inp = document.getElementById('exitReason'); inp.value = btn.textContent;
+    if (_EXIT_SENSITIVE.test(btn.textContent)) document.getElementById('exitSens').checked = true;
+  };
+  window.exitPickDate = function(days) {
+    var d = new Date(Date.now() + days * 864e5); document.getElementById('exitDate').value = d.toISOString().slice(0, 10);
+  };
+  window.exitSave = async function() {
+    var m = _exitMoney(); if (!m) return; var id = m.dataset.id, t = window._exitType;
+    var err = document.getElementById('exitErr');
+    var reason = (document.getElementById('exitReason').value || '').trim();
+    var dateV = document.getElementById('exitDate').value;
+    if (!t) { err.textContent = 'Pick Paused, Not interested or Dead.'; return; }
+    if (!reason) { err.textContent = 'Add a one-line reason.'; return; }
+    if (t === 'paused' && !dateV) { err.textContent = 'Pick a follow-up date.'; return; }
+    var rec = (adminCustomers || []).find(function(x) { return x.id === id; });
+    if (!rec) { err.textContent = 'Lead not found — refresh.'; return; }
+    var isNS = rec.lead_category === 'new_solar';
+    var sens = t !== 'dead' && (document.getElementById('exitSens').checked || _EXIT_SENSITIVE.test(reason));
+    var upd = { disposition_exit: t, pause_reason: reason, recapture_sensitive: sens, recapture_touches: 0 };
+    if (t === 'paused') { upd.paused_until = new Date(dateV + 'T17:00:00').toISOString(); upd.recapture_next_at = upd.paused_until; }
+    else {
+      upd.paused_until = null;
+      upd.recapture_next_at = t === 'not_interested' ? new Date(Date.now() + 30 * 864e5).toISOString() : null;
+      if (isNS) upd.solar_status = t === 'dead' ? 'ns_welcome_dead' : 'ns_eval_canceled'; else upd.step = 7;
+    }
+    document.getElementById('exitSave').disabled = true;
+    try {
+      var sc = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var { data, error } = await sc.from('customers').update(upd).eq('id', id).select('id');
+      if (error) throw error;
+      if (!data || !data.length) throw new Error('No row was updated');
+      Object.assign(rec, upd); rec.updated_at = new Date().toISOString();
+      var label = t === 'paused' ? 'Paused until ' + dateV : t === 'dead' ? 'Marked Dead' : 'Marked Not interested';
+      try { if (typeof bbLogActivity === 'function') bbLogActivity(id, 'note', null, label + ' — ' + reason + (sens ? ' (sensitive)' : '')); } catch (e) {}
+      m.remove();
+      if (typeof closeLeadEditor === 'function') closeLeadEditor();
+      if (typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE === 'admin') renderAdminView(adminView);
+      else if (typeof window.salesRerender === 'function') window.salesRerender();
+    } catch (e) { err.textContent = 'Save failed: ' + e.message; document.getElementById('exitSave').disabled = false; }
+  };
+
+  // Follow-ups due: exited leads whose recapture time has arrived and who still have touches left.
+  window._followUpsDue = function() {
+    var now = Date.now();
+    var admin = (typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE === 'admin');
+    var me = window._bbDialerPersonId;
+    return (adminCustomers || []).filter(function(c) {
+      if (c.disposition_exit !== 'paused' && c.disposition_exit !== 'not_interested') return false;
+      if (!c.recapture_next_at || new Date(c.recapture_next_at).getTime() > now) return false;
+      if ((c.recapture_touches || 0) >= (c.recapture_sensitive ? 2 : 3)) return false;
+      if (!c.phone && !c.email) return false;
+      return admin || !me || c.rep_id === me;
+    });
+  };
+  window.followUpsBannerHtml = function() {
+    var n = window._followUpsDue().length; if (!n) return '';
+    return '<div onclick="openFollowUps()" style="cursor:pointer;margin:0 0 12px;padding:10px 14px;border-radius:10px;background:rgba(141,198,63,0.12);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;font-size:0.82rem;font-weight:800;">&#128172; ' + n + ' follow-up' + (n > 1 ? 's' : '') + ' due — tap to review &amp; send</div>';
+  };
+  window.openFollowUps = function() {
+    var m = document.getElementById('fuModal'); if (m) m.remove();
+    var list = window._followUpsDue();
+    var rows = list.length ? list.map(function(c) {
+      var nm = ((c.first_name || '') + ' ' + (c.last_name || '')).trim() || c.address || 'Unnamed';
+      var n = (c.recapture_touches || 0) + 1;
+      return '<div style="border:1px solid rgba(255,255,255,0.12);border-radius:10px;padding:10px 12px;margin-bottom:10px;"><div style="font-weight:800;font-size:0.85rem;">' + esc(nm) + ' <span style="color:#aaa;font-weight:600;font-size:0.7rem;">· follow-up ' + n + ' of ' + (c.recapture_sensitive ? 2 : 3) + (c.recapture_sensitive ? ' · gentle' : '') + '</span></div>'
+        + '<div style="font-size:0.72rem;color:#aaa;margin:2px 0 8px;">' + esc(c.pause_reason || '') + '</div>'
+        + '<div id="fuBox_' + c.id + '"><button type="button" onclick="fuDraft(\'' + c.id + '\')" style="width:auto;padding:7px 12px;border-radius:100px;font-size:0.75rem;font-weight:800;cursor:pointer;border:0;background:#8DC63F;color:#111;">&#10024; Quoya: draft message</button> '
+        + '<button type="button" onclick="fuStop(\'' + c.id + '\')" style="width:auto;padding:7px 12px;border-radius:100px;font-size:0.72rem;cursor:pointer;border:1px solid rgba(255,255,255,0.18);background:transparent;color:#bbb;">Stop follow-ups</button></div></div>';
+    }).join('') : '<div style="color:#aaa;font-size:0.82rem;padding:10px 0;">Nothing due right now.</div>';
+    document.body.insertAdjacentHTML('beforeend', '<div id="fuModal" style="position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;padding:16px;"><div style="background:#1a1a1a;border:1px solid rgba(255,255,255,0.12);border-radius:14px;max-width:480px;width:100%;max-height:92vh;overflow:auto;padding:18px;color:#fff;"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;"><div style="font-size:1rem;font-weight:800;">Follow-ups due</div><button type="button" onclick="document.getElementById(\'fuModal\').remove()" style="width:auto;background:transparent;border:0;color:#aaa;font-size:1.2rem;cursor:pointer;">&#10005;</button></div>' + rows + '<div style="font-size:0.68rem;color:#777;">Messages go out from Solar Review by text + email only after you tap Send. Replying STOP ends them.</div></div></div>');
+  };
+  window.fuDraft = async function(id) {
+    var c = (adminCustomers || []).find(function(x) { return x.id === id; }); var box = document.getElementById('fuBox_' + id); if (!c || !box) return;
+    box.innerHTML = '<span style="color:#aaa;font-size:0.75rem;">Quoya is writing…</span>';
+    var rep = ''; try { rep = (typeof person !== 'undefined' && person && person.name) || ''; } catch (e) {}
+    try {
+      var r = await fetch('/.netlify/functions/recapture-draft', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ first_name: c.first_name, exit: c.disposition_exit, reason: c.pause_reason, touch: (c.recapture_touches || 0) + 1, sensitive: !!c.recapture_sensitive, pipeline: c.lead_category, rep_name: rep }) });
+      var d = await r.json(); if (!d || d.error) throw new Error((d && (d.detail || d.error)) || 'failed');
+      box.innerHTML = '<div style="font-size:0.68rem;color:#aaa;">Text</div><textarea id="fuSms_' + id + '" rows="3" style="width:100%;margin-bottom:6px;">' + esc(d.sms) + '</textarea>'
+        + '<div style="font-size:0.68rem;color:#aaa;">Email subject</div><input id="fuSub_' + id + '" value="' + esc(d.email_subject) + '" style="width:100%;margin-bottom:6px;">'
+        + '<div style="font-size:0.68rem;color:#aaa;">Email</div><textarea id="fuBody_' + id + '" rows="4" style="width:100%;margin-bottom:8px;">' + esc(d.email_body) + '</textarea>'
+        + '<div id="fuMsg_' + id + '" style="font-size:0.72rem;min-height:14px;margin-bottom:6px;"></div>'
+        + '<button type="button" onclick="fuSend(\'' + id + '\')" style="width:auto;padding:8px 16px;border-radius:100px;font-size:0.78rem;font-weight:800;cursor:pointer;border:0;background:#8DC63F;color:#111;">Send now</button>';
+    } catch (e) { box.innerHTML = '<span style="color:#f87171;font-size:0.75rem;">Could not draft (' + esc(e.message) + '). </span><button type="button" onclick="fuDraft(\'' + id + '\')" style="width:auto;padding:5px 10px;border-radius:100px;cursor:pointer;">Retry</button>'; }
+  };
+  window.fuSend = async function(id) {
+    var msg = document.getElementById('fuMsg_' + id);
+    msg.style.color = '#aaa'; msg.textContent = 'Sending…';
+    try {
+      var r = await fetch('/.netlify/functions/recapture-send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ customerId: id, sms: document.getElementById('fuSms_' + id).value, email_subject: document.getElementById('fuSub_' + id).value, email_body: document.getElementById('fuBody_' + id).value }) });
+      var d = await r.json();
+      if (!d.ok) { msg.style.color = '#f87171'; msg.textContent = 'Not sent: ' + (d.reason || d.error || 'unknown'); return; }
+      var c = (adminCustomers || []).find(function(x) { return x.id === id; });
+      if (c) { c.recapture_touches = d.touches; c.recapture_last_at = new Date().toISOString(); c.recapture_next_at = d.touches >= d.max ? null : new Date(Date.now() + 30 * 864e5).toISOString(); }
+      msg.style.color = '#8DC63F'; msg.textContent = 'Sent' + (d.sms && d.sms.ok ? ' — text ✓' : '') + (d.email && d.email.ok ? ' — email ✓' : '');
+      setTimeout(window.openFollowUps, 1200);
+    } catch (e) { msg.style.color = '#f87171'; msg.textContent = 'Send failed: ' + e.message; }
+  };
+  window.fuStop = async function(id) {
+    if (!confirm('Stop follow-ups for this lead?')) return;
+    try {
+      await fetch('/.netlify/functions/recapture-send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ customerId: id, action: 'stop' }) });
+      var c = (adminCustomers || []).find(function(x) { return x.id === id; }); if (c) c.recapture_next_at = null;
+      window.openFollowUps();
+    } catch (e) { alert('Could not stop: ' + e.message); }
+  };
+
   window.cancelLead = function(id) { return _lfSetCanceled(id, true); };
   window.reopenLead = function(id) { return _lfSetCanceled(id, false); };
 
@@ -31226,6 +31381,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         }
         var _lfPoolRL = viewLeads;
         viewLeads = _lfApply(viewLeads, _lfState('repLeads', salesLeadCat), _lfPoolRL);
+        h += (typeof window.followUpsBannerHtml === 'function' ? window.followUpsBannerHtml() : '');
         h += _lfBarHtml('repLeads', salesLeadCat, _lfPoolRL);
         if (!viewLeads.length) {
           // Same "don't let a search-empty result read like the person doesn't exist"
