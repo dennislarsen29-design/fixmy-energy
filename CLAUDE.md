@@ -2538,3 +2538,4 @@ Every San Diego parcel (SanGIS `PARCELS_ALL`, 1.09M rows, exported via QGIS cent
 - ⚠️ Lookup is origin-allowlisted like the other internal functions, not session-authenticated (no server-verified staff session exists). Same residual exposure as `regrid-lookup`.
 
 - `PARCEL_IMPORT_KEY` (Netlify env) was found missing 2026-10-05 and re-added (functions+runtime scope); functions need a redeploy to read a new env var.
+- Confirmed saved 2026-10-05 (default scopes, context all) after a first upsert silently did not persist; verify with get-all-env-vars after any upsert.
