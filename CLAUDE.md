@@ -2539,3 +2539,5 @@ Every San Diego parcel (SanGIS `PARCELS_ALL`, 1.09M rows, exported via QGIS cent
 
 - `PARCEL_IMPORT_KEY` (Netlify env) was found missing 2026-10-05 and re-added (functions+runtime scope); functions need a redeploy to read a new env var.
 - Confirmed saved 2026-10-05 (default scopes, context all) after a first upsert silently did not persist; verify with get-all-env-vars after any upsert.
+
+- Regrid free trial token set in REGRID_KEY 2026-10-05 (30-day, expires ~2026-11-03). Verify API entitlement with Black Box Diagnose; a regrid_*:403 means still not entitled.
