@@ -2536,3 +2536,5 @@ Every San Diego parcel (SanGIS `PARCELS_ALL`, 1.09M rows, exported via QGIS cent
 - **Loader:** Black Box → 📦 County File → "📤 Load Lookup Table" (`bbRunParcelLoad`): reads the CSV locally in 4 MB slices, posts 1,000-row batches (3 at a time), resumable (`localStorage parcelLoadRows:<name>:<size>`), wake-lock + Stop like the other loaders. Asks once per session for the import password.
 - Verified: node tests (address parsing incl. 5-digit house numbers, row filters, import auth, ambiguity refusal, lookup via `regrid-lookup`) and a Chromium run of the loader against a 5,000-row synthetic CSV (dup APN, mobile home, no-owner, quoted-comma owner, wrong password).
 - ⚠️ Lookup is origin-allowlisted like the other internal functions, not session-authenticated (no server-verified staff session exists). Same residual exposure as `regrid-lookup`.
+
+- `PARCEL_IMPORT_KEY` (Netlify env) was found missing 2026-10-05 and re-added (functions+runtime scope); functions need a redeploy to read a new env var.
