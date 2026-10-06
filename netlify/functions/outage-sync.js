@@ -182,6 +182,9 @@ exports.handler = async function (event) {
       log
     };
     await upsertSnapshot(supaHeaders, snapshot);
+    // Outage history (per zip, one entry per day an outage was active). Lets proposals say how often
+    // THIS area really loses power once enough days have been collected. Never blocks the sync.
+    try { await appendHistory(supaHeaders, zips); } catch (eh) { stamp('history not recorded: ' + eh.message); }
 
     return { statusCode: 200, headers: cors, body: JSON.stringify({ ok: true, sdge_incident_count: sdgeFeatures.length, zips: zips.length, log }) };
   } catch (e) {
@@ -224,5 +227,29 @@ async function upsertSnapshot(supaHeaders, snapshot) {
     method: 'POST',
     headers: { ...supaHeaders, Prefer: 'resolution=merge-duplicates' },
     body: JSON.stringify({ key: 'sdge_outages', value: JSON.stringify(snapshot), updated_at: new Date().toISOString() })
+  });
+}
+
+// pipeline_state key 'sdge_outage_history' = { since: ISO, days: { '92130': ['2026-10-06', ...] } }
+async function appendHistory(supaHeaders, zips) {
+  const list = (zips || []).map(z => String(z && z.zip ? z.zip : z)).filter(z => /^\d{5}$/.test(z));
+  if (!list.length) return;
+  const today = new Date().toISOString().slice(0, 10);
+  let hist = { since: new Date().toISOString(), days: {} };
+  try {
+    const r = await fetch(SUPA_REST + '/pipeline_state?key=eq.sdge_outage_history&select=value', { headers: supaHeaders });
+    if (r.ok) { const rows = await r.json(); if (rows.length) { const v = rows[0].value; hist = typeof v === 'string' ? JSON.parse(v) : v; } }
+  } catch (e) {}
+  if (!hist.days) hist.days = {};
+  let changed = false;
+  list.forEach(z => {
+    const arr = hist.days[z] || (hist.days[z] = []);
+    if (arr[arr.length - 1] !== today) { arr.push(today); changed = true; if (arr.length > 800) arr.shift(); }
+  });
+  if (!changed) return;
+  await fetch(SUPA_REST + '/pipeline_state', {
+    method: 'POST',
+    headers: { ...supaHeaders, Prefer: 'resolution=merge-duplicates' },
+    body: JSON.stringify({ key: 'sdge_outage_history', value: JSON.stringify(hist), updated_at: new Date().toISOString() })
   });
 }

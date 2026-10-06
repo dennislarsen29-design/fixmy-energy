@@ -25481,6 +25481,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '</div>';
     document.body.appendChild(modal);
     modal._catalog = catalog;
+    window._propOutHist = null;
+    (async function(){ try { var _hc = supabase.createClient(SUPA_URL, SUPA_KEY); var _hr = await _hc.from('pipeline_state').select('value').eq('key','sdge_outage_history').limit(1); var _hv = _hr.data && _hr.data[0] && _hr.data[0].value; if (_hv) { window._propOutHist = typeof _hv === 'string' ? JSON.parse(_hv) : _hv; if (document.getElementById('proposalModal')) window._propRenderBuilds(); } } catch(e) {} })();
     window._propStep = 1;
     window._propLiveStatus = (existing && existing.status) || null;
     clearTimeout(window._propAutoT);
@@ -25744,6 +25746,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           if (_oi.length) proposal.outage = { events: _rs.outage.events || 2, items: _oi }; else delete proposal.outage;
         }
         if (_rs.hide_payback) proposal.hide_payback = true; else delete proposal.hide_payback;
+        if (_rs.nem_capacity_ok) proposal.nem_capacity_ok = true; else delete proposal.nem_capacity_ok;
         if (_rs.outlook_switch) proposal.outlook_switch = true; else delete proposal.outlook_switch;
         if (_rs.outlook_default && _rs.outlook_default !== 'moderate') proposal.outlook_default = _rs.outlook_default; else delete proposal.outlook_default;
         ['bill_rate','bill_manual'].forEach(function(k){ if (_rs[k] > 0) proposal[k] = _rs[k]; else delete proposal[k]; });
@@ -26013,6 +26016,18 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // ── Savings assumptions (REP ONLY) — lives in the builder, never on the customer-facing proposal page.
   // Saved onto customers.proposal by sendProposal; proposal-preview.html only reads them.
   var OUTAGE_DEFS = [['fridge','Food spoilage (fridge/freezer)',250],['hotel','Hotel / staying elsewhere',200],['work','Lost work or internet downtime',150]];
+  // Real local outage history (logged by outage-sync, one entry per day an outage was active in a zip).
+  function _propOutageHistoryHtml() {
+    var h = window._propOutHist, st = 'font-size:0.66rem;color:#888;margin:2px 0 6px;';
+    var c = (typeof adminCustomers !== 'undefined' ? adminCustomers : []).find(function(x){ return x.id === _propPropId; }) || {};
+    var zip = extractZip(c.address || '');
+    if (!h || !zip) return '<div style="'+st+'">Local outage history: not available yet.</div>';
+    var days = (h.days && h.days[zip]) || [];
+    var elapsed = Math.max(1, Math.round((Date.now() - new Date(h.since).getTime()) / 86400000));
+    if (elapsed < 90) return '<div style="'+st+'">Local outage history: collecting (day '+elapsed+' of 90) &mdash; '+days.length+' outage day'+(days.length===1?'':'s')+' logged in '+zip+' so far. A real number appears after 90 days.</div>';
+    var perYr = Math.max(0.5, Math.round(days.length * 365 / elapsed * 2) / 2);
+    return '<div style="'+st+'">Local outage history: '+days.length+' outage day'+(days.length===1?'':'s')+' in '+zip+' over '+elapsed+' days (&asymp; '+perYr+'/yr). <button onclick="_propSetOutage(\'events\',null,'+perYr+');_propRenderBuilds()" style="width:auto;padding:2px 8px;border-radius:100px;font-size:0.64rem;cursor:pointer;background:rgba(255,170,0,0.15);border:1px solid rgba(255,170,0,0.4);color:#ffaa00;">Use '+perYr+'/yr</button></div>';
+  }
   window._propSetOutage = function(id, field, v) {
     var s = window._propRepSettings || (window._propRepSettings = {});
     var o = s.outage || (s.outage = { events: 2, items: {} });
@@ -26024,7 +26039,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var s = window._propRepSettings || (window._propRepSettings = {});
     if (k === 'bill_method' || k === 'bill_rate' || k === 'bill_manual') { s[k] = (k === 'bill_method') ? (v || null) : (parseFloat(v) > 0 ? parseFloat(v) : 0); window._propApplyBillBasis(); return; }
     if (k === 'outlook_default') { s[k] = v; return; }
-    if (k === 'hide_bill' || k === 'inverter_down' || k === 'outlook_switch' || k === 'hide_payback') s[k] = !!v;
+    if (k === 'hide_bill' || k === 'inverter_down' || k === 'outlook_switch' || k === 'hide_payback' || k === 'nem_capacity_ok') s[k] = !!v;
     else if (k === 'nem_version') s[k] = parseInt(v, 10) || 2;
     else { var n = parseFloat(v); s[k] = (isFinite(n) && n > 0) ? n : 0; }
   };
@@ -26088,11 +26103,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '<label style="'+lb+'"><span>Inverter currently down</span><input type="checkbox" '+(s.inverter_down?'checked':'')+' onchange="_propSetRepSetting(\'inverter_down\',this.checked)"/></label>';
     h += '<label style="'+lb+'"><span>Current working battery (kWh)</span><input type="number" step="0.5" min="0" value="'+(s.current_battery_kwh||'')+'" onchange="_propSetRepSetting(\'current_battery_kwh\',this.value)" style="'+fs+'"/></label>';
     h += '<label style="'+lb+'"><span>NEM version</span><select onchange="_propSetRepSetting(\'nem_version\',this.value)" style="'+fs+'">'+[1,2,3].map(function(n){return '<option value="'+n+'"'+(s.nem_version===n?' selected':'')+'>'+n+'.0</option>';}).join('')+'</select></label>';
+    h += '<label style="'+lb+'"><span>Adding panels is safe for this customer&rsquo;s NEM rate<br><small style="color:#777;">Only matters on NEM 1.0/2.0. Tick after you&rsquo;ve confirmed the capacity-change rules &mdash; until then the added-panels savings line stays hidden from the customer.</small></span><input type="checkbox" '+(s.nem_capacity_ok?'checked':'')+' onchange="_propSetRepSetting(\'nem_capacity_ok\',this.checked)"/></label>';
     h += '<label style="'+lb+'"><span>Bill with full system + battery ($/mo, NEM 1/2)</span><input type="number" step="1" min="0" value="'+(s.postfix_monthly_bill||15)+'" onchange="_propSetRepSetting(\'postfix_monthly_bill\',this.value)" style="'+fs+'"/></label>';
     var og = s.outage || { events: 2, items: {} };
     h += '<div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,170,0,0.25);"><div style="font-size:0.72rem;font-weight:700;color:#ffaa00;margin-bottom:2px;">Outage costs &mdash; customer opt-in (only with a Powerwall)</div><div style="font-size:0.66rem;color:#777;margin-bottom:4px;">Tick what you want to OFFER. The customer chooses what applies; nothing is added to savings automatically.</div>';
     OUTAGE_DEFS.forEach(function(d){ var it = og.items[d[0]] || { on:false, amt:d[2] };
       h += '<label style="'+lb+'"><span><input type="checkbox" '+(it.on?'checked':'')+' onchange="_propSetOutage(\''+d[0]+'\',\'on\',this.checked)" style="margin-right:6px;"/>'+d[1]+'</span><span>$<input type="number" min="0" step="10" value="'+it.amt+'" onchange="_propSetOutage(\''+d[0]+'\',\'amt\',this.value)" style="'+fs+'"/> / outage</span></label>'; });
+    h += _propOutageHistoryHtml();
     h += '<label style="'+lb+'"><span>Outages per year (assumed)</span><input type="number" min="0.5" step="0.5" value="'+og.events+'" onchange="_propSetOutage(\'events\',null,this.value)" style="'+fs+'"/></label></div>';
     h += '<div style="font-size:0.66rem;color:#777;margin-top:4px;">Saved with the proposal (Save Draft / Send). Drives the &ldquo;what this upgrade changes&rdquo; savings math.</div>';
     h += '</div></details>';
@@ -26959,6 +26976,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       postfix_monthly_bill: parseFloat(_ex.postfix_monthly_bill) > 0 ? parseFloat(_ex.postfix_monthly_bill) : 15,
       outage: (function(){ var o = _ex.outage || {}, m = {}; (o.items||[]).forEach(function(i){ m[i.id] = { on:true, amt:i.amt }; }); return { events: o.events > 0 ? o.events : 2, items: m }; })(),
       hide_payback: !!_ex.hide_payback,
+      nem_capacity_ok: !!_ex.nem_capacity_ok,
       outlook_switch: !!_ex.outlook_switch,
       outlook_default: (['conservative','moderate','significant'].indexOf(_ex.outlook_default) > -1) ? _ex.outlook_default : 'moderate',
       bill_method: _ex.bill_method || null,

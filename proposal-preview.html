@@ -561,7 +561,7 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
       : '';
     var vppSum = (kind === 'sdcp') ? sdcpAmt : teslaAmt;
     return '<details class="ov-section"'+(window._ovOpen.vpp?' open':'')+' ontoggle="window._ovOpen.vpp=this.open">'+
-      '<summary><span class="ov-title">Ongoing Performance Value</span><span>'+vppSum+'<span class="ov-chev">&rsaquo;</span></span></summary>'+
+      '<summary><span class="ov-title">Ongoing Performance Value<span class="g-tag">Estimate &middot; program rules apply</span></span><span>'+vppSum+'<span class="ov-chev">&rsaquo;</span></span></summary>'+
       row+
       '<div class="ov-note">Paid periodically for battery grid participation &mdash; not a purchase-price discount, and not guaranteed until program enrollment is confirmed.'+noteTail+'</div>'+
     '</details>';
@@ -763,7 +763,7 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
       ? '<span class="ov-amt">~'+moneyRound(annual)+'/yr</span>'
       : '<span class="ov-amt muted">'+(CUSTOMER_MODE?'Confirmed in your usage review':'Needs usage data')+'</span>';
     return '<details class="ov-section"'+(window._ovOpen.tou?' open':'')+' ontoggle="window._ovOpen.tou=this.open">'+
-      '<summary><span class="ov-title">Time-of-Use Savings</span><span>'+touSum+'<span class="ov-chev">&rsaquo;</span></span></summary>'+
+      '<summary><span class="ov-title">Time-of-Use Savings<span class="g-tag">Estimate</span></span><span>'+touSum+'<span class="ov-chev">&rsaquo;</span></span></summary>'+
       '<div class="ov-check" style="cursor:default;border-top:none;">'+
         '<span>Shifting stored solar off $0.749/kWh peak rates<small>Stores midday solar at ~$0.36/kWh super off-peak, discharges 4&ndash;9 PM peak'+(kwh!=null?' &middot; ~'+kwh.toLocaleString()+' kWh/yr shifted':'')+'</small></span>'+
         amtHtml+
@@ -845,6 +845,17 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
     var use = PROP && PROP.usage_kwh > 0 ? PROP.usage_kwh : 0;
     var kw = PROP && parseFloat(PROP.system_kw) > 0 ? parseFloat(PROP.system_kw) : 0;
     out.kw = kw;
+    // Added panels (from the option's own "420W Panel xN" line). Shown only on NEM 3.0, or when the rep
+    // confirmed in the builder that adding capacity won't put a grandfathered NEM 1.0/2.0 rate at risk.
+    out.panelMonthly = 0; out.panelCount = 0; out.panelKwh = 0;
+    var _pl = (opt.line_items || []).filter(function(li){ return li && li.id === 'panel_addon_420w'; })[0];
+    var _pm = _pl && /[\u00d7x]\s*(\d+)/i.exec(_pl.name || '');
+    if (_pm && out.rate > 0 && (nemVersion() === 3 || (PROP && PROP.nem_capacity_ok))) {
+      out.panelCount = parseInt(_pm[1], 10);
+      out.panelKwh = Math.round(out.panelCount * 0.42 * SOLAR_KWH_PER_KW_YR);
+      if (use > 0) out.panelKwh = Math.min(out.panelKwh, Math.round(use * 0.9));
+      out.panelMonthly = Math.round(out.panelKwh * out.rate / 12);
+    }
     var sk = solarRecoveredKwh(opt);
     if (sk > 0 && out.rate > 0) { out.solarKwh = sk; out.solarMonthly = Math.round(sk * out.rate / 12); }
     if (hasPowerwall(opt)) {
@@ -855,7 +866,7 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
       var k = annualBatteryKwhFor(opt);
       if (k != null) { out.touKwh = k; out.touMonthly = Math.round(k * BATTERY_TOU_RATE_DEFAULT / 12); }
     }
-    out.totalMonthly = out.solarMonthly + out.touMonthly;
+    out.totalMonthly = out.solarMonthly + out.touMonthly + out.panelMonthly;
     var billMo = parseFloat(CUST.monthly_bill) || 0;
     // Remaining bill once a down inverter is restored is NEM-version dependent (2026-09-30, per Dennis).
     // Under NEM 1.0/2.0 the restored array nets against usage, so the bill falls to roughly the
@@ -878,7 +889,7 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
       else { out.touMonthly = 0; out.touKwh = 0; }
       out.remaining = hasPowerwall(opt) ? anchor : noBattRemaining;
       out.batteryCapped = false;
-      out.totalMonthly = out.solarMonthly + out.touMonthly;
+      out.totalMonthly = Math.min(out.solarMonthly + out.touMonthly + out.panelMonthly, Math.max(0, Math.round(billMo - MIN_MONTHLY_CHARGE)));   // never more than the bill
       return out;
     }
     // The upgrade can't remove more than the customer pays today.
@@ -896,6 +907,10 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
       rows += '<div class="im-row"><div class="im-h"><span>Battery upgrade &mdash; load shifting<span class="g-tag">Estimate</span></span><span class="im-amt">~'+moneyRound(im.touMonthly)+'/mo</span></div>'+
         '<div class="im-d">'+(im.from > 0 ? 'Storage goes from '+im.from+' kWh (not working) to '+im.to+' kWh' : 'You gain '+im.to+' kWh of working storage')+
         '. The battery doesn&rsquo;t make power &mdash; it stores solar and super-off-peak power and uses it during the 4&ndash;9 PM peak, shifting about '+im.touKwh.toLocaleString()+' kWh a year off the most expensive rates.'+(im.batteryCapped?' Your bill is already close to the utility&rsquo;s minimum charge once solar is back, so the battery&rsquo;s bigger value is backup power and grid-support income, shown below.':'')+'</div></div>';
+    }
+    if (im.panelMonthly > 0) {
+      rows += '<div class="im-row"><div class="im-h"><span>Added solar panels<span class="g-tag">Estimate</span></span><span class="im-amt">~'+moneyRound(im.panelMonthly)+'/mo</span></div>'+
+        '<div class="im-d">'+im.panelCount+' new panels (~'+(im.panelCount*0.42).toFixed(1)+' kW) make about '+im.panelKwh.toLocaleString()+' kWh a year that you no longer buy from the utility, valued at your current rate.</div></div>';
     }
     if (!rows) return '';
     rows = rows.replace(/<div class="im-d">([\s\S]*?)<\/div><\/div>/g, '<details class="im-more"><summary>How we calculated this</summary><div class="im-d">$1</div></details></div>');
