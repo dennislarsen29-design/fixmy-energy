@@ -13443,7 +13443,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
     h += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">'
       + '<button onclick="sunrunLayerPull()" style="width:auto;padding:8px 12px;font-size:0.74rem;">&#128229; Pull permits (free)</button>'
-      + '<button onclick="sunrunLayerExport()" style="width:auto;padding:8px 12px;font-size:0.74rem;background:transparent;border:1.5px solid #E8793A;color:#E8793A;">&#128190; Export top leads for skip-trace</button>'
+      + '<button onclick="sunrunLayerExport()" style="width:auto;padding:8px 12px;font-size:0.74rem;background:transparent;border:1.5px solid #E8793A;color:#E8793A;">&#128190; Export top leads for skip-trace (nearest 92026 first)</button>'
       + '</div><div id="sunrunLayerMsg" style="font-size:0.7rem;color:#8a8578;margin-top:8px;"></div>';
     el.innerHTML = h;
   };
@@ -13463,15 +13463,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (!n || n < 1) return;
     if (msg) msg.textContent = 'Building list…';
     var c = supabase.createClient(SUPA_URL, SUPA_KEY);
-    var res = await c.from('customers').select('address,lead_score,original_installer,title_owner')
+    var res = await c.from('customers').select('address,lead_score,original_installer,title_owner,lat,lng')
       .eq('lead_source','sunrun_layer').is('sold_type',null).is('phone',null).is('email',null)
       .or('archived.is.null,archived.eq.false').order('lead_score',{ascending:false,nullsFirst:false}).limit(Math.max(n*3, 1000));
     if (res.error) { if (msg) msg.textContent = 'Failed: ' + res.error.message; return; }
     // SDCP zips get a small boost so the first credits go to the best-served territory.
     var rows = (res.data || []).map(function(l){
       var z = extractZip(l.address || ''); var sd = z && SDCP_ZIPS && SDCP_ZIPS.has(z);
-      return { l: l, z: z, score: (l.lead_score || 0) + (sd ? 5 : 0) };
-    }).filter(function(x){ return x.z; }).sort(function(a,b){ return b.score - a.score; }).slice(0, n);
+      // Distance to home zip 92026 (Escondido) is the primary key; score breaks ties within ~2 mi.
+      var d = 1e9, la = parseFloat(l.lat), ln = parseFloat(l.lng);
+      if (isFinite(la) && isFinite(ln)) { var dx = (ln + 117.10) * 58, dy = (la - 33.14) * 69; d = Math.sqrt(dx*dx + dy*dy); }
+      else if (z === '92026') d = 3;
+      return { l: l, z: z, d: d, score: (l.lead_score || 0) + (sd ? 5 : 0) };
+    }).filter(function(x){ return x.z; }).sort(function(a,b){ return (Math.round(a.d/2) - Math.round(b.d/2)) || (b.score - a.score); }).slice(0, n);
     var out = rows.map(function(x){
       var street = String(x.l.address || '').split(',')[0].trim();
       return [street, '', 'CA', x.z];
@@ -25011,6 +25015,18 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // freshly-confirmed number as authoritative rather than silently editing that older note;
   // flag to Dennis if $4,275 was actually the real figure and this was the typo instead.
   var CARE_SDCP_REBATE = 4725;
+  // Upfront SDCP battery incentive is a formula, not a flat number: $/kWh of installed storage
+  // (standard $250, CARE/FERA/Medical Baseline $350 — i.e. $3,375 / $4,725 for one 13.5 kWh
+  // Powerwall 3) capped at the program maximum. Two Powerwalls (27 kWh) therefore hit the cap.
+  var SDCP_RATE_STD = 250, SDCP_RATE_CARE = 350, SDCP_UPFRONT_CAP = 6725;
+  function _propSdcpFormula(build) {
+    function cnt(item){ if (!item) return 0; var m = String(item.name||'').match(/[×x]\s*(\d+)/i); return m ? parseInt(m[1],10) : 1; }
+    var items = (build && build.lineItems) || [];
+    var units = cnt(items.find(function(li){ return li.id === 'pw3_retrofit'; })) + cnt(items.find(function(li){ return li.id === 'pw3_expansion_pack'; }));
+    if (!(units > 0)) return 0;
+    var care = !!(_propBillAnalysis && (_propBillAnalysis.care || _propBillAnalysis.fera || _propBillAnalysis.medical_baseline));
+    return Math.min(SDCP_UPFRONT_CAP, Math.round(units * 13.5 * (care ? SDCP_RATE_CARE : SDCP_RATE_STD)));
+  }
   var _propServiceType = '';
   var _commMins = { inverter_swap: 400, battery_retrofit: 2000, diagnostic: 90, new_solar: 0 };
   function _calcPropComm(price, redline) {
@@ -26100,6 +26116,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   function _propRecalcRedline(optIdx) {
     var build = _propBuilds[optIdx];
     if (!build) return;
+    // SDCP upfront incentive follows the battery size + income tier unless the rep typed their own.
+    if (build.sdcpRebate > 0 && !build.sdcpManual) { var _f = _propSdcpFormula(build); if (_f > 0) build.sdcpRebate = _f; }
     var lineSum = build.lineItems
       .filter(function(li){ return !li.isCustom; })
       .reduce(function(s, li){ return s + (parseFloat(li.price)||0); }, 0);
@@ -26873,6 +26891,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var build = _propBuilds[optIdx];
     if (!build) return;
     build.sdcpRebate = Math.max(0, parseFloat(val) || 0);
+    build.sdcpManual = true;
     _propRenderBuilds();
   };
 

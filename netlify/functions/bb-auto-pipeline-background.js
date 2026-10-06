@@ -1480,6 +1480,16 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
   }
 
   const TRACERFY_BATCH_CAP = enrichOnly ? 2000 : 500;
+  // Skip-trace priority anchor: 92026 (Escondido). Haversine miles; no coordinates => far away.
+  const HOME_LAT = 33.14, HOME_LNG = -117.10;
+  function distToHome(l) {
+    const la = parseFloat(l.lat), ln = parseFloat(l.lng);
+    if (!isFinite(la) || !isFinite(ln)) return 1e9;
+    const R = 3958.8, rad = Math.PI / 180;
+    const dLa = (la - HOME_LAT) * rad, dLn = (ln - HOME_LNG) * rad;
+    const x = Math.sin(dLa / 2) ** 2 + Math.cos(HOME_LAT * rad) * Math.cos(la * rad) * Math.sin(dLn / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(x));
+  }
 
   if (tracerfyKey) {
     const authHdr = { Authorization: 'Bearer ' + tracerfyKey, Accept: 'application/json' };
@@ -1531,12 +1541,15 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
     // ── Submit new batch only when no pending queue is outstanding ───────────
     if (!pendingQueueId) {
       const noContactRes = await supaFetch(
-        '/customers?lead_source=eq.orphaned_list&sold_type=is.null&phone=is.null&email=is.null&enrichment_source=is.null&select=id,address,install_year&limit=10000'
+        '/customers?lead_source=eq.orphaned_list&sold_type=is.null&phone=is.null&email=is.null&enrichment_source=is.null&select=id,address,install_year,lat,lng&limit=10000'
       );
       const allNoContact = (Array.isArray(noContactRes.data) ? noContactRes.data : []).filter(r => r.address);
       const skipLeads = allNoContact
         .filter(l => addressQualityScore(l.address) >= 9)
-        .sort((a, b) => (b.install_year || 0) - (a.install_year || 0))
+        // Spend skip-trace credits closest to Dennis's home zip (92026, Escondido) first, so the
+        // team's own door/dial routes fill with reachable leads before the rest of the county.
+        // Leads with no coordinates sort after; newest install year breaks ties.
+        .sort((a, b) => (distToHome(a) - distToHome(b)) || ((b.install_year || 0) - (a.install_year || 0)))
         .slice(0, TRACERFY_BATCH_CAP);
       stamp(`Phase 3: ${skipLeads.length}/${allNoContact.length} leads pass address quality filter`);
 

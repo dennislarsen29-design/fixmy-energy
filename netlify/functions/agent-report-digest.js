@@ -26,6 +26,7 @@ const AGENT_META = {
   finance:          { emoji: '💰', label: 'Finance Advisor' },
   roadmap:          { emoji: '🗺️', label: 'Roadmap & Growth' },
   socials:          { emoji: '📱', label: 'Social Media' },
+  gbp:              { emoji: '📍', label: 'Google Business Post' },
   financial_coach:  { emoji: '🧭', label: 'Financial Coach' }
 };
 function agentMeta(a) { return AGENT_META[a] || { emoji: '🤖', label: a || 'Agent' }; }
