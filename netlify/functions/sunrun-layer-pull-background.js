@@ -80,7 +80,10 @@ function scoreLead(rec, ownerKnown) {
 exports.handler = async function (event) {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 200, body: '' };
   if (event.httpMethod !== 'POST') return { statusCode: 405, body: 'Method Not Allowed' };
-  if (!originAllowed(event)) return { statusCode: 403, body: 'Forbidden' };
+  // Netlify's own cron invocation carries { next_run } in the body and no browser origin.
+  let _sched = false;
+  try { _sched = !!JSON.parse(event.body || '{}').next_run; } catch (e) {}
+  if (!_sched && !originAllowed(event)) return { statusCode: 403, body: 'Forbidden' };
 
   const key = process.env.SUPA_SERVICE_KEY;
   const psKey = process.env.PERMITSTACK_KEY;

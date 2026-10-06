@@ -8510,9 +8510,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '</div></div>';
     if (CURRENT_ROLE === 'admin') {
       h += '<div style="font-size:0.66rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#555;margin:2px 0 10px;">&#128202; Dashboard</div>';
+      h += '<div id="bbFunnelPanel" style="margin-bottom:14px;"></div>';
+      h += '<div id="sunrunLayerCard" style="background:var(--bg-card,#161616);border:1.5px solid rgba(232,121,58,0.4);border-radius:12px;padding:14px;margin-bottom:16px;"><div style="color:#8a8578;font-size:0.8rem;">&#9728; Loading Sunrun / Vivint layer&hellip;</div></div>';
+      setTimeout(function(){ if (window.sunrunLayerLoad) window.sunrunLayerLoad(); }, 0);
+      // Everything below the two funnels is rarely needed — folded away so the page is two funnels,
+      // the lead list, and one "Advanced tools" row instead of dozens of buttons.
+      h += '<details id="bbAdvanced" style="margin:0 0 18px;"><summary style="cursor:pointer;font-size:0.74rem;font-weight:700;color:#8a8578;padding:8px 0;">&#9881; Advanced tools &mdash; pipeline steps, owner lookup, geocoding, coverage map</summary><div style="padding-top:10px;">';
       h += '<div id="bbPhase0Panel" style="margin-bottom:12px;"></div>';
       h += '<div id="bbInsightsPanel" style="margin-bottom:12px;"></div>';
-      h += '<div id="bbFunnelPanel" style="margin-bottom:20px;"></div>';
       h += '<div style="font-size:0.66rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#555;margin-bottom:14px;">&#128260; Pipeline &mdash; Raw Data &rarr; Enriched Lead</div>';
     }
     // ── STAGE 1 — PERMIT STACK — source new leads ──────────────────────────────
@@ -8540,11 +8545,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }
       h += _bbStageClose();
     }
-    // ── SUNRUN / VIVINT LAYER — its own pool, never mixed with the orphaned list ──
-    if (CURRENT_ROLE === 'admin') {
-      h += '<div id="sunrunLayerCard" style="background:var(--bg-card,#161616);border:1.5px solid rgba(232,121,58,0.4);border-radius:12px;padding:14px;margin:14px 0;"><div style="color:#8a8578;font-size:0.8rem;">&#9728; Loading Sunrun / Vivint layer&hellip;</div></div>';
-      setTimeout(function(){ if (window.sunrunLayerLoad) window.sunrunLayerLoad(); }, 0);
-    }
     // ── STAGE 3 — ENRICH — owner lookup (free) then skip-trace (paid) ──────────
     if (CURRENT_ROLE === 'admin') {
       h += _bbStageOpen(3, false, '&#128269;', 'Enrich', 'Regrid/SANDAG (free) &rarr; Tracerfy (paid)',
@@ -8559,6 +8559,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       h += '<div style="font-size:0.68rem;color:#555;">Automatic &mdash; nothing to run here.</div>';
       h += _bbStageClose();
     }
+    if (CURRENT_ROLE === 'admin') h += '</div></details>';
     // ── STAGE 5 (below) — WORK THE LEADS — Quarantined list, see further down ──
     // ── ROUTES — non-admin (rep) GPS door-knocking flow, unchanged ────────────
     if (CURRENT_ROLE !== 'admin') {
@@ -13422,28 +13423,44 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   window.sunrunLayerLoad = async function() {
     var el = document.getElementById('sunrunLayerCard'); if (!el) return;
     var c = supabase.createClient(SUPA_URL, SUPA_KEY);
-    var base = function(){ return c.from('customers').select('id', { count:'exact', head:true }).eq('lead_source','sunrun_layer').is('sold_type',null); };
+    var base = function(){ return c.from('customers').select('id', { count:'exact', head:true }).eq('lead_source','sunrun_layer'); };
     var r = await Promise.all([
-      base(), base().not('title_owner','is',null), base().not('phone','is',null),
+      base(), base().not('lat','is',null), base().not('title_owner','is',null), base().not('phone','is',null),
+      base().not('email','is',null).not('email','ilike','%@pending.fixmy.energy'), base().eq('black_box', false),
       c.from('pipeline_state').select('value').eq('key','sunrun_layer_status').maybeSingle()
     ]);
-    var total = r[0].count || 0, owners = r[1].count || 0, phones = r[2].count || 0;
-    var st = (r[3].data && r[3].data.value) || null;
+    var stages = [
+      { label:'Permits Sourced', count:r[0].count || 0 }, { label:'Geocoded', count:r[1].count || 0 },
+      { label:'Owner Found', count:r[2].count || 0 }, { label:'Phone Found', count:r[3].count || 0 },
+      { label:'Email Found', count:r[4].count || 0 }, { label:'Activated', count:r[5].count || 0 }
+    ];
+    var top = stages[0].count || 1;
+    var st = (r[6].data && r[6].data.value) || null;
     if (typeof st === 'string') { try { st = JSON.parse(st); } catch(e) { st = null; } }
-    var h = '<div style="font-weight:800;font-size:0.9rem;color:#E8793A;margin-bottom:4px;">&#9728; Sunrun / Vivint layer</div>'
-      + '<div style="font-size:0.7rem;color:#8a8578;line-height:1.5;margin-bottom:10px;">Separate pool (not orphaned installers). Doors and Dialing each have a &ldquo;Sunrun layer&rdquo; switch. Owned systems first, leased second. Permits + owner lookup are free; skip-trace is paid and only runs when you export a list.</div>'
-      + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">'
-      + [['Leads',total],['With owner',owners],['With phone',phones]].map(function(t){ return '<div style="flex:1;min-width:90px;background:rgba(255,255,255,0.04);border-radius:8px;padding:8px;text-align:center;"><div style="font-size:1.1rem;font-weight:800;color:#fff;">'+t[1].toLocaleString()+'</div><div style="font-size:0.62rem;color:#8a8578;">'+t[0]+'</div></div>'; }).join('')
-      + '</div>';
+    var h = '<div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:6px;">'
+      + '<div style="font-weight:800;font-size:0.82rem;color:#E8793A;">&#9728; Sunrun / Vivint Funnel</div>'
+      + '<div style="font-size:0.62rem;color:#8a8578;">Separate from orphaned installers &middot; owned systems first &middot; pulls nightly ~5:30am PT</div></div>'
+      + '<div style="font-size:0.64rem;color:#666;margin:2px 0 12px;">Permits and owner lookup are free. Skip-trace is paid and only runs when you export a list.</div>';
+    stages.forEach(function(s2, i) {
+      var pct = Math.round(s2.count / top * 100), drop = i > 0 ? stages[i-1].count - s2.count : 0;
+      h += '<div style="margin-bottom:9px;"><div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px;">'
+        + '<span style="font-size:0.72rem;color:#ccc;font-weight:600;">' + s2.label + '</span>'
+        + '<span style="font-size:0.72rem;color:#E8793A;font-weight:800;">' + s2.count.toLocaleString() + '</span></div>'
+        + '<div style="background:rgba(255,255,255,0.06);border-radius:100px;height:7px;overflow:hidden;"><div style="background:linear-gradient(90deg,#E8793A,#ffaa00);height:7px;border-radius:100px;width:' + pct + '%;"></div></div>'
+        + (i > 0 && drop > 0 ? '<div style="font-size:0.6rem;color:#ef4444;margin-top:2px;">&#8595; ' + drop.toLocaleString() + ' dropped off here (' + pct + '% remain)</div>' : '')
+        + '</div>';
+    });
     if (st) {
       var when = st.finished_at || st.started_at || '';
-      h += '<div style="font-size:0.68rem;color:#8a8578;margin-bottom:8px;">Last pull: ' + esc(String(when).slice(0,16).replace('T',' ')) + ' &middot; ' + (st.running ? 'running…' : 'done')
+      h += '<div style="font-size:0.66rem;color:#8a8578;margin:4px 0 8px;">Last pull: ' + esc(String(when).slice(0,16).replace('T',' ')) + ' &middot; ' + (st.running ? 'running…' : 'done')
         + ' &middot; scanned ' + (st.scanned || 0) + ', +' + (st.inserted || 0) + ' new, ' + (st.skipped_dupe || 0) + ' already on file'
         + (st.outcomes ? '<br>Pull results: ' + esc(JSON.stringify(st.outcomes)) : '') + (st.error ? '<br><span style="color:#f87171;">Error: ' + esc(String(st.error)) + '</span>' : '') + '</div>';
+    } else {
+      h += '<div style="font-size:0.66rem;color:#8a8578;margin:4px 0 8px;">No pull has run yet. The first scheduled pull is tonight, or run one now.</div>';
     }
     h += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">'
-      + '<button onclick="sunrunLayerPull()" style="width:auto;padding:8px 12px;font-size:0.74rem;">&#128229; Pull permits (free)</button>'
-      + '<button onclick="sunrunLayerExport()" style="width:auto;padding:8px 12px;font-size:0.74rem;background:transparent;border:1.5px solid #E8793A;color:#E8793A;">&#128190; Export top leads for skip-trace (nearest 92026 first)</button>'
+      + '<button onclick="sunrunLayerPull()" style="width:auto;padding:7px 12px;font-size:0.72rem;">&#128229; Pull permits now</button>'
+      + '<button onclick="sunrunLayerExport()" style="width:auto;padding:7px 12px;font-size:0.72rem;background:transparent;border:1.5px solid #E8793A;color:#E8793A;">&#128190; Export for skip-trace (nearest 92026)</button>'
       + '</div><div id="sunrunLayerMsg" style="font-size:0.7rem;color:#8a8578;margin-top:8px;"></div>';
     el.innerHTML = h;
   };
@@ -18479,6 +18496,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   };
 
   // ── Lead Funnel — where leads are stuck or not fully enriched ────────────
+  window._bbOpenAdv = function(id) {
+    var d = document.getElementById('bbAdvanced'); if (d) d.open = true;
+    var el = document.getElementById(id); if (el) el.scrollIntoView({ behavior: 'smooth' });
+  };
   window.adminCanvassLoadFunnel = async function() {
     var el = document.getElementById('bbFunnelPanel');
     if (!el) return;
@@ -18506,10 +18527,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // Owner Found is free + idempotent so it triggers the real fix directly; Skip Trace is
       // paid and count-gated so those rows scroll to the real button instead of firing blind.
       var ctaFor = {
-        'Geocoded':    { text: '&#128205; Go geocode &rarr;',     onclick: "document.getElementById('bbStage2').scrollIntoView({behavior:'smooth'})" },
+        'Geocoded':    { text: '&#128205; Go geocode &rarr;',     onclick: "_bbOpenAdv('bbStage2')" },
         'Owner Found': { text: '&#128269; Run Owner Lookup &rarr;', onclick: 'adminCanvassEnrichAll()' },
-        'Phone Found': { text: '&#128222; Go to Skip Trace &rarr;', onclick: "document.getElementById('bbStage3').scrollIntoView({behavior:'smooth'})" },
-        'Email Found': { text: '&#128222; Go to Skip Trace &rarr;', onclick: "document.getElementById('bbStage3').scrollIntoView({behavior:'smooth'})" },
+        'Phone Found': { text: '&#128222; Go to Skip Trace &rarr;', onclick: "_bbOpenAdv('bbStage3')" },
+        'Email Found': { text: '&#128222; Go to Skip Trace &rarr;', onclick: "_bbOpenAdv('bbStage3')" },
         'Activated':   { text: '&#128203; Go work leads &rarr;',    onclick: "document.getElementById('bbStage5').scrollIntoView({behavior:'smooth'})" }
       };
       // Meta Audience isn't part of the sourced→activated waterfall above (it's
