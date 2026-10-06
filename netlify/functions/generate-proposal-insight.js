@@ -156,7 +156,7 @@ exports.handler = async function(event) {
     annual_kwh_solar_api, calculated_monthly_savings, calculated_annual_savings,
     savings_source, panel_kw_added, has_battery,
     storage_kwh, annual_usage_kwh, surplus_kwh_trueup,
-    photo_urls
+    photo_urls, real_bill
   } = body;
   // Quoya reads the uploaded equipment photos (issues/recalls/warranty). Cap to bound cost.
   const photos = Array.isArray(photo_urls) ? photo_urls.filter(p => p && p.url).slice(0, 10) : [];
@@ -170,7 +170,10 @@ exports.handler = async function(event) {
   if (installer)             parts.push(`Original installer: ${installer}`);
   if (system_size)           parts.push(`Current system size: ${system_size} kW DC`);
   if (nem_status)            parts.push(`NEM status: ${nem_status.toUpperCase()} — full retail rate credit grandfathered`);
-  if (monthly_bill)          parts.push(`Current monthly SDG&E bill: $${monthly_bill} (while system is underperforming or without storage)`);
+  // Real bill from the uploaded statement (2026-10-06): this is the ONLY bill figure to quote. The intake
+  // "monthly_bill" can be a setter's stand-in, and "annual true-up" dollar amounts in notes are not to be used.
+  if (real_bill && real_bill.monthly > 0) parts.push(`REAL BILL (from the customer's uploaded SDG&E statement — the only bill figure you may quote): about $${real_bill.monthly}/month, ~$${(real_bill.annual||real_bill.monthly*12).toLocaleString()}/year (${real_bill.basis}). State it ONCE as a monthly figure; never present a separate "annual true-up" amount as an additional cost, and never use any dollar bill figure from the tech notes.`);
+  else if (monthly_bill)     parts.push(`Current monthly SDG&E bill: $${monthly_bill} (while system is underperforming or without storage)`);
   if (inverter_output_pct)   parts.push(`Inverter currently running at: ~${inverter_output_pct}% of rated capacity`);
   if (monthly_loss_est)      parts.push(`Estimated monthly generation loss: ~$${Math.round(monthly_loss_est)}/month the customer is paying SDG&E that their solar should cover`);
   if (expected_bill_with_fix)parts.push(`Expected monthly bill after full fix: ~$${Math.round(expected_bill_with_fix)} (near the $24 base services charge minimum under NEM 1.0)`);
