@@ -625,6 +625,26 @@ button.component-chip.open{border-color:var(--dark);}
     if (!(m > 0)) { try { m = improvementsFor(opt).totalMonthly; } catch(e) { m = 0; } }
     return m;
   }
+  // Splits the savings figure into named parts that always add back up to monthlySavingsFor(opt), so the monthly
+  // card and the "behind the savings" list can never disagree.
+  function savingsPartsFor(opt){
+    var total = monthlySavingsFor(opt);
+    var im = null; try { im = improvementsFor(opt); } catch(e) {}
+    var pd = opt.prod_data || {};
+    var mod = opt.savings && opt.savings.moderate;
+    var P = { tou:0, panels:0, inverter:0, other:0, total: total };
+    if (mod && mod.monthly > 0) {
+      var tkwh = (pd.batteryArbitrageKwh > 0) ? pd.batteryArbitrageKwh : (annualBatteryKwhFor(opt) || 0);
+      P.tou = hasPowerwall(opt) ? Math.min(total, Math.round(tkwh * BATTERY_TOU_RATE_DEFAULT / 12)) : 0;
+      var rem = Math.max(0, total - P.tou), pk = pd.panelKwh || 0, ik = pd.inverterKwh || 0;
+      if (pk + ik > 0) { P.panels = Math.round(rem * pk / (pk + ik)); P.inverter = rem - P.panels; }
+      else P.other = rem;
+    } else if (im) {
+      P.tou = im.touMonthly; P.panels = im.panelMonthly; P.inverter = im.solarMonthly;
+      P.total = P.tou + P.panels + P.inverter;
+    }
+    return P;
+  }
   function cashPriceFor(opt, hasParticipate){
     var cashSdcp = finSub === 'sdcp' && (opt.sdcp_rebate||0) > 0;
     var part = participatePriceFor(opt);
@@ -661,8 +681,17 @@ button.component-chip.open{border-color:var(--dark);}
     var sav = monthlySavingsFor(opt);
     var rows = '';
     var estGrid = billToday > 0 ? Math.max(sav > 0 ? MIN_MONTHLY_CHARGE : 0, Math.round(billToday - sav)) : null;
+    var PT = savingsPartsFor(opt);
     if (billToday > 0) rows += '<div class="compare-row"><div class="lbl">Your bill today<span class="sub">before any upgrade</span></div><div class="amt">'+moneyRound(billToday)+'/mo</div></div>';
-    if (estGrid !== null) rows += '<div class="compare-row"><div class="lbl">Utility bill after the upgrade<span class="sub">estimated</span></div><div class="amt">'+moneyRound(estGrid)+'/mo</div></div>';
+    if (billToday > 0 && sav > 0) {
+      [['tou','Battery shifts your power use off peak',PT.tou],['panels','Added solar panels',PT.panels],['inverter','Restored solar production',PT.inverter],['other','Solar production',PT.other]].forEach(function(x){
+        if (x[2] > 0) rows += '<div class="compare-row"><div class="lbl">'+x[1]+'</div><div class="amt neg">&minus;'+moneyRound(x[2])+'/mo</div></div>';
+      });
+    }
+    if (estGrid !== null) {
+      var capped = sav > billToday - MIN_MONTHLY_CHARGE;
+      rows += '<div class="compare-row"><div class="lbl">Utility bill after the upgrade<span class="sub">'+(capped ? 'estimated &middot; the savings above exceed what your bill can drop by, so it stops at the '+moneyRound(MIN_MONTHLY_CHARGE)+' minimum charge' : 'estimated')+'</span></div><div class="amt">'+moneyRound(estGrid)+'/mo</div></div>';
+    }
     if (fin) rows += '<div class="compare-row"><div class="lbl">Monthly payment'+(finSub==='sdcp'?'<span class="applied-badge">&#10003; SDCP</span>':'')+'</div><div class="amt">'+moneyRound(financeMonthly)+'/mo</div></div>';
     if (perfMonthly > 0) rows += '<div class="compare-row"><div class="lbl">'+esc(perfLabel||'Performance incentive')+'<span class="sub">paid to you each month</span></div><div class="amt neg">&minus;'+moneyRound(perfMonthly)+'/mo</div></div>';
     if (touDeltaMonthly) rows += '<div class="compare-row"><div class="lbl">Time-of-Use rate adjustment</div><div class="amt'+(touDeltaMonthly>0?' neg':'')+'">'+(touDeltaMonthly>=0?'&minus;':'+')+moneyRound(Math.abs(touDeltaMonthly))+'/mo</div></div>';
@@ -875,12 +904,12 @@ button.component-chip.open{border-color:var(--dark);}
     var use = PROP && PROP.usage_kwh > 0 ? PROP.usage_kwh : 0;
     var kw = PROP && parseFloat(PROP.system_kw) > 0 ? parseFloat(PROP.system_kw) : 0;
     out.kw = kw;
-    // Added panels (from the option's own "420W Panel xN" line). Shown only on NEM 3.0, or when the rep
-    // confirmed in the builder that adding capacity won't put a grandfathered NEM 1.0/2.0 rate at risk.
+    // Added panels (from the option's own "420W Panel xN" line). Always shown; on NEM 1.0/2.0 the breakdown carries
+    // a note that this assumes the net-metering rate isn't affected (the rep can tick the capacity check in the builder).
     out.panelMonthly = 0; out.panelCount = 0; out.panelKwh = 0;
     var _pl = (opt.line_items || []).filter(function(li){ return li && li.id === 'panel_addon_420w'; })[0];
     var _pm = _pl && /[\u00d7x]\s*(\d+)/i.exec(_pl.name || '');
-    if (_pm && out.rate > 0 && (nemVersion() === 3 || (PROP && PROP.nem_capacity_ok))) {
+    if (_pm && out.rate > 0) {
       out.panelCount = parseInt(_pm[1], 10);
       out.panelKwh = Math.round(out.panelCount * 0.42 * SOLAR_KWH_PER_KW_YR);
       if (use > 0) out.panelKwh = Math.min(out.panelKwh, Math.round(use * 0.9));
@@ -928,6 +957,8 @@ button.component-chip.open{border-color:var(--dark);}
   }
   function improvementsHtml(opt){
     var im = improvementsFor(opt);
+    var _P = savingsPartsFor(opt);
+    im.touMonthly = _P.tou; im.panelMonthly = _P.panels; im.solarMonthly = _P.inverter + _P.other;
     var rows = '';
     if (im.solarMonthly > 0) {
       rows += '<div class="im-row"><div class="im-h"><span>Solar production restored&nbsp;<span class="g-tag">Estimate</span></span><span class="im-amt">~'+moneyRound(im.solarMonthly)+'/mo</span></div>'+
@@ -940,8 +971,9 @@ button.component-chip.open{border-color:var(--dark);}
     }
     if (im.panelMonthly > 0) {
       rows += '<div class="im-row"><div class="im-h"><span>Added solar panels<span class="g-tag">Estimate</span></span><span class="im-amt">~'+moneyRound(im.panelMonthly)+'/mo</span></div>'+
-        '<div class="im-d">'+im.panelCount+' new panels (~'+(im.panelCount*0.42).toFixed(1)+' kW) make about '+im.panelKwh.toLocaleString()+' kWh a year that you no longer buy from the utility, valued at your current rate.</div></div>';
+        '<div class="im-d">'+(im.panelCount||'The')+' new panels'+(im.panelCount?' (~'+(im.panelCount*0.42).toFixed(1)+' kW)':'')+' make about '+(im.panelKwh||0).toLocaleString()+' kWh a year that you no longer buy from the utility.'+((nemVersion() !== 3 && !(PROP && PROP.nem_capacity_ok)) ? ' This assumes adding panels doesn\u2019t change your current net-metering rate &mdash; we confirm that during your evaluation.' : '')+'</div></div>';
     }
+    if (_P.other > 0) rows += '<div class="im-row"><div class="im-h"><span>Solar production&nbsp;<span class="g-tag">Estimate</span></span><span class="im-amt">~'+moneyRound(_P.other)+'/mo</span></div></div>';
     if (!rows) return '';
     rows = rows.replace(/<div class="im-d">([\s\S]*?)<\/div><\/div>/g, '<details class="im-more"><summary>How we calculated this</summary><div class="im-d">$1</div></details></div>');
     var assume = true ? '' :
@@ -950,7 +982,7 @@ button.component-chip.open{border-color:var(--dark);}
       'current working battery <input type="number" step="0.5" min="0" value="'+(PROP.current_battery_kwh||'')+'" onchange="setImpField(\'current_battery_kwh\',this.value)"/> kWh &middot; '+
       'NEM <select onchange="setImpField(\'nem_version\',this.value)">'+[1,2,3].map(function(n){return '<option value="'+n+'"'+(nemVersion()===n?' selected':'')+'>'+n+'.0</option>';}).join('')+'</select> &middot; '+
       'bill with full system + battery (NEM 1/2) $<input type="number" step="1" min="0" value="'+postfixBillFor()+'" onchange="setImpField(\'postfix_monthly_bill\',this.value)"/>/mo</div>';
-    return '<div class="improve-card"><div class="im-title">What\u2019s behind the savings</div>'+rows+assume+'</div>';
+    return '<div class="improve-card" style="margin-bottom:0;">'+rows+assume+'</div>';
   }
   async function setImpField(k, v){
     var val = (k === 'inverter_down') ? !!v : (k === 'nem_version') ? parseInt(v,10) : (parseFloat(v) > 0 ? parseFloat(v) : 0);
