@@ -2012,7 +2012,50 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var _rh = await _rhc.from('pipeline_state').select('value').eq('key','regrid_health').maybeSingle();
       window._regridHealth = (_rh && _rh.data && _rh.data.value) ? (typeof _rh.data.value === 'string' ? JSON.parse(_rh.data.value) : _rh.data.value) : null;
     } catch (e) { window._regridHealth = null; }
+    // Background-job health (permit pulls, nightly pipeline, SEO sync, outage feed) — every
+    // failure must surface here instead of sitting in a status row nobody opens.
+    var _jobAlerts = [];
+    try {
+      var _jc = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var _jr = await _jc.from('pipeline_state').select('key,value,updated_at')
+        .in('key', ['sunrun_layer_status','last_run_at','last_run_phase','last_run_summary','seo_sync_status','sdge_outages']);
+      var _ps = {};
+      (_jr.data || []).forEach(function(r){
+        var v = r.value; if (typeof v === 'string') { try { v = JSON.parse(v); } catch(e) {} }
+        _ps[r.key] = { v: v, at: r.updated_at };
+      });
+      var _hrs = function(iso){ return iso ? (Date.now() - new Date(iso).getTime()) / 3600000 : null; };
+      // Sunrun / Vivint permit pull
+      var sr = _ps.sunrun_layer_status && _ps.sunrun_layer_status.v;
+      if (sr && typeof sr === 'object' && !sr.running) {
+        var oc = sr.outcomes || {}, okN = oc.ok || 0, failN = 0, failKeys = [];
+        Object.keys(oc).forEach(function(k){ if (/^(http_|timeout|net_error|bad_json|unexpected)/.test(k)) { failN += oc[k]; failKeys.push(k + ' ×' + oc[k]); } });
+        if (sr.error) _jobAlerts.push(['bad', '&#9888; Sunrun/Vivint permit pull failed', esc(String(sr.error)) + '. Open Black Box → Sunrun funnel → Pull permits now to retry.']);
+        else if (failKeys.some(function(k){ return /http_40[13]/.test(k); })) _jobAlerts.push(['bad', '&#9888; Sunrun/Vivint permit pull: PermitStack rejected the key', esc(failKeys.join(', ')) + '. Check PERMITSTACK_KEY in Netlify.']);
+        else if (failN > 0 && okN === 0) _jobAlerts.push(['bad', '&#9888; Sunrun/Vivint permit pull: every request failed', esc(failKeys.join(', '))]);
+        else if (failN > okN) _jobAlerts.push(['warn', 'Sunrun/Vivint permit pull: mostly failing', esc(failKeys.join(', ')) + ' vs ' + okN + ' ok']);
+        var srAge = _hrs(sr.finished_at || sr.started_at);
+        if (srAge != null && srAge > 40) _jobAlerts.push(['warn', 'Sunrun/Vivint permit pull has not run in ' + Math.round(srAge) + 'h', 'It is scheduled nightly. Check the function log or pull manually.']);
+      }
+      // Nightly Black Box pipeline
+      var lp = _ps.last_run_phase && _ps.last_run_phase.v;
+      var lsum = _ps.last_run_summary && _ps.last_run_summary.v;
+      var lAt = _ps.last_run_at && (_ps.last_run_at.v || _ps.last_run_at.at);
+      var lAge = _hrs(typeof lAt === 'string' ? lAt : (_ps.last_run_at && _ps.last_run_at.at));
+      if (lp && lp !== 'complete' && lAge != null && lAge < 48) _jobAlerts.push(['warn', 'Nightly Black Box pipeline stopped after ' + esc(String(lp)), 'It did not finish its last run (earlier phases saved). See Black Box → Advanced tools.']);
+      if (lAge != null && lAge > 40) _jobAlerts.push(['warn', 'Nightly Black Box pipeline has not run in ' + Math.round(lAge) + 'h', 'Check the function log.']);
+      var pOut = lsum && typeof lsum === 'object' ? String(lsum.permit_pull_outcomes || '') : '';
+      if (/http_40[13]/.test(pOut)) _jobAlerts.push(['bad', '&#9888; Nightly permit pull: PermitStack rejected the key', esc(pOut.slice(0, 160))]);
+      else if (pOut && !/:ok/.test(pOut) && !/no permit queries ran/.test(pOut)) _jobAlerts.push(['bad', '&#9888; Nightly permit pull: no request succeeded', esc(pOut.slice(0, 160))]);
+      // Search Console / GA4 sync
+      var seo = _ps.seo_sync_status && _ps.seo_sync_status.v;
+      if (seo && typeof seo === 'object' && seo.status && !/^ok/.test(String(seo.status))) _jobAlerts.push(['warn', 'Search Console sync problem: ' + esc(String(seo.status)), esc(String(seo.reason || seo.hint || ''))]);
+      // Live outage feed
+      var og = _ps.sdge_outages && _ps.sdge_outages.v;
+      if (og && typeof og === 'object' && og.failed_at) _jobAlerts.push(['warn', 'Outage feed is failing', esc(String(og.error || '')) + ' (Black Box outage badges may be stale)']);
+    } catch (e) { /* health strip must never block the page */ }
     var actionItemsHtml = '';
+    _jobAlerts.forEach(function(a){ actionItemsHtml += _cmdHealthRow(a[0], a[1], a[2], "renderAdminCanvassView()"); });
     if (hisSoon.length) {
       actionItemsHtml += _cmdHealthRow('warn', hisSoon.length + ' HIS license' + (hisSoon.length > 1 ? 's' : '') + ' expired or expiring within 60 days',
         hisSoon.map(function(m){ return esc(m.name); }).join(', '), "renderTeamView()");
