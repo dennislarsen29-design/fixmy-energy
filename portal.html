@@ -8345,8 +8345,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (status) { status.textContent = 'Loading photos...'; status.style.color = '#4a9eff'; }
     var client = supabase.createClient(SUPA_URL, SUPA_KEY);
     // Pre-load customer-uploaded photos from job_photos table by customer_id
+    var custPhotos = null;
     try {
-      var custPhotos = await client.from('job_photos')
+      custPhotos = await client.from('job_photos')
         .select('*')
         .or('job_id.eq.' + String(jobId) + ',customer_id.eq.' + String(jobId));
       if (custPhotos.data && custPhotos.data.length) {
@@ -8362,7 +8363,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var result = await client.from('job_photos').select('*').eq('job_id', String(jobId));
 
     if (!result.error && result.data && result.data.length > 0) {
-      jobPhotos[jobId] = result.data;
+      // Keep the customer_id-matched rows too: this used to REPLACE the merged list with only
+      // the job_id matches, silently dropping every photo the customer had sent themselves.
+      var _merged = result.data.slice();
+      ((custPhotos && custPhotos.data) || []).forEach(function(p){
+        if (!_merged.some(function(x){ return String(x.id) === String(p.id); })) _merged.push(p);
+      });
+      jobPhotos[jobId] = _merged;
       if (status) status.textContent = '';
       renderPhotoGrid();
       return;
@@ -9911,8 +9918,25 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   var _evLocal = { brand: '', model: '', serial: '', platform: '', utility: '', skipped: {}, answers: {}, billAnalysis: null };
 
   function _evPhotos() { return (jobPhotos[_evId] || []); }
+  // A photo belongs to the slot the rep UPLOADED it into (expected_label), not to whatever
+  // category Quoya later decided it looked like. Quoya's sync overwrites `label` with its own
+  // read, so matching on label alone made a perfectly good Serial Number upload "vanish" from
+  // its slot (re-labelled Production Screenshot, Sub Panel, Meter Photo...) — the reported
+  // "I uploaded all of these and it lost them". Photos with no expected_label (customer
+  // uploads, older rows) still match on label.
+  function _evSlotLabelSet() {
+    if (_evSlotLabelSet._s) return _evSlotLabelSet._s;
+    var set = {};
+    EVAL_STEPS.forEach(function(st){ (st.slots || []).forEach(function(sl){ set[sl.label] = true; }); });
+    return (_evSlotLabelSet._s = set);
+  }
+  function _evPhotoSlotLabel(p) {
+    var e = p.expected_label || p.Expected_label || '';
+    if (e && _evSlotLabelSet()[e]) return e;
+    return p.label || p.Label || '';
+  }
   function _evHas(label) {
-    return _evPhotos().filter(function(p){ return (p.label || p.Label || '') === label; });
+    return _evPhotos().filter(function(p){ return _evPhotoSlotLabel(p) === label; });
   }
   function _evSlotDone(slot) {
     return _evHas(slot.label).length > 0 || !!_evLocal.skipped[slot.key];
@@ -10165,6 +10189,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var _slotKey = _evSlotKeyForLabel(label);
     var _statusId = _slotKey ? ('evSlotStatus_' + _slotKey) : 'evStatus';
     _evBusy = true;
+    // uploadPhotos() reads the global currentJobId. Pin it to THIS evaluation so a stray open of
+    // another job while the wizard is up can never send the photo to the wrong lead.
+    currentJobId = _evId;
     try {
       // Passed as an explicit argument, not just window._evForceLabel — a second slot tapped
       // before this upload finishes must not be able to relabel these photos mid-flight.
