@@ -8540,6 +8540,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }
       h += _bbStageClose();
     }
+    // ── SUNRUN / VIVINT LAYER — its own pool, never mixed with the orphaned list ──
+    if (CURRENT_ROLE === 'admin') {
+      h += '<div id="sunrunLayerCard" style="background:var(--bg-card,#161616);border:1.5px solid rgba(232,121,58,0.4);border-radius:12px;padding:14px;margin:14px 0;"><div style="color:#8a8578;font-size:0.8rem;">&#9728; Loading Sunrun / Vivint layer&hellip;</div></div>';
+      setTimeout(function(){ if (window.sunrunLayerLoad) window.sunrunLayerLoad(); }, 0);
+    }
     // ── STAGE 3 — ENRICH — owner lookup (free) then skip-trace (paid) ──────────
     if (CURRENT_ROLE === 'admin') {
       h += _bbStageOpen(3, false, '&#128269;', 'Enrich', 'Regrid/SANDAG (free) &rarr; Tracerfy (paid)',
@@ -13379,6 +13384,102 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return h + '</span>';
   };
 
+  // ── Sunrun / Vivint layer — a separate lead pool (lead_source='sunrun_layer'), never mixed
+  // with the orphaned-installer Black Box. Doors and Dialing each remember their own switch.
+  // ON = ONLY layer leads on that surface; OFF = everything except them.
+  window._bbLayerOn = function(mode) {
+    try { return localStorage.getItem('bbLayer_' + (mode === 'door' ? 'door' : 'call')) === '1'; } catch(e) { return false; }
+  };
+  window._bbLayerSource = function(mode) { return window._bbLayerOn(mode) ? 'sunrun_layer' : 'orphaned_list'; };
+  // PostgREST fragment appended inside an and=(...) list.
+  window._bbLayerAnd = function(mode) {
+    return window._bbLayerOn(mode) ? ',lead_source.eq.sunrun_layer' : ',or(lead_source.is.null,lead_source.neq.sunrun_layer)';
+  };
+  window.bbLayerToggle = function(mode) {
+    var key = 'bbLayer_' + (mode === 'door' ? 'door' : 'call');
+    var on = !window._bbLayerOn(mode);
+    try { localStorage.setItem(key, on ? '1' : '0'); } catch(e) {}
+    if (mode === 'door') {
+      try { localStorage.removeItem('bbLeadsCache'); } catch(e) {}
+      location.reload();
+    } else {
+      bbDialQueue = []; bbDialLoaded = false;
+      if (typeof renderBBDialerView === 'function') renderBBDialerView();
+    }
+  };
+  window._bbLayerPillHtml = function(mode) {
+    var on = window._bbLayerOn(mode);
+    return '<button onclick="bbLayerToggle(\'' + (mode === 'door' ? 'door' : 'call') + '\')" title="Sunrun / Vivint owners — separate from the orphaned-installer list" '
+      + 'style="width:auto;margin:0 8px 0 0;padding:5px 10px;border-radius:999px;font-size:0.7rem;font-weight:700;cursor:pointer;border:1.5px solid '
+      + (on ? '#E8793A' : '#3a3a3a') + ';background:' + (on ? 'rgba(232,121,58,0.15)' : 'transparent') + ';color:' + (on ? '#E8793A' : '#8a8578') + ';">'
+      + '&#9728; Sunrun layer: ' + (on ? 'ON' : 'Off') + '</button>';
+  };
+
+
+  // ── Sunrun / Vivint layer admin card ─────────────────────────────────────────
+  // Free steps (permits, county-roll owner + coordinates) run in the background function.
+  // Paid skip-trace is NEVER automatic: the admin exports a short, scored list and decides.
+  window.sunrunLayerLoad = async function() {
+    var el = document.getElementById('sunrunLayerCard'); if (!el) return;
+    var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var base = function(){ return c.from('customers').select('id', { count:'exact', head:true }).eq('lead_source','sunrun_layer').is('sold_type',null); };
+    var r = await Promise.all([
+      base(), base().not('title_owner','is',null), base().not('phone','is',null),
+      c.from('pipeline_state').select('value').eq('key','sunrun_layer_status').maybeSingle()
+    ]);
+    var total = r[0].count || 0, owners = r[1].count || 0, phones = r[2].count || 0;
+    var st = (r[3].data && r[3].data.value) || null;
+    if (typeof st === 'string') { try { st = JSON.parse(st); } catch(e) { st = null; } }
+    var h = '<div style="font-weight:800;font-size:0.9rem;color:#E8793A;margin-bottom:4px;">&#9728; Sunrun / Vivint layer</div>'
+      + '<div style="font-size:0.7rem;color:#8a8578;line-height:1.5;margin-bottom:10px;">Separate pool (not orphaned installers). Doors and Dialing each have a &ldquo;Sunrun layer&rdquo; switch. Owned systems first, leased second. Permits + owner lookup are free; skip-trace is paid and only runs when you export a list.</div>'
+      + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">'
+      + [['Leads',total],['With owner',owners],['With phone',phones]].map(function(t){ return '<div style="flex:1;min-width:90px;background:rgba(255,255,255,0.04);border-radius:8px;padding:8px;text-align:center;"><div style="font-size:1.1rem;font-weight:800;color:#fff;">'+t[1].toLocaleString()+'</div><div style="font-size:0.62rem;color:#8a8578;">'+t[0]+'</div></div>'; }).join('')
+      + '</div>';
+    if (st) {
+      var when = st.finished_at || st.started_at || '';
+      h += '<div style="font-size:0.68rem;color:#8a8578;margin-bottom:8px;">Last pull: ' + esc(String(when).slice(0,16).replace('T',' ')) + ' &middot; ' + (st.running ? 'running…' : 'done')
+        + ' &middot; scanned ' + (st.scanned || 0) + ', +' + (st.inserted || 0) + ' new, ' + (st.skipped_dupe || 0) + ' already on file'
+        + (st.outcomes ? '<br>Pull results: ' + esc(JSON.stringify(st.outcomes)) : '') + (st.error ? '<br><span style="color:#f87171;">Error: ' + esc(String(st.error)) + '</span>' : '') + '</div>';
+    }
+    h += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">'
+      + '<button onclick="sunrunLayerPull()" style="width:auto;padding:8px 12px;font-size:0.74rem;">&#128229; Pull permits (free)</button>'
+      + '<button onclick="sunrunLayerExport()" style="width:auto;padding:8px 12px;font-size:0.74rem;background:transparent;border:1.5px solid #E8793A;color:#E8793A;">&#128190; Export top leads for skip-trace</button>'
+      + '</div><div id="sunrunLayerMsg" style="font-size:0.7rem;color:#8a8578;margin-top:8px;"></div>';
+    el.innerHTML = h;
+  };
+
+  window.sunrunLayerPull = async function() {
+    var msg = document.getElementById('sunrunLayerMsg');
+    if (msg) msg.textContent = 'Starting the permit pull… it runs in the background; reload this card in a few minutes.';
+    try {
+      var resp = await fetch('/.netlify/functions/sunrun-layer-pull-background', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' });
+      if (msg) msg.textContent = (resp.status === 202 || resp.ok) ? 'Pull started. Reopen Black Box in a few minutes to see results.' : 'Could not start the pull (HTTP ' + resp.status + ').';
+    } catch(e) { if (msg) msg.textContent = 'Could not start the pull: ' + e.message; }
+  };
+
+  window.sunrunLayerExport = async function() {
+    var msg = document.getElementById('sunrunLayerMsg');
+    var n = parseInt(prompt('How many top-scored leads to export for skip-trace? (cost is about 2 credits per lead)', '500') || '0', 10);
+    if (!n || n < 1) return;
+    if (msg) msg.textContent = 'Building list…';
+    var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var res = await c.from('customers').select('address,lead_score,original_installer,title_owner')
+      .eq('lead_source','sunrun_layer').is('sold_type',null).is('phone',null).is('email',null)
+      .or('archived.is.null,archived.eq.false').order('lead_score',{ascending:false,nullsFirst:false}).limit(Math.max(n*3, 1000));
+    if (res.error) { if (msg) msg.textContent = 'Failed: ' + res.error.message; return; }
+    // SDCP zips get a small boost so the first credits go to the best-served territory.
+    var rows = (res.data || []).map(function(l){
+      var z = extractZip(l.address || ''); var sd = z && SDCP_ZIPS && SDCP_ZIPS.has(z);
+      return { l: l, z: z, score: (l.lead_score || 0) + (sd ? 5 : 0) };
+    }).filter(function(x){ return x.z; }).sort(function(a,b){ return b.score - a.score; }).slice(0, n);
+    var out = rows.map(function(x){
+      var street = String(x.l.address || '').split(',')[0].trim();
+      return [street, '', 'CA', x.z];
+    });
+    window.finExportCSV('sunrun-layer-skiptrace-' + new Date().toISOString().slice(0,10) + '.csv', ['address','city','state','zip'], out);
+    if (msg) msg.textContent = 'Exported ' + out.length + ' leads — about ' + (out.length * 2).toLocaleString() + ' skip-trace credits if you run them all. Nothing was spent.';
+  };
+
   window._bbControlsRowHtml = function(mode) {
     // The live-outage row sits directly above the focus/script controls on BOTH surfaces.
     // Lazy-loads once per session, then re-renders whichever view asked for it.
@@ -13390,7 +13491,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
     return window._bbOutageRowHtml(mode)
       + '<div data-tour="controls" style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px;">'
-      + '<span>' + window._bbFocusControlHtml(mode) + '</span>'
+      + '<span>' + window._bbLayerPillHtml(mode) + window._bbFocusControlHtml(mode) + '</span>'
       + window._bbScriptControlsHtml(mode === 'door' ? 'door' : 'call')
       + '</div>';
   };
@@ -14036,7 +14137,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var dialableAnd = '&and=(or(sold_type.is.null,dialed_at.gt.' + recentCutoff + '),'
       + 'or(black_box.eq.true,lead_source.eq.orphaned_list,dialed_at.gt.' + recentCutoff + '),'
       + 'or(black_box.is.null,black_box.eq.true,dialed_at.gt.' + recentCutoff + '),'
-      + 'or(dnc.is.null,dnc.eq.false),or(archived.is.null,archived.eq.false))';
+      + 'or(dnc.is.null,dnc.eq.false),or(archived.is.null,archived.eq.false)' + window._bbLayerAnd('call') + ')';
     // ORDER matters: there are far more dialable leads (~13k) than this 2000-row cap, and
     // PostgREST without an explicit order returns an arbitrary slice — so the same handful
     // of leads loaded every time and the rest of the pool was effectively invisible.
@@ -14045,7 +14146,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       + '&order=lead_score.desc.nullslast&limit=2000';
     var filtersBase = 'sold_type=is.null' // pre-migration fallback: no dialed_at column to relax against
       + '&phone=not.is.null&phone=neq.'
-      + '&and=(or(black_box.eq.true,lead_source.eq.orphaned_list),or(black_box.is.null,black_box.eq.true),or(dnc.is.null,dnc.eq.false),or(archived.is.null,archived.eq.false))'
+      + '&and=(or(black_box.eq.true,lead_source.eq.orphaned_list),or(black_box.is.null,black_box.eq.true),or(dnc.is.null,dnc.eq.false),or(archived.is.null,archived.eq.false)' + window._bbLayerAnd('call') + ')'
       + '&order=lead_score.desc.nullslast&limit=2000';
     var lastErr = null;
     var q = async function(sel, f) {
@@ -14067,7 +14168,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var data = await q(selFull, filters);
     if (!data) { // dialer columns not migrated yet
       usedSel = BB_DIAL_SEL_BASE;
-      usedAnd = '&and=(or(black_box.eq.true,lead_source.eq.orphaned_list),or(black_box.is.null,black_box.eq.true),or(dnc.is.null,dnc.eq.false),or(archived.is.null,archived.eq.false))';
+      usedAnd = '&and=(or(black_box.eq.true,lead_source.eq.orphaned_list),or(black_box.is.null,black_box.eq.true),or(dnc.is.null,dnc.eq.false),or(archived.is.null,archived.eq.false)' + window._bbLayerAnd('call') + ')';
       data = await q(BB_DIAL_SEL_BASE, filtersBase);
     }
     if (!data) bbDialLoadError = lastErr || 'Unknown error';
@@ -14267,7 +14368,63 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (!addr) return 'your street';
     return addr.split(',')[0].trim() || 'your street';
   }
+  // ── Sunrun / Vivint layer script — shared by Dialing and Doors. Only used when the lead
+  // came from the layer (lead_source='sunrun_layer'); everything else keeps its own script.
+  // Rules: no affiliation with Sunrun, never disparage them, never quote a price or
+  // incentive amount on the call, and never say we change/modify their solar system.
+  function _bbSunrunScriptHtml(stage, lead, mode) {
+    var c = _bbScriptCtx(lead);
+    var street = esc(_bbStreet(lead && lead.address));
+    var brand = /vivint/i.test((lead && lead.original_installer) || '') ? 'Vivint Solar (now Sunrun)' : 'Sunrun';
+    var door = mode === 'door';
+    var greet = door ? 'Hi, I&rsquo;m '+c.rep+' &mdash; I&rsquo;m a local solar tech, not selling door to door packages.' : 'Hi '+c.name+'. This is '+c.rep+', a local solar tech.';
+    switch (stage) {
+      case 'flow': return (
+        '<div style="font-size:0.66rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#E8793A;margin-bottom:8px;">&#9728; Sunrun / Vivint layer &mdash; the angle</div>' +
+        _bbWarn('This list is separate from the orphaned-installer list. These homes&rsquo; installer is NOT out of business &mdash; never say it is, never badmouth '+brand+', and never claim any link to them.') +
+        _bbFlowNode('#4a9eff','1','Ask who owns the system','Owned/loan-financed solar vs. leased/PPA. Owned = our best fit; leased is a secondary priority.') + _bbFlowArrow() +
+        _bbFlowNode('#8DC63F','2','Lead with the evening problem','Solar stops producing right when the 4&ndash;9 pm peak rates start. A battery moves that cheap daytime power into the evening.') + _bbFlowArrow() +
+        _bbFlowNode('#ffaa00','3','One question about their bill','Is the evening usage what hurts? Do they send extra power back to the grid?') + _bbFlowArrow() +
+        _bbFlowNode('#E8793A','4','Book the free check-up','Same free evaluation as every other lead &mdash; confirm date AND 2-hour window, within 48 hours.')
+      );
+      case 'approach': case 'opener': return (
+        _bbTip('Your reason for the visit is the evening peak &mdash; not their installer.') +
+        _bbSay(greet+' I&rsquo;m looking at <strong>'+street+'</strong> because you have solar. Quick question &mdash; is that system paid off or financed by you, or is it a lease through the installer?') +
+        _bbTip('Owned/loan &rarr; continue. Leased/PPA &rarr; still fine, just lower priority; keep it short and never say it can&rsquo;t be done.')
+      );
+      case 'qualify': return (
+        _bbSay('Does your solar keep the house running when the grid goes down, or does everything shut off?') +
+        _bbSay('Between 4 and 9 at night, do you notice your bill jump? Do you ever send extra power back to the grid in the daytime?') +
+        _bbTip('Listen for: high evening usage, EV, A/C, pool pump, or net-positive production. Those are the homes that benefit most.')
+      );
+      case 'pain': return (
+        _bbSay('Here&rsquo;s the thing &mdash; your panels make the most power at noon, but the utility charges the most from 4 to 9. A battery that connects at the meter just saves the midday power for the evening, so you stop paying peak rates.') +
+        _bbSay('It connects at the AC meter, so we don&rsquo;t change or touch your solar system at all.') +
+        _bbWarn('Never quote a price, a monthly payment or an incentive amount on this call. If they ask: &ldquo;it depends on your usage &mdash; that&rsquo;s exactly what the free check-up works out.&rdquo; You may say they <b>may qualify</b> for utility programs.')
+      );
+      case 'expectations': return (
+        _bbSay('The tech comes out for about an hour, looks at your meter, panel and usage, and tells you honestly whether a battery makes sense. No obligation. Someone who makes decisions on the house should be there.') +
+        _bbTip('Free to reschedule. There is no no-show fee.')
+      );
+      case 'book': return (
+        _bbSay('I can get you in '+(door?'tomorrow':'within the next day or two')+'. Does morning or afternoon work better? &hellip; So that&rsquo;s [day], between [start] and [start+2 hrs] &mdash; does that work?') +
+        _bbTip('Confirm the date AND the 2-hour window out loud before you hang up.')
+      );
+      case 'objections': return (
+        _bbObj('I already have a battery quote from '+brand+'.', 'Good &mdash; that tells me you&rsquo;re already thinking about it. A second look costs nothing: we can compare the same evening-usage numbers side by side.') +
+        _bbObj('I don&rsquo;t want to mess with my lease / contract.', 'Understood. Nothing we look at changes your solar system or your agreement &mdash; it&rsquo;s an add-on at the meter. The check-up just tells you if it&rsquo;s worth it.') +
+        _bbObj('Is this from '+brand+'?', 'No &mdash; we&rsquo;re an independent local company. We&rsquo;re just contacting homeowners who already have solar.') +
+        _bbObj('How much is it?', 'It depends on your usage, so I&rsquo;d be guessing &mdash; the free visit gives you a real number.') +
+        _bbWarn('Never disparage '+brand+', never claim a partnership, never promise savings or incentives.')
+      );
+      case 'vm': return _bbSay('Hi '+c.name+', this is '+c.rep+', a local solar tech. I&rsquo;m reaching out to homeowners with solar about evening electricity costs &mdash; there may be a simple way to lower them. Call or text me back at this number.');
+      case 'callback': return _bbSay('Hi '+c.name+', '+c.rep+' again &mdash; following up about the evening peak rates on your solar. Do you have a minute?');
+      case 'branches': return _bbTip('Not home: leave a card with &ldquo;Evening electric bills &mdash; ask me how&rdquo;. Renter: ask for the owner&rsquo;s contact and move on.');
+      default: return null;
+    }
+  }
   function bbScriptBodyHtml(stage, lead) {
+    if (lead && lead.lead_source === 'sunrun_layer') { var _sr = _bbSunrunScriptHtml(stage, lead, 'call'); if (_sr != null) return _sr; }
     var c = _bbScriptCtx(lead);
     var street = esc(_bbStreet(lead && lead.address));
     var whoInstalled = c.year && c.installer
@@ -14574,6 +14731,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
   window.cvScriptBodyHtml = function(stage, lead) {
     lead = lead || {};
+    if (lead.lead_source === 'sunrun_layer') { var _sr = _bbSunrunScriptHtml(stage, lead, 'door'); if (_sr != null) return _sr; }
     var nm      = _bbLeadDisplayName(lead);
     var who     = nm.human && lead.first_name ? String(lead.first_name).trim() : (nm.surname ? 'Mr./Ms. ' + nm.surname : 'there');
     var street  = _bbStreet(lead.address || '') || 'your street';
@@ -16971,7 +17129,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var byStreetZip = {}, streetOnly = {}, dupe = {}, off = 0, n = 0;
     while (true) {
       var r = await c.from('customers').select('id,address')
-        .eq('lead_source', 'orphaned_list')
+        .in('lead_source', ['orphaned_list','sunrun_layer'])
         .order('id', { ascending: true }).range(off, off + 999);
       if (r.error || !r.data || !r.data.length) break;
       r.data.forEach(function(l) {
@@ -34297,7 +34455,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     (function() {
       try {
         var _bbCache = JSON.parse(localStorage.getItem('bbLeadsCache') || 'null');
-        if (_bbCache && typeof _bbCache.ts === 'number' && Date.now() - _bbCache.ts < 3600000 && Array.isArray(_bbCache.leads)) {
+        if (_bbCache && (_bbCache.layer || 'orphaned_list') === window._bbLayerSource('door') && typeof _bbCache.ts === 'number' && Date.now() - _bbCache.ts < 3600000 && Array.isArray(_bbCache.leads)) {
           canvassLeads = _bbCache.leads;
           canvassUserLat = _bbCache.lat || null;
           canvassUserLng = _bbCache.lng || null;
@@ -34366,7 +34524,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       for (var bi = 0; bi < boxes.length; bi++) {
         var bx = _canvassGeoBox(lat, lng, boxes[bi]);
         var r = await client.from('customers').select(SEL)
-          .eq('lead_source', 'orphaned_list')
+          .eq('lead_source', window._bbLayerSource('door'))
           .is('sold_type', null)
           // DQ'd doors are archived, which is what keeps them out of BOTH motions.
           // The dialer has always filtered this; the route never did.
@@ -34456,7 +34614,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // and canvassCommitBooking used to update canvassLeads in memory and the DB but
     // never call this, so the cache went stale the instant either one fired.
     function _cvSaveLeadsCache() {
-      try { localStorage.setItem('bbLeadsCache', JSON.stringify({ts: Date.now(), leads: canvassLeads, lat: canvassUserLat, lng: canvassUserLng, skipIds: canvassSkipIds})); } catch(e) {}
+      try { localStorage.setItem('bbLeadsCache', JSON.stringify({ts: Date.now(), layer: window._bbLayerSource('door'), leads: canvassLeads, lat: canvassUserLat, lng: canvassUserLng, skipIds: canvassSkipIds})); } catch(e) {}
     }
 
     async function _canvassLoadLeads(userLat, userLng) {
@@ -34487,7 +34645,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         result = { data: boxRes.rows, error: boxRes.rows.length ? null : boxRes.error };
       } else {
         result = await client.from('customers').select(SEL)
-          .eq('lead_source', 'orphaned_list')
+          .eq('lead_source', window._bbLayerSource('door'))
           .is('sold_type', null)
           .or('archived.is.null,archived.eq.false')
           .or('black_box.is.null,black_box.eq.true')   // booked leads are out of Black Box
@@ -34526,7 +34684,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // If GPS filter returned nothing, reload without geo constraint
       if (userLat && userLng && leads.length === 0) {
         var fb = await client.from('customers').select(SEL)
-          .eq('lead_source', 'orphaned_list')
+          .eq('lead_source', window._bbLayerSource('door'))
           .is('sold_type', null)
           .not('lat', 'is', null)
           .order('lead_score', { ascending: false, nullsFirst: false })

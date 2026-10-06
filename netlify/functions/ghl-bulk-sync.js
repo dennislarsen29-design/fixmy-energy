@@ -46,7 +46,7 @@ exports.handler = async function(event) {
   const q = SUPA_URL + '/rest/v1/customers'
     + '?select=id,first_name,last_name,email,phone,address,original_installer'
     + '&phone=not.is.null&phone=neq.'
-    + '&and=(or(black_box.eq.true,lead_source.eq.orphaned_list),or(dnc.is.null,dnc.eq.false))'
+    + '&and=(or(black_box.eq.true,lead_source.eq.orphaned_list),or(dnc.is.null,dnc.eq.false),or(lead_source.is.null,lead_source.neq.sunrun_layer))'
     + '&limit=1000';
   const leadResp = await fetch(q, { headers: supaHeaders });
   const leads = await leadResp.json();
