@@ -25659,6 +25659,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         ['usage_kwh','system_kw','current_battery_kwh','nem_version','postfix_monthly_bill'].forEach(function(k){ if (_kp && _kp[k] > 0) proposal[k] = _kp[k]; });
         if (_kp && _kp.inverter_down) proposal.inverter_down = true;
       } catch(_e) {}
+      // Builder-set rep assumptions are authoritative (they override anything carried over above).
+      var _rs = window._propRepSettings;
+      if (_rs) {
+        proposal.hide_bill = !!_rs.hide_bill;
+        proposal.inverter_down = !!_rs.inverter_down;
+        ['system_kw','current_battery_kwh','nem_version','postfix_monthly_bill'].forEach(function(k){ if (_rs[k] > 0) proposal[k] = _rs[k]; else delete proposal[k]; });
+        if (!proposal.hide_bill) delete proposal.hide_bill;
+        if (!proposal.inverter_down) delete proposal.inverter_down;
+      }
       var custUpdate = { proposal: proposal };
       if (commissionEstimate > 0) custUpdate.commission_estimate = commissionEstimate;
       var { error } = await client.from('customers').update(custUpdate).eq('id', id);
@@ -25916,6 +25925,33 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (existingIdx >= 0) { _propRemoveItem(optIdx, existingIdx); } else { _propAddCatItem(catIdx, optIdx); }
   };
 
+  // ── Savings assumptions (REP ONLY) — lives in the builder, never on the customer-facing proposal page.
+  // Saved onto customers.proposal by sendProposal; proposal-preview.html only reads them.
+  window._propSetRepSetting = function(k, v) {
+    var s = window._propRepSettings || (window._propRepSettings = {});
+    if (k === 'hide_bill' || k === 'inverter_down') s[k] = !!v;
+    else if (k === 'nem_version') s[k] = parseInt(v, 10) || 2;
+    else { var n = parseFloat(v); s[k] = (isFinite(n) && n > 0) ? n : 0; }
+  };
+  function _propRepSettingsHtml() {
+    var s = window._propRepSettings || {};
+    var open = window._propRepSetOpen ? ' open' : '';
+    var fs = 'width:78px;padding:6px 8px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.22);border-radius:8px;color:#fff;font-size:0.82rem;';
+    var lb = 'display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 0;font-size:0.78rem;color:#ccc;';
+    var h = '<details'+open+' ontoggle="window._propRepSetOpen=this.open" style="background:rgba(255,170,0,0.06);border:1px dashed rgba(255,170,0,0.4);border-radius:12px;padding:10px 14px;margin-bottom:10px;">';
+    h += '<summary style="cursor:pointer;font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#ffaa00;">Savings assumptions &mdash; rep only (customer never sees these)</summary>';
+    h += '<div style="margin-top:8px;">';
+    h += '<label style="'+lb+'"><span>Show previous-bill comparison to customer<br><small style="color:#777;">Turn off when the upgrade isn&rsquo;t about saving on the bill</small></span><input type="checkbox" '+(s.hide_bill?'':'checked')+' onchange="_propSetRepSetting(\'hide_bill\',!this.checked)"/></label>';
+    h += '<label style="'+lb+'"><span>Existing system size (kW)</span><input type="number" step="0.1" min="0" value="'+(s.system_kw||'')+'" onchange="_propSetRepSetting(\'system_kw\',this.value)" style="'+fs+'"/></label>';
+    h += '<label style="'+lb+'"><span>Inverter currently down</span><input type="checkbox" '+(s.inverter_down?'checked':'')+' onchange="_propSetRepSetting(\'inverter_down\',this.checked)"/></label>';
+    h += '<label style="'+lb+'"><span>Current working battery (kWh)</span><input type="number" step="0.5" min="0" value="'+(s.current_battery_kwh||'')+'" onchange="_propSetRepSetting(\'current_battery_kwh\',this.value)" style="'+fs+'"/></label>';
+    h += '<label style="'+lb+'"><span>NEM version</span><select onchange="_propSetRepSetting(\'nem_version\',this.value)" style="'+fs+'">'+[1,2,3].map(function(n){return '<option value="'+n+'"'+(s.nem_version===n?' selected':'')+'>'+n+'.0</option>';}).join('')+'</select></label>';
+    h += '<label style="'+lb+'"><span>Bill with full system + battery ($/mo, NEM 1/2)</span><input type="number" step="1" min="0" value="'+(s.postfix_monthly_bill||15)+'" onchange="_propSetRepSetting(\'postfix_monthly_bill\',this.value)" style="'+fs+'"/></label>';
+    h += '<div style="font-size:0.66rem;color:#777;margin-top:4px;">Saved with the proposal (Save Draft / Send). Drives the &ldquo;what this upgrade changes&rdquo; savings math.</div>';
+    h += '</div></details>';
+    return h;
+  }
+
   window._propRenderBuilds = function() {
     var container = document.getElementById('propBuilderBuilds');
     if (!container) return;
@@ -25923,6 +25959,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // Quoya's prefill summary, rendered as part of the builds so it survives the
     // re-renders that every edit triggers.
     if (_propPrefillNote) h += _propPrefillNote;
+    h += _propRepSettingsHtml();
     var _propBuildCust = (typeof adminCustomers !== 'undefined' && adminCustomers) ? (adminCustomers.find(function(x){ return x.id===_propPropId; })||{}) : {};
     var _propBuildAddr = (_propBuildCust.address||'').replace(/'/g,"\\'");
     _propBuilds.forEach(function(build, optIdx) {
@@ -26629,6 +26666,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     _propExpPackCounts = {};
     _propSolarData = null;
     _propBuilds = [];
+    // Rep-only savings assumptions (2026-10-06) — seeded from the saved proposal, else sensible defaults.
+    var _ex = existing || {};
+    var _sk = parseFloat(_ex.system_kw); if (!(_sk > 0)) _sk = parseFloat(c.system_size) || 0;
+    window._propRepSettings = {
+      hide_bill: !!_ex.hide_bill,
+      system_kw: _sk > 0 ? _sk : 0,
+      inverter_down: !!_ex.inverter_down,
+      current_battery_kwh: parseFloat(_ex.current_battery_kwh) > 0 ? parseFloat(_ex.current_battery_kwh) : 0,
+      nem_version: ([1,2,3].indexOf(parseInt(_ex.nem_version,10)) > -1) ? parseInt(_ex.nem_version,10) : 2,
+      postfix_monthly_bill: parseFloat(_ex.postfix_monthly_bill) > 0 ? parseFloat(_ex.postfix_monthly_bill) : 15
+    };
     // Always start fresh — one empty build option
     _propBuilds.push(_propInitBuild());
     // Store existing for optional restore
