@@ -370,10 +370,30 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
     if (pd.storageKwh > 0) return pd.storageKwh + ' kWh storage';
     return null;
   }
+  // ── Savings outlook: Conservative / Standard / Aggressive (customer-selectable, 2026-10-06) ──
+  // Same three yearly-utility-increase cases the builder has always computed (5% / 7% / 10%, CPUC SB 695);
+  // Standard (7%) is the default. First-year savings are the same in every case — only how fast
+  // utility rates rise, and therefore what the savings add up to over time, changes.
+  var SCENS = { conservative:{ label:'Conservative', r:0.05 }, moderate:{ label:'Standard', r:0.07 }, significant:{ label:'Aggressive', r:0.10 } };
+  var SCEN = 'moderate';
+  function projectedSavings(annual, years){ var r = SCENS[SCEN].r; return annual * (Math.pow(1 + r, years) - 1) / r; }
+  function paybackYearsFor(price, annual){
+    if (!(price > 0) || !(annual > 0)) return null;
+    var r = SCENS[SCEN].r, cum = 0;
+    for (var y = 1; y <= 40; y++) { var yr = annual * Math.pow(1 + r, y - 1); if (cum + yr >= price) return Math.round((y - 1 + (price - cum) / yr) * 10) / 10; cum += yr; }
+    return null;
+  }
   function paybackFor(opt, priceOverride){
     var mod = opt.savings && opt.savings.moderate;
     var price = priceOverride != null ? priceOverride : opt.price;
-    return (price > 0 && mod && mod.annual > 0) ? (Math.round(price/mod.annual*10)/10 + '-yr payback') : null;
+    var yrs = (mod && mod.annual > 0) ? paybackYearsFor(price, mod.annual) : null;
+    return yrs ? (yrs + '-yr payback') : null;
+  }
+  function setScen(k){ if (SCENS[k]) { SCEN = k; renderPanel(); renderBottomBar(); } }
+  window.setScen = setScen;
+  function scenSwitchHtml(){
+    return '<div class="scen-switch" style="display:flex;gap:6px;margin-top:8px;align-items:center;flex-wrap:wrap;"><span style="font-size:11px;color:var(--muted,#777);">Utility rate outlook:</span>'+
+      Object.keys(SCENS).map(function(k){ var on = k === SCEN; return '<button type="button" onclick="setScen(\''+k+'\')" style="padding:4px 10px;border-radius:100px;border:1px solid '+(on?'#111':'#cfcac0')+';background:'+(on?'#111':'transparent')+';color:'+(on?'#fff':'#555')+';font-size:11px;font-weight:600;cursor:pointer;">'+SCENS[k].label+' &middot; '+Math.round(SCENS[k].r*100)+'%/yr</button>'; }).join('')+'</div>';
   }
 
   // Real annual battery TOU-arbitrage throughput, already computed server-side (portal.html's
@@ -624,9 +644,9 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
     var footParts = [];
     var sz = sizeLabelFor(opt); if (sz) footParts.push(sz);
     var pb = financeMode ? null : paybackFor(opt, cashPriceForFoot); if (pb) footParts.push(pb);
-    if (mod && mod.annual > 0) footParts.push('~'+moneyRound(mod.annual*25)+' est. over 25 yrs');
+    if (mod && mod.annual > 0) footParts.push('~'+moneyRound(projectedSavings(mod.annual, 25))+' est. over 25 yrs ('+SCENS[SCEN].label+')');
     if (footParts.length) {
-      footHtml = '<div class="compare-foot"><span>'+footParts.map(esc).join(' &middot; ')+'</span></div>';
+      footHtml = '<div class="compare-foot"><span>'+footParts.map(esc).join(' &middot; ')+'</span>'+(mod && mod.annual > 0 ? scenSwitchHtml() : '')+'</div>';
     }
 
     return '<div class="compare-card">'+rows+
