@@ -226,6 +226,10 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
 .im-more>summary{cursor:pointer;font-size:0.72rem;color:#7a7766;list-style:none;}
 .im-more>summary::-webkit-details-marker{display:none;}
 .im-more>summary:after{content:" \25BE";}
+.out-note{font-size:0.74rem;color:var(--muted);line-height:1.55;margin-bottom:8px;}
+.out-row{display:flex;gap:10px;align-items:flex-start;padding:7px 0;font-size:0.86rem;font-weight:600;cursor:pointer;}
+.out-row input{margin-top:3px;width:18px;height:18px;flex:none;}
+.out-d{font-weight:400;color:var(--muted);font-size:0.76rem;}
 </style>
 </head>
 <body>
@@ -885,11 +889,11 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
     var im = improvementsFor(opt);
     var rows = '';
     if (im.solarMonthly > 0) {
-      rows += '<div class="im-row"><div class="im-h"><span>Solar production restored</span><span class="im-amt">~'+moneyRound(im.solarMonthly)+'/mo</span></div>'+
+      rows += '<div class="im-row"><div class="im-h"><span>Solar production restored<span class="g-tag">Estimate</span></span><span class="im-amt">~'+moneyRound(im.solarMonthly)+'/mo</span></div>'+
         '<div class="im-d">Your '+im.kw+' kW system isn&rsquo;t producing while the inverter is down. Replacing it brings back roughly '+im.solarKwh.toLocaleString()+' kWh a year (~'+Math.round(im.solarKwh/12).toLocaleString()+' kWh/mo) that you&rsquo;re now buying from the grid at about '+('$'+im.rate.toFixed(2))+'/kWh.</div></div>';
     }
     if (im.touMonthly > 0) {
-      rows += '<div class="im-row"><div class="im-h"><span>Battery upgrade &mdash; load shifting</span><span class="im-amt">~'+moneyRound(im.touMonthly)+'/mo</span></div>'+
+      rows += '<div class="im-row"><div class="im-h"><span>Battery upgrade &mdash; load shifting<span class="g-tag">Estimate</span></span><span class="im-amt">~'+moneyRound(im.touMonthly)+'/mo</span></div>'+
         '<div class="im-d">'+(im.from > 0 ? 'Storage goes from '+im.from+' kWh (not working) to '+im.to+' kWh' : 'You gain '+im.to+' kWh of working storage')+
         '. The battery doesn&rsquo;t make power &mdash; it stores solar and super-off-peak power and uses it during the 4&ndash;9 PM peak, shifting about '+im.touKwh.toLocaleString()+' kWh a year off the most expensive rates.'+(im.batteryCapped?' Your bill is already close to the utility&rsquo;s minimum charge once solar is back, so the battery&rsquo;s bigger value is backup power and grid-support income, shown below.':'')+'</div></div>';
     }
@@ -1068,20 +1072,56 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
       (isPw3 ? '<div class="situation-video-caption">Official Tesla Powerwall 3 video</div>' : '');
   }
 
+  // ── Outage costs: customer opt-in only (rep chooses which items to offer in the builder; the customer
+  // ticks what applies to them; nothing is ever included automatically). Local state — never saved.
+  var OUT_ON = {};
+  function outageItems(){ return (PROP && PROP.outage && PROP.outage.items) ? PROP.outage.items.filter(function(i){ return i && i.amt > 0; }) : []; }
+  function outageEvents(){ var e = PROP && PROP.outage ? parseFloat(PROP.outage.events) : 0; return e > 0 ? e : 2; }
+  function outageMonthly(){ var tot = 0; outageItems().forEach(function(i){ if (OUT_ON[i.id]) tot += i.amt; }); return Math.round(tot * outageEvents() / 12); }
+  function toggleOutage(id){ OUT_ON[id] = !OUT_ON[id]; renderPanel(); renderBottomBar(); }
+  window.toggleOutage = toggleOutage;
+  function outageCardHtml(opt){
+    var items = outageItems();
+    if (!items.length || !hasPowerwall(opt)) return '';
+    var rows = items.map(function(i){
+      return '<label class="out-row"><input type="checkbox" '+(OUT_ON[i.id]?'checked':'')+' onchange="toggleOutage(\''+esc(i.id)+'\')"/><span>'+esc(i.label)+'<span class="out-d"> &mdash; about '+moneyRound(i.amt)+' each time the power goes out</span></span></label>';
+    }).join('');
+    var m = outageMonthly();
+    return '<div class="improve-card"><div class="im-title">Optional: what an outage costs you</div>'+
+      '<div class="out-note">These aren&rsquo;t in the savings above. Tick only what would really apply to your home &mdash; assuming about '+outageEvents()+' outage'+(outageEvents()===1?'':'s')+' a year. A Powerwall keeps these running during an outage.</div>'+rows+
+      (m > 0 ? '<div class="im-total"><span>Outage costs avoided (your choices)</span><span>~'+moneyRound(m)+'/mo</span></div>' : '')+'</div>';
+  }
+
   // One-screen summary: what changes, what it saves, what it costs — the detail below is the proof.
   function glanceHtml(opt, hasParticipate){
     var im = null; try { im = improvementsFor(opt); } catch(e) {}
+    var tag = function(t){ return '<span class="g-tag">'+t+'</span>'; };
     var rows = '';
     rows += '<div class="g-row"><span class="g-k">Your upgrade</span><span class="g-v" style="font-size:0.9rem;">'+esc(optDisplayName(opt))+'</span></div>';
-    if (im && im.totalMonthly > 0) rows += '<div class="g-row"><span class="g-k">Estimated monthly savings<span class="g-tag">Estimate</span></span><span class="g-v" style="color:#3d6b12;">~'+moneyRound(im.totalMonthly)+'/mo</span></div>';
-    var cost;
+    var billToday = parseFloat(CUST.monthly_bill) || 0;
+    if (billToday > 0 && !(PROP && PROP.hide_bill)) rows += '<div class="g-row"><span class="g-k">Your bill today'+tag((PROP && (PROP.bill_method || PROP.insight_bill > 0)) ? 'From your statement' : 'Estimate')+'</span><span class="g-v">'+moneyRound(billToday)+'/mo</span></div>';
+    var save = (im && im.totalMonthly > 0) ? im.totalMonthly : 0;
+    if (im && PROP && PROP.inverter_down && im.solarMonthly > 0) rows += '<div class="g-row"><span class="g-k">Costing you now (inverter down)'+tag('Estimate')+'</span><span class="g-v" style="color:#b45309;">~'+moneyRound(im.solarMonthly)+'/mo</span></div>';
+    if (save > 0) rows += '<div class="g-row"><span class="g-k">Estimated monthly savings'+tag('Estimate')+'</span><span class="g-v" style="color:#3d6b12;">~'+moneyRound(save)+'/mo</span></div>';
+    var extra = outageMonthly();
+    if (extra > 0) rows += '<div class="g-row"><span class="g-k">Plus outage costs you chose'+tag('Your numbers')+'</span><span class="g-v" style="color:#3d6b12;">~'+moneyRound(extra)+'/mo</span></div>';
+    var payMo = null, cost;
     if (payMode === 'finance' && hasParticipate) {
       var sc = financeScenarios(opt), pick = sc[finSub] || sc.standard;
-      cost = '~'+moneyRound(wheelhouseMonthly(pick.principal))+'/mo';
+      payMo = wheelhouseMonthly(pick.principal);
+      cost = '~'+moneyRound(payMo)+'/mo';
     } else cost = moneyRound(participatePriceFor(opt));
-    rows += '<div class="g-row"><span class="g-k">'+((payMode === 'finance' && hasParticipate)?'Estimated payment':'Estimated price')+'<span class="g-tag">Estimate</span></span><span class="g-v">'+cost+'</span></div>';
+    rows += '<div class="g-row"><span class="g-k">'+((payMo != null)?'Estimated payment':'Estimated price')+tag('Estimate')+'</span><span class="g-v">'+cost+'</span></div>';
+    if (payMo != null && save > 0) {
+      var net = Math.round(save + extra - payMo);
+      rows += '<div class="g-row"><span class="g-k">Net each month, after the payment'+tag('Estimate')+'</span><span class="g-v" style="color:'+(net >= 0 ? '#3d6b12' : '#b45309')+';">'+(net >= 0 ? '+' : '&minus;')+moneyRound(Math.abs(net))+'/mo</span></div>';
+    }
+    if (payMo == null && save > 0 && !(PROP && PROP.hide_payback)) {
+      var yrs = paybackYearsFor(participatePriceFor(opt), (save + extra) * 12);
+      if (yrs) rows += '<div class="g-row"><span class="g-k">Estimated payback'+tag('Estimate')+'</span><span class="g-v">~'+yrs+' yrs</span></div>';
+    }
     return '<div class="glance"><div class="g-title">At a glance</div>'+rows+
-      '<div style="font-size:0.68rem;color:var(--muted);margin-top:8px;">Tap any section below to see exactly how each number is built. Final pricing is confirmed in writing before you sign.</div></div>'+
+      '<div style="font-size:0.68rem;color:var(--muted);margin-top:8px;"><b>From your statement</b> = read from your utility bill. <b>Estimate</b> = modeled from your bill and system. Tap any section below to see how each number is built. Final pricing is confirmed in writing before you sign.</div></div>'+
       (CUSTOMER_MODE ? '<div class="trust"><span>CSLB-licensed installer</span><span>Written price before you sign</span><span>10-year workmanship warranty</span></div>' : '');
   }
 
@@ -1145,7 +1185,7 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
         '<div class="fine-print">This estimate is preliminary and for illustration only — final pricing is confirmed after a full site evaluation. Not a bid for work or a binding agreement.</div>';
     }
     financeBlock += touSavingsHtml(opt) + ongoingValueHtml(opt);
-    financeBlock = billToggleHtml() + creditMathHtml(opt) + improvementsHtml(opt) + financeBlock;
+    financeBlock = billToggleHtml() + creditMathHtml(opt) + improvementsHtml(opt) + outageCardHtml(opt) + financeBlock;
 
     // Option list always reflects the price for the CURRENTLY ACTIVE pay mode — this was
     // the actual bug in the report: it showed the Participate price even while the Cash tab's
