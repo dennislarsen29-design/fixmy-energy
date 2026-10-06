@@ -9494,7 +9494,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       } catch(e) {}
       // Real bill (uploaded statement) — never the setter's intake figures. Setter-authored notes are
       // dropped from what Quoya sees, since they carry the stand-in "$X/mo" / "annual true-up $Y".
-      var _realBill = (typeof window._realBillFromAnalysis === 'function') ? window._realBillFromAnalysis(_propBillAnalysis) : null;
+      var _realBill = (typeof window._realBillFromAnalysis === 'function') ? window._realBillFromAnalysis(_propBillAnalysis, window._propRepSettings ? { method: window._propRepSettings.bill_method, rate: window._propRepSettings.bill_rate, manual: window._propRepSettings.bill_manual } : null) : null;
       var _techNotes = '';
       try {
         var _nl = JSON.parse(rec.notes || '[]');
@@ -10227,6 +10227,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var merged = {
         annual_kwh: out.annual_kwh, avg_rate_per_kwh: out.avg_rate_per_kwh,
         monthly_amount_paid: out.monthly_amount_paid, annual_amount_paid: out.annual_amount_paid, monthly_source: out.monthly_source || null,
+        annual_nem_charges: out.annual_nem_charges != null ? out.annual_nem_charges : null, annual_credits_applied: out.annual_credits_applied != null ? out.annual_credits_applied : null, annual_non_bypassable: out.annual_non_bypassable != null ? out.annual_non_bypassable : null,
         care: !!out.care, fera: !!out.fera, medical_baseline: !!out.medical_baseline,
         source: out.source, confidence: out.confidence, notes: out.notes || '',
         // 2026-09-30 — the "show the math" build. Read-only, not individually
@@ -10271,29 +10272,48 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   //   1. a regular monthly bill Quoya read  -> that month's real amount
   //   2. a NEM true-up statement            -> net kWh x $0.50/kWh (SDG&E blended retail) / 12
   //      (Dennis's rule: 3,789 kWh x $0.50 = $1,895/yr = $158/mo)
-  window.TRUEUP_RATE_PER_KWH = 0.50;
-  window._realBillFromAnalysis = function(ba) {
+  window.TRUEUP_RATE_PER_KWH = 0.50;   // only the DEFAULT for the rep-adjustable "kWh x rate" method
+  // Formula (computed from the statement's own numbers; every input is shown to the rep in the builder):
+  //   billed  : annual electric charges actually printed  (true-up: NEM charges - credits + non-bypassable)
+  //             or a real monthly bill x 12                 -> monthly = annual / 12
+  //   rate    : net kWh x $/kWh (rep-adjustable)           -> monthly = kWh x rate / 12
+  //   manual  : the rep's own monthly figure
+  // opts = { method, rate, manual } saved on the proposal; omitted => best available ("billed", else "rate").
+  window._realBillFromAnalysis = function(ba, opts) {
     if (!ba || ba._err) return null;
+    opts = opts || {};
     var edited = ba.edited || {};
-    if (edited.monthly_amount_paid && parseFloat(ba.monthly_amount_paid) > 0) {
-      var m = parseFloat(ba.monthly_amount_paid);
-      return { monthly: Math.round(m), annual: Math.round(m * 12), kwh: parseFloat(ba.annual_kwh) || 0, rate: null, basis: 'rep-entered monthly bill' };
-    }
-    if (ba.monthly_source === 'monthly_bill' && parseFloat(ba.monthly_amount_paid) > 0) {
-      var mm = parseFloat(ba.monthly_amount_paid);
-      return { monthly: Math.round(mm), annual: Math.round(mm * 12), kwh: parseFloat(ba.annual_kwh) || 0, rate: null, basis: 'the customer\'s actual monthly bill' };
-    }
     var kwh = parseFloat(ba.annual_kwh) || 0;
-    if (kwh > 0) {
-      var annual = kwh * window.TRUEUP_RATE_PER_KWH;
-      return { monthly: Math.round(annual / 12), annual: Math.round(annual), kwh: Math.round(kwh), rate: window.TRUEUP_RATE_PER_KWH,
-        basis: Math.round(kwh).toLocaleString() + ' kWh on the NEM true-up statement x $' + window.TRUEUP_RATE_PER_KWH.toFixed(2) + '/kWh' };
+    var nem = parseFloat(ba.annual_nem_charges), cred = parseFloat(ba.annual_credits_applied) || 0, nb = parseFloat(ba.annual_non_bypassable);
+    var billedAnnual = 0, billedBasis = '';
+    if (edited.monthly_amount_paid && parseFloat(ba.monthly_amount_paid) > 0) {
+      billedAnnual = parseFloat(ba.monthly_amount_paid) * 12; billedBasis = 'monthly bill entered by rep x 12';
+    } else if (ba.monthly_source === 'monthly_bill' && parseFloat(ba.monthly_amount_paid) > 0) {
+      billedAnnual = parseFloat(ba.monthly_amount_paid) * 12; billedBasis = 'the customer\'s actual monthly bill x 12';
+    } else if (nem > 0) {
+      billedAnnual = Math.max(0, nem - cred) + (nb > 0 ? nb : 0);
+      billedBasis = 'true-up: NEM charges $' + Math.round(nem).toLocaleString() + (cred > 0 ? ' - credits $' + Math.round(cred).toLocaleString() : '') + (nb > 0 ? ' + non-bypassable $' + Math.round(nb).toLocaleString() : '');
+    } else if (ba.source === 'true_up' && parseFloat(ba.annual_amount_paid) > 0) {
+      billedAnnual = parseFloat(ba.annual_amount_paid); billedBasis = 'true-up electric total printed on the statement';
     }
-    return null;
+    var rate = parseFloat(opts.rate) > 0 ? parseFloat(opts.rate) : window.TRUEUP_RATE_PER_KWH;
+    var method = opts.method;
+    if (method === 'billed' && !(billedAnnual > 0)) method = null;
+    if (method === 'rate' && !(kwh > 0)) method = null;
+    if (method === 'manual' && !(parseFloat(opts.manual) > 0)) method = null;
+    if (!method) method = billedAnnual > 0 ? 'billed' : (kwh > 0 ? 'rate' : null);
+    if (!method) return null;
+    var monthly, annual, basis;
+    if (method === 'billed') { annual = billedAnnual; monthly = annual / 12; basis = billedBasis; }
+    else if (method === 'rate') { annual = kwh * rate; monthly = annual / 12; basis = Math.round(kwh).toLocaleString() + ' kWh x $' + rate.toFixed(2) + '/kWh'; }
+    else { monthly = parseFloat(opts.manual); annual = monthly * 12; basis = 'monthly figure entered by rep'; }
+    return { method: method, monthly: Math.round(monthly), annual: Math.round(annual), kwh: Math.round(kwh), rate: method === 'rate' ? rate : null,
+      effectiveRate: (kwh > 0 && annual > 0) ? annual / kwh : null, billedAnnual: Math.round(billedAnnual), billedBasis: billedBasis,
+      nem: nem > 0 ? nem : null, credits: cred, nonBypassable: nb > 0 ? nb : null, basis: basis };
   };
 
-  window._syncMonthlyBillFromAnalysis = async function(custId, ba, rec) {
-    var real = window._realBillFromAnalysis(ba);
+  window._syncMonthlyBillFromAnalysis = async function(custId, ba, rec, opts) {
+    var real = window._realBillFromAnalysis(ba, opts);
     if (!real || !(real.monthly > 0)) return false;
     var cur = parseFloat(rec && rec.monthly_bill);
     if (cur > 0 && Math.abs(cur - real.monthly) < 0.5) return false;
@@ -12132,6 +12152,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var detail = document.getElementById('propSavingsDetail');
     if (!detail) return;
     bill = parseFloat(bill) || 0;
+    if (window._propLiveBill > 0) bill = window._propLiveBill;
     sysKw = parseFloat(sysKw) || 0;
 
     // Get production from current build state (first option in builder)
@@ -25344,7 +25365,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
     // Quoya's read of a real monthly bill supersedes whatever the setter noted at intake.
     try {
-      if (_propBillAnalysis && await window._syncMonthlyBillFromAnalysis(id, _propBillAnalysis, c)) {
+      if (_propBillAnalysis && await window._syncMonthlyBillFromAnalysis(id, _propBillAnalysis, c, (function(){ var _sp = safeJson(c.proposal, null) || {}; return { method: _sp.bill_method, rate: _sp.bill_rate, manual: _sp.bill_manual }; })())) {
         var _bsRec = adminCustomers.find(function(x){ return x.id === id; });
         if (_bsRec) _bsRec.monthly_bill = c.monthly_bill;
       }
@@ -25700,6 +25721,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var _rs = window._propRepSettings;
       if (_rs) {
         proposal.hide_bill = !!_rs.hide_bill;
+        ['bill_rate','bill_manual'].forEach(function(k){ if (_rs[k] > 0) proposal[k] = _rs[k]; else delete proposal[k]; });
+        if (_rs.bill_method) proposal.bill_method = _rs.bill_method; else delete proposal.bill_method;
         proposal.inverter_down = !!_rs.inverter_down;
         ['system_kw','current_battery_kwh','nem_version','postfix_monthly_bill'].forEach(function(k){ if (_rs[k] > 0) proposal[k] = _rs[k]; else delete proposal[k]; });
         if (!proposal.hide_bill) delete proposal.hide_bill;
@@ -25966,10 +25989,54 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // Saved onto customers.proposal by sendProposal; proposal-preview.html only reads them.
   window._propSetRepSetting = function(k, v) {
     var s = window._propRepSettings || (window._propRepSettings = {});
+    if (k === 'bill_method' || k === 'bill_rate' || k === 'bill_manual') { s[k] = (k === 'bill_method') ? (v || null) : (parseFloat(v) > 0 ? parseFloat(v) : 0); window._propApplyBillBasis(); return; }
     if (k === 'hide_bill' || k === 'inverter_down') s[k] = !!v;
     else if (k === 'nem_version') s[k] = parseInt(v, 10) || 2;
     else { var n = parseFloat(v); s[k] = (isFinite(n) && n > 0) ? n : 0; }
   };
+  // Recompute the bill number from the statement data + the rep's chosen method, save it to the customer,
+  // and refresh the savings preview — so the rep sees exactly where the figure comes from and can adjust it.
+  window._propApplyBillBasis = async function() {
+    var s = window._propRepSettings || {};
+    var real = window._realBillFromAnalysis(_propBillAnalysis, { method: s.bill_method, rate: s.bill_rate, manual: s.bill_manual });
+    if (real && real.monthly > 0) {
+      window._propLiveBill = real.monthly;
+      try {
+        var cl = supabase.createClient(SUPA_URL, SUPA_KEY);
+        await cl.from('customers').update({ monthly_bill: real.monthly }).eq('id', _propPropId);
+        var rec = adminCustomers.find(function(x){ return x.id === _propPropId; }); if (rec) rec.monthly_bill = real.monthly;
+      } catch(e) {}
+      try { var sd = document.getElementById('propSavingsDetail'); if (sd && typeof propShowScenario === 'function') propShowScenario('moderate', real.monthly, (adminCustomers.find(function(x){ return x.id === _propPropId; })||{}).system_size||0); } catch(e) {}
+    }
+    window._propRepSetOpen = true;
+    window._propRenderBuilds();
+  };
+  function _propBillBasisHtml() {
+    var s = window._propRepSettings || {};
+    var real = window._realBillFromAnalysis(_propBillAnalysis, { method: s.bill_method, rate: s.bill_rate, manual: s.bill_manual });
+    var box = 'margin:6px 0 10px;padding:10px 12px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.12);border-radius:10px;font-size:0.76rem;color:#ccc;';
+    if (!real) return '<div style="'+box+'"><b style="color:#ffaa00;">Bill basis:</b> no bill read on file &mdash; upload the utility bill in Site Evaluation so Quoya can calculate the real number. The bill on the lead right now is the setter&rsquo;s stand-in.</div>';
+    var fs = 'width:78px;padding:5px 7px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.22);border-radius:8px;color:#fff;font-size:0.8rem;';
+    var row = function(l, v, strong) { return '<div style="display:flex;justify-content:space-between;gap:10px;padding:2px 0;'+(strong?'font-weight:800;color:#fff;border-top:1px solid rgba(255,255,255,0.15);margin-top:3px;padding-top:5px;':'')+'"><span>'+l+'</span><span>'+v+'</span></div>'; };
+    var usd = function(n){ return '$' + Math.round(n).toLocaleString(); };
+    var h = '<div style="'+box+'"><div style="font-size:0.66rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#8DC63F;margin-bottom:6px;">Where the bill number comes from (from the uploaded statement)</div>';
+    if (real.kwh) h += row('Net kWh on statement', real.kwh.toLocaleString() + ' kWh');
+    if (real.nem) h += row('NEM charges', usd(real.nem));
+    if (real.credits) h += row('Applied credits', '&minus;' + usd(real.credits));
+    if (real.nonBypassable) h += row('Non-bypassable charges', usd(real.nonBypassable));
+    if (real.billedAnnual) h += row('Annual electric charges billed', usd(real.billedAnnual) + '/yr');
+    if (real.effectiveRate) h += row('Effective $/kWh (annual &divide; kWh)', '$' + real.effectiveRate.toFixed(2));
+    h += row('Bill used in this proposal', usd(real.monthly) + '/mo &nbsp;<span style="font-weight:400;color:#888;">('+real.basis+')</span>', true);
+    h += '<div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;">';
+    h += '<label style="display:flex;align-items:center;gap:6px;">Method <select onchange="_propSetRepSetting(\'bill_method\',this.value)" style="'+fs+'width:auto;">'+
+      '<option value="billed"'+(real.method==='billed'?' selected':'')+'>Billed charges &divide; 12</option>'+
+      '<option value="rate"'+(real.method==='rate'?' selected':'')+'>Net kWh &times; rate</option>'+
+      '<option value="manual"'+(real.method==='manual'?' selected':'')+'>Enter manually</option></select></label>';
+    if (real.method === 'rate') h += '<label style="display:flex;align-items:center;gap:6px;">$/kWh <input type="number" step="0.01" min="0" value="'+(real.rate||'')+'" onchange="_propSetRepSetting(\'bill_rate\',this.value)" style="'+fs+'"/></label>';
+    if (real.method === 'manual') h += '<label style="display:flex;align-items:center;gap:6px;">$/mo <input type="number" step="1" min="0" value="'+(s.bill_manual||real.monthly||'')+'" onchange="_propSetRepSetting(\'bill_manual\',this.value)" style="'+fs+'"/></label>';
+    h += '</div><div style="margin-top:6px;font-size:0.64rem;color:#777;">Change the method or rate and the savings preview and customer proposal update.'+(_propBillAnalysis && _propBillAnalysis.source==='true_up' ? ' Net kWh on a true-up is usage after solar offset, so &ldquo;billed charges&rdquo; is the most reliable.' : '')+'</div></div>';
+    return h;
+  }
   function _propRepSettingsHtml() {
     var s = window._propRepSettings || {};
     var open = window._propRepSetOpen ? ' open' : '';
@@ -25978,6 +26045,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var h = '<details'+open+' ontoggle="window._propRepSetOpen=this.open" style="background:rgba(255,170,0,0.06);border:1px dashed rgba(255,170,0,0.4);border-radius:12px;padding:10px 14px;margin-bottom:10px;">';
     h += '<summary style="cursor:pointer;font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#ffaa00;">Savings assumptions &mdash; rep only (customer never sees these)</summary>';
     h += '<div style="margin-top:8px;">';
+    h += _propBillBasisHtml();
     h += '<label style="'+lb+'"><span>Show previous-bill comparison to customer<br><small style="color:#777;">Turn off when the upgrade isn&rsquo;t about saving on the bill</small></span><input type="checkbox" '+(s.hide_bill?'':'checked')+' onchange="_propSetRepSetting(\'hide_bill\',!this.checked)"/></label>';
     h += '<label style="'+lb+'"><span>Existing system size (kW)</span><input type="number" step="0.1" min="0" value="'+(s.system_kw||'')+'" onchange="_propSetRepSetting(\'system_kw\',this.value)" style="'+fs+'"/></label>';
     h += '<label style="'+lb+'"><span>Inverter currently down</span><input type="checkbox" '+(s.inverter_down?'checked':'')+' onchange="_propSetRepSetting(\'inverter_down\',this.checked)"/></label>';
@@ -26712,8 +26780,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       inverter_down: !!_ex.inverter_down,
       current_battery_kwh: parseFloat(_ex.current_battery_kwh) > 0 ? parseFloat(_ex.current_battery_kwh) : 0,
       nem_version: ([1,2,3].indexOf(parseInt(_ex.nem_version,10)) > -1) ? parseInt(_ex.nem_version,10) : 2,
-      postfix_monthly_bill: parseFloat(_ex.postfix_monthly_bill) > 0 ? parseFloat(_ex.postfix_monthly_bill) : 15
+      postfix_monthly_bill: parseFloat(_ex.postfix_monthly_bill) > 0 ? parseFloat(_ex.postfix_monthly_bill) : 15,
+      bill_method: _ex.bill_method || null,
+      bill_rate: parseFloat(_ex.bill_rate) > 0 ? parseFloat(_ex.bill_rate) : 0,
+      bill_manual: parseFloat(_ex.bill_manual) > 0 ? parseFloat(_ex.bill_manual) : 0
     };
+    window._propLiveBill = parseFloat(c.monthly_bill) || 0;
     // Always start fresh — one empty build option
     _propBuilds.push(_propInitBuild());
     // Store existing for optional restore
