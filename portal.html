@@ -2460,7 +2460,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // entered it, since that's the true install date. installed_at/ns_pto_at stay the
   // ONLY source for the "earned" pay-date math elsewhere in this file (payroll is
   // untouched by this) — this cache is solely the operational duration estimate.
-  var INSTALL_DURATION_SEED_DAYS = { battery_retrofit: 35, new_solar: 35, diagnostic: 10, monitoring: 10 };
+  var INSTALL_DURATION_SEED_DAYS = { crew_to_m2: 2, battery_retrofit: 35, new_solar: 35, diagnostic: 10, monitoring: 10 };
   var _installDurationCache = {}; // key ('battery_retrofit'|'new_solar'|'diagnostic'|'monitoring') -> {days, source, sampleSize}
   var _installDurationFetchedAt = 0;
   var INSTALL_DURATION_TTL_MS = 15 * 60 * 1000;
@@ -2468,9 +2468,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (Date.now() - _installDurationFetchedAt < INSTALL_DURATION_TTL_MS && _installDurationFetchedAt) return;
     try {
       var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
-      var { data } = await pc.from('customers').select('sold_type,lead_category,sold_at,install_date,installed_at,ns_pto_at,install_completed_at').not('sold_at', 'is', null);
+      var { data } = await pc.from('customers').select('sold_type,lead_category,sold_at,install_date,installed_at,ns_pto_at,install_completed_at,install_started_at,diagnostic_date').not('sold_at', 'is', null);
       var bySoldType = {};
+      var crewDays = [];
       (data || []).forEach(function(r) {
+        // Crew on site -> Axia/TPO marks M2 (Install Completed). Real days, drives the payroll expectation.
+        if (r.install_started_at && r.install_completed_at) {
+          var cd = (new Date(r.install_completed_at) - new Date(r.install_started_at)) / 86400000;
+          if (cd >= 0 && cd <= 60) crewDays.push(cd);
+        }
         var isNS = r.lead_category === 'new_solar';
         var key = isNS ? 'new_solar' : (r.sold_type || 'diagnostic');
         // ⚠️ 2026-09-25, per Dennis ("a similar field for Diagnostics... a scheduled date
@@ -2493,6 +2499,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var median = arr.length % 2 ? arr[mid] : (arr[mid - 1] + arr[mid]) / 2;
         _installDurationCache[key] = { days: Math.round(median), source: 'live', sampleSize: arr.length };
       });
+      if (crewDays.length >= 3) {
+        crewDays.sort(function(x, y){ return x - y; });
+        var cm = Math.floor(crewDays.length / 2);
+        var cmed = crewDays.length % 2 ? crewDays[cm] : (crewDays[cm - 1] + crewDays[cm]) / 2;
+        _installDurationCache.crew_to_m2 = { days: Math.max(1, Math.round(cmed)), source: 'live', sampleSize: crewDays.length };
+      }
       _installDurationFetchedAt = Date.now();
     } catch (e) { /* leave whatever's cached — a failed refresh just keeps using the seed or the last-known live value */ }
   }
@@ -2513,6 +2525,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var tag = d.source === 'live' ? (' &middot; ' + d.sampleSize + ' job' + (d.sampleSize === 1 ? '' : 's')) : ' &middot; est.';
       return '<span style="font-size:0.68rem;padding:4px 10px;border-radius:20px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);color:#ccc;">' + lbl + ': <b style="color:#fff;">' + d.days + 'd</b>' + tag + '</span>';
     }).join('');
+    if (cat === 'new_solar') {
+      var cw = _installDurationFor('crew_to_m2');
+      parts += '<span style="font-size:0.68rem;padding:4px 10px;border-radius:20px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);color:#ccc;">Crew on site &rarr; M2: <b style="color:#fff;">' + cw.days + 'd</b>' + (cw.source === 'live' ? ' &middot; ' + cw.sampleSize + ' jobs' : ' &middot; est.') + '</span>';
+    }
     return '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;">' +
       '<span style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#888;">&#128197; Avg. Sale &rarr; Install</span>' +
       parts +
@@ -2591,11 +2607,26 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         (cval ? '' : '<button type="button" onclick="window._saveInstallCompleted(\'' + c.id + '\', \'today\')" style="width:auto;padding:4px 10px;border-radius:20px;border:1px solid rgba(141,198,63,0.4);background:rgba(141,198,63,0.1);color:#8DC63F;font-size:0.68rem;font-weight:700;cursor:pointer;">Mark completed today</button>') +
       '</div>';
     }
+    var axRows = '';
+    if (isNSJob) {
+      var isAdm = typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE === 'admin';
+      var dRow = function(lbl, field, v, note) {
+        var dv = v ? String(v).slice(0, 10) : '';
+        return '<div style="margin-top:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;" onclick="event.stopPropagation();"><label style="font-size:0.62rem;font-weight:700;color:#888;white-space:nowrap;">' + lbl + '</label>' +
+          (isAdm ? '<input type="date" value="' + dv + '" onchange="window._saveJobDate(\'' + c.id + '\',\'' + field + '\', this.value)" style="width:auto;padding:4px 8px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.04);color:#ddd;font-size:0.72rem;"/>'
+            : '<span style="font-size:0.72rem;color:#ccc;">' + (dv ? new Date(dv + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '&mdash;') + '</span>') +
+          (note || '') + '</div>';
+      };
+      if (isAdm) axRows += dRow('&#128119; Crew Started <span style="font-weight:400;color:#666;">(internal)</span>', 'install_started_at', c.install_started_at);
+      axRows += dRow('&#128270; Inspection Date <span style="font-weight:400;color:#666;">(shows to customer)</span>', 'inspection_date', c.inspection_date);
+      axRows += dRow('&#9889; Permission to Operate <span style="font-weight:400;color:#666;">(activation &middot; shows to customer)</span>', 'pto_date', c.pto_date,
+        c.pto_date ? '<span style="font-size:0.66rem;color:#8DC63F;font-weight:700;">Plan a stop-by this day: check they&rsquo;re running well &middot; ask for a 5&#9733; review &middot; ask for referrals</span>' : '');
+    }
     return '<div style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;" onclick="event.stopPropagation();">' +
       '<label style="font-size:0.62rem;font-weight:700;color:#888;white-space:nowrap;">&#128197; ' + label + '</label>' +
       '<input type="date" value="' + val + '" onchange="window._saveInstallDate(\'' + c.id + '\', this.value, ' + (isDiag ? 'true' : 'false') + ')" style="width:auto;padding:4px 8px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.04);color:#ddd;font-size:0.72rem;"/>' +
       (status && !(isNSJob && (c.install_completed_at || c.solar_status === 'ns_pto')) ? '<span style="font-size:0.68rem;color:' + status.color + ';font-weight:700;">' + status.text + '</span>' : '') +
-    '</div>' + completedRow + (status && isNSJob && (c.install_completed_at || c.solar_status === 'ns_pto') ? '<div style="margin-top:4px;font-size:0.68rem;color:' + status.color + ';font-weight:700;" onclick="event.stopPropagation();">' + status.text + '</div>' : '');
+    '</div>' + completedRow + axRows + (status && isNSJob && (c.install_completed_at || c.solar_status === 'ns_pto') ? '<div style="margin-top:4px;font-size:0.68rem;color:' + status.color + ';font-weight:700;" onclick="event.stopPropagation();">' + status.text + '</div>' : '');
   }
   // Writes straight to Supabase (a scheduling field, same trust level as every other
   // direct customers.update() a rep already makes elsewhere in this file), updates
@@ -2622,6 +2653,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // never copies), so one mutation here is visible everywhere, admin or rep.
       var idx = (adminCustomers || []).findIndex(function(x) { return x.id === id; });
       if (idx > -1) adminCustomers[idx][field] = iso;
+      if (typeof adminView !== 'undefined' && adminView === 'jobs') renderJobsView();
+      else if (typeof salesView !== 'undefined' && salesView === 'jobs' && typeof renderSales === 'function') renderSales();
+    } catch (e) { alert('Could not save date: ' + e.message); }
+  };
+  // Axia/QCells milestone dates (2026-10-07): crew start (internal), inspection + PTO (customer-visible).
+  window._saveJobDate = async function(id, field, val) {
+    if (['install_started_at', 'inspection_date', 'pto_date'].indexOf(field) < 0) return;
+    try {
+      var cl = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var iso = val ? new Date(val + 'T12:00:00').toISOString() : null;
+      var upd = {}; upd[field] = iso;
+      var resp = await cl.from('customers').update(upd).eq('id', id);
+      if (resp.error) { alert('Could not save date: ' + resp.error.message); return; }
+      var idx = (adminCustomers || []).findIndex(function(x) { return x.id === id; });
+      if (idx > -1) adminCustomers[idx][field] = iso;
+      _installDurationFetchedAt = 0; // crew-start changes the live median
       if (typeof adminView !== 'undefined' && adminView === 'jobs') renderJobsView();
       else if (typeof salesView !== 'undefined' && salesView === 'jobs' && typeof renderSales === 'function') renderSales();
     } catch (e) { alert('Could not save date: ' + e.message); }
@@ -2661,6 +2708,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   function _payDateInfoFor(d) {
     if (!d) return null;
     if (d.earned && d.earnedAt) return { date: _payFridayAfter(new Date(d.earnedAt)), tentative: false };
+    if (d.installDate && d.durationKey === 'new_solar') {
+      var cw = _installDurationFor('crew_to_m2');
+      var estDone = new Date(d.installDate); estDone.setDate(estDone.getDate() + cw.days);
+      return { date: _payFridayAfter(estDone), tentative: true, estInstallDate: estDone, durationDays: cw.days, durationSource: cw.source, fromSchedule: true };
+    }
     if (!d.soldAt) return null;
     var dur = _installDurationFor(d.durationKey);
     var est = new Date(d.soldAt); est.setDate(est.getDate() + dur.days);
@@ -2672,7 +2724,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var when = _payDateShort(info.date);
     return '<div style="display:flex;align-items:center;gap:6px;margin-top:6px;padding:5px 10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:100px;font-size:0.66rem;color:#999;">'+
       '<span style="width:6px;height:6px;border-radius:50%;flex-shrink:0;background:'+(info.tentative?'#ffb648':'#8DC63F')+';"></span>'+
-      (info.tentative ? 'Est. install ~'+_payDateShort(info.estInstallDate)+' &middot; est. pay ~'+when : 'Pay date '+when)+
+      (info.tentative ? (info.fromSchedule ? 'Est. install complete '+_payDateShort(info.estInstallDate)+' &middot; est. pay '+when : 'Est. install '+_payDateShort(info.estInstallDate)+' &middot; est. pay '+when) : 'Pay date '+when)+
     '</div>';
   }
 
@@ -3116,7 +3168,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           closerLocked: !!closerRow, setterLocked: !!setterRow, companyLocked: !!companyRow,
           closerPaid: !!(closerRow && closerRow.status==='paid'), setterPaid: !!(setterRow && setterRow.status==='paid'),
           companyPaid: !!(companyRow && companyRow.status==='paid'),
-          soldAt: c.sold_at||null, earnedAt: calc.earnedAt||null, installDoneAt: calc.earnedAt||null, ptoAt: calc.ptoAt||null, durationKey: 'new_solar'
+          soldAt: c.sold_at||null, installDate: c.install_date||null, earnedAt: calc.earnedAt||null, installDoneAt: calc.earnedAt||null, ptoAt: calc.ptoAt||null, durationKey: 'new_solar'
         });
       });
       _loadInstallDurationStats(); // fire-and-forget, same shared cache the FixMy loader refreshes
@@ -30814,6 +30866,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '</div>';
     }
 
+    // Installation timeline (2026-10-07, per Dennis): install scheduled, inspection, Permission to Operate.
+    // Install Completed / crew-start are internal and never shown here.
+    var instHtml = '';
+    if (c.install_date || c.inspection_date || c.pto_date) {
+      var _fd = function(d){ return new Date(d).toLocaleDateString('en-US', {timeZone:'America/Los_Angeles',weekday:'long',month:'long',day:'numeric'}); };
+      var _row = function(ic, t, d, sub){ return '<div style="display:flex;gap:12px;align-items:flex-start;padding:10px 0;border-top:1px solid rgba(255,255,255,0.06);"><span style="font-size:1.2rem;">'+ic+'</span><div><div style="font-size:0.72rem;color:#888;">'+t+'</div><div style="font-weight:700;color:#fff;font-size:0.9rem;">'+_fd(d)+'</div>'+(sub?'<div style="font-size:0.72rem;color:#8DC63F;margin-top:2px;">'+sub+'</div>':'')+'</div></div>'; };
+      instHtml = '<div class="sect-label">Your Installation</div><div style="background:rgba(141,198,63,0.06);border:1px solid rgba(141,198,63,0.25);border-radius:12px;padding:6px 18px 10px;margin-bottom:16px;">'
+        + (c.install_date ? _row('&#128295;','Installation scheduled',c.install_date,'') : '')
+        + (c.inspection_date ? _row('&#128270;','Inspection',c.inspection_date,'') : '')
+        + (c.pto_date ? _row('&#9889;','Permission to Operate (system activation)',c.pto_date,'We\'ll stop by to make sure you\'re up and running.') : '')
+        + '</div>';
+    }
+
     // Diagnostic findings (step 3+ with tech notes visible to customer)
     var findingsHtml = '';
     if (_hasReport) {
@@ -30914,6 +30979,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     showDash(name,
       '<div style="margin-bottom:24px;"><h2 style="font-size:1.3rem;margin-bottom:4px;">Hi, <span style="color:#8DC63F">'+(c.first_name||'there')+'</span> &#128075;</h2><p style="font-size:0.8rem;color:#aaa;">Your Solar Review evaluation status.</p></div>'+
       apptHtml+
+      instHtml+
       (_hasReport ? findingsHtml+proposalHtml : '')+
       '<div class="info-grid"><div class="info-card"><div class="info-label">Address</div><div class="info-val">'+(c.address||'--')+'</div></div><div class="info-card"><div class="info-label">System Size</div><div class="info-val">'+sys+'</div></div><div class="info-card"><div class="info-label">Utility</div><div class="info-val">'+(c.utility||'--')+'</div></div><div class="info-card"><div class="info-label">Monthly Bill</div><div class="info-val">'+(c.monthly_bill?'$'+c.monthly_bill+'/mo':'--')+'</div></div></div>'+
       '<div class="sect-label">Your Progress</div><div style="overflow-x:auto;margin-bottom:16px;"><div class="timeline">'+stepsHtml+'</div></div>'+
