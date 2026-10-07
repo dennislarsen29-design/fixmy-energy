@@ -23575,6 +23575,53 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     } catch(e) { console.warn('document_templates load:', e); return null; }
   }
 
+  // ── Generic documents (2026-10-07, per Dennis — "expand it to all the other documents") ──
+  // The signing screens speak the CPUC template's field ids (cust_signature, pg3_initials, rep_*,
+  // company_*). Every other document's fields have their own ids, so at load time we give each field
+  // an ROLE-based alias: all customer signature boxes share one signature, all customer initials
+  // boxes share one set of initials (sign once, applied everywhere — like a real e-sign product),
+  // rep and company boxes resolve to the rep / assigned installer. Checkboxes keep their own ids.
+  // A template that already has a cust_signature field (CPUC) is returned untouched.
+  function _docFieldRole(f) {
+    var t = ((f.id || '') + ' ' + (f.label || '')).toLowerCase();
+    if (/(^|[^a-z])rep(_|[^a-z])|representative|sales rep/.test(t)) return 'rep';
+    if (/company|contractor|installer|cslb|license|licence|seller|dealer/.test(t)) return 'company';
+    return 'customer';
+  }
+  function _docNormalizeTemplate(tpl) {
+    if (!tpl || !Array.isArray(tpl.fields)) return tpl;
+    if (tpl.fields.some(function(f){ return f.id === 'cust_signature'; })) return tpl; // legacy CPUC shape
+    var out = JSON.parse(JSON.stringify(tpl));
+    out.fields = out.fields.map(function(f) {
+      var role = _docFieldRole(f), lbl = (f.label || '').toLowerCase(), alias = null;
+      if (f.type === 'checkbox') return f;
+      if (role === 'customer') {
+        if (f.type === 'signature') alias = 'cust_signature';
+        else if (f.type === 'initials') alias = 'pg3_initials';
+        else if (f.type === 'date') alias = 'cust_date';
+        else if (/name/.test(lbl)) alias = 'cust_name';
+        else if (/address/.test(lbl)) alias = 'cust_address';
+        else if (/phone|mobile|cell/.test(lbl)) alias = 'cust_phone';
+        else if (/e-?mail/.test(lbl)) alias = 'cust_email';
+      } else if (role === 'rep') {
+        if (f.type === 'signature') alias = 'rep_signature';
+        else if (f.type === 'date') alias = 'rep_date';
+        else if (/name/.test(lbl)) alias = 'rep_name';
+      } else {
+        if (/phone/.test(lbl)) alias = 'company_phone';
+        else if (/e-?mail/.test(lbl)) alias = 'company_email';
+        else if (/class/.test(lbl)) alias = 'license_classification_p7';
+        else if (/license|licence|cslb/.test(lbl)) alias = 'cslb_license_p7';
+        else if (/name/.test(lbl)) alias = 'company_name';
+        else if (f.type === 'date') alias = 'cust_date';
+      }
+      if (alias) { f.origId = f.id; f.id = alias; }
+      return f;
+    });
+    return out;
+  }
+  window._docNormalizeTemplate = _docNormalizeTemplate;
+
   // ── Template editor — admin reviews/adjusts Claude's auto-placed field positions
   // over the REAL rendered PDF before any customer ever signs against it. Fields are
   // stored as fractions (0-1) of page width/height so they're resolution-independent
@@ -24116,8 +24163,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // this purpose) with the freshly captured signature spliced in.
     if (_repDocState && _repDocState.tpl && _repDocState.values) {
       _repDocState.values.rep_signature = st.result;
-      var f = (_repDocState.tpl.fields||[]).find(function(x){ return x.id === 'rep_signature'; });
-      if (f) _repDocRenderFieldsForPage(f.page, _repDocState.tpl, _repDocState.values);
+      var _pgs = {};
+      (_repDocState.tpl.fields||[]).forEach(function(x){ if (x.id === 'rep_signature') _pgs[x.page] = 1; });
+      Object.keys(_pgs).forEach(function(pg){ _repDocRenderFieldsForPage(parseInt(pg, 10), _repDocState.tpl, _repDocState.values); });
     }
     _docGuideNext('dealDoc', 'rep');
   };
@@ -24312,6 +24360,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
       var tpl = def.hasPdfTemplate ? await _loadDocTemplate(docType) : null;
       if (tpl && tpl.confirmed) {
+        tpl = _docNormalizeTemplate(tpl);
         var pdfOk = await _loadPdfJs();
         if (pdfOk) { _openDealDocRealPdf(c, def, row, tpl); return; }
         // pdf.js failed to load (bad connection) — fall through to the text summary
@@ -24546,6 +24595,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         case 'rep_name':        values[f.id] = (docRow && docRow.reviewed_by_rep_name) || ''; break;
         case 'rep_signature':   values[f.id] = (docRow && docRow.data && docRow.data.rep_signature) || null; break;
         case 'rep_date':        values[f.id] = (docRow && docRow.reviewed_at) ? new Date(docRow.reviewed_at).toLocaleDateString('en-US') : ''; break;
+        case 'cust_address':    values[f.id] = c.address || ''; break;
+        case 'cust_phone':      values[f.id] = c.phone || ''; break;
+        case 'cust_email':      values[f.id] = (c.email && !/@pending\./.test(c.email)) ? c.email : ''; break;
         case 'company_phone':   values[f.id] = CPUC_COMPANY_PHONE; break;
         case 'company_name':    values[f.id] = opsInfo ? opsInfo.name : ''; break;
         case 'company_email':   values[f.id] = opsInfo ? opsInfo.email : ''; break;
@@ -24566,6 +24618,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (!pdfOk) { alert('Could not load the document viewer — check your connection and try again.'); return; }
     var tpl = await _loadDocTemplate(docType, true);
     if (!tpl || !tpl.confirmed) { alert('This document isn\'t ready to sign yet — check back soon.'); return; }
+    tpl = _docNormalizeTemplate(tpl);
     var cache = _dealDocsCache[customerId] || await _dealDocsLoad(customerId);
     var row = cache[docType] || { status:'pending', initials:{}, signature:'', signed_by_name:'' };
     if (row.status === 'pending') { alert('This document isn\'t ready for your signature yet — your rep needs to review it with you first.'); return; }
@@ -24729,8 +24782,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (!st || !st.context || !_custDocState) return;
     var fid = (st.context && st.context.field) || 'cust_signature';
     _custDocState.values[fid] = st.result;
-    var f = (_custDocState.template.fields||[]).find(function(x){ return x.id === fid; });
-    if (f) _custDocRenderFieldsForPage(f.page);
+    var _pgs2 = {};
+    (_custDocState.template.fields||[]).forEach(function(x){ if (x.id === fid) _pgs2[x.page] = 1; });
+    Object.keys(_pgs2).forEach(function(pg){ _custDocRenderFieldsForPage(parseInt(pg, 10)); });
     _docGuideNext('custDoc', 'cust', fid);
   };
 
@@ -24790,18 +24844,23 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // it's a real object is the actual "did they sign" gate now. Printed name (identity)
     // and signature (the mark itself) are deliberately separate fields on this document,
     // same as a real DocuSign flow — cust_name already collects the former.
+    var _fl = _custDocState.template.fields || [];
+    var _hasF = function(id){ return _fl.some(function(f){ return f.id === id; }); };
     var sig = vals.cust_signature;
+    if (!_hasF('cust_signature')) { alert('This document has no customer signature box yet \u2014 tell your rep so it can be fixed.'); return; }
     if (!sig || typeof sig !== 'object') { alert('Tap the signature box and sign before submitting.'); return; }
     var name = (vals.cust_name || '').trim();
+    if (!name && !_hasF('cust_name')) { var _cu = (typeof currentUser !== 'undefined' && currentUser) || {}; name = ((_cu.first_name || '') + ' ' + (_cu.last_name || '')).trim(); }
     if (!name) { alert('Type your printed name before signing.'); return; }
     var pg3 = vals.pg3_initials;
-    if (!pg3 || typeof pg3 !== 'object') { alert('Tap the initials box on the False Claims page and add your initials before signing.'); return; }
+    var _needInit = _hasF('pg3_initials');
+    if (_needInit && (!pg3 || typeof pg3 !== 'object')) { alert('Tap an initials box and add your initials before signing.'); return; }
 
     var initials = {};
     (_custDocState.template.fields||[]).forEach(function(f) {
       if (f.type === 'checkbox') initials[f.id] = vals[f.id] !== false;
     });
-    var initialsData = { pg3_initials: pg3 };
+    var initialsData = _needInit ? { pg3_initials: pg3 } : {};
 
     var btn = document.getElementById('custDocSubmitBtn');
     if (btn) { btn.disabled = true; btn.textContent = 'Signing…'; }
@@ -24856,7 +24915,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // Nothing else ready right now — check whether every applicable real-PDF
       // document for this customer is now signed. If so, this is the actual
       // "you're done" moment, worth its own notification (not just "Signed!").
-      var _applicable = _signedCust ? DEAL_DOC_TYPES.filter(function(d){ return d.hasPdfTemplate && d.appliesWhen(_signedCust); }) : [];
+      var _applicable = _signedCust ? DEAL_DOC_TYPES.filter(function(d){ return d.hasPdfTemplate && d.appliesWhen(_signedCust) && _docsMap[d.id] && (_docsMap[d.id].status === 'reviewed' || _docsMap[d.id].status === 'signed'); }) : [];
       var _allSigned = _applicable.length > 0 && _applicable.every(function(d){ return _docsMap[d.id] && _docsMap[d.id].status === 'signed'; });
       _custDocCloseSign();
       if (_allSigned && _signedCust) {
