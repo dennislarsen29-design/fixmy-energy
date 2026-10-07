@@ -13514,7 +13514,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var r = await Promise.all([
       base(), base().not('lat','is',null), base().not('title_owner','is',null), base().not('phone','is',null),
       base().not('email','is',null).not('email','ilike','%@pending.fixmy.energy'), base().eq('black_box', false),
-      c.from('pipeline_state').select('value').eq('key','sunrun_layer_status').maybeSingle()
+      c.from('pipeline_state').select('value').eq('key','sunrun_layer_status').maybeSingle(),
+      c.from('pipeline_state').select('value,updated_at').eq('key','sunrun_layer_probe').maybeSingle()
     ]);
     var stages = [
       { label:'Permits Sourced', count:r[0].count || 0 }, { label:'Geocoded', count:r[1].count || 0 },
@@ -13545,18 +13546,25 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     } else {
       h += '<div style="font-size:0.66rem;color:#8a8578;margin:4px 0 8px;">No pull has run yet. The first scheduled pull is tonight, or run one now.</div>';
     }
+    var pr = (r[7] && r[7].data && r[7].data.value) || null;
+    if (typeof pr === 'string') { try { pr = JSON.parse(pr); } catch(e) { pr = null; } }
+    if (pr) {
+      h += '<details style="margin:6px 0 10px;"><summary style="cursor:pointer;font-size:0.68rem;color:#8a8578;">&#129658; Diagnostic from ' + esc(String(pr.at || '').slice(0,16).replace('T',' ')) + '</summary>'
+        + '<div style="font-size:0.64rem;color:#999;line-height:1.5;margin-top:6px;">' + (pr.contractors || []).map(esc).join('<br>') + '<br><br>' + (pr.keyword || []).map(esc).join('<br>') + '</div></details>';
+    }
     h += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">'
       + '<button onclick="sunrunLayerPull()" style="width:auto;padding:7px 12px;font-size:0.72rem;">&#128229; Pull permits now</button>'
+      + '<button onclick="sunrunLayerPull(true)" style="width:auto;padding:7px 12px;font-size:0.72rem;background:transparent;border:1px solid #666;color:#aaa;">&#129658; Diagnose</button>'
       + '<button onclick="sunrunLayerExport()" style="width:auto;padding:7px 12px;font-size:0.72rem;background:transparent;border:1.5px solid #E8793A;color:#E8793A;">&#128190; Export for skip-trace (nearest 92026)</button>'
       + '</div><div id="sunrunLayerMsg" style="font-size:0.7rem;color:#8a8578;margin-top:8px;"></div>';
     el.innerHTML = h;
   };
 
-  window.sunrunLayerPull = async function() {
+  window.sunrunLayerPull = async function(probe) {
     var msg = document.getElementById('sunrunLayerMsg');
-    if (msg) msg.textContent = 'Starting the permit pull… it runs in the background; reload this card in a few minutes.';
+    if (msg) msg.textContent = probe ? 'Running the diagnostic… give it about a minute, then reopen Black Box.' : 'Starting the permit pull… it runs in the background; reload this card in a few minutes.';
     try {
-      var resp = await fetch('/.netlify/functions/sunrun-layer-pull-background', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}' });
+      var resp = await fetch('/.netlify/functions/sunrun-layer-pull-background', { method:'POST', headers:{'Content-Type':'application/json'}, body: probe ? '{"probe":true}' : '{}' });
       if (msg) msg.textContent = (resp.status === 202 || resp.ok) ? 'Pull started. Reopen Black Box in a few minutes to see results.' : 'Could not start the pull (HTTP ' + resp.status + ').';
     } catch(e) { if (msg) msg.textContent = 'Could not start the pull: ' + e.message; }
   };

@@ -40,6 +40,18 @@ const CITIES = [
   'National City', 'Vista', 'San Marcos', 'Lemon Grove', 'Spring Valley', 'Lakeside'
 ];
 
+
+// San Diego County zips (91901-91999, 92003-92199). Contractor-wide permit lists are statewide, so every
+// record is filtered to this before it can become a lead.
+function sdZip(z) { const n = parseInt(z, 10); return (n >= 91901 && n <= 91999) || (n >= 92003 && n <= 92199); }
+function recZip(p) { return String(p.address_zip || p.zip || p.zip_code || p.postal_code || p.zipcode || '').replace(/\D/g, '').slice(0, 5); }
+function recInSD(p) {
+  const z = recZip(p);
+  if (z) return sdZip(z);
+  const c = String(p.address_city || p.city || '').trim().toLowerCase();
+  return !!c && CITIES.some(x => x.toLowerCase() === c);
+}
+
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 const STREET_SUFFIX = {
@@ -140,6 +152,144 @@ exports.handler = async function (event) {
     const seen = new Set();
     const thisYear = new Date().getFullYear();
 
+  async function processBatch(batch, brand, city, trusted) {
+    const cands = [];
+    for (const p of batch) {
+      status.scanned++;
+      // The keyword search is fuzzy — only keep permits that really name the brand somewhere.
+      if (!trusted && !brand.rx.test(JSON.stringify(p))) { status.skipped_other++; continue; }
+      const street = String(p.address_street || p.street_address || p.address || p.site_address || p.property_address || '').split(',')[0].trim();
+      if (!street || !/^\d/.test(street) || street.split(/\s+/).length < 2) { status.skipped_other++; continue; }
+      const zip = String(p.address_zip || p.zip || p.zip_code || p.postal_code || p.zipcode || '').replace(/\D/g, '').slice(0, 5);
+      const full = [street, String(p.address_city || p.city || city || 'San Diego').trim(), 'CA', zip].filter(Boolean).join(', ');
+      const k = normAddr(full);
+      if (!k) { status.skipped_other++; continue; }
+      if (seen.has(k) || existing.has(k)) { status.skipped_dupe++; continue; }
+      const rawDate = p.issue_date || p.issued_date || p.permit_date || p.filed_date || '';
+      const yr = rawDate ? (new Date(rawDate).getFullYear() || null) : null;
+      const kw = extractKw(p.work_description || p.description || p.scope_of_work || '');
+      if (yr && (yr < 2005 || yr > thisYear)) { status.skipped_other++; continue; }
+      if (kw != null && (kw < 0.5 || kw > 100)) { status.skipped_other++; continue; }
+      seen.add(k);
+      cands.push({
+        address: full, lead_category: 'fixmy', step: 1,
+        lead_source: LAYER_SOURCE, black_box: true,
+        original_installer: brand.name, install_year: yr || null,
+        system_size: kw ? String(kw) : null,
+        notes: brand.name + (kw ? ' · ' + kw + 'kW' : '') + (yr ? ' · Installed ' + yr : '')
+      });
+    }
+
+    // Owner of record + parcel coordinates from the county roll (free), 10 at a time.
+    for (let i = 0; i < cands.length; i += 10) {
+      await Promise.all(cands.slice(i, i + 10).map(async rec => {
+        let hit = null;
+        try { hit = await P.lookup(rec.address); } catch (e) { tally('roll_err'); }
+        if (hit && hit.owner) { rec.title_owner = hit.owner; status.with_owner++; }
+        if (hit && hit.x != null && hit.y != null && hit.x > -117.7 && hit.x < -116.0 && hit.y > 32.4 && hit.y < 33.6) {
+          rec.lng = hit.x; rec.lat = hit.y; status.with_coords++;
+        }
+        rec.lead_score = scoreLead(rec, !!(hit && hit.owner));
+      }));
+    }
+
+    if (cands.length) {
+      for (let i = 0; i < cands.length; i += 100) {
+        const chunk = cands.slice(i, i + 100);
+        const ins = await fetch(SUPA_REST + '/customers', {
+          method: 'POST', headers: { ...headers, Prefer: 'return=minimal' }, body: JSON.stringify(chunk)
+        });
+        if (ins.ok) { status.inserted += chunk.length; chunk.forEach(r => existing.add(normAddr(r.address))); }
+        else { tally('insert_http_' + ins.status); console.error('[sunrun-layer] insert failed', ins.status, (await ins.text()).slice(0, 300)); }
+      }
+    }
+  }
+
+
+    async function psGet(path) {
+      try {
+        const r = await fetch(PS_BASE + path, { headers: psHeaders, signal: AbortSignal.timeout(12000) });
+        if (!r.ok) { tally('http_' + r.status); return { status: r.status }; }
+        return { status: 200, body: await r.json() };
+      } catch (e) { tally(e && e.name === 'TimeoutError' ? 'timeout' : 'net_error'); return { status: 0, error: e.message }; }
+    }
+    function listOf(b) { return (b && (b.permits || b.results || b.data || b.contractors)) || []; }
+
+    // Diagnostic: shows what PermitStack really calls these contractors and how many permits each query
+    // returns, so the search terms can be tuned from real data instead of guessed.
+    async function probe() {
+      const out = { at: new Date().toISOString(), keyword: [], contractors: [], samples: [] };
+      const terms = ['Sunrun', 'SUNRUN INC', 'Sunrun Installation Services', 'Sun Run', 'Vivint Solar', 'Vivint Solar Developer', 'VIVINT'];
+      for (const t of terms) {
+        for (const city of ['San Diego', 'Escondido', 'Oceanside']) {
+          const r = await psGet('/permits/search?city=' + encodeURIComponent(city) + '&keyword=' + encodeURIComponent(t) + '&per_page=5&page=1');
+          const arr = listOf(r.body);
+          out.keyword.push(t + ' @ ' + city + ': ' + (r.status === 200 ? arr.length + ' results' : 'HTTP ' + r.status));
+          if (arr.length && out.samples.length < 3) {
+            const x = arr[0];
+            out.samples.push({ term: t, city, keys: Object.keys(x), contractorFields: Object.keys(x).filter(k => /contract|licen|applic|business|company/i.test(k)).reduce((m, k) => (m[k] = String(x[k]).slice(0, 80), m), {}),
+              addr: [x.address_street || x.address, x.address_city || x.city, x.address_zip || x.zip].join(' | ') });
+          }
+        }
+        const c = await psGet('/contractors/search?name=' + encodeURIComponent(t) + '&per_page=10');
+        const carr = listOf(c.body);
+        out.contractors.push(t + ': ' + (c.status === 200 ? carr.length + ' contractors' : 'HTTP ' + c.status)
+          + (carr.length ? ' → ' + carr.slice(0, 6).map(x => (x.name || x.business_name || x.company || '?') + ' [id ' + (x.id || x.contractor_id) + (x.permit_count != null ? ', ' + x.permit_count + ' permits' : '') + ']').join('; ') : ''));
+        await sleep(150);
+      }
+      out.outcomes = status.outcomes;
+      await writeState('sunrun_layer_probe', out);
+      return out;
+    }
+
+    // Contractor-wide pass: find the contractor records PermitStack holds for each brand, then walk their
+    // permit lists page by page (statewide), keeping only San Diego County. A per-contractor page cursor
+    // is saved so every night continues where the last run stopped.
+    async function contractorPass() {
+      let pages = {};
+      try {
+        const r = await fetch(SUPA_REST + '/pipeline_state?key=eq.sunrun_layer_contractor_pages&select=value&limit=1', { headers });
+        const rows = r.ok ? await r.json() : [];
+        if (rows.length) pages = JSON.parse(rows[0].value) || {};
+      } catch (e) {}
+      const found = {};
+      for (const brand of BRANDS) {
+        for (const name of brand.names) {
+          if (Date.now() > deadline) break;
+          const c = await psGet('/contractors/search?name=' + encodeURIComponent(name) + '&per_page=20');
+          if (c.status !== 200) continue;
+          listOf(c.body).forEach(x => {
+            const id = x.id || x.contractor_id;
+            if (id && brand.rx.test(JSON.stringify(x))) found[id] = brand;
+          });
+        }
+      }
+      status.contractors_found = Object.keys(found).length;
+      for (const id of Object.keys(found)) {
+        const brand = found[id];
+        const st = pages[id] || { page: 1 };
+        if (st.done_at && Date.now() - new Date(st.done_at).getTime() < 7 * 86400000) continue;
+        let page = st.done_at ? 1 : (st.page || 1);
+        while (Date.now() < deadline && page <= 400) {
+          const r = await psGet('/contractors/' + encodeURIComponent(id) + '/permits?per_page=100&page=' + page);
+          if (r.status !== 200) { if (r.status === 429) await sleep(2000); break; }
+          const batch = listOf(r.body);
+          if (!Array.isArray(batch) || !batch.length) { pages[id] = { page, done_at: new Date().toISOString() }; tally('c_end'); break; }
+          tally('c_ok');
+          status.c_scanned = (status.c_scanned || 0) + batch.length;
+          const sd = batch.filter(recInSD);
+          if (sd.length) await processBatch(sd, brand, 'San Diego', true);
+          if (batch.length < 100) { pages[id] = { page, done_at: new Date().toISOString() }; break; }
+          page++;
+          pages[id] = { page };
+          if (page % 5 === 0) { await writeState('sunrun_layer_contractor_pages', pages); await writeState('sunrun_layer_status', status); }
+          await sleep(60);
+        }
+      }
+      await writeState('sunrun_layer_contractor_pages', pages);
+    }
+
+    if (req.probe) { const pr = await probe(); status.running = false; status.finished_at = new Date().toISOString(); await writeState('sunrun_layer_status', status); return { statusCode: 200, body: JSON.stringify(pr) }; }
     for (let u = 0; u < units.length; u++) {
       if (Date.now() > deadline) break;
       const { brand, city } = units[(start + u) % units.length];
@@ -160,56 +310,7 @@ exports.handler = async function (event) {
           if (!batch.length) { tally(page === 1 ? 'empty' : 'end_of_pages'); break; }
           tally('ok');
 
-          const cands = [];
-          for (const p of batch) {
-            status.scanned++;
-            // The keyword search is fuzzy — only keep permits that really name the brand somewhere.
-            if (!brand.rx.test(JSON.stringify(p))) { status.skipped_other++; continue; }
-            const street = String(p.address_street || p.street_address || p.address || p.site_address || '').split(',')[0].trim();
-            if (!street || !/^\d/.test(street) || street.split(/\s+/).length < 2) { status.skipped_other++; continue; }
-            const zip = String(p.zip || p.zip_code || p.postal_code || '').replace(/\D/g, '').slice(0, 5);
-            const full = [street, String(p.city || city).trim(), 'CA', zip].filter(Boolean).join(', ');
-            const k = normAddr(full);
-            if (!k) { status.skipped_other++; continue; }
-            if (seen.has(k) || existing.has(k)) { status.skipped_dupe++; continue; }
-            const rawDate = p.issue_date || p.issued_date || p.permit_date || p.filed_date || '';
-            const yr = rawDate ? (new Date(rawDate).getFullYear() || null) : null;
-            const kw = extractKw(p.work_description || p.description || p.scope_of_work || '');
-            if (yr && (yr < 2005 || yr > thisYear)) { status.skipped_other++; continue; }
-            if (kw != null && (kw < 0.5 || kw > 100)) { status.skipped_other++; continue; }
-            seen.add(k);
-            cands.push({
-              address: full, lead_category: 'fixmy', step: 1,
-              lead_source: LAYER_SOURCE, black_box: true,
-              original_installer: brand.name, install_year: yr || null,
-              system_size: kw ? String(kw) : null,
-              notes: brand.name + (kw ? ' · ' + kw + 'kW' : '') + (yr ? ' · Installed ' + yr : '')
-            });
-          }
-
-          // Owner of record + parcel coordinates from the county roll (free), 10 at a time.
-          for (let i = 0; i < cands.length; i += 10) {
-            await Promise.all(cands.slice(i, i + 10).map(async rec => {
-              let hit = null;
-              try { hit = await P.lookup(rec.address); } catch (e) { tally('roll_err'); }
-              if (hit && hit.owner) { rec.title_owner = hit.owner; status.with_owner++; }
-              if (hit && hit.x != null && hit.y != null && hit.x > -117.7 && hit.x < -116.0 && hit.y > 32.4 && hit.y < 33.6) {
-                rec.lng = hit.x; rec.lat = hit.y; status.with_coords++;
-              }
-              rec.lead_score = scoreLead(rec, !!(hit && hit.owner));
-            }));
-          }
-
-          if (cands.length) {
-            for (let i = 0; i < cands.length; i += 100) {
-              const chunk = cands.slice(i, i + 100);
-              const ins = await fetch(SUPA_REST + '/customers', {
-                method: 'POST', headers: { ...headers, Prefer: 'return=minimal' }, body: JSON.stringify(chunk)
-              });
-              if (ins.ok) { status.inserted += chunk.length; chunk.forEach(r => existing.add(normAddr(r.address))); }
-              else { tally('insert_http_' + ins.status); console.error('[sunrun-layer] insert failed', ins.status, (await ins.text()).slice(0, 300)); }
-            }
-          }
+          await processBatch(batch, brand, city);
           if (batch.length < 100) break;
           await sleep(80);
         }
@@ -218,6 +319,7 @@ exports.handler = async function (event) {
       await writeState('sunrun_layer_status', status);
     }
 
+    try { await contractorPass(); } catch (e) { tally('contractor_pass_err'); console.error('[sunrun-layer] contractor pass', e.message); }
     await writeState('sunrun_layer_cursor', String((start + status.units_covered) % units.length));
     return finish(null);
   } catch (e) {
