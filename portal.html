@@ -10376,7 +10376,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         analyzed_at: new Date().toISOString(), edited: prevEdited
       };
       Object.keys(prevEdited).forEach(function(f){ if (prevEdited[f] && f in prev) merged[f] = prev[f]; });
+      // Months the rep typed by hand survive a re-read (matched by month label); the rest is Quoya's.
+      (prev.monthly_breakdown || []).filter(function(m){ return m && m.manual; }).forEach(function(pm){
+        var hit = merged.monthly_breakdown.filter(function(m){ return m.month && m.month === pm.month; })[0];
+        if (hit) { hit.total_kwh = pm.total_kwh; hit.estimated = false; hit.manual = true; } else merged.monthly_breakdown.push(pm);
+      });
       _evLocal.billAnalysis = merged;
+      _evRecalcAnnualFromMonths(merged);
       // 2026-09-28, per Dennis: "the select Utility feature is not necessary — if
       // Quoya can pull data from the bill, it should read the name and select the
       // correct utility." Only fills a BLANK utility, never overwrites a rep's own
@@ -10462,6 +10468,70 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // A rep correcting/filling in a field by hand — mirrors Quoya Assist's field-lock
   // pattern elsewhere in the file (never let a later re-run silently overwrite what a
   // human already typed). `edited` tracks which fields to leave alone on a re-read.
+  // Annual consumption = sum of the 12 monthly figures, but only once every one of 12 months has a number.
+  // Until then the annual field stays whatever Quoya read / the rep typed. A rep who types the annual
+  // figure by hand wins (annual_manual) until they edit a month again.
+  function _evMonthsFilled(ba) {
+    return (ba.monthly_breakdown || []).filter(function(m){ return m && m.total_kwh != null && !isNaN(m.total_kwh); });
+  }
+  function _evRecalcAnnualFromMonths(ba) {
+    var f = _evMonthsFilled(ba);
+    if (f.length < 12) { ba.annual_auto = false; return false; }
+    var last12 = f.slice(-12);
+    ba.annual_kwh = Math.round(last12.reduce(function(t, m){ return t + (parseFloat(m.total_kwh) || 0); }, 0));
+    ba.annual_auto = true;
+    if (ba.edited) delete ba.edited.annual_kwh;
+    return true;
+  }
+  window.evBillMonth = function(i, val) {
+    var ba = _evLocal.billAnalysis; if (!ba || !ba.monthly_breakdown || !ba.monthly_breakdown[i]) return;
+    var n = parseFloat(val), m = ba.monthly_breakdown[i];
+    m.total_kwh = isNaN(n) ? null : n; m.estimated = false; m.manual = true;
+    var auto = _evRecalcAnnualFromMonths(ba);
+    _evSave({ bill_analysis: ba });
+    var f = _evMonthsFilled(ba).length, cnt = document.getElementById('evMonthCount'); if (cnt) cnt.textContent = f + ' of 12 months filled';
+    var an = document.getElementById('evAnnualKwh');
+    if (an && auto) { an.value = ba.annual_kwh; an.style.border = '1px solid #9b6de8'; }
+    var tag = document.getElementById('evAnnualTag'); if (tag) tag.style.display = auto ? 'block' : 'none';
+  };
+  window.evBillMonthLabel = function(i, val) {
+    var ba = _evLocal.billAnalysis; if (!ba || !ba.monthly_breakdown || !ba.monthly_breakdown[i]) return;
+    ba.monthly_breakdown[i].month = String(val || '').slice(0, 20); ba.monthly_breakdown[i].manual = true; _evSave({ bill_analysis: ba });
+  };
+  window.evBillAddMonth = function() {
+    if (!_evLocal.billAnalysis || _evLocal.billAnalysis._err) _evLocal.billAnalysis = { edited: {}, monthly_breakdown: [] };
+    var ba = _evLocal.billAnalysis; if (!ba.monthly_breakdown) ba.monthly_breakdown = [];
+    if (ba.monthly_breakdown.length >= 12) return;
+    ba.monthly_breakdown.push({ month: '', total_kwh: null, estimated: false, manual: true });
+    _evRender();
+  };
+  function _evMonthEditorHtml(ba) {
+    var months = ba.monthly_breakdown || [];
+    var filled = _evMonthsFilled(ba).length;
+    var maxTotal = months.reduce(function(m, x){ return Math.max(m, parseFloat(x.total_kwh) || 0); }, 0) || 1;
+    var cap = { table_exact: 'Read directly from an exact usage table on the bill.', chart_estimated: 'Estimated from the bill’s usage-history chart — correct any month below.' }[ba.reading_method] || 'Fill in or correct any month.';
+    var h = '<div style="margin:2px 0 12px;"><div style="display:flex;justify-content:space-between;align-items:baseline;"><label style="font-size:0.68rem;color:#888;">Monthly Consumption (kWh) — editable</label>'
+      + '<span id="evMonthCount" style="font-size:0.66rem;color:#c4a3f0;">' + filled + ' of 12 months filled</span></div>'
+      + '<div style="font-size:0.66rem;color:#9b6de8;margin:2px 0 8px;line-height:1.4;">' + esc(cap) + ' When all 12 are filled, the annual total adds itself up.</div>'
+      + '<div style="background:rgba(0,0,0,0.2);border-radius:10px;padding:8px 10px;">';
+    months.forEach(function(m, i) {
+      var bar = Math.max(3, Math.round((parseFloat(m.total_kwh) || 0) / maxTotal * 100));
+      h += '<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-top:' + (i ? '1px solid rgba(255,255,255,0.05)' : 'none') + ';">'
+        + (m.manual && !m.month
+          ? '<input value="" placeholder="Mon YYYY" onchange="evBillMonthLabel(' + i + ',this.value)" style="width:78px;flex-shrink:0;padding:6px 7px;border-radius:7px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.14);color:#F3EDE3;font-size:0.7rem;">'
+          : '<div style="width:78px;flex-shrink:0;font-size:0.7rem;color:#aaa;">' + esc(m.month) + '</div>')
+        + '<div style="flex:1;min-width:0;height:8px;border-radius:5px;background:rgba(255,255,255,0.05);overflow:hidden;"><div style="width:' + bar + '%;height:8px;background:#9b6de8;"></div></div>'
+        + '<input type="number" inputmode="decimal" step="any" value="' + (m.total_kwh == null ? '' : esc(String(m.total_kwh))) + '" oninput="evBillMonth(' + i + ',this.value)" '
+          + 'style="width:84px;flex-shrink:0;padding:6px 8px;border-radius:7px;background:rgba(255,255,255,0.04);color:#F3EDE3;font-size:0.78rem;text-align:right;'
+          + (m.estimated ? 'border:1px solid #9b6de8;' : 'border:1px solid rgba(255,255,255,0.14);') + '">'
+        + '<span style="font-size:0.6rem;color:' + (m.estimated ? '#ffaa00' : '#8DC63F') + ';width:12px;">' + (m.estimated ? '~' : '&#10003;') + '</span></div>';
+    });
+    h += '</div>';
+    if (months.length < 12) h += '<button onclick="evBillAddMonth()" style="width:auto;margin:8px 0 0;padding:7px 14px;font-size:0.72rem;background:transparent;border:1px dashed rgba(155,109,232,0.5);border-radius:100px;color:#c4a3f0;cursor:pointer;">+ Add a month</button>';
+    h += '<div style="font-size:0.6rem;color:#666;margin-top:5px;">~ estimated from chart &nbsp;&middot;&nbsp; &#10003; exact or confirmed by you</div></div>';
+    return h;
+  }
+
   window.evBillField = function(field, val) {
     if (!_evLocal.billAnalysis || _evLocal.billAnalysis._err) _evLocal.billAnalysis = { edited: {} };
     if (!_evLocal.billAnalysis.edited) _evLocal.billAnalysis.edited = {};
@@ -10470,6 +10540,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     } else {
       var n = parseFloat(val);
       _evLocal.billAnalysis[field] = isNaN(n) ? null : n;
+      if (field === 'annual_kwh') { _evLocal.billAnalysis.annual_auto = false; var _t = document.getElementById('evAnnualTag'); if (_t) _t.style.display = 'none'; }
     }
     _evLocal.billAnalysis.edited[field] = true;
     _evSave({ bill_analysis: _evLocal.billAnalysis });
@@ -11513,12 +11584,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           }).join('<br/>')
         + '</div></div>';
     }
-    if (Array.isArray(ba.monthly_breakdown) && ba.monthly_breakdown.length) {
-      h += _billMonthlyTableHtml(ba.monthly_breakdown.map(function(m){
-        return { month: m.month, total: m.total_kwh, onPeak: m.on_peak_kwh, offPeak: m.off_peak_kwh, superOffPeak: m.super_off_peak_kwh, estimated: m.estimated };
-      }), ba.reading_method);
-    }
-    h += _evBillNumField(ba, 'annual_kwh', 'Annual Consumption', '', 'kWh/yr', 1);
+    h += _evMonthEditorHtml(ba);
+    h += _evBillNumField(ba, 'annual_kwh', 'Annual Consumption', '', 'kWh/yr', 1).replace('<input type="number"', '<input id="evAnnualKwh" type="number"');
+    h += '<div id="evAnnualTag" style="display:' + (ba.annual_auto ? 'block' : 'none') + ';font-size:0.66rem;color:#9b6de8;margin:-6px 0 10px;">&#10024; Auto-total of the 12 months above. Type here to override.</div>';
     if (parseFloat(ba.annual_kwh) < 0) h += '<div style="font-size:0.68rem;color:#c4a3f0;margin:-4px 0 10px;line-height:1.5;">&#9728; Negative = this home&rsquo;s solar produces more than it uses (net-metered). Saved as entered; upgrade sizing uses the bill-based estimate instead.</div>';
     h += _evBillNumField(ba, 'avg_rate_per_kwh', 'Average Rate', '$', '/kWh', 0.01);
     h += '<div style="margin-bottom:10px;">';
