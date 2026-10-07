@@ -14,11 +14,23 @@
  *   from   2026-10-03  $1,000   (per Dennis)
  * A PDF for an agreement signed under the old cap must still show the $2,000 the
  * customer actually agreed to, so capFor() keys off the signed-at timestamp.
+ *
+ * Cancellation terms history (Section 2 + fee notice):
+ *   before 2026-10-08  cancel 48h+ in advance; no cancellation charge defined beyond the $50 reschedule fee
+ *   from   2026-10-08  cancel 48h+ out = no cost (full refund); cancel under 48h = 50% of the fee retained
+ * Keyed to the signed-at timestamp like the cap, so an old PDF never shows terms the customer didn't see.
+ * The change date must not be earlier than the deploy date (the page and the server both key off it).
  */
 (function (root) {
   var CAP_CURRENT = 1000;
   var CAP_LEGACY = 2000;
   var CAP_CHANGE_ISO = '2026-10-03T00:00:00Z';
+  var CANCEL_CHANGE_ISO = '2026-10-08T07:00:00Z'; // midnight Pacific, Oct 8
+  function cancelV2(signedAtIso) {
+    var t = signedAtIso ? new Date(signedAtIso).getTime() : Date.now();
+    if (isNaN(t)) t = Date.now();
+    return t >= new Date(CANCEL_CHANGE_ISO).getTime();
+  }
 
   function capFor(signedAtIso) {
     if (!signedAtIso) return CAP_CURRENT;
@@ -59,6 +71,8 @@
     ]}
   ];
 
+  var CANCEL_PARA_V2 = "**Cancellation:** If you cancel at least **48 hours** before your scheduled visit, there is **no cost** and your Diagnostic Service Fee is refunded in full. If you cancel **less than 48 hours** before your scheduled visit, **50% of the Diagnostic Service Fee is retained** and the remaining 50% is refunded.";
+  var FEE_NOTICE_V2 = "Cancel **48 or more hours** before your visit: no cost, full refund. Cancel **less than 48 hours** before: 50% of the diagnostic fee is retained. The fee is non-refundable once the visit is completed. A **$50 rescheduling fee** applies to appointment changes requested less than 24 hours before the scheduled visit.";
   var FEE_NOTICE = "The diagnostic fee is non-refundable once the visit is completed. Cancellations must be requested at least 48 hours in advance. A **$50 rescheduling fee** applies to appointment changes requested less than 24 hours before the scheduled visit.";
 
   var ESIGN = "By signing electronically, the Customer confirmed: (1) they are the Customer identified above, (2) they signed on their own personal device, and (3) they have read and agree to all terms of this agreement. This constitutes a legally binding electronic signature under the federal ESIGN Act and California UETA (Cal. Civ. Code § 1633.1 et seq.).";
@@ -66,11 +80,15 @@
   function fill(text, cap) { return String(text).replace(/\{\{CAP\}\}/g, money(cap)); }
 
   // Sections with {{CAP}} resolved for a given cap.
-  function sectionsFor(cap) {
-    return SECTIONS.map(function (s) {
-      return { title: s.title, paras: s.paras.map(function (p) { return fill(p, cap); }) };
+  function sectionsFor(cap, signedAtIso) {
+    var v2 = cancelV2(signedAtIso);
+    return SECTIONS.map(function (s, i) {
+      var paras = s.paras.slice();
+      if (v2 && i === 1) paras.splice(1, 0, CANCEL_PARA_V2); // Section 2: cancellation terms before the non-refundable line
+      return { title: s.title, paras: paras.map(function (p) { return fill(p, cap); }) };
     });
   }
+  function feeNoticeFor(signedAtIso) { return cancelV2(signedAtIso) ? FEE_NOTICE_V2 : FEE_NOTICE; }
 
   // **bold** -> <strong>, with HTML escaping (used by sign.html).
   function mdToHtml(text) {
@@ -78,15 +96,15 @@
     return esc.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
   }
 
-  function termsHtml(cap) {
-    return sectionsFor(cap).map(function (s) {
+  function termsHtml(cap, signedAtIso) {
+    return sectionsFor(cap, signedAtIso).map(function (s) {
       return '<h4>' + mdToHtml(s.title) + '</h4>' + s.paras.map(function (p) { return '<p>' + mdToHtml(p) + '</p>'; }).join('');
     }).join('');
   }
 
   root.DIAG_AGREEMENT = {
     CAP_CURRENT: CAP_CURRENT, CAP_LEGACY: CAP_LEGACY, CAP_CHANGE_ISO: CAP_CHANGE_ISO,
-    capFor: capFor, money: money, sectionsFor: sectionsFor, termsHtml: termsHtml, mdToHtml: mdToHtml,
+    capFor: capFor, cancelV2: cancelV2, feeNoticeFor: feeNoticeFor, CANCEL_CHANGE_ISO: CANCEL_CHANGE_ISO, money: money, sectionsFor: sectionsFor, termsHtml: termsHtml, mdToHtml: mdToHtml,
     FEE_NOTICE: FEE_NOTICE, ESIGN: ESIGN
   };
 
@@ -187,7 +205,8 @@
     y -= 14;
 
     // Terms (as signed: cap depends on signing date)
-    sectionsFor(cap).forEach(function (s) {
+    var atIso = signed ? c.agreement_signed_at : null;
+    sectionsFor(cap, atIso).forEach(function (s) {
       need(40);
       y -= 4;
       textLine(s.title, bold, 11, ink);
@@ -195,7 +214,7 @@
       y -= 4;
     });
     need(60);
-    richPara(FEE_NOTICE, 9, CW, MX);
+    richPara(feeNoticeFor(atIso), 9, CW, MX);
     y -= 10;
 
     // Signature block

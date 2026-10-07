@@ -73,8 +73,8 @@ function initialsText(v, fallback) {
 function diagTermsFingerprint(signedAtIso) {
   const A = diag();
   const cap = A.capFor(signedAtIso);
-  const sections = A.sectionsFor(cap);
-  return { cap, sha256: sha256(JSON.stringify({ cap, sections, fee: A.FEE_NOTICE })) };
+  const sections = A.sectionsFor(cap, signedAtIso);
+  return { cap, sha256: sha256(JSON.stringify({ cap, sections, fee: A.feeNoticeFor(signedAtIso) })) };
 }
 
 function signatureFingerprint(sd) {
