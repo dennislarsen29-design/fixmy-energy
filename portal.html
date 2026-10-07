@@ -3057,7 +3057,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // pool). A lead that came in through the company website is company tooling, not a
   // rep's own contact — same reasoning as EDDM and Smith.AI.
   function _nsIsBlackBoxSourced(c) {
-    return !!(c && (c.black_box === true || c.lead_source === 'orphaned_list' || c.lead_source === 'direct_mail' || c.lead_source === 'smith_ai' || c.lead_source === 'inbound_web'));
+    return !!(c && (c.black_box === true || c.lead_source === 'orphaned_list' || c.lead_source === 'direct_mail' || c.lead_source === 'smith_ai' || c.lead_source === 'inbound_web' || c.lead_source === 'lead_locker'));
   }
   // ⚠️ 2026-10-03, per Dennis — Axia/QCells pays in TWO stages:
   //   Payment 1 (M2) — commission on the FULL redline (no Domestic Content Bonus), paid the Friday
@@ -13657,6 +13657,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     try { return localStorage.getItem('bbLayer_' + (mode === 'door' ? 'door' : 'call')) === '1'; } catch(e) { return false; }
   };
   window._bbLayerSource = function(mode) { return window._bbLayerOn(mode) ? 'sunrun_layer' : 'orphaned_list'; };
+  // Doors: Lead Locker (purchased, consented) leads ride with the main list.
+  window._bbLayerSources = function(mode) { return window._bbLayerOn(mode) ? ['sunrun_layer'] : ['orphaned_list', 'lead_locker']; };
   // PostgREST fragment appended inside an and=(...) list.
   window._bbLayerAnd = function(mode) {
     return window._bbLayerOn(mode) ? ',lead_source.eq.sunrun_layer' : ',or(lead_source.is.null,lead_source.neq.sunrun_layer)';
@@ -14393,6 +14395,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (bits.length) return bits.join(', ');
     return String(lead.mail_address || '').trim();
   }
+  function _bbLockerNote(lead) {
+    if (!lead || lead.lead_source !== 'lead_locker') return '';
+    var m = lead.lead_locker || {}, h = '<div style="font-size:0.72rem;color:#E8793A;font-weight:700;margin-bottom:6px;line-height:1.5;">&#128276; LEAD LOCKER &mdash; requested solar info';
+    var rcv = m.received_at ? new Date(m.received_at) : null;
+    if (rcv && !isNaN(rcv)) { var mins = Math.round((Date.now() - rcv.getTime()) / 60000); h += ' &middot; ' + (mins < 60 ? mins + ' min ago' : mins < 2880 ? Math.round(mins / 60) + ' hr ago' : Math.round(mins / 1440) + ' days ago'); }
+    h += '</div>';
+    var st = m.sms_status;
+    h += '<div style="font-size:0.68rem;color:#999;margin-bottom:6px;">' + (st === 'sent' ? '&#9989; Roof-confirm text sent' : st === 'queued' ? '&#9203; Text queued &mdash; sends 8am&ndash;8pm Pacific' : st === 'failed' ? '&#9888; Text did not send &mdash; text them yourself' : st === 'skipped' ? 'No automatic text' : '') + '</div>';
+    return h;
+  }
   function _bbAbsenteeNote(lead) {
     if (!lead || lead.absentee !== true) return '';
     var where = _bbMailWhere(lead);
@@ -14401,8 +14413,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       + '. Likely a rental &mdash; whoever answers may not be the decision-maker.</div>';
   }
 
-  var BB_DIAL_SEL_FULL ='id,first_name,last_name,address,phone,email,dnc,notes,knock_status,title_owner,apn,lat,lng,lead_source,original_installer,install_year,black_box,step,lead_category,dial_status,dialed_at,dial_attempts,callback_at';
-  var BB_DIAL_SEL_BASE = 'id,first_name,last_name,address,phone,email,dnc,notes,knock_status,title_owner,apn,lat,lng,lead_source,original_installer,install_year,black_box,step,lead_category';
+  var BB_DIAL_SEL_FULL ='id,first_name,last_name,address,phone,email,dnc,notes,knock_status,title_owner,apn,lat,lng,lead_source,original_installer,install_year,black_box,step,lead_category,dial_status,dialed_at,dial_attempts,callback_at,solar_status,lead_locker';
+  var BB_DIAL_SEL_BASE = 'id,first_name,last_name,address,phone,email,dnc,notes,knock_status,title_owner,apn,lat,lng,lead_source,original_installer,install_year,black_box,step,lead_category,solar_status,lead_locker';
 
   var bbDialLoadError = null;
 
@@ -14521,6 +14533,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       else fresh.push(l);
     });
     var pri = function(a,b) {
+      var la = a.lead_source === 'lead_locker', lb = b.lead_source === 'lead_locker';
+      if (la !== lb) return la ? -1 : 1; // purchased, consented leads are worked first
       var pa = bbDialPriorityIds.indexOf(a.id), pb = bbDialPriorityIds.indexOf(b.id);
       if (pa > -1 || pb > -1) return (pa > -1 ? pa : 999) - (pb > -1 ? pb : 999);
       // Focus-ZIP leads jump ahead of the normal order (but below explicit priority IDs).
@@ -14666,6 +14680,57 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // came from the layer (lead_source='sunrun_layer'); everything else keeps its own script.
   // Rules: no affiliation with Sunrun, never disparage them, never quote a price or
   // incentive amount on the call, and never say we change/modify their solar system.
+  // Lead Locker leads: the homeowner REQUESTED solar info (consented, purchased). New-solar evaluation, not a
+  // defunct-installer pitch. Sequence per Dennis: auto text (roof confirm) -> call -> call again -> short video.
+  function _bbLockerScriptHtml(stage, lead, mode) {
+    var c = _bbScriptCtx(lead);
+    var street = esc(_bbStreet(lead && lead.address));
+    var door = mode === 'door';
+    switch (stage) {
+      case 'flow': return (
+        '<div style="font-size:0.66rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#E8793A;margin-bottom:8px;">&#128276; Lead Locker lead &mdash; the sequence</div>' +
+        _bbWarn('They asked for solar information, so this is a warm lead &mdash; speed matters. Work it the day it lands.') +
+        _bbFlowNode('#4a9eff','1','Text goes out automatically','&ldquo;I got your information&hellip; can you confirm this is your roof?&rdquo; with a satellite photo. Check the note on the lead to see it sent. If it did not, text it yourself.') + _bbFlowArrow() +
+        _bbFlowNode('#8DC63F','2','Call right away','Reference the text. Goal: confirm the roof and book the free solar evaluation, 2-hour window, inside 48 hours.') + _bbFlowArrow() +
+        _bbFlowNode('#ffaa00','3','No answer? Call a second time','Same day, a few hours later. Leave one short voicemail.') + _bbFlowArrow() +
+        _bbFlowNode('#E8793A','4','Send a short video','A 20&ndash;30 second video of you: who you are, the roof you looked at, and one question to confirm their details. Then keep following up.')
+      );
+      case 'approach': case 'opener': return (
+        _bbTip('They requested this. Open with the text you already sent.') +
+        _bbSay('Hi '+c.name+', this is '+c.rep+' with Solar Review. You asked about solar for your home &mdash; I just texted you a picture of the roof at <strong>'+street+'</strong>. Is that your roof?') +
+        _bbTip('If they do not remember asking: &ldquo;You filled out a form online about going solar &mdash; I&rsquo;m the local company following up.&rdquo; If they say they never did, thank them, offer to remove them, and mark the disposition.')
+      );
+      case 'qualify': return (
+        _bbSay('Do you own the home? Who else makes the decision on it?') +
+        _bbSay('Roughly what is your electric bill in a normal month, and is it SDG&amp;E?') +
+        _bbSay('Do you already have solar, or is this brand new?') +
+        _bbTip('Listen for: owns the home, bill over about $150, unshaded roof, decision-makers available for the visit.')
+      );
+      case 'pain': return (
+        _bbSay('Great &mdash; what I do is design the system for your actual roof and your actual bill, so you see real numbers instead of a generic quote. The first step is a free visit where we look at your panel, roof and usage.') +
+        _bbWarn('Never quote a price, a payment or an incentive amount on the phone. &ldquo;It depends on your usage &mdash; the free visit works out the real number.&rdquo;')
+      );
+      case 'expectations': return (
+        _bbSay('The tech comes out for about an hour, checks your roof, main panel and bill, and tells you honestly whether solar makes sense. No obligation, and everyone who owns the home should be there.') +
+        _bbTip('Free to reschedule. There is no no-show fee.')
+      );
+      case 'book': return (
+        _bbSay('I can get you in '+(door?'tomorrow':'within the next day or two')+'. Does morning or afternoon work better? &hellip; So that&rsquo;s [day], between [start] and [start+2 hrs] &mdash; does that work?') +
+        _bbTip('Confirm the DATE and the 2-hour window out loud before you hang up.')
+      );
+      case 'objections': return (
+        _bbObj('I\'m just getting quotes.', 'Perfect &mdash; the visit is free and has no obligation, so you can compare it against anyone else.') +
+        _bbObj('How much is it?', 'It depends on your roof and usage, so I would be guessing. The free visit gives you a real number.') +
+        _bbObj('I did not ask for this.', 'Sorry about that &mdash; the request came through an online solar form. I can take you off the list right now if you like.') +
+        _bbObj('Not right now.', 'No problem &mdash; when would be a better time to check back? I will note it.') +
+        _bbWarn('Never promise savings, incentives or approval. If they say stop, mark Do Not Call.')
+      );
+      case 'vm': return _bbSay('Hi '+c.name+', this is '+c.rep+' with Solar Review. I got your solar request and I sent you a text with a picture of your roof &mdash; can you confirm it is yours? Call or text me back at this number. Thanks!');
+      case 'callback': return _bbSay('Hi '+c.name+', '+c.rep+' again &mdash; following up on your solar request. Did you get my text with the picture of your roof?');
+      case 'branches': return _bbTip('Not home: leave a card. Wrong person: ask who handles the electric bill and when they are home.');
+      default: return null;
+    }
+  }
   function _bbSunrunScriptHtml(stage, lead, mode) {
     var c = _bbScriptCtx(lead);
     var street = esc(_bbStreet(lead && lead.address));
@@ -14719,6 +14784,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   }
   function bbScriptBodyHtml(stage, lead) {
     if (lead && lead.lead_source === 'sunrun_layer') { var _sr = _bbSunrunScriptHtml(stage, lead, 'call'); if (_sr != null) return _sr; }
+    if (lead && lead.lead_source === 'lead_locker') { var _ll = _bbLockerScriptHtml(stage, lead, 'call'); if (_ll != null) return _ll; }
     var c = _bbScriptCtx(lead);
     var street = esc(_bbStreet(lead && lead.address));
     var whoInstalled = c.year && c.installer
@@ -15026,6 +15092,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   window.cvScriptBodyHtml = function(stage, lead) {
     lead = lead || {};
     if (lead.lead_source === 'sunrun_layer') { var _sr = _bbSunrunScriptHtml(stage, lead, 'door'); if (_sr != null) return _sr; }
+    if (lead.lead_source === 'lead_locker') { var _ll2 = _bbLockerScriptHtml(stage, lead, 'door'); if (_ll2 != null) return _ll2; }
     var nm      = _bbLeadDisplayName(lead);
     var who     = nm.human && lead.first_name ? String(lead.first_name).trim() : (nm.surname ? 'Mr./Ms. ' + nm.surname : 'there');
     var street  = _bbStreet(lead.address || '') || 'your street';
@@ -16233,6 +16300,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += _bbAskForHtml(_nm, lead);
     h += _bbOwnerPeopleHtml(lead);
     h += _bbTrusteeNote(lead);
+    h += _bbLockerNote(lead);
     h += _bbAbsenteeNote(lead);
     // A dialer who hears the real name on the phone had nowhere to put it — these are the
     // same controls the door rep has, not a second copy.
@@ -16630,6 +16698,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
     if (outcome === 'booked') {
       var act = { black_box: false, step: lead.step || 1, lead_category: lead.lead_category || 'fixmy' };
+      if (act.lead_category === 'new_solar' && !lead.solar_status) act.solar_status = 'ns_eval_booked';
       if (bookedSlot && bookedSlot.startISO) {
         var _sd = new Date(bookedSlot.startISO);
         var _ed = bookedSlot.endISO ? new Date(bookedSlot.endISO) : new Date(_sd.getTime() + 2*3600*1000);
@@ -32959,6 +33028,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             h += _bbAskForHtml(_doorNm, lead);
             h += _bbOwnerPeopleHtml(lead);
             h += _bbTrusteeNote(lead);
+            h += _bbLockerNote(lead);
             h += _bbAbsenteeNote(lead);
             // Same inline email row the dialer has. Matters here because the magic-link
             // photo upload after a doorstep booking needs a real address on file.
@@ -34139,6 +34209,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     function _cvRouteCmp(a, b) {
       if (a._hot && !b._hot) return -1;
       if (!a._hot && b._hot) return 1;
+      var _la = a.lead_source === 'lead_locker' && !a.knock_status, _lb = b.lead_source === 'lead_locker' && !b.knock_status;
+      if (_la !== _lb) return _la ? -1 : 1; // purchased, consented leads go first on the route
       var ao = _cvIsOpen(a), bo = _cvIsOpen(b);
       if (ao !== bo) return ao ? -1 : 1;
       // A come-back sits behind untouched doors — unless its time has arrived, in which
@@ -34644,7 +34716,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           // Dennis when they cannot. setter_name always records who actually booked it,
           // so the split math and the setter's own "Booked by me" list both work.
           rep_id: _bkCloserId, setter_name: (person.name || person.id),
-          step: 1, lead_category: 'fixmy', sold_type: null, black_box: false
+          step: 1, lead_category: (lead.lead_category === 'new_solar' ? 'new_solar' : 'fixmy'), sold_type: null, black_box: false
         }).eq('id', lead.id).select('id');
         if (_res && _res.error) _saveErr = _res.error.message || 'the database rejected the update';
         // A successful call that matched NO row is still a failure — wrong id, or RLS
@@ -34956,7 +35028,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       for (var bi = 0; bi < boxes.length; bi++) {
         var bx = _canvassGeoBox(lat, lng, boxes[bi]);
         var r = await client.from('customers').select(SEL)
-          .eq('lead_source', window._bbLayerSource('door'))
+          .in('lead_source', window._bbLayerSources('door'))
           .is('sold_type', null)
           // DQ'd doors are archived, which is what keeps them out of BOTH motions.
           // The dialer has always filtered this; the route never did.
@@ -34986,7 +35058,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       _cvRefetching = true;
       renderSales();
       try {
-        var SEL = await bbMailSel('id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,original_installer,install_year,callback_at');
+        var SEL = await bbMailSel('id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,original_installer,install_year,callback_at,lead_category,solar_status,lead_locker');
         var client = supabase.createClient(SUPA_URL, SUPA_KEY);
         var res = await _canvassFetchBox(client, SEL, lat, lng);
         if (res.rows.length) {
@@ -35058,7 +35130,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // bbMailSel appends the mailing/absentee columns only when 20260808_owner_mailing.sql
       // is applied — this SEL has no fallback tier, so one unknown column would hard-error
       // the entire Doors route (canvassGpsStatus='error'), not degrade it.
-      var SEL = await bbMailSel('id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,original_installer,install_year,callback_at');
+      var SEL = await bbMailSel('id,first_name,last_name,address,notes,title_owner,apn,lat,lng,knock_status,knocked_at,knocked_by,lead_source,rep_id,step,phone,email,dnc,lead_score,original_installer,install_year,callback_at,lead_category,solar_status,lead_locker');
       var client = supabase.createClient(SUPA_URL, SUPA_KEY);
 
       var result;
@@ -35077,7 +35149,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         result = { data: boxRes.rows, error: boxRes.rows.length ? null : boxRes.error };
       } else {
         result = await client.from('customers').select(SEL)
-          .eq('lead_source', window._bbLayerSource('door'))
+          .in('lead_source', window._bbLayerSources('door'))
           .is('sold_type', null)
           .or('archived.is.null,archived.eq.false')
           .or('black_box.is.null,black_box.eq.true')   // booked leads are out of Black Box
@@ -35116,7 +35188,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // If GPS filter returned nothing, reload without geo constraint
       if (userLat && userLng && leads.length === 0) {
         var fb = await client.from('customers').select(SEL)
-          .eq('lead_source', window._bbLayerSource('door'))
+          .in('lead_source', window._bbLayerSources('door'))
           .is('sold_type', null)
           .not('lat', 'is', null)
           .order('lead_score', { ascending: false, nullsFirst: false })

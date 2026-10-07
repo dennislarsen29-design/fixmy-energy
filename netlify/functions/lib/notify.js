@@ -27,7 +27,7 @@ function magicLink(c) {
   return SITE + '/portal?email=' + encodeURIComponent(c.email) + '&code=' + encodeURIComponent(c.access_code || digits(c.phone));
 }
 
-async function sendSms(c, message, doFetch) {
+async function sendSms(c, message, doFetch, attachments) {
   doFetch = doFetch || fetch;
   const key = process.env.GHL_API_KEY;
   const phone = toE164(c.phone);
@@ -48,6 +48,7 @@ async function sendSms(c, message, doFetch) {
   try {
     const body = { type: 'SMS', contactId, message, locationId: GHL_LOC, toNumber: phone };
     if (process.env.GHL_SMS_FROM_NUMBER) body.fromNumber = process.env.GHL_SMS_FROM_NUMBER;
+    if (attachments && attachments.length) body.attachments = attachments;
     const r = await doFetch(GHL_BASE + '/conversations/messages', { method: 'POST', headers: Object.assign({}, H, { Version: '2021-04-15' }), body: JSON.stringify(body) });
     if (!r.ok) { const t = await r.text().catch(function () { return ''; }); console.error('notify sms http', r.status, t.slice(0, 200)); return { ok: false, reason: 'ghl_sms_http_' + r.status }; }
     return { ok: true };
