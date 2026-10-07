@@ -28478,6 +28478,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           h += '<span>Actually a Powerwall / battery retrofit deal? This panel will show $0 Revenue no matter what you add above.</span>';
           h += '<button onclick="edConvertToBatteryRetrofit(\''+cid+'\')" style="margin-left:auto;padding:4px 10px;background:rgba(74,158,255,0.12);border:1px solid rgba(74,158,255,0.4);border-radius:100px;color:#4a9eff;font-size:0.68rem;font-weight:700;cursor:pointer;white-space:nowrap;">&#128267; Convert to Battery Retrofit</button>';
           h += '</div>';
+          // Partner credit balance (e.g. a canceled-but-prepaid Cosmic diagnostic): applying it marks a
+          // pending cost line paid via credit, so the job's COGS is recognised once, on the job that uses it.
+          var _credBal = 0;
+          if (opsPartner) { try { var _cr = await pc.from('partner_credits').select('amount').eq('partner_id', opsPartner); _credBal = ((_cr.data) || []).reduce(function(t, r){ return t + (parseFloat(r.amount) || 0); }, 0); } catch (e) {} }
+          if (_credBal > 0.004) h += '<div style="margin:6px 0;padding:6px 10px;border-radius:8px;background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.3);font-size:0.7rem;color:#8DC63F;">&#128179; Credit on file with this partner: <b>$' + _credBal.toLocaleString(undefined,{maximumFractionDigits:2}) + '</b> &mdash; apply it to a pending cost below.</div>';
           costs.forEach(function(x){
             h += '<div style="display:flex;gap:8px;align-items:center;font-size:0.72rem;color:#aaa;padding:4px 0;border-top:1px solid rgba(255,255,255,0.05);flex-wrap:wrap;">';
             h += '<span style="color:#ddd;flex:1;">'+esc(x.label)+'</span>';
@@ -28487,6 +28492,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             // 2026-08-30) — this just opens the payment link; the pending→paid toggle next to
             // it is how admin marks it done here once it's been paid on Cosmic's side.
             if (opsPartner === 'ops3' && x.status !== 'paid') h += '<a href="https://www.cosmicsolar.com/account" target="_blank" rel="noopener" style="padding:2px 9px;border-radius:100px;border:1px solid rgba(74,158,255,0.4);background:rgba(74,158,255,0.08);color:#4a9eff;font-size:0.62rem;font-weight:700;text-decoration:none;">&#128179; Pay via Cosmic</a>';
+            if (_credBal > 0.004 && x.status !== 'paid' && (parseFloat(x.amount) || 0) > 0) h += '<button onclick="edApplyPartnerCredit(\''+x.id+'\',\''+cid+'\',\''+opsPartner+'\')" style="padding:2px 9px;border-radius:100px;border:1px solid rgba(141,198,63,0.4);background:rgba(141,198,63,0.08);color:#8DC63F;font-size:0.62rem;font-weight:700;cursor:pointer;">Use credit</button>';
             h += '<button onclick="edToggleCost(\''+x.id+'\',\''+x.status+'\')" style="padding:2px 9px;border-radius:100px;border:1px solid '+(x.status==='paid'?'rgba(141,198,63,0.4);background:rgba(141,198,63,0.1);color:#8DC63F':'rgba(255,170,0,0.4);background:rgba(255,170,0,0.08);color:#ffaa00')+';font-size:0.62rem;font-weight:700;cursor:pointer;text-transform:uppercase;">'+x.status+'</button>';
             h += '<button onclick="edDelCost(\''+x.id+'\')" style="background:none;border:none;color:#555;cursor:pointer;font-size:0.8rem;">&times;</button>';
             h += '</div>';
@@ -28686,6 +28692,30 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var { error } = await pc.from('job_costs').insert({ customer_id: cid, label: label, amount: amt, status: 'pending', created_by: 'admin' });
     if (error) { alert('Could not add cost: ' + error.message); return; }
     edLoadAccounting();
+  };
+  window.edApplyPartnerCredit = async function(costId, cid, partner) {
+    try {
+      var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var cr = await pc.from('partner_credits').select('amount').eq('partner_id', partner);
+      var bal = ((cr.data) || []).reduce(function(t, r){ return t + (parseFloat(r.amount) || 0); }, 0);
+      var cl = await pc.from('job_costs').select('*').eq('id', costId).single();
+      var line = cl.data; if (!line || line.status === 'paid') { alert('That cost line is already paid.'); return; }
+      var amt = parseFloat(line.amount) || 0;
+      var use = Math.round(Math.min(bal, amt) * 100) / 100;
+      if (!(use > 0)) { alert('No credit available.'); return; }
+      if (!confirm('Apply $' + use.toFixed(2) + ' of the partner credit to "' + line.label + '"?' + (use < amt ? ' The remaining $' + (amt - use).toFixed(2) + ' stays pending.' : ' This marks the line paid.'))) return;
+      var now = new Date().toISOString(), err;
+      if (use >= amt - 0.004) {
+        var u = await pc.from('job_costs').update({ status: 'paid', paid_at: now, label: line.label + ' (paid via partner credit)' }).eq('id', costId); err = u.error;
+      } else {
+        var i = await pc.from('job_costs').insert({ customer_id: line.customer_id, label: line.label + ' (paid via partner credit)', amount: use, status: 'paid', paid_at: now, created_by: 'credit' });
+        if (i.error) err = i.error; else { var u2 = await pc.from('job_costs').update({ amount: Math.round((amt - use) * 100) / 100 }).eq('id', costId); err = u2.error; }
+      }
+      if (err) { alert('Could not apply credit: ' + err.message); return; }
+      var lg = await pc.from('partner_credits').insert({ partner_id: partner, amount: -use, kind: 'applied', applied_customer_id: cid, job_cost_id: costId, note: 'Applied to ' + line.label });
+      if (lg.error) alert('Cost updated but the credit ledger did not save: ' + lg.error.message + ' — tell Claude so the balance can be corrected.');
+      edLoadAccounting();
+    } catch (e) { alert('Could not apply credit: ' + e.message); }
   };
   window.edToggleCost = async function(id, cur) {
     var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
