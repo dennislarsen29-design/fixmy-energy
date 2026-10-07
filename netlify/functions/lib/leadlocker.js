@@ -65,7 +65,22 @@ async function sendLeadSms(c, address, doFetch) {
   const msg = smsText(c.first_name);
   let r = await notify.sendSms(c, msg, doFetch, [satelliteUrl(address)]);
   if (!r.ok && /ghl_sms_http_4/.test(r.reason || '')) r = await notify.sendSms(c, msg.replace(' (pic attached)', ''), doFetch); // image rejected -> text only
+  if (r.ok) await copyToOwner(c, msg, doFetch);
   return r.ok ? { status: 'sent' } : { status: 'failed', reason: r.reason };
+}
+
+// Best-effort copy of the outgoing text to Dennis (tech4) so he can see exactly what went out.
+// Never throws and never affects the lead's own send status.
+async function copyToOwner(c, msg, doFetch) {
+  try {
+    const KEY = process.env.SUPA_SERVICE_KEY;
+    if (!KEY) return;
+    const r = await doFetch('https://kbtobyoumvbcxfbugsid.supabase.co/rest/v1/team_members?id=eq.tech4&select=name,phone&limit=1', { headers: { apikey: KEY, Authorization: 'Bearer ' + KEY } });
+    const tm = ((await r.json().catch(function () { return []; })) || [])[0];
+    if (!tm || !tm.phone) return;
+    const who = ((c.first_name || '') + ' ' + (c.last_name || '')).trim() || 'new lead';
+    await notify.sendSms({ phone: tm.phone, first_name: tm.name }, 'Lead Locker text sent to ' + who + ' (' + (c.phone || '') + '):\n\n' + msg.replace(/ Reply STOP to opt out\.$/, ''), doFetch);
+  } catch (e) { /* ignore */ }
 }
 
 module.exports = { titleCase, isTestPayload, mapPayload, inSmsWindow, ptHour, satelliteUrl, smsText, geocode, sendLeadSms };
