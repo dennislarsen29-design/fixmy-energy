@@ -155,39 +155,51 @@ exports.handler = async function (event) {
   let payload;
   try { payload = JSON.parse(event.body || '{}'); } catch (e) { return reply(400, { error: 'Invalid JSON' }); }
 
-  const billUrl = String(payload.billUrl || '');
-  if (!billUrl) return reply(400, { error: 'billUrl required' });
+  // billUrls: several photos that are pages of ONE bill, read together in a single call (a multi-page
+  // statement shot as 10 photos is one document, not ten). billUrl: one file (PDF or photo), as before.
+  const urls = (Array.isArray(payload.billUrls) ? payload.billUrls : [payload.billUrl]).map(function (u) { return String(u || ''); }).filter(Boolean).slice(0, 8);
+  if (!urls.length) return reply(400, { error: 'billUrl required' });
   const utility = String(payload.utility || '').slice(0, 60);
   const address = String((payload.lead && payload.lead.address) || '').slice(0, 200);
 
-  let block;
-  try {
-    const r = await fetch(billUrl, { signal: AbortSignal.timeout(9000) });
-    if (!r.ok) return reply(200, { readable: false, notes: 'Could not fetch the uploaded bill (HTTP ' + r.status + ').' });
-    const ct = (r.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
-    const buf = Buffer.from(await r.arrayBuffer());
-    if (buf.length > MAX_FILE_BYTES) {
-      return reply(200, { readable: false, notes: 'The bill file is too large to read (' + Math.round(buf.length / 1024 / 1024) + 'MB).' });
+  const blocks = [];
+  let totalBytes = 0;
+  for (const u of urls) {
+    try {
+      const r = await fetch(u, { signal: AbortSignal.timeout(9000) });
+      if (!r.ok) { if (urls.length === 1) return reply(200, { readable: false, notes: 'Could not fetch the uploaded bill (HTTP ' + r.status + ').' }); continue; }
+      const ct = (r.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+      const buf = Buffer.from(await r.arrayBuffer());
+      if (buf.length > MAX_FILE_BYTES) {
+        if (urls.length === 1) return reply(200, { readable: false, notes: 'The bill file is too large to read (' + Math.round(buf.length / 1024 / 1024) + 'MB).' });
+        continue;
+      }
+      if (totalBytes + buf.length > 22 * 1024 * 1024) continue; // stay under the request size limit
+      totalBytes += buf.length;
+      const b64 = buf.toString('base64');
+      if (ct === 'application/pdf') {
+        blocks.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } });
+      } else if (/^image\/(jpeg|png|gif|webp)$/.test(ct)) {
+        blocks.push({ type: 'image', source: { type: 'base64', media_type: ct, data: b64 } });
+      } else if (urls.length === 1) {
+        return reply(200, { readable: false, notes: 'Unsupported file type (' + (ct || 'unknown') + ') — re-upload as a PDF or a photo.' });
+      }
+    } catch (e) {
+      if (urls.length === 1) return reply(200, { readable: false, notes: 'Could not read the uploaded bill: ' + e.message });
     }
-    const b64 = buf.toString('base64');
-    if (ct === 'application/pdf') {
-      block = { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } };
-    } else if (/^image\/(jpeg|png|gif|webp)$/.test(ct)) {
-      block = { type: 'image', source: { type: 'base64', media_type: ct, data: b64 } };
-    } else {
-      return reply(200, { readable: false, notes: 'Unsupported file type (' + (ct || 'unknown') + ') — re-upload as a PDF or a photo.' });
-    }
-  } catch (e) {
-    return reply(200, { readable: false, notes: 'Could not read the uploaded bill: ' + e.message });
   }
+  if (!blocks.length) return reply(200, { readable: false, notes: 'None of the uploaded files could be read — re-upload as a PDF or clear photos.' });
+  const block = blocks;
 
   const ctxLines = [];
   if (utility) ctxLines.push('Utility: ' + utility);
   if (address) ctxLines.push('Property: ' + address);
+  if (blocks.length > 1) ctxLines.push('These ' + blocks.length + ' files are pages/photos of the SAME bill — read them together as one document.');
   ctxLines.push('Read this utility bill and call report_bill_analysis.');
 
   try {
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      signal: AbortSignal.timeout(23000),
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -200,7 +212,7 @@ exports.handler = async function (event) {
         system: SYSTEM,
         tools: [TOOL],
         tool_choice: { type: 'tool', name: 'report_bill_analysis' },
-        messages: [{ role: 'user', content: [block, { type: 'text', text: ctxLines.join('\n') }] }]
+        messages: [{ role: 'user', content: blocks.concat([{ type: 'text', text: ctxLines.join('\n') }]) }]
       })
     });
 

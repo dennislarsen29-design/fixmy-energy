@@ -10196,9 +10196,34 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return null;
   }
 
+  // Phone photos of a bill are 3-6 MB each; Quoya reads text, so ~2200px JPEG is plenty and a 10-page
+  // statement then uploads and reads in seconds instead of timing out. Falls back to the original file.
+  function _evDownscale(file) {
+    return new Promise(function(resolve) {
+      try {
+        if (!/^image\//.test(file.type) || file.size < 1200000) return resolve(file);
+        var url = URL.createObjectURL(file), img = new Image();
+        img.onload = function() {
+          try {
+            var max = 2200, sc = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+            var cv = document.createElement('canvas'); cv.width = Math.round(img.naturalWidth * sc); cv.height = Math.round(img.naturalHeight * sc);
+            cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+            cv.toBlob(function(b) {
+              URL.revokeObjectURL(url);
+              if (!b || b.size >= file.size) return resolve(file);
+              resolve(new File([b], file.name.replace(/\.[^.]+$/, '') + '.jpg', { type: 'image/jpeg' }));
+            }, 'image/jpeg', 0.85);
+          } catch (e) { resolve(file); }
+        };
+        img.onerror = function() { URL.revokeObjectURL(url); resolve(file); };
+        img.src = url;
+      } catch (e) { resolve(file); }
+    });
+  }
   window.evUpload = async function(inputEl, label) {
     var files = Array.from(inputEl.files || []);
     if (!files.length || !_evId) return;
+    if (label === 'Utility Bill') files = await Promise.all(files.map(_evDownscale));
     // 2026-09-28, per Dennis: the upload status used to show as one frozen line above
     // the whole slot list. uploadPhotos() now writes its own real per-file progress
     // ("Checking storage access...", "Uploading 1 of 3 — filename.jpg") directly into
@@ -10255,27 +10280,44 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var ai = Number(a.id) || 0, bi = Number(b.id) || 0;
       if (ai !== bi) return bi - ai;
       return String(b.Uploaded_at || '').localeCompare(String(a.Uploaded_at || ''));
-    }).filter(function(x){ return x && x.url; }).slice(0, 3);
+    }).filter(function(x){ return x && x.url; }).slice(0, 10);
     if (!sorted.length) return;
+    // PDFs are each their own statement (read separately, newest 3); photos are pages of one bill, so
+    // up to 8 of them are sent together in ONE read instead of three unrelated single-page reads.
+    var _isPdf = function(b){ return /\.pdf(\?|$)/i.test(String(b.path || b.url || '')); };
+    var pdfBills = sorted.filter(_isPdf).slice(0, 3);
+    var photoBills = sorted.filter(function(b){ return !_isPdf(b); }).slice(0, 8);
+    var tasks = pdfBills.map(function(b){ return [b.url]; });
+    if (photoBills.length) tasks.push(photoBills.map(function(b){ return b.url; }));
     _evBillAnalyzing = true;
     _evRender();
     var failMsg = '';
-    async function readOne(bill) {
+    async function readOne(urls) {
+      for (var attempt = 0; attempt < 2; attempt++) {
+        var res = await readOnce(urls);
+        if (res !== 'NETFAIL') return res;
+        await new Promise(function(r){ setTimeout(r, 1500); });   // one retry on a dropped connection
+      }
+      failMsg = failMsg || 'Couldn\'t reach Quoya — check the connection and tap Re-read bill, or enter the figures manually below.';
+      return null;
+    }
+    async function readOnce(urls) {
       try {
         var r = await fetch('/.netlify/functions/eval-bill-analysis', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            billUrl: bill.url,
+            billUrls: urls,
             utility: (UTILITY_HELP[_evLocal.utility] || {}).label || _evLocal.utility,
             lead: { address: _evRec ? (_evRec.address || '') : '' }
           })
         });
         var o = await r.json().catch(function(){ return null; });
-        if (!r.ok || !o || o.readable === false) { failMsg = failMsg || (o && o.notes) || 'Quoya could not read this bill — enter the figures manually below.'; return null; }
+        if (!o) return 'NETFAIL';   // non-JSON = a gateway timeout / dropped response, worth one retry
+        if (!r.ok || o.readable === false) { failMsg = failMsg || (o && o.notes) || 'Quoya could not read this bill — enter the figures manually below.'; return null; }
         return o;
-      } catch (e) { failMsg = failMsg || 'Couldn\'t reach Quoya — enter the figures manually below.'; return null; }
+      } catch (e) { return 'NETFAIL'; }
     }
-    var reads = (await Promise.all(sorted.map(readOne))).filter(Boolean);
+    var reads = (await Promise.all(tasks.map(readOne))).filter(Boolean);
     // 2026-10-02 (Mohan — Aug 2026 away-from-home bill + Apr 2025 at-home bill): several bills can
     // tell very different stories, and upload order is not bill order. Newest STATEMENT DATE wins
     // by default; undated reads keep upload order after the dated ones. The rep is shown every bill.
