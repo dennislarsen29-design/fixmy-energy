@@ -24745,10 +24745,50 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         case 'cslb_license_p4': values[f.id] = opsInfo ? opsInfo.license : ''; break;
         case 'license_classification_p7': values[f.id] = opsInfo ? opsInfo.licenseClass : ''; break;
         case 'his_registration_p4': values[f.id] = hisNumber || ''; break;
-        default: values[f.id] = '';
+        default: values[f.id] = _participateAutoValue(f, c, opsInfo);
       }
     });
     return values;
+  }
+
+  // Participate Customer Agreement autofill (2026-10-08). Returns '' for anything not
+  // known — never a guess. Fields are matched by id/page from document_templates.
+  function _participateAutoValue(f, c, opsInfo) {
+    var id = String(f.id||''), pg = parseInt(f.page,10)||0;
+    var opt = null;
+    try { var P = c.proposal; if (P && P.options) opt = P.options.find(function(o){ return o.id === P.accepted_option; }) || P.options[0]; } catch(e) {}
+    var items = (opt && opt.line_items) || [];
+    var name = ((c.first_name||'')+' '+(c.last_name||'')).trim();
+    var today = new Date().toLocaleDateString('en-US');
+    var panels = 0, pw3 = 0;
+    items.forEach(function(li){
+      var n = String(li.name||''), m = n.match(/[×x]\s*(\d+)/i), q = m ? parseInt(m[1],10) : 1;
+      if (/420\s*w|panel/i.test(n) && !/powerwall/i.test(n)) panels += q;
+      else if (/powerwall|pw3/i.test(n)) pw3 += q;
+    });
+    // Contractor blocks (page 7 contractor info; page 36/47/48 installer)
+    if (pg === 7) {
+      if (id === 'field_p7')       return opsInfo ? opsInfo.name : '';
+      if (id === 'address')        return opsInfo ? opsInfo.address : '';
+      if (id === 'license_number') return opsInfo ? opsInfo.license : '';
+      if (id === 'field_p7_2')     return opsInfo ? opsInfo.email : '';
+    }
+    if (id === 'installer' || id === 'field_p47' || id === 'field_p48') return opsInfo ? opsInfo.name : '';
+    if (id === 'license' || id === 'license_number') return opsInfo ? opsInfo.license : '';
+    if (id === 'field_p36' || id === 'field_p47_2' || id === 'field_p48_2') return opsInfo ? opsInfo.address : '';
+    // Customer blocks
+    if (/^customer_print/.test(id)) return name;
+    if (/^address(_\d+)?$/.test(id)) return c.address || '';
+    if (/^effective_date/.test(id) || /^date_of_installation_order/.test(id) || id === 'date_signed_by_customer') return today;
+    // System specs (page 44) — only from what the accepted option actually lists
+    if (id === 'battery_quantity') return pw3 ? String(pw3) : '';
+    if (id === 'module_quantity_module_wattage') return panels ? (panels + ' x 420 W') : '';
+    if (id === 'module_manufacturer_product_item') return panels ? 'Tesla 420W' : '';
+    if (id === 'nameplate_capacity_kw') return panels ? (panels * 0.42).toFixed(2) : '';
+    if (id === 'output_capacity_kw_kwh') return panels ? (panels * 0.42).toFixed(2) : '';
+    if (id === 'output_capacity_kw_kwh_2') return pw3 ? (pw3 * 13.5).toFixed(1) : '';
+    if (id === 'inverter_s_inverter_specification') return pw3 ? ('Tesla Powerwall 3 integrated inverter (11.5 kW) x ' + pw3) : '';
+    return '';
   }
 
   window.openCustDocSign = async function(customerId, docType) {
