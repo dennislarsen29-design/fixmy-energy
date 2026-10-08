@@ -5,10 +5,10 @@
 // Documents whose template isn't confirmed yet are skipped and Dennis is told, once.
 const notify = require('./notify');
 
-const ORDER = ['participate_customer_agreement', 'sdcp_enrollment_form', 'tesla_sdcp', 'sdge_interconnect_battery', 'sdge_interconnect_pv_ess'];
+const ORDER = ['participate_customer_agreement', 'sdcp_enrollment_form', 'tesla_sdcp', 'sdge_interconnect_battery', 'sdge_interconnect_pv_ess', 'sdge_check'];
 const LABEL = {
   participate_customer_agreement: 'Participate agreement', sdcp_enrollment_form: 'SDCP enrollment form', tesla_sdcp: 'Tesla SDCP agreement',
-  sdge_interconnect_battery: 'SDG&E interconnection (battery only)', sdge_interconnect_pv_ess: 'SDG&E interconnection (PV + storage)', cpuc_guide: 'CPUC guide'
+  sdge_check: 'SDG&E interconnection (couldn\'t tell battery-only from PV+storage — pick it by hand)', sdge_interconnect_battery: 'SDG&E interconnection (battery only)', sdge_interconnect_pv_ess: 'SDG&E interconnection (PV + storage)', cpuc_guide: 'CPUC guide'
 };
 
 function acceptedOption(proposal) {
@@ -18,16 +18,33 @@ function acceptedOption(proposal) {
 }
 function safeParse(s) { try { return JSON.parse(s); } catch (e) { return null; } }
 
+// Total added panels across the option's line items; null when a panel line exists but its count can't be read.
+function panelCount(items) {
+  let total = 0;
+  for (const l of items) {
+    if (!/panel|420w/i.test(l.name) && l.id !== 'panel_addon_420w') continue;
+    if (/powerwall|battery|expansion/i.test(l.name) && !/panel/i.test(l.name)) continue;
+    const m = l.name.match(/\((\d+)\)\s*(?:420|tesla)/i) || l.name.match(/(\d+)\s*[×x]\s*(?:420|tesla)/i) || l.name.match(/panels?\s*[×x]\s*(\d+)/i) || l.name.match(/[×x]\s*(\d+)/i);
+    if (!m) return null;
+    total += parseInt(m[1], 10);
+  }
+  return total;
+}
+
 // Which downstream documents apply to the approved option. Pure; tested.
 function applicableDocs(customer, opt) {
   if (!customer || customer.lead_category === 'new_solar' || !opt) return [];
-  const names = (opt.line_items || []).map(function (l) { return String((l && l.name) || '').toLowerCase(); }).join(' | ');
-  const hasPanels = /panel|420w|array|solar module/.test(names);
-  const hasBattery = /powerwall|battery|tesla pw|expansion/.test(names);
+  const items = (opt.line_items || []).map(function (l) { return { id: String((l && l.id) || ''), name: String((l && l.name) || '') }; });
+  const hasBattery = items.some(function (l) { return /powerwall|battery|tesla pw|tpw3|pw3|expansion/i.test(l.name); });
   const out = [];
   if (opt.participate || opt.participate_price) out.push('participate_customer_agreement');
   if ((opt.sdcp_rebate || 0) > 0) { out.push('sdcp_enrollment_form'); out.push('tesla_sdcp'); }
-  if (hasBattery) out.push(hasPanels ? 'sdge_interconnect_pv_ess' : 'sdge_interconnect_battery');
+  if (hasBattery) {
+    // Dennis's rule (2026-10-08): a Powerwall 3 plus 0-4 added panels does NOT change the customer's NEM
+    // status, so it uses the battery-only SDG&E form. Five or more panels is a new system -> PV+ESS form.
+    const n = panelCount(items);
+    out.push(n === null ? 'sdge_check' : (n <= 4 ? 'sdge_interconnect_battery' : 'sdge_interconnect_pv_ess'));
+  }
   return ORDER.filter(function (d) { return out.indexOf(d) > -1; });
 }
 
@@ -81,4 +98,4 @@ async function alertOwner(ctx, customer, skipped) {
   } catch (e) { /* ignore */ }
 }
 
-module.exports = { applicableDocs, acceptedOption, issueNext, ownerPhones, LABEL };
+module.exports = { panelCount, applicableDocs, acceptedOption, issueNext, ownerPhones, LABEL };
