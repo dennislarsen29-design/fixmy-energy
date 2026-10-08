@@ -53,7 +53,7 @@ exports.handler = async function (event, context, deps) {
     (m.meta.utility_provider ? ' · utility: ' + m.meta.utility_provider : '') + (m.meta.trusted_form_url ? ' · TrustedForm: ' + m.meta.trusted_form_url : '') + (m.meta.consent ? ' · consent: ' + m.meta.consent : ''));
   const row = {
     first_name: m.first_name, last_name: m.last_name, email: m.email, phone: m.phone, address: m.address,
-    lead_category: 'new_solar', lead_source: 'lead_locker', black_box: true, lead_score: 100, step: 1,
+    lead_category: 'new_solar', lead_source: 'lead_locker', black_box: true, lead_score: 100, step: 1, rep_id: 'tech4',
     notes: JSON.stringify([note]),
     lead_locker: Object.assign({}, m.meta, { received_at: now.toISOString(), sms_status: sendNow ? 'sending' : (m.phone ? 'queued' : 'skipped') })
   };

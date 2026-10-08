@@ -1310,7 +1310,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var _timeout = new Promise(function(_, rej){ setTimeout(function(){ rej(new Error('timeout')); }, 12000); });
     var resp;
     try {
-      resp = await Promise.race([client.from('customers').select('*').or('black_box.is.null,black_box.eq.false').or('archived.is.null,archived.eq.false').order('updated_at',{ascending:false}), _timeout]);
+      resp = await Promise.race([client.from('customers').select('*').or('black_box.is.null,black_box.eq.false,lead_source.eq.lead_locker').or('archived.is.null,archived.eq.false').order('updated_at',{ascending:false}), _timeout]);
     } catch(e) {
       _dbEl.innerHTML = '<p style="color:#ef4444;">Could not reach database'+(e.message==='timeout'?' (connection timed out)':'')+'. <button onclick="loadAdminDashboard()" style="width:auto;padding:8px 16px;font-size:0.75rem;background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;cursor:pointer;">Retry</button></p>';
       return;
@@ -6686,7 +6686,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
       // ── Deduplicate ──────────────────────────────────────────────────────
       // ⚠️ This used to compare only against `adminCustomers`, which is loaded with
-      // `.or('black_box.is.null,black_box.eq.false')` and therefore contains almost NO
+      // `.or('black_box.is.null,black_box.eq.false,lead_source.eq.lead_locker')` and therefore contains almost NO
       // Black Box leads — while every record here is inserted with black_box=true. So the
       // check could never catch a duplicate of an existing Black Box lead, and a
       // re-imported list quietly doubled the queue. It also compared raw address strings,
@@ -7550,7 +7550,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   async function _refreshAdminCustomersQuiet() {
     try {
       var client = supabase.createClient(SUPA_URL, SUPA_KEY);
-      var resp = await client.from('customers').select('*').or('black_box.is.null,black_box.eq.false').or('archived.is.null,archived.eq.false').order('updated_at',{ascending:false});
+      var resp = await client.from('customers').select('*').or('black_box.is.null,black_box.eq.false,lead_source.eq.lead_locker').or('archived.is.null,archived.eq.false').order('updated_at',{ascending:false});
       if (!resp.error && resp.data) { adminCustomers = resp.data; return true; }
     } catch(e) {}
     return false;
@@ -17541,7 +17541,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // ── Skip-trace result matching ────────────────────────────────────────────
   // Tracerfy echoes back the situs address, not our lead id, so results are matched on
   // street. Both matchers used to build that map from `adminCustomers` — which is loaded
-  // with `.or('black_box.is.null,black_box.eq.false')` and therefore contains almost NO
+  // with `.or('black_box.is.null,black_box.eq.false,lead_source.eq.lead_locker')` and therefore contains almost NO
   // Black Box leads, i.e. precisely the leads skip-trace runs on. Nearly every result hit
   // `if (!resolvedId) continue;` and was silently discarded, including the owner names
   // Tracerfy returns (first_name/last_name) that California blocks the free parcel
@@ -23117,6 +23117,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   }
   function _lfT(v) { var t = new Date(v || 0).getTime(); return isNaN(t) ? 0 : t; }
   // pool = the category's full list BEFORE any filtering (so option lists + counts are stable)
+  // Purchased Lead Locker lead, not exited, not booked/sold -> urgent action.
+  window._llUrgent = function(c) {
+    return !!(c && c.lead_source === 'lead_locker' && !c.disposition_exit && !c.sold_type && !c.arrival_window && (c.step || 1) <= 1);
+  };
+  window._llUrgentBanner = function(c) {
+    if (!_llUrgent(c)) return '';
+    var mins = Math.max(0, Math.round((Date.now() - _lfT(c.created_at)) / 60000));
+    var age = mins < 60 ? mins + ' min' : (mins < 1440 ? Math.round(mins / 60) + ' hr' : Math.round(mins / 1440) + ' d');
+    return '<div style="margin:6px 0;padding:7px 10px;background:rgba(239,68,68,0.14);border:1px solid #ef4444;border-radius:8px;color:#fca5a5;font-size:0.74rem;font-weight:800;">&#128680; URGENT &mdash; purchased lead, waiting ' + age + '. Call now &amp; book the evaluation. If it stalls, Pause / Not interested sends it back to Black Box.</div>';
+  };
   window._lfApply = function(list, st, pool) {
     var out = list.filter(function(c) {
       if (!st.showCanceled && _lfIsCanceled(c)) return false;
@@ -23132,7 +23142,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       name:    function(a, b) { return ((a.last_name || '') + (a.first_name || '')).toLowerCase().localeCompare(((b.last_name || '') + (b.first_name || '')).toLowerCase()); },
       appt:    function(a, b) { var x = _lfT(a.diagnostic_date), y = _lfT(b.diagnostic_date); if (!x && !y) return 0; if (!x) return 1; if (!y) return -1; return x - y; }
     };
-    return out.slice().sort(sorters[st.sort] || sorters.updated);
+    var base = sorters[st.sort] || sorters.updated;
+    // Purchased Lead Locker leads nobody has worked yet go first (oldest waiting first).
+    return out.slice().sort(function(a, b) {
+      var ua = _llUrgent(a), ub = _llUrgent(b);
+      if (ua !== ub) return ua ? -1 : 1;
+      if (ua && ub) return _lfT(a.created_at) - _lfT(b.created_at);
+      return base(a, b);
+    });
   };
   window._lfBarHtml = function(scope, cat, pool) {
     var st = _lfState(scope, cat), isRep = scope.indexOf('rep') === 0;
@@ -25500,6 +25517,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<div class="lead-name">'+(((c.first_name||'')+(c.last_name?' '+c.last_name:'')).trim()||c.email||c.phone||'Unknown')+pillHtml+'</div>'+
         '<div class="lead-meta">'+(c.email||'')+(c.phone?' &middot; '+c.phone:'')+(created?' &middot; '+created:'')+'</div>'+
         '<div class="lead-addr">'+(c.address||'No address')+sdcpBadge+window.purchasedBadgeHtml(c)+'</div>'+
+        _llUrgentBanner(c)+
         assignLine+
         techAssignHtml+
         '<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px;align-items:center;">'+invBadge+agBadge+docBadge+opsBadge+incompleteBadge+'</div></div>'+
@@ -32257,7 +32275,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // ⚠️ 2026-09-21, real bug found off a live screenshot ("Unknown / Eval Booked" cards
     // leaking into a rep's own Leads tab): this query never excluded black_box, unlike
     // every admin customers query (loadAdminDashboard, _refreshAdminCustomersQuiet — both
-    // carry `.or('black_box.is.null,black_box.eq.false')`). A "Warm" door disposition
+    // carry `.or('black_box.is.null,black_box.eq.false,lead_source.eq.lead_locker')`). A "Warm" door disposition
     // (canvassKnock/adminCanvassKnock) deliberately stamps rep_id so the rep keeps
     // ownership WITHOUT clearing black_box — see the 2026-08-12 "Warm stays in Black Box"
     // fix — so any still-quarantined warm door the rep knocked immediately showed up here
@@ -32265,7 +32283,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // step 1 ⇒ renders "Eval Booked" even though nothing was ever booked). The WRITE side
     // was fixed in 2026-08-12; this READ side was never given the matching guard. Same
     // black_box exclusion as the admin queries closes it here too.
-    var r1 = await client.from('customers').select('*').eq('rep_id', person.id).or('archived.is.null,archived.eq.false').or('black_box.is.null,black_box.eq.false').order('updated_at', {ascending:false, nullsFirst:false});
+    var r1 = await client.from('customers').select('*').eq('rep_id', person.id).or('archived.is.null,archived.eq.false').or('black_box.is.null,black_box.eq.false,lead_source.eq.lead_locker').order('updated_at', {ascending:false, nullsFirst:false});
     var allRecords = r1.data || [];
 
     // ── "Booked by me" — a setter's handed-off deals, READ ONLY ───────────────
@@ -32281,7 +32299,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var rh = await client.from('customers').select('*')
         .eq('setter_name', person.name).neq('rep_id', person.id)
         .or('archived.is.null,archived.eq.false')
-        .or('black_box.is.null,black_box.eq.false')
+        .or('black_box.is.null,black_box.eq.false,lead_source.eq.lead_locker')
         .order('diagnostic_date', { ascending: false }).limit(100);
       handedOff = (rh.data || []);
     }
