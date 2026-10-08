@@ -205,5 +205,14 @@ exports.handler = async function (event, context, deps) {
   if (!Array.isArray(written) || !written.length) return out(409, { error: 'Already signed.' });
 
   console.log('doc-sign: signed', docType, 'for', customerId, 'ip', audit.ip);
-  return out(200, { ok: true, signed_at: signedAt });
+  // Customer finished the CPUC guide -> issue the rest of the chain (Participate, SDCP, Tesla, SDG&E) that applies.
+  let chainResult = null;
+  if (docType === 'cpuc_guide') {
+    try {
+      const cr = await doFetch(SUPA_URL + '/rest/v1/customers?id=eq.' + customerId + '&select=id,first_name,last_name,rep_id,lead_category,proposal&limit=1', { headers: H });
+      const cj = await cr.json().catch(function () { return []; });
+      if (Array.isArray(cj) && cj[0]) chainResult = await require('./lib/doc-chain').issueNext({ doFetch, H, SUPA_URL }, cj[0]);
+    } catch (e) { console.warn('doc-sign: chain failed', e.message); }
+  }
+  return out(200, { ok: true, signed_at: signedAt, chain: chainResult });
 };
