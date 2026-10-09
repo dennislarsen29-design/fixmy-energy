@@ -501,40 +501,91 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
   // ══════════════════════════════════════════════════════════════════════════
   stamp('=== Phase 0b: Geocode missing lat/lng ===');
   let geocodedCount = 0;
+  const geoTally = {};
+  const gt = k => { geoTally[k] = (geoTally[k] || 0) + 1; };
   if (!enrichOnly) {
     try {
-      const geoRes = await fetch(
-        SUPA_REST + '/customers?lead_source=eq.orphaned_list&lat=is.null&address=not.is.null&select=id,address&limit=300',
-        { headers: supaHeaders }
-      );
+      // 2026-10-09 rewrite. The old version re-fetched the SAME first 300 un-geocoded rows every night
+      // (no ORDER BY, no cursor): once those 300 were un-geocodable by Nominatim, every run burned 5.5 min
+      // for 0 gain forever (3,236 leads stuck) — and it ignored the Sunrun layer entirely. Now: both lead
+      // pools, a rotating cursor (advance by the rows that STAYED un-geocoded), the free county roll first
+      // (has coordinates), then the US Census geocoder, then Nominatim — and every failure is counted.
+      const POOL = 'lead_source=in.(orphaned_list,sunrun_layer)&lat=is.null&address=not.is.null';
+      const cRes = await fetch(SUPA_REST + '/customers?' + POOL + '&select=id', { headers: { ...supaHeaders, Prefer: 'count=exact', Range: '0-0' } });
+      const cr = cRes.headers.get('content-range') || '';
+      const poolSize = parseInt(cr.split('/')[1], 10) || 0;
+      const stRes = await fetch(SUPA_REST + '/pipeline_state?key=eq.phase0b_offset&select=value&limit=1', { headers: supaHeaders });
+      const stRows = stRes.ok ? await stRes.json() : [];
+      let off = (stRows[0] && parseInt(stRows[0].value, 10)) || 0;
+      if (off >= poolSize) off = 0;
+      const geoRes = await fetch(SUPA_REST + '/customers?' + POOL + '&select=id,address&order=id.asc&offset=' + off + '&limit=300', { headers: supaHeaders });
       const geoBatch = geoRes.ok ? await geoRes.json() : [];
-      stamp(`Phase 0b: ${geoBatch.length} leads to geocode`);
-      const GEOCODE_DEADLINE = Date.now() + (5.5 * 60 * 1000); // 5.5 min budget
+      stamp(`Phase 0b: ${geoBatch.length} leads to geocode (pool ${poolSize}, offset ${off})`);
+      const GEOCODE_DEADLINE = Date.now() + (5.5 * 60 * 1000);
+      const inSoCal = (la, lo) => la > 32.4 && la < 35.2 && lo > -118.9 && lo < -114.4;
+      let stayed = 0, processed = 0;
+      async function patchCoords(id, la, lo) {
+        const pr = await fetch(SUPA_REST + '/customers?id=eq.' + id, {
+          method: 'PATCH', headers: { ...supaHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lat: la, lng: lo })
+        });
+        return pr.ok;
+      }
       for (const lead of geoBatch) {
         if (Date.now() > GEOCODE_DEADLINE || overGlobal()) break;
+        processed++;
+        let done = false;
+        // 1) county roll — free, instant, parcel-accurate
         try {
-          const gUrl = 'https://nominatim.openstreetmap.org/search?q=' + encodeURIComponent(lead.address) + '&format=json&limit=1';
-          const gResp = await fetch(gUrl, { headers: { 'User-Agent': 'fixmy.energy/1.0 (dennis@fixmy.energy)' } });
-          const hits = gResp.ok ? await gResp.json() : [];
-          if (hits && hits[0] && hits[0].lat) {
-            await fetch(SUPA_REST + '/customers?id=eq.' + lead.id, {
-              method: 'PATCH',
-              headers: { ...supaHeaders, 'Content-Type': 'application/json' },
-              body: JSON.stringify({ lat: parseFloat(hits[0].lat), lng: parseFloat(hits[0].lon) })
-            });
-            geocodedCount++;
-          }
-        } catch(e) { /* skip individual failures */ }
-        await sleep(1100); // Nominatim rate limit: 1 req/sec
+          const hit = await require('./lib/parcel-owner').lookup(lead.address);
+          if (hit && hit.x != null && hit.y != null && inSoCal(hit.y, hit.x) && await patchCoords(lead.id, hit.y, hit.x)) { geocodedCount++; gt('roll'); done = true; }
+        } catch (e) { gt('roll_err'); }
+        // 2) US Census geocoder
+        if (!done) {
+          try {
+            const addr = String(lead.address).replace(/,?\s*USA$/i, '').replace(/, ([A-Z]{2}), (\d{5})/, ', $1 $2');
+            const cUrl = 'https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?address=' + encodeURIComponent(addr) + '&benchmark=Public_AR_Current&format=json';
+            const cResp = await fetch(cUrl, { signal: AbortSignal.timeout(8000) });
+            if (!cResp.ok) gt('census_http_' + cResp.status);
+            else {
+              const cj = await cResp.json();
+              const m = cj && cj.result && cj.result.addressMatches && cj.result.addressMatches[0];
+              if (m && m.coordinates && inSoCal(m.coordinates.y, m.coordinates.x) && await patchCoords(lead.id, m.coordinates.y, m.coordinates.x)) { geocodedCount++; gt('census'); done = true; }
+              else gt('census_nomatch');
+            }
+          } catch (e) { gt(e && e.name === 'TimeoutError' ? 'census_timeout' : 'census_err'); }
+        }
+        // 3) Nominatim last resort (1 req/sec)
+        if (!done) {
+          try {
+            const gUrl = 'https://nominatim.openstreetmap.org/search?q=' + encodeURIComponent(String(lead.address).replace(/,?\s*USA$/i, '')) + '&format=json&limit=1&countrycodes=us';
+            const gResp = await fetch(gUrl, { headers: { 'User-Agent': 'fixmy.energy/1.0 (dennis@fixmy.energy)' }, signal: AbortSignal.timeout(8000) });
+            if (!gResp.ok) gt('nominatim_http_' + gResp.status);
+            else {
+              const hits = await gResp.json();
+              if (hits && hits[0] && hits[0].lat && inSoCal(parseFloat(hits[0].lat), parseFloat(hits[0].lon)) && await patchCoords(lead.id, parseFloat(hits[0].lat), parseFloat(hits[0].lon))) { geocodedCount++; gt('nominatim'); done = true; }
+              else gt('nominatim_nomatch');
+            }
+          } catch (e) { gt('nominatim_err'); }
+          await sleep(1100);
+        }
+        if (!done) stayed++;
       }
-      stamp(`Phase 0b: geocoded ${geocodedCount} leads`);
+      // Advance by the rows that remained un-geocoded (rows that resolved left the filter and shifted the set).
+      let nextOff = off + stayed;
+      if (processed < geoBatch.length || geoBatch.length < 300 || nextOff >= poolSize) nextOff = 0;
+      await fetch(SUPA_REST + '/pipeline_state', {
+        method: 'POST', headers: { ...supaHeaders, Prefer: 'resolution=merge-duplicates' },
+        body: JSON.stringify({ key: 'phase0b_offset', value: String(nextOff), updated_at: new Date().toISOString() })
+      }).catch(() => {});
+      stamp(`Phase 0b: geocoded ${geocodedCount} leads · ${JSON.stringify(geoTally)}`);
     } catch(e) { stamp('Phase 0b error: ' + e.message); }
   } else {
     stamp('Phase 0b: skipped (enrich_only mode)');
   }
 
 
-  progress.phase0b_geocoded = geocodedCount;
+  progress.phase0b_geocoded = geocodedCount; progress.phase0b_outcomes = JSON.stringify(geoTally);
   await checkpoint('phase0b');
   // ══════════════════════════════════════════════════════════════════════════
   // PHASE 1 — PERMIT PULL
@@ -1145,6 +1196,18 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
     // Regrid v1 conventionally authenticates via a `token` query param; sending it
     // alongside the Bearer header rules out an auth-mechanism mismatch (see regrid-lookup.js).
     const regridTok = regridKey ? '&token=' + encodeURIComponent(regridKey) : '';
+
+    // Step 0 (2026-10-09): the county assessor roll loaded into parcel_owners — free, instant, covers San Diego
+    // County and was never consulted by this nightly phase, which is why it kept finding 0 owners (Regrid 403,
+    // free SANDAG/SD-City ok_no_data) while the roll already held the answer.
+    try {
+      const rollHit = await require('./lib/parcel-owner').lookup(address);
+      if (rollHit && rollHit.owner) {
+        const rl = (rollHit.y != null && rollHit.y > 32.4 && rollHit.y < 35.2) ? rollHit.y : (existingLat != null ? existingLat : null);
+        const rg = (rollHit.x != null && rollHit.x < -114.4 && rollHit.x > -118.9) ? rollHit.x : (existingLng != null ? existingLng : null);
+        return { owner: rollHit.owner, apn: rollHit.apn || null, lat: rl, lng: rg };
+      }
+    } catch (e) { /* roll unavailable — fall through to the web sources */ }
 
     // Step 1: Census geocode — skip if caller already has coords from a prior run
     const censusAddr = address.replace(/, ([A-Z]{2}), (\d{5})/, ', $1 $2');
