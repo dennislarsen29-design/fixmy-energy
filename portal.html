@@ -14196,15 +14196,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // awaited: the disposition must never wait on (or fail because of) the shift clock.
     if (channel === 'dialer' || channel === 'door_knock') _bbAutoShiftOnActivity(new Date().toISOString());
 
-    // 1. Structured row — tolerated if the lead_activity table isn't created yet
-    try {
-      var ins = await client.from('lead_activity').insert({
-        customer_id: id, channel: channel, outcome: outcome || null, note: note || null,
-        rep_id: bbRepId(), rep_name: rep,
-        callback_at: opts.callback_at || null, call_duration: opts.call_duration || null
-      });
-      if (ins.error) console.warn('lead_activity insert skipped:', ins.error.message);
-    } catch(e) { console.warn('lead_activity insert error:', e.message); }
+    // 1. Structured row — tolerated if the lead_activity table isn't created yet.
+    // Started now but awaited alongside the notes write below (was a second serial round
+    // trip — on a weak connection a note took twice as long to save).
+    var _actP = (async function() {
+      try {
+        var ins = await client.from('lead_activity').insert({
+          customer_id: id, channel: channel, outcome: outcome || null, note: note || null,
+          rep_id: bbRepId(), rep_name: rep,
+          callback_at: opts.callback_at || null, call_duration: opts.call_duration || null
+        });
+        if (ins.error) console.warn('lead_activity insert skipped:', ins.error.message);
+      } catch(e) { console.warn('lead_activity insert error:', e.message); }
+    })();
 
     // 2. Human-readable entry in the shared notes feed
     var chanTag = channel === 'dialer' ? '📞 Dialer — ' + rep
@@ -14217,13 +14221,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
            || adminCustomers.find(function(x){ return x.id === id; })
            || (typeof adminCanvassLeads !== 'undefined' && adminCanvassLeads.find(function(x){ return x.id === id; }))
            || bbDialQueue.find(function(x){ return x.id === id; });
+    var _prevNotes = rec ? rec.notes : null;
     var newNotes = _appendNote(rec ? rec.notes : null, chanTag, text);
-    if (opts.rec) opts.rec.notes = newNotes;
-    [adminCustomers, (typeof adminCanvassLeads !== 'undefined' ? adminCanvassLeads : []), bbDialQueue].forEach(function(arr) {
-      var r = arr.find(function(x){ return x.id === id; });
-      if (r) r.notes = newNotes;
-    });
-    await client.from('customers').update({ notes: newNotes }).eq('id', id);
+    function _setMem(v) {
+      if (opts.rec) opts.rec.notes = v;
+      [adminCustomers, (typeof adminCanvassLeads !== 'undefined' ? adminCanvassLeads : []), bbDialQueue].forEach(function(arr) {
+        var r = arr.find(function(x){ return x.id === id; });
+        if (r) r.notes = v;
+      });
+    }
+    _setMem(newNotes);
+    var _upd = await client.from('customers').update({ notes: newNotes }).eq('id', id);
+    if (opts.strict && _upd && _upd.error) { _setMem(_prevNotes); await _actP; throw new Error(_upd.error.message); }
+    await _actP;
     // Lead Locker refund eligibility: wrong number, DQ, or not the homeowner -> flagged for a manual refund request.
     try {
       if ((!rec || rec.lead_source === 'lead_locker') && (outcome === 'wrong_number' || outcome === 'disqualified' || outcome === 'renter')) {
@@ -28510,7 +28520,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '</div>'+
         '<div class="ed-full" style="display:flex;flex-direction:column;gap:8px;">'+
           '<textarea id="edNoteInput" class="ed-input" rows="4" style="width:100%;resize:vertical;box-sizing:border-box;" placeholder="Add a note…"></textarea>'+
-          '<button type="button" onclick="addEditorNote()" style="align-self:flex-end;padding:9px 20px;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.4);border-radius:8px;color:#8DC63F;font-size:0.8rem;font-weight:700;cursor:pointer;">+ Log Note</button>'+
+          '<button type="button" id="edLogNoteBtn" onclick="addEditorNote()" style="align-self:flex-end;padding:9px 20px;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.4);border-radius:8px;color:#8DC63F;font-size:0.8rem;font-weight:700;cursor:pointer;">+ Log Note</button>'+
         '</div>'+
         '</div>'+
       '</details>'+
@@ -30114,19 +30124,35 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var logDiv = document.getElementById('edNotesLog');
     if (logDiv) logDiv.innerHTML = _renderNotesLog(_parseNotes(newNotes), false, { deletable: true, custId: id });
   };
+  var _noteSaving = false;
   async function addEditorNote() {
     var idEl = document.getElementById('edId');
     var inputEl = document.getElementById('edNoteInput');
     var logDiv = document.getElementById('edNotesLog');
     if (!idEl || !inputEl) return;
+    if (_noteSaving) return;            // a tap while a save is in flight must never log it again
     var text = inputEl.value.trim();
     if (!text) return;
     var id = idEl.value;
+    var btn = document.getElementById('edLogNoteBtn');
+    var idle = btn ? btn.innerHTML : '';
+    _noteSaving = true;
+    inputEl.readOnly = true;
+    if (btn) { btn.disabled = true; btn.innerHTML = '&#9203; Saving&hellip;'; btn.style.opacity = '0.7'; }
+    // If the connection is slow, say so instead of looking frozen.
+    var slowTimer = setTimeout(function() { if (btn && _noteSaving) btn.innerHTML = '&#9203; Still saving &mdash; slow connection&hellip; don\'t tap again'; }, 6000);
     try {
-      var newNotes = await bbLogActivity(id, 'note', null, text); // shared feed + lead_activity
+      var newNotes = await _bbWithTimeout(bbLogActivity(id, 'note', null, text, { strict: true }), 'Saving the note', 45000);
       inputEl.value = '';
       if (logDiv) logDiv.innerHTML = _renderNotesLog(_parseNotes(newNotes), false, { deletable: true, custId: id });
-    } catch(e) { alert('Failed to save note: '+e.message); }
+    } catch(e) {
+      alert('Could not confirm the note saved: ' + e.message + '\nYour text is still in the box. Check the Activity Log first — if it is not there, tap Log Note again.');
+    } finally {
+      clearTimeout(slowTimer);
+      _noteSaving = false;
+      inputEl.readOnly = false;
+      if (btn) { btn.disabled = false; btn.innerHTML = idle; btn.style.opacity = ''; }
+    }
   }
 
   // Editor title lookup (Admin / Tech editor — re-runs Regrid lookup for existing leads)
