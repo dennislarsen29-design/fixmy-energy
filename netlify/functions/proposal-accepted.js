@@ -27,7 +27,8 @@ exports.handler = async function (event, context, deps) {
   if (!c || !codeMatches(code, c)) return out(403, { error: 'Not authorized' });
   const prop = typeof c.proposal === 'string' ? (function () { try { return JSON.parse(c.proposal); } catch (e) { return null; } })() : c.proposal;
   if (!prop || prop.status !== 'accepted') return out(409, { error: 'Proposal is not approved' });
-  if (c.lead_category === 'new_solar') return out(200, { ok: true, skipped: 'axia' });
+  // Axia/QCells leads that went through the Internal Tool (Cosmic new system) follow the same chain.
+  if (c.lead_category === 'new_solar' && !(prop.options && prop.options.length)) return out(200, { ok: true, skipped: 'axia' });
 
   // Open the CPUC guide for the rep. ignore-duplicates: a second call (refresh/replay) changes nothing and doesn't re-text.
   const ins = await doFetch(SUPA_URL + '/rest/v1/deal_documents?on_conflict=customer_id,doc_type', {

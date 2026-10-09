@@ -33,7 +33,7 @@ function panelCount(items) {
 
 // Which downstream documents apply to the approved option. Pure; tested.
 function applicableDocs(customer, opt) {
-  if (!customer || customer.lead_category === 'new_solar' || !opt) return [];
+  if (!customer || !opt) return [];
   const items = (opt.line_items || []).map(function (l) { return { id: String((l && l.id) || ''), name: String((l && l.name) || '') }; });
   const hasBattery = items.some(function (l) { return /powerwall|battery|tesla pw|tpw3|pw3|expansion/i.test(l.name); });
   const out = [];
