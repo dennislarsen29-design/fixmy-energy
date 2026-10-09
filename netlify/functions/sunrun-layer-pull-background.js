@@ -23,7 +23,6 @@
 //
 // POST /.netlify/functions/sunrun-layer-pull-background   body: { max_seconds? }
 
-const { originAllowed } = require('./lib/plaid');
 const P = require('./lib/parcel-owner');
 
 const SUPA_REST = 'https://kbtobyoumvbcxfbugsid.supabase.co/rest/v1';
@@ -92,10 +91,13 @@ function scoreLead(rec, ownerKnown) {
 exports.handler = async function (event) {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 200, body: '' };
   if (event.httpMethod !== 'POST') return { statusCode: 405, body: 'Method Not Allowed' };
-  // Netlify's own cron invocation carries { next_run } in the body and no browser origin.
+  // 2026-10-09: the browser Origin/Referer gate was removed. This is a Netlify BACKGROUND function — the
+  // headers a handler sees are not reliably the browser's, and the button answered "HTTP 403" every time
+  // while the scheduled run worked. The work is free (permit APIs + county roll, no paid skip-trace) and
+  // writes only to the Sunrun layer, so instead of an unreliable origin check it is rate-limited below:
+  // at most one pull per 10 minutes, whoever calls it.
   let _sched = false;
   try { _sched = !!JSON.parse(event.body || '{}').next_run; } catch (e) {}
-  if (!_sched && !originAllowed(event)) return { statusCode: 403, body: 'Forbidden' };
 
   const key = process.env.SUPA_SERVICE_KEY;
   const psKey = process.env.PERMITSTACK_KEY;
@@ -123,6 +125,17 @@ exports.handler = async function (event) {
   }
 
   if (!key) return finish('SUPA_SERVICE_KEY not set');
+  if (!_sched) {
+    try {
+      const pr = await fetch(SUPA_REST + '/pipeline_state?key=eq.sunrun_layer_status&select=value&limit=1', { headers });
+      const pj = await pr.json();
+      const prev = pj && pj[0] && (typeof pj[0].value === 'string' ? JSON.parse(pj[0].value) : pj[0].value);
+      if (prev && prev.started_at && (Date.now() - new Date(prev.started_at).getTime()) < 10 * 60 * 1000) {
+        console.log('[sunrun-layer] ignored: a pull started less than 10 minutes ago');
+        return { statusCode: 200, body: JSON.stringify({ ok: true, skipped: 'recent_run' }) };
+      }
+    } catch (e) { /* if the check itself fails, run — the schedule must never be blocked by it */ }
+  }
   if (!psKey) return finish('PERMITSTACK_KEY not set in Netlify — no permits can be pulled');
   await writeState('sunrun_layer_status', status);
 
