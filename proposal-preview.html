@@ -222,6 +222,13 @@ body.opt-0 .opt-row.active,body.opt-1 .opt-row.active{border-color:var(--accent)
 .glance .g-tag{display:inline-block;font-size:0.58rem;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;background:#f1efe6;color:#7a7766;border-radius:100px;padding:2px 7px;margin-left:6px;vertical-align:middle;}
 .trust{display:flex;flex-wrap:wrap;gap:6px 14px;margin:0 0 14px;font-size:0.72rem;color:var(--muted);}
 .trust span:before{content:"\2713";color:#3d6b12;font-weight:800;margin-right:5px;}
+.compare-row.cr-col{display:block;}
+.compare-row.cr-col .cr-top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;}
+.amt.buf{color:#6b7a8f;}
+details.lm{margin-top:6px;}
+details.lm>summary{cursor:pointer;font-size:0.72rem;color:#7a7766;list-style:none;text-decoration:underline;text-underline-offset:2px;}
+details.lm>summary::-webkit-details-marker{display:none;}
+.lm-b{font-size:0.78rem;color:#4a463f;line-height:1.65;padding:8px 0 2px;}
 .im-more{margin-top:4px;}
 .im-more>summary{cursor:pointer;font-size:0.72rem;color:#7a7766;list-style:none;}
 .im-more>summary::-webkit-details-marker{display:none;}
@@ -685,17 +692,34 @@ button.component-chip.open{border-color:var(--dark);}
     var estGrid = billToday > 0 ? Math.max(sav > 0 ? MIN_MONTHLY_CHARGE : 0, Math.round(billToday - sav)) : null;
     var PT = savingsPartsFor(opt);
     if (billToday > 0) rows += '<div class="compare-row"><div class="lbl">Your bill today<span class="sub">before any upgrade</span></div><div class="amt">'+moneyRound(billToday)+'/mo</div></div>';
+    var DET = {}; try { DET = impDetailMap(opt); } catch(e) {}
+    var lm = function(html){ return html ? '<details class="lm"><summary>Learn more</summary><div class="lm-b">'+html+'</div></details>' : ''; };
+    var row = function(lbl, sub, amt, cls, more){ return '<div class="compare-row cr-col"><div class="cr-top"><div class="lbl">'+lbl+(sub?'<span class="sub">'+sub+'</span>':'')+'</div><div class="amt'+(cls?' '+cls:'')+'">'+amt+'</div></div>'+lm(more)+'</div>'; };
+    var cappedNow = billToday > 0 && sav > billToday - MIN_MONTHLY_CHARGE;
+    var buffer = cappedNow ? Math.round(sav - (billToday - MIN_MONTHLY_CHARGE)) : 0;
     if (billToday > 0 && sav > 0) {
       [['tou','Battery shifts your power use off peak',PT.tou],['panels','Added solar panels',PT.panels],['inverter','Restored solar production',PT.inverter],['other','Solar production',PT.other]].forEach(function(x){
-        if (x[2] > 0) rows += '<div class="compare-row"><div class="lbl">'+x[1]+'</div><div class="amt neg">&minus;'+moneyRound(x[2])+'/mo</div></div>';
+        if (x[2] > 0) rows += row(x[1], '', '&minus;'+moneyRound(x[2])+'/mo', 'neg', DET[x[0]]);
       });
+    }
+    if (buffer > 0) {
+      rows += row('Future consumption buffer', 'extra savings beyond your bill today &middot; not counted in your total', moneyRound(buffer)+'/mo', 'buf',
+        '<b>What this is.</b> Together the battery and panels are estimated to save about '+moneyRound(sav)+'/mo, but your bill today is only '+moneyRound(billToday)+'/mo and can never fall below about '+moneyRound(MIN_MONTHLY_CHARGE)+'/mo.<br>'+
+        '<b>The math.</b> '+moneyRound(billToday)+' &minus; '+moneyRound(sav)+' = '+(billToday-sav<0?'&minus;':'')+moneyRound(Math.abs(billToday-sav))+', which stops at the '+moneyRound(MIN_MONTHLY_CHARGE)+' minimum &rarr; '+moneyRound(sav)+' &minus; '+moneyRound(billToday-MIN_MONTHLY_CHARGE)+' = '+moneyRound(buffer)+'/mo left over.<br>'+
+        'That leftover is real production capacity. If your usage grows (an EV, new A/C, a pool) your system covers it before it shows up on your bill. We don&rsquo;t count it as savings today, so your total stays conservative.');
     }
     if (estGrid !== null) {
       var capped = sav > billToday - MIN_MONTHLY_CHARGE;
-      rows += '<div class="compare-row"><div class="lbl">Utility bill after the upgrade<span class="sub">'+(capped ? 'estimated &middot; the savings above exceed what your bill can drop by, so it stops at the '+moneyRound(MIN_MONTHLY_CHARGE)+' minimum charge' : 'estimated')+'</span></div><div class="amt">'+moneyRound(estGrid)+'/mo</div></div>';
+      rows += row('Utility bill after the upgrade', (capped ? 'estimated &middot; stops at the '+moneyRound(MIN_MONTHLY_CHARGE)+' minimum charge' : 'estimated'), moneyRound(estGrid)+'/mo', '',
+        'Your bill today ('+moneyRound(billToday)+') minus the estimated savings above'+(capped ? ', limited to what a bill can actually drop by. A utility always charges a base amount of about '+moneyRound(MIN_MONTHLY_CHARGE)+'/mo, and extra solar beyond what you use is credited at a low wholesale rate, not the full retail rate.' : '.'));
     }
-    if (fin) rows += '<div class="compare-row"><div class="lbl">Monthly payment'+(finSub==='sdcp'?'<span class="applied-badge">&#10003; SDCP</span>':'')+'</div><div class="amt">'+moneyRound(financeMonthly)+'/mo</div></div>';
-    if (perfMonthly > 0) rows += '<div class="compare-row"><div class="lbl">'+esc(perfLabel||'Performance incentive')+'<span class="sub">paid to you each month</span></div><div class="amt neg">&minus;'+moneyRound(perfMonthly)+'/mo</div></div>';
+    if (fin) {
+      var _fp = cashPriceFor(opt, true).price;
+      rows += row('Monthly payment'+(finSub==='sdcp'?'<span class="applied-badge">&#10003; SDCP</span>':''), '', moneyRound(financeMonthly)+'/mo', '',
+        'Financed amount '+money(_fp)+' (the Participate price'+(finSub==='sdcp'?' after your SDCP incentive':'')+') at '+(WHEELHOUSE_APR*100).toFixed(2)+'% APR over '+WHEELHOUSE_TERM_YEARS+' years through Wheelhouse CU, subject to approval. Standard loan amortization: '+money(_fp)+' paid down in '+(WHEELHOUSE_TERM_YEARS*12)+' equal monthly payments.');
+    }
+    if (perfMonthly > 0) rows += row(esc(perfLabel||'Performance incentive'), 'paid to you each month', '&minus;'+moneyRound(perfMonthly)+'/mo', 'neg',
+        'Estimated at about '+moneyRound(perfMonthly*12)+' a year ('+moneyRound(perfMonthly)+' &times; 12). Utility and program rules apply and the payment isn&rsquo;t guaranteed, so treat it as an estimate that can change.');
     if (touDeltaMonthly) rows += '<div class="compare-row"><div class="lbl">Time-of-Use rate adjustment</div><div class="amt'+(touDeltaMonthly>0?' neg':'')+'">'+(touDeltaMonthly>=0?'&minus;':'+')+moneyRound(Math.abs(touDeltaMonthly))+'/mo</div></div>';
     var rawTotal = (fin ? financeMonthly : 0) + (estGrid||0) - perfMonthly - touDeltaMonthly;
     var total = Math.max(0, rawTotal);
@@ -705,7 +729,19 @@ button.component-chip.open{border-color:var(--dark);}
     if (!rows && !fin) return '';
     return '<div class="compare-card"><div class="cc-k" style="padding:12px 16px 0;">Your monthly cost</div>'+rows+
       '<div class="compare-total"><div class="lbl">'+lbl+'</div><div class="big">'+moneyRound(total)+'<small>/mo</small></div>'+delta+'</div></div>'+
-      '<details class="spec" style="border-top:none;padding-top:0;"><summary>What’s behind the savings</summary><div class="body">'+improvementsHtml(opt)+'</div></details>';
+      '';
+  }
+  // Per-row "Learn more" text, taken from the same calculation write-ups the old savings list used.
+  function impDetailMap(opt){
+    var d = document.createElement('div'); d.innerHTML = improvementsHtml(opt);
+    var map = {};
+    d.querySelectorAll('.im-row').forEach(function(r){
+      var h = ((r.querySelector('.im-h span') || {}).textContent || '');
+      var det = r.querySelector('.im-d');
+      var key = /restored/i.test(h) ? 'inverter' : /load shifting/i.test(h) ? 'tou' : /panels/i.test(h) ? 'panels' : 'other';
+      if (det) map[key] = det.innerHTML;
+    });
+    return map;
   }
 
   // 4 · LONG TERM — payback + 25-year outlook (the outlook switch lives here, once).
