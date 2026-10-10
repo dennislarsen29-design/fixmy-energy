@@ -2586,6 +2586,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       return { text: '&#9989; Install completed ' + _doneS + ' &middot; Payment 1 pays ' + _p1 + _tail, color: COMM_COLOR_EARNED };
     }
     var dateVal = isDiag ? c.diagnostic_date : c.install_date;
+    // Diagnostic jobs: diagnostic_date also holds the EVALUATION slot, so it only counts as the Cosmic visit
+    // once someone has confirmed it (diag_visit_confirmed_at). Until then: a visible 'needs scheduling'.
+    if (isDiag && !c.diag_visit_confirmed_at) return { text: '&#9888; Needs scheduling &mdash; waiting on a confirmed date from Cosmic', color: COMM_COLOR_POTENTIAL };
     if (!dateVal) return null;
     var inst = new Date(dateVal); if (isNaN(inst.getTime())) return null;
     var today = new Date(); today.setHours(0, 0, 0, 0);
@@ -2607,7 +2610,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var isNSJob = c.lead_category === 'new_solar';
     var isDiag = !isNSJob && c.sold_type === 'diagnostic';
     var status = _installTimelineStatus(c);
-    var dateVal = isDiag ? c.diagnostic_date : c.install_date;
+    var dateVal = isDiag ? (c.diag_visit_confirmed_at ? c.diagnostic_date : null) : c.install_date;
     var val = dateVal ? String(dateVal).slice(0, 10) : '';
     var label = isDiag ? 'Scheduled Date' : 'Install Date';
     var completedRow = '';
@@ -2658,6 +2661,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // actually edits — see the 2026-09-25 note on _installTimelineStatus above.
       var field = isDiag ? 'diagnostic_date' : 'install_date';
       var upd = {}; upd[field] = iso;
+      if (isDiag) upd.diag_visit_confirmed_at = iso ? new Date().toISOString() : null;   // entering a date here = confirmed with Cosmic
       var resp = await cl.from('customers').update(upd).eq('id', id);
       if (resp.error) { alert('Could not save ' + (isDiag ? 'scheduled' : 'install') + ' date: ' + resp.error.message); return; }
       // adminCustomers IS the rep session's own `allRecords` array (aliased in
@@ -2665,7 +2669,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // myFixmyJobs/myNSJobs are filter()'d views over the same object references,
       // never copies), so one mutation here is visible everywhere, admin or rep.
       var idx = (adminCustomers || []).findIndex(function(x) { return x.id === id; });
-      if (idx > -1) adminCustomers[idx][field] = iso;
+      if (idx > -1) { adminCustomers[idx][field] = iso; if (isDiag) adminCustomers[idx].diag_visit_confirmed_at = upd.diag_visit_confirmed_at; }
       if (typeof adminView !== 'undefined' && adminView === 'jobs') renderJobsView();
       else if (typeof salesView !== 'undefined' && salesView === 'jobs' && typeof renderSales === 'function') renderSales();
     } catch (e) { alert('Could not save date: ' + e.message); }
@@ -29521,7 +29525,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var arrivalWindow = fmtTime(startTimeVal) + ' – ' + fmtTime(endTimeVal);
     var diagISO = new Date(dateVal + 'T' + startTimeVal).toISOString();
 
-    var updates = { diagnostic_date: diagISO, arrival_end: new Date(dateVal + 'T' + endTimeVal).toISOString(), arrival_window: arrivalWindow, step: 3 };
+    var updates = { diag_visit_confirmed_at: new Date().toISOString(), diagnostic_date: diagISO, arrival_end: new Date(dateVal + 'T' + endTimeVal).toISOString(), arrival_window: arrivalWindow, step: 3 };
     if (opsVal) updates.assigned_ops = opsVal;
     try {
       var client = supabase.createClient(SUPA_URL, SUPA_KEY);
