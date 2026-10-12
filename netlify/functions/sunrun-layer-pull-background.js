@@ -207,6 +207,11 @@ exports.handler = async function (event) {
     }
 
     if (cands.length) {
+      // PostgREST rejects a bulk insert whose rows have different keys (PGRST102 -> HTTP 400), and owner/coords
+      // only exist on rows the county roll matched — so give every row the identical key set.
+      cands.forEach(r => {
+        ['title_owner', 'lat', 'lng', 'install_year', 'system_size'].forEach(k => { if (r[k] === undefined) r[k] = null; });
+      });
       for (let i = 0; i < cands.length; i += 100) {
         const chunk = cands.slice(i, i + 100);
         const ins = await fetch(SUPA_REST + '/customers', {
@@ -220,11 +225,25 @@ exports.handler = async function (event) {
 
 
     async function psGet(path) {
-      try {
-        const r = await fetch(PS_BASE + path, { headers: psHeaders, signal: AbortSignal.timeout(12000) });
-        if (!r.ok) { tally('http_' + r.status); return { status: r.status }; }
-        return { status: 200, body: await r.json() };
-      } catch (e) { tally(e && e.name === 'TimeoutError' ? 'timeout' : 'net_error'); return { status: 0, error: e.message }; }
+      // Retry rate limits (429) and timeouts with backoff instead of abandoning the page.
+      for (let attempt = 0; attempt < 4; attempt++) {
+        try {
+          const r = await fetch(PS_BASE + path, { headers: psHeaders, signal: AbortSignal.timeout(15000) });
+          if (r.status === 429 && attempt < 3 && Date.now() < deadline) {
+            tally('http_429');
+            const ra = parseInt(r.headers.get('retry-after') || '', 10);
+            await sleep(Math.min(((ra > 0 ? ra : 2) * 1000) * (attempt + 1), 10000));
+            continue;
+          }
+          if (!r.ok) { tally('http_' + r.status); return { status: r.status }; }
+          return { status: 200, body: await r.json() };
+        } catch (e) {
+          tally(e && e.name === 'TimeoutError' ? 'timeout' : 'net_error');
+          if (attempt < 3 && Date.now() < deadline) { await sleep(1000 * (attempt + 1)); continue; }
+          return { status: 0, error: e.message };
+        }
+      }
+      return { status: 429 };
     }
     function listOf(b) { return (b && (b.permits || b.results || b.data || b.contractors)) || []; }
 
@@ -285,7 +304,7 @@ exports.handler = async function (event) {
         let page = st.done_at ? 1 : (st.page || 1);
         while (Date.now() < deadline && page <= 400) {
           const r = await psGet('/contractors/' + encodeURIComponent(id) + '/permits?per_page=100&page=' + page);
-          if (r.status !== 200) { if (r.status === 429) await sleep(2000); break; }
+          if (r.status !== 200) break; // psGet already retried 429/timeouts; the saved page cursor resumes here next run
           const batch = listOf(r.body);
           if (!Array.isArray(batch) || !batch.length) { pages[id] = { page, done_at: new Date().toISOString() }; tally('c_end'); break; }
           tally('c_ok');
