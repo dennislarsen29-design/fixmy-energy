@@ -2606,6 +2606,42 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (diffDays === 0) return { text: '&#128197; ' + L.today, color: COMM_COLOR_POTENTIAL };
     return { text: '&#128197; ' + L.future + ' ' + shortDate + ' &middot; in ' + diffDays + 'd', color: '#4a9eff' };
   }
+
+  // Read-only list of a job's scheduled events (from the appointments table), shared by every job card.
+  var _jobApptCache = {}, _jobApptTimer = null;
+  function _jobApptsHtml(cid) {
+    var e = _jobApptCache[cid];
+    if (!e) { _jobApptsQueue(); return '<span style="font-size:0.66rem;color:#666;">Loading schedule…</span>'; }
+    var now = Date.now();
+    var rows = e.rows.filter(function(a){ return a.status === 'scheduled'; });
+    if (!rows.length) return '<span style="font-size:0.7rem;color:#777;">&#128197; Nothing scheduled yet &mdash; add events in the lead editor</span>';
+    var tz = { timeZone:'America/Los_Angeles' };
+    return rows.map(function(a){
+      var s = new Date(a.starts_at);
+      var d = s.toLocaleDateString('en-US', Object.assign({ weekday:'short', month:'short', day:'numeric' }, tz));
+      var t = a.notes === 'date_only' ? '' : ' &middot; ' + s.toLocaleTimeString('en-US', Object.assign({ hour:'numeric', minute:'2-digit' }, tz)) + (a.ends_at ? '&ndash;' + new Date(a.ends_at).toLocaleTimeString('en-US', Object.assign({ hour:'numeric', minute:'2-digit' }, tz)) : '');
+      var past = new Date(a.ends_at || a.starts_at).getTime() < now - 3*3600000;
+      return '<div style="font-size:0.74rem;margin-top:2px;color:' + (past ? '#e8a33d' : '#ccc') + ';"><span style="color:#888;">&#128197; ' + a.event_type + '</span> <b>' + d + '</b>' + t + (past ? ' <span style="font-size:0.62rem;font-weight:700;">(date passed)</span>' : '') + '</div>';
+    }).join('');
+  }
+  function _jobApptsQueue() {
+    if (_jobApptTimer) return;
+    _jobApptTimer = setTimeout(async function(){
+      _jobApptTimer = null;
+      var ids = [];
+      document.querySelectorAll('[data-jobappt]').forEach(function(el){ var id = el.getAttribute('data-jobappt'); if (id && !_jobApptCache[id] && ids.indexOf(id) < 0) ids.push(id); });
+      if (!ids.length) return;
+      try {
+        var cl = supabase.createClient(SUPA_URL, SUPA_KEY);
+        var r = await cl.from('appointments').select('customer_id,event_type,starts_at,ends_at,status,notes').in('customer_id', ids).order('starts_at');
+        if (r.error) throw r.error;
+        ids.forEach(function(id){ _jobApptCache[id] = { rows: [] }; });
+        (r.data || []).forEach(function(a){ if (_jobApptCache[a.customer_id]) _jobApptCache[a.customer_id].rows.push(a); });
+      } catch (e) { ids.forEach(function(id){ _jobApptCache[id] = { rows: [] }; }); }
+      document.querySelectorAll('[data-jobappt]').forEach(function(el){ var id = el.getAttribute('data-jobappt'); if (_jobApptCache[id]) el.innerHTML = _jobApptsHtml(id); });
+    }, 60);
+  }
+  window._jobApptsInvalidate = function(cid){ if (cid) delete _jobApptCache[cid]; else _jobApptCache = {}; };
   function _installDateBlockHtml(c) {
     var isNSJob = c.lead_category === 'new_solar';
     var isDiag = !isNSJob && c.sold_type === 'diagnostic';
@@ -2634,15 +2670,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           (note || '') + '</div>';
       };
       if (isAdm) axRows += dRow('&#128119; Crew Started <span style="font-weight:400;color:#666;">(internal)</span>', 'install_started_at', c.install_started_at);
-      axRows += dRow('&#128270; Inspection Date <span style="font-weight:400;color:#666;">(shows to customer)</span>', 'inspection_date', c.inspection_date);
       axRows += dRow('&#9889; Permission to Operate <span style="font-weight:400;color:#666;">(activation &middot; shows to customer)</span>', 'pto_date', c.pto_date,
         c.pto_date ? '<span style="font-size:0.66rem;color:#8DC63F;font-weight:700;">Plan a stop-by this day: check they&rsquo;re running well &middot; ask for a 5&#9733; review &middot; ask for referrals</span>' : '');
     }
-    return '<div style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;" onclick="event.stopPropagation();">' +
-      '<label style="font-size:0.62rem;font-weight:700;color:#888;white-space:nowrap;">&#128197; ' + label + '</label>' +
-      '<input type="date" value="' + val + '" onchange="window._saveInstallDate(\'' + c.id + '\', this.value, ' + (isDiag ? 'true' : 'false') + ')" style="width:auto;padding:4px 8px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.04);color:#ddd;font-size:0.72rem;"/>' +
-      (status && !(isNSJob && (c.install_completed_at || c.solar_status === 'ns_pto')) ? '<span style="font-size:0.68rem;color:' + status.color + ';font-weight:700;">' + status.text + '</span>' : '') +
-    '</div>' + completedRow + axRows + (status && isNSJob && (c.install_completed_at || c.solar_status === 'ns_pto') ? '<div style="margin-top:4px;font-size:0.68rem;color:' + status.color + ';font-weight:700;" onclick="event.stopPropagation();">' + status.text + '</div>' : '');
+    // Scheduled dates are READ-ONLY here (set them in the lead editor's Schedule box); filled in from the appointments table.
+    var apptBox = '<div class="jobAppts" data-jobappt="' + c.id + '" style="margin-top:8px;" onclick="event.stopPropagation();">' + _jobApptsHtml(c.id) + '</div>';
+    return apptBox + (status && !(isNSJob && (c.install_completed_at || c.solar_status === 'ns_pto')) ? '<div style="margin-top:4px;font-size:0.68rem;color:' + status.color + ';font-weight:700;">' + status.text + '</div>' : '') + completedRow + axRows + (status && isNSJob && (c.install_completed_at || c.solar_status === 'ns_pto') ? '<div style="margin-top:4px;font-size:0.68rem;color:' + status.color + ';font-weight:700;" onclick="event.stopPropagation();">' + status.text + '</div>' : '');
   }
   // Writes straight to Supabase (a scheduling field, same trust level as every other
   // direct customers.update() a rep already makes elsewhere in this file), updates
@@ -30628,6 +30661,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var now = new Date().toISOString();
       if (!startISO) { // date cleared: close out the open event, never text about it
         if (prior) await cl.from('appointments').update({ status:'canceled', updated_at:now }).eq('id', prior.id);
+        if (window._jobApptsInvalidate) window._jobApptsInvalidate(cid);
         return '';
       }
       if (prior && new Date(prior.starts_at).getTime() === new Date(startISO).getTime() && (prior.ends_at ? new Date(prior.ends_at).getTime() : 0) === (endISO ? new Date(endISO).getTime() : 0)) return '';
@@ -30635,6 +30669,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var res = prior ? await cl.from('appointments').update(payload).eq('id', prior.id).select().single()
                       : await cl.from('appointments').insert(Object.assign({ customer_id:cid, created_by: (typeof CURRENT_ROLE !== 'undefined' ? CURRENT_ROLE : '') }, payload)).select().single();
       if (res.error || !res.data) throw (res.error || new Error('nothing was saved'));
+      if (window._jobApptsInvalidate) window._jobApptsInvalidate(cid);
       if (_schedRows[cid]) { _schedRows[cid] = _schedRows[cid].filter(function(x){ return x.id !== res.data.id; }); _schedRows[cid].push(res.data); }
       if (!opts.notify) return '';
       return await _schedNotify(res.data.id, prior ? { starts_at: prior.starts_at } : null);
@@ -30665,6 +30700,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (prior) res = await cl.from('appointments').update({ event_type:type, starts_at:startISO, ends_at:endISO, status:'scheduled', updated_at:new Date().toISOString() }).eq('id', prior.id).select().single();
       else res = await cl.from('appointments').insert({ customer_id: cid, event_type:type, starts_at:startISO, ends_at:endISO, status:'scheduled', created_by: (typeof CURRENT_ROLE!=='undefined'?CURRENT_ROLE:'') }).select().single();
       if (res.error || !res.data) throw (res.error || new Error('nothing was saved'));
+      if (window._jobApptsInvalidate) window._jobApptsInvalidate(cid);
       var row = res.data;
       var patch = _schedLegacyPatch(type, startISO, endISO, c);
       var ghlNote = '';
@@ -30700,6 +30736,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var cl = supabase.createClient(SUPA_URL, SUPA_KEY);
       var r = await cl.from('appointments').update({ status: status, updated_at: new Date().toISOString() }).eq('id', aid).select().single();
       if (r.error || !r.data) throw (r.error || new Error('nothing was saved'));
+      if (window._jobApptsInvalidate) window._jobApptsInvalidate(cid);
       _schedRows[cid] = _schedRows[cid].map(function(x){ return x.id === aid ? r.data : x; });
       _schedRender(cid);
       var note = status === 'canceled' ? await _schedNotify(aid, null) : '';
