@@ -2588,3 +2588,6 @@ Job cards (2026-10-13): the Install Date / Scheduled Date / Inspection Date pick
 
 ## Request Bids removed (2026-10-13, per Dennis — "not used as much as I thought")
 The multi-partner bid feature is gone: admin `_opsBidControl` panel + `edSendBidRequest/edClearBidRequest/edAwardBid`, and the Ops-portal "Bid Requests" section (`bidLeads` query, `opsBidEdit`, `opsSubmitBid`). Any existing `proposal.bid_request` data is simply ignored (left in place, no migration). "Ask Ops for Advice" is a separate feature and was kept.
+
+## Ask Ops for Advice removed (2026-10-13, per Dennis)
+Admin `_opsAdviceControl` panel and its handlers, the Ops-portal "Sales Advice Requested" section (`adviceLeads`, `opsSendAdvice`), and the helpers only it used (`_opsProposalSpecs`, `_opsPhotoGridHtml`) are gone. Existing `proposal.ops_advice` data is ignored (left in place). Past "💡 Ops Advice" notes stay in lead notes. This supersedes the 2026-07-20/21 "Pre-sale Ask Ops for Advice" section above.
