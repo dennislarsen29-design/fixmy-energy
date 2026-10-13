@@ -145,6 +145,36 @@ const TOOL = {
           notes_for_rep: { type: 'string', description: 'Anything the rep must set manually — squares, panel counts, prices.' }
         }
       },
+      system_status: {
+        type: 'object',
+        description: 'Is the system DOWN, UNDER-PRODUCING, or fine? Judge from error codes, production screenshots and the Green Button summary (answers.gbd) together.',
+        properties: {
+          state: { type: 'string', enum: ['down', 'under_producing', 'producing_normally', 'unknown'] },
+          evidence: { type: 'string', description: 'The specific numbers/dates/codes that support the state.' },
+          size_check: { type: 'string', description: 'Does the recorded system size fit the production seen (panel count x wattage, inverter rating, peak export)? Flag a mismatch that could mean the size on file is wrong or panels are offline.' }
+        }
+      },
+      visit_plan: {
+        type: 'object',
+        description: 'From the error codes and symptoms: can this be handled by scheduling a service call, or does a tech/electrician have to diagnose first?',
+        properties: {
+          path: { type: 'string', enum: ['service_call_known_fix', 'diagnostic_visit', 'electrician_required', 'warranty_claim_first', 'no_visit_needed'] },
+          reason: { type: 'string' },
+          parts_or_tools: { type: 'array', items: { type: 'string' }, description: 'Parts/tools to bring if a service call is enough.' }
+        }
+      },
+      nem: {
+        type: 'object',
+        description: 'NEM status. NEM 1.0 and 2.0 both run 20 years from the interconnection application date; NEM 3.0 / Net Billing has no such lock.',
+        properties: {
+          version: { type: 'string' }, expires: { type: 'string', description: 'YYYY-MM-DD, only if an application date is known' }, note: { type: 'string' }
+        }
+      },
+      upgrade_effects: {
+        type: 'array',
+        description: 'What each candidate upgrade would do for THIS home using its consumption and production data (new panels, additional panels, new inverter, battery). Qualitative + rough kWh only, never prices.',
+        items: { type: 'object', properties: { upgrade: { type: 'string' }, effect: { type: 'string' } }, required: ['upgrade', 'effect'] }
+      },
       missing_data: { type: 'array', items: { type: 'string' }, description: 'Photos or documents that would sharpen this. Not blocking.' },
       field_updates: {
         type: 'object',
@@ -174,6 +204,14 @@ Rules:
 7. A string inverter usually fails PARTIALLY — one MPPT or string down means 40-65% output, not 25%. Derive array_output_pct from measured production versus expected whenever production data is present; only fall back to an estimate if it is not.
 8. A Powerwall 3 has its own 11.5kW solar inverter with 6 MPPTs. When an inverter is dead, existing strings can land directly on the PW3, so no standalone replacement inverter is needed. This is the default cost-reduction play on inverter-failure jobs — check whether it applies before recommending a plain inverter swap.
 9. Fill field_updates (system_size_kw / utility / nem_version) whenever you can read the real value off a photo in front of you — a nameplate rating, a panel count you can actually count, a utility bill's printed company name or rate schedule. Leave a field out entirely rather than estimate it; a wrong value silently overwriting the customer record is worse than a blank one a rep fills in by hand.
+
+10. DOWN vs UNDER-PRODUCING. Use answers.gbd (Green Button summary), production screenshots and error codes together. gbd.down_runs (days with ~no midday export after the system exported before) means DOWN. Flat-topped export (gbd.flat_top_share high) suggests clipping, i.e. an undersized inverter, not a fault. The meter only sees the grid boundary, so low export alone is NOT proof of a fault: say what else would confirm it. Fill system_status.
+11. SIZE CROSS-CHECK. Compare the system size on file (panel count x wattage, inverter nameplate) with peak export and production. Peak export above the recorded kW means the size on file is wrong. Report it in system_status.size_check.
+12. ERROR CODES -> VISIT PLAN. Research each visible code. If it has a known, rep-or-service-tech-fixable cause (ground fault from a known wiring issue, grid fault that clears, firmware, a swap-in part), return visit_plan.path=service_call_known_fix and list parts/tools. If the cause is unknown, intermittent or involves live conductors, return diagnostic_visit or electrician_required. If a warranty claim must be opened before any work, return warranty_claim_first. Never tell the rep to open covers or touch conductors.
+13. NEM. NEM 1.0 and NEM 2.0 both run 20 years from the interconnection application date; NEM 3.0 / Net Billing has no such lock and does not appear as a version on bills. answers.nem_version and answers.nem_app_date are supplied by the rep; if only an install year is known, say the expiry is approximate. Warn that changing a grandfathered system (adding panels or a battery) should be confirmed with the utility before it is sold as safe.
+14. WARRANTY. Decode the serial for the manufacture date, state the manufacturer warranty end date, and say whether the installer's workmanship warranty died with the installer.
+15. UPGRADE EFFECTS. Using the monthly consumption (answers / bill) and the production data, fill upgrade_effects for each candidate: new inverter, additional panels, replacement panels, additional battery. Say what each does to the home's bill or backup in plain terms with rough kWh, no prices.
+16. SPEED. The rep is in the home with the customer. Lead with the answer in diagnosis/system_status/visit_plan; keep every field short.
 
 Call report_evaluation exactly once.`;
 
@@ -227,7 +265,7 @@ async function runEvalAnalysis(anthropicKey, body) {
     const answerKeys = Object.keys(answers);
     if (answerKeys.length) {
       ctx.push('Rep answered your previous questions:\n' +
-        answerKeys.map(k => `- ${k}: ${String(answers[k]).slice(0, 400)}`).join('\n'));
+        answerKeys.map(k => { const v = answers[k]; const t = (v && typeof v === 'object') ? JSON.stringify(v) : String(v); return `- ${k}: ${t.slice(0, 900)}`; }).join('\n'));
     }
 
     if (catalog.length) {

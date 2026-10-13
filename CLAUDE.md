@@ -2606,3 +2606,11 @@ A homeowner uploaded their GBD as an .xlsx into the Utility Bill slot (Richard G
 
 ### Customer-uploaded bills were never read (fixed 2026-10-13, Richard Go)
 `evRunBillAnalysis` only fired on a rep's own upload in the wizard (`evUpload`), so bills the homeowner uploaded through the portal were never read — the Upgrade Path said "No usage data yet — upload the utility bill" with two real bills on file. `_evRender` now auto-runs the read once per wizard session (`_evBillAutoTried`) when the rep reaches Consumption / Green Button / Upgrade / Analysis with a real (non-data-file) bill on file and no read yet.
+
+## Quoya evaluation SOPs — instant checks, GBD hand-off fix, new report fields (2026-10-13, per Dennis)
+- **Bug fixed:** `eval-analysis-core.js` stringified every `answers` entry with `String()`, so the Green Button summary (`answers.gbd`, an object) reached Quoya as "[object Object]". Objects are now JSON-encoded. Quoya had never seen GBD data before this.
+- **NEM (AUTHORITATIVE):** NEM 1.0 and NEM 2.0 both run **20 years from the interconnection application date**; NEM 3.0 / Net Billing has no lock and doesn't show as a version on bills. Rep picks version + application date in the wizard (`answers.nem_version`, `answers.nem_app_date`); without a date the install year is used and marked approximate.
+- **Instant, no-AI "Quoya's quick checks"** (`_evChecksHtml`) on the Green Button, Upgrade and Analysis steps: NEM expiry, system age, DOWN vs UNDER-PRODUCING vs clipping from the GBD summary, and size-on-file vs peak export. Plus `_evChartHtml` (usage by month vs estimated solar now vs with added panels; 1 kW ≈ 1,600 kWh/yr, typical CA seasonal shape — an estimate, labeled).
+- **Quoya's report** (system prompt rules 10–16) now returns `system_status`, `visit_plan` (service call vs diagnostic vs electrician vs warranty-claim-first, with parts to bring), `nem`, `upgrade_effects`, rendered above the diagnosis. Serial-date warranty decode and error-code research were already rules 2–3.
+- Peak export is NOT production (house load is subtracted) — the checks say so and ask for a production screenshot before calling anything under-producing.
+- Verified: parse-check 4/4, node check of the NEM/system-read logic. Not tried in a live browser or with a real Quoya run.

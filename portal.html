@@ -10870,9 +10870,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       + '<span>' + step.icon + ' ' + step.title + '</span></div>';
 
     if (step.key === 'analysis') {
-      h += _evAnalysisHtml();
+      h += _evChecksHtml() + _evAnalysisHtml();
     } else if (step.key === 'upgrade') {
-      h += _evUpgradeHtml();
+      h += _evChecksHtml() + _evUpgradeHtml();
     } else {
       h += '<div style="font-size:1.05rem;font-weight:800;margin-bottom:4px;">' + step.icon + ' ' + step.title + '</div>';
       h += '<div style="font-size:0.76rem;color:#999;line-height:1.5;margin-bottom:16px;">' + step.blurb + '</div>';
@@ -10889,7 +10889,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
       h += '<div id="evStatus" style="font-size:0.72rem;min-height:16px;margin-bottom:8px;color:#8DC63F;"></div>';
       step.slots.forEach(function(s){ h += _evSlotHtml(s); });
-      if (step.key === 'gbd') h += _evGbdHtml();
+      if (step.key === 'gbd') h += _evChecksHtml() + _evGbdHtml();
       if (_utilBelow) h += _evUtilityHelpHtml();
       if (step.key === 'consumption') h += _evBillAnalysisHtml();
       // Troubleshoot card sits BELOW the Error Codes slot — its button needs those
@@ -11592,6 +11592,82 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // sizing below is deterministic math over those numbers, deliberately NOT another
   // multi-minute vision+search pass, which was the whole complaint. Labeled a starting
   // point, never a quote — same honesty rule as every estimate in this file.
+  // ── Quoya's instant checks (2026-10-13, per Dennis) ── no AI round trip: NEM expiry, inverter age,
+  // down-vs-under-producing from the Green Button summary, size cross-check, and a consumption-vs-
+  // production chart. The tech is in the home, so these render the moment the data exists.
+  function _evNemInfo() {
+    var a = _evLocal.answers || {}, rec = _evRec || {};
+    var ver = a.nem_version || (/3/.test(rec.nem_status || '') ? '3' : /2/.test(rec.nem_status || '') ? '2' : /1/.test(rec.nem_status || '') ? '1' : '');
+    var d = a.nem_app_date || '', est = false;
+    if (!d && rec.install_year) { d = String(rec.install_year) + '-07-01'; est = true; }
+    var out = { ver: ver, date: d, est: est, text: '', tone: 'info' };
+    if (!ver) { out.text = 'Pick the NEM version (it is printed on the bill, or ask the homeowner).'; return out; }
+    if (ver === '3') { out.text = 'NEM 3.0 / Net Billing: different credit structure, no 20-year lock. Does not show as a version on the bill.'; return out; }
+    if (!d) { out.text = 'Enter the interconnection application date to get the 20-year end date.'; return out; }
+    var dt = new Date(d + 'T12:00:00'); if (isNaN(dt)) { out.text = 'Date not readable.'; return out; }
+    var exp = new Date(dt); exp.setFullYear(exp.getFullYear() + 20);
+    var yrs = (exp - new Date()) / 31557600000;
+    out.exp = exp.toISOString().slice(0, 10); out.yrs = yrs;
+    out.text = 'NEM ' + ver + '.0 runs 20 years from the application: ends ' + out.exp + (est ? ' (approximate: based on install year only)' : '') + ' &middot; ' + (yrs > 0 ? yrs.toFixed(1) + ' yrs left' : 'already ended');
+    out.tone = yrs <= 0 ? 'bad' : yrs < 5 ? 'warn' : 'good';
+    var hint = d >= '2023-04-14' ? '3' : d < '2016-06-01' ? '1' : '2';
+    if ((ver === '1' && hint !== '1' && d >= '2017-01-01') || (ver === '2' && (hint === '3' || d < '2016-01-01'))) out.text += '<br><span style="color:#ffaa00;">The date and version don&rsquo;t fit together &mdash; double-check both.</span>';
+    out.text += '<br><span style="color:#999;">Before selling panels or a battery on a grandfathered system, confirm with the utility how it affects NEM.</span>';
+    return out;
+  }
+  window.evNemSet = function(k, v) {
+    _evLocal.answers[k] = v; _evSave({ answers: _evLocal.answers });
+    var el = document.getElementById('evChecks'); if (el) el.outerHTML = _evChecksHtml();
+  };
+  function _evSystemRead() {
+    var g = (_evLocal.answers || {}).gbd, kw = parseFloat(_evRec && _evRec.system_size) || null, out = [];
+    if (g && g.has_export) {
+      if (g.down_runs && g.down_runs.length) { var d = g.down_runs[g.down_runs.length - 1]; out.push({ tone: 'bad', t: 'Looks DOWN: almost no midday export ' + d.from + ' to ' + d.to + ' (' + d.days + ' days) after it exported before.' }); }
+      else if (g.flat_top_share >= 0.4) out.push({ tone: 'warn', t: 'Running, but export flat-tops on ' + Math.round(g.flat_top_share * 100) + '% of strong days: the inverter is probably clipping (undersized), not faulted.' });
+      else if (kw && g.peak_export_kw < kw * 0.35) out.push({ tone: 'warn', t: 'Running but possibly UNDER-producing: best export ~' + g.peak_export_kw + ' kW against a ' + kw + ' kW system. Confirm with a production screenshot (export is only what the house did not use).' });
+      else out.push({ tone: 'good', t: 'Production looks normal in the meter data (peak export ~' + g.peak_export_kw + ' kW).' });
+      if (kw && g.peak_export_kw > kw * 1.05) out.push({ tone: 'warn', t: 'Peak export (' + g.peak_export_kw + ' kW) is higher than the system size on file (' + kw + ' kW): the size on file is probably too small. Check the panel count and nameplate.' });
+    } else if (g) out.push({ tone: 'info', t: 'The data file has no export readings, so it can&rsquo;t say whether the system is working.' });
+    else out.push({ tone: 'info', t: 'No Green Button data: add it to tell &ldquo;completely down&rdquo; from &ldquo;producing less than it used to&rdquo;.' });
+    var yr = parseInt(_evRec && _evRec.install_year, 10);
+    if (yr) { var age = new Date().getFullYear() - yr; out.push({ tone: age >= 10 ? 'warn' : 'info', t: 'System age ~' + age + ' yrs (installed ' + yr + ')' + (age >= 10 ? ': past most standard inverter warranties; Quoya checks the exact serial date.' : '.') }); }
+    return out;
+  }
+  function _evChecksHtml() {
+    var a = _evLocal.answers || {}, nem = _evNemInfo(), col = { good: '#8DC63F', warn: '#ffaa00', bad: '#f87171', info: '#9fb3c8' };
+    var h = '<div id="evChecks" style="background:rgba(155,109,232,0.06);border:1px solid rgba(155,109,232,0.28);border-radius:14px;padding:13px;margin:0 0 14px;">';
+    h += '<div style="font-size:0.66rem;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;color:#c4a3f0;margin-bottom:8px;">&#129302; Quoya&rsquo;s quick checks</div>';
+    h += '<div style="display:flex;gap:8px;margin-bottom:8px;"><select onchange="evNemSet(\'nem_version\',this.value)" style="flex:1;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:9px;color:#fff;padding:9px;font-size:0.8rem;">'
+      + [['', 'NEM version…'], ['1', 'NEM 1.0'], ['2', 'NEM 2.0'], ['3', 'NEM 3.0 / Net Billing']].map(function(o){ return '<option value="' + o[0] + '"' + (String(nem.ver) === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('')
+      + '</select><input type="date" value="' + esc(a.nem_app_date || '') + '" onchange="evNemSet(\'nem_app_date\',this.value)" title="Interconnection application date" style="flex:1;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:9px;color:#fff;padding:9px;font-size:0.8rem;"></div>';
+    h += '<div style="font-size:0.74rem;line-height:1.5;color:' + col[nem.tone] + ';margin-bottom:8px;">' + nem.text + '</div>';
+    _evSystemRead().forEach(function(r){ h += '<div style="font-size:0.74rem;line-height:1.5;color:' + col[r.tone] + ';margin-bottom:5px;">&bull; ' + r.t + '</div>'; });
+    h += '</div>';
+    return h;
+  }
+  var _EV_SHAPE = [0.055, 0.068, 0.088, 0.10, 0.11, 0.115, 0.115, 0.108, 0.093, 0.075, 0.057, 0.048];
+  function _evChartHtml() {
+    var ba = (_evLocal.billAnalysis && !_evLocal.billAnalysis._err) ? _evLocal.billAnalysis : null, s = _evUpgradeSizing();
+    var MN = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'], cons = new Array(12).fill(null);
+    ((ba && ba.monthly_breakdown) || []).forEach(function(m){ var i = MN.indexOf(String(m.month || '').slice(0, 3).toLowerCase()), v = parseFloat(m.total_kwh); if (i > -1 && v > 0) cons[i] = v; });
+    if (!s.existingKw && !cons.some(function(v){ return v; })) return '';
+    var tot = _EV_SHAPE.reduce(function(a, b){ return a + b; }, 0), kw0 = s.existingKw || 0, kw1 = kw0 + (s.shortKw > 0.5 ? s.shortKw : 0);
+    var cur = _EV_SHAPE.map(function(f){ return kw0 * 1600 * f / tot; }), upg = _EV_SHAPE.map(function(f){ return kw1 * 1600 * f / tot; });
+    var W = 320, H = 150, L = 8, B = 20, T = 8, mx = Math.max.apply(null, cons.concat(cur, upg).filter(Boolean)) || 1, bw = (W - L * 2) / 12;
+    var y = function(v){ return (H - B) - (v / mx) * (H - B - T); };
+    var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;height:auto;display:block;">';
+    cons.forEach(function(v, i){ if (v) svg += '<rect x="' + (L + i * bw + 3) + '" y="' + y(v) + '" width="' + (bw - 6) + '" height="' + ((H - B) - y(v)) + '" fill="#9b6de8" opacity="0.75"/>'; });
+    var line = function(a, c, d){ return '<polyline fill="none" stroke="' + c + '" stroke-width="2"' + (d ? ' stroke-dasharray="5 3"' : '') + ' points="' + a.map(function(v, i){ return (L + i * bw + bw / 2) + ',' + y(v); }).join(' ') + '"/>'; };
+    if (kw0) svg += line(cur, '#8DC63F');
+    if (kw1 > kw0) svg += line(upg, '#4a9eff', true);
+    MN.forEach(function(m, i){ svg += '<text x="' + (L + i * bw + bw / 2) + '" y="' + (H - 6) + '" font-size="8" fill="#888" text-anchor="middle">' + m[0].toUpperCase() + '</text>'; });
+    svg += '</svg>';
+    var h = '<div style="background:rgba(255,255,255,0.035);border:1px solid rgba(255,255,255,0.1);border-radius:14px;padding:13px;margin:0 0 11px;">';
+    h += '<div style="font-size:0.66rem;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;color:#888;margin-bottom:6px;">Usage vs. solar, by month</div>' + svg;
+    h += '<div style="display:flex;gap:12px;flex-wrap:wrap;font-size:0.66rem;color:#aaa;margin-top:4px;"><span><b style="color:#9b6de8;">&#9632;</b> Usage (bill)</span>' + (kw0 ? '<span><b style="color:#8DC63F;">&#9472;</b> Solar now (' + kw0.toFixed(1) + ' kW est.)</span>' : '') + (kw1 > kw0 ? '<span><b style="color:#4a9eff;">- -</b> With ' + (kw1 - kw0).toFixed(1) + ' kW more panels</span>' : '') + '</div>';
+    h += '<div style="font-size:0.66rem;color:#777;line-height:1.5;margin-top:6px;">Solar is an estimate (1 kW &asymp; 1,600 kWh/yr, typical California seasons), not measured output. A battery doesn&rsquo;t add production; it moves daytime solar into the 4&ndash;9pm hours' + (s.pw3 ? ' (about ' + s.pw3 + ' Powerwall' + (s.pw3 > 1 ? 's' : '') + ' for this usage).' : '.') + ' A new inverter restores output a failed one is losing.</div></div>';
+    return h;
+  }
   function _evUpgradeSizing() {
     var ba = (_evLocal.billAnalysis && !_evLocal.billAnalysis._err) ? _evLocal.billAnalysis : null;
     var billMo = (ba && ba.monthly_source === 'monthly_bill' && ba.monthly_amount_paid > 0) ? ba.monthly_amount_paid : (parseFloat(_evRec && _evRec.monthly_bill) || (ba && ba.monthly_amount_paid) || 0);
@@ -11621,6 +11697,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       h += '<div style="background:rgba(141,198,63,0.06);border:1px solid rgba(141,198,63,0.28);border-radius:14px;padding:13px;margin-bottom:11px;font-size:0.76rem;color:#c8e6a0;line-height:1.55;">&#10003; ' + (own === 'financed' ? 'Financed' : 'Owned') + ' &mdash; the homeowner owns this hardware, so new panels or a battery below can generally tie onto the existing system.</div>';
     }
 
+    h += _evChartHtml();
     if (!s.annualKwh) {
       h += '<div style="background:rgba(255,170,0,0.07);border:1px solid rgba(255,170,0,0.3);border-radius:14px;padding:14px;margin-bottom:11px;font-size:0.78rem;color:#ffd28a;line-height:1.55;">No usage data yet &mdash; go back and upload the utility bill (Quoya reads it in seconds), or enter a monthly bill amount on the lead. The builder still opens without it; the sizing just can\'t be pre-computed.</div>';
     } else {
@@ -11969,6 +12046,25 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       h += '</div>';
     }
 
+    var ss = a.system_status || {};
+    if (ss.state && ss.state !== 'unknown') {
+      var sc = ss.state === 'down' ? '#f87171' : ss.state === 'under_producing' ? '#ffaa00' : '#8DC63F';
+      h += '<div style="border:1px solid ' + sc + '66;background:' + sc + '12;border-radius:14px;padding:13px;margin-bottom:11px;"><div style="font-size:0.88rem;font-weight:800;color:' + sc + ';">' + ({ down: 'System is DOWN', under_producing: 'Running, but UNDER-producing', producing_normally: 'Producing normally' }[ss.state]) + '</div>'
+        + (ss.evidence ? '<div style="font-size:0.76rem;color:#ddd;margin-top:5px;line-height:1.5;">' + esc(ss.evidence) + '</div>' : '')
+        + (ss.size_check ? '<div style="font-size:0.74rem;color:#ffd28a;margin-top:6px;line-height:1.5;">Size check: ' + esc(ss.size_check) + '</div>' : '') + '</div>';
+    }
+    var vp = a.visit_plan || {};
+    if (vp.path) {
+      var vl = { service_call_known_fix: 'Schedule a service call (known fix)', diagnostic_visit: 'Send a tech to diagnose', electrician_required: 'Electrician required', warranty_claim_first: 'Open the warranty claim first', no_visit_needed: 'No visit needed' }[vp.path] || vp.path;
+      h += '<div style="border:1px solid rgba(74,158,255,0.3);background:rgba(74,158,255,0.06);border-radius:14px;padding:13px;margin-bottom:11px;"><div style="font-size:0.66rem;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;color:#4a9eff;margin-bottom:4px;">Next step</div><div style="font-size:0.88rem;font-weight:800;">' + esc(vl) + '</div>'
+        + (vp.reason ? '<div style="font-size:0.76rem;color:#ccc;margin-top:4px;line-height:1.5;">' + esc(vp.reason) + '</div>' : '')
+        + ((vp.parts_or_tools || []).length ? '<div style="font-size:0.72rem;color:#8DC63F;margin-top:5px;">Bring: ' + esc(vp.parts_or_tools.join(', ')) + '</div>' : '') + '</div>';
+    }
+    if ((a.upgrade_effects || []).length) {
+      h += '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:14px;padding:13px;margin-bottom:11px;"><div style="font-size:0.66rem;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;color:#888;margin-bottom:6px;">What each upgrade would do</div>';
+      a.upgrade_effects.forEach(function(u){ h += '<div style="font-size:0.76rem;line-height:1.5;color:#ccc;margin-bottom:5px;"><b style="color:#eee;">' + esc(u.upgrade) + ':</b> ' + esc(u.effect) + '</div>'; });
+      h += _evChartHtml() + '</div>';
+    }
     if (a.diagnosis) {
       h += '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:14px;padding:14px;margin-bottom:11px;">';
       h += '<div style="font-size:0.66rem;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;color:#888;margin-bottom:6px;">What\'s going on</div>';
