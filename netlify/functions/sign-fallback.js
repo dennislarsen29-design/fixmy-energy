@@ -40,7 +40,7 @@ exports.handler = async function(event) {
 
   // Validate token → customer (same lookup as sign-init)
   const lookupResp = await fetch(SUPA_URL + '/rest/v1/customers?sign_token=eq.' + encodeURIComponent(token) +
-    '&select=id,first_name,last_name,email,phone,invoice_amount,sign_token_expires_at&limit=1', { headers: H });
+    '&select=id,first_name,last_name,email,phone,address,rep_id,invoice_amount,sign_token_expires_at&limit=1', { headers: H });
   const rows = await lookupResp.json();
   const c = Array.isArray(rows) && rows[0];
   if (!c) return { statusCode: 404, headers: cors, body: JSON.stringify({ error: 'Invalid or expired link' }) };
@@ -143,6 +143,17 @@ exports.handler = async function(event) {
           ' Phone: ' + (c.phone || '—') + '. The payment will auto-book to the ledger when the invoice is paid.'
       })
     }).catch(() => {});
+
+    // SMS + email to the rep and Dennis: signed, but payment still outstanding. Non-fatal.
+    try {
+      const how = String(body.paymentMethod || 'invoice').slice(0, 20);
+      await require('./lib/staff-alert').alertStaff({
+        key: 'fb_' + c.id + '_' + signedNow, customer: c,
+        sms: '{name} signed the Diagnostic Agreement (' + how + ') — payment of $' + (c.invoice_amount || '?') + ' NOT collected yet.',
+        subject: '{name} signed — payment pending ($' + (c.invoice_amount || '?') + ')',
+        lines: ['Signed the Diagnostic Service Agreement and chose <b>' + how + '</b>.', 'Payment of <b>$' + (c.invoice_amount || '?') + '</b> is still outstanding \u2014 mark it paid when it clears.']
+      });
+    } catch (e) { console.warn('sign-fallback: staff alert error —', e.message); }
 
     console.log('sign-fallback: agreement-only recorded for', custName, '— GHL invoice', tagged ? 'queued' : 'NOT queued');
     return { statusCode: 200, headers: cors, body: JSON.stringify({ ok: true, customerName: custName, invoiceQueued: tagged }) };

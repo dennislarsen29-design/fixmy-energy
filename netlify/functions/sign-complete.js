@@ -84,7 +84,7 @@ exports.handler = async function(event) {
   };
 
   // Fetch customer record
-  const cResp = await fetch(SUPA_URL + '/rest/v1/customers?id=eq.' + customerId + '&select=id,first_name,last_name,email,phone,address,invoice_amount,sold_type,sold_at,agreement_signed_at,agreement_audit&limit=1', {
+  const cResp = await fetch(SUPA_URL + '/rest/v1/customers?id=eq.' + customerId + '&select=id,first_name,last_name,email,phone,address,rep_id,invoice_amount,sold_type,sold_at,agreement_signed_at,agreement_audit&limit=1', {
     headers: supaHeaders
   });
   const cRows = await cResp.json();
@@ -316,6 +316,16 @@ exports.handler = async function(event) {
       }
     } catch(e) { console.error('GHL post-payment tag error:', e.message); }
   }
+
+  // Tell the rep + Dennis (SMS + email) — the customer often finishes after the rep has left. Non-fatal.
+  try {
+    await require('./lib/staff-alert').alertStaff({
+      key: paymentIntentId, customer: c,
+      sms: '{name} just signed the Diagnostic Agreement and PAID $' + chargedAmount.toFixed(2) + ' (card). \u2705',
+      subject: '{name} signed & paid $' + chargedAmount.toFixed(2),
+      lines: ['Signed the Diagnostic Service Agreement and paid <b>$' + chargedAmount.toFixed(2) + '</b> by card.', 'The lead is now a Diagnostic job \u2014 schedule the visit with Cosmic.']
+    });
+  } catch (e) { console.warn('sign-complete: staff alert error —', e.message); }
 
   return {
     statusCode: 200,
