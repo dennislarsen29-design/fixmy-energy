@@ -14,6 +14,22 @@ function originAllowed(event) {
 const cors = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Methods': 'POST, OPTIONS' };
 const reply = (obj) => ({ statusCode: 200, headers: cors, body: JSON.stringify(obj) });
 
+
+// Tolerant reader: the model sometimes wraps JSON in fences/prose, puts real line breaks inside strings,
+// or (rarely) drops the JSON entirely and answers in labelled lines. Try each in turn.
+function parseDraft(text) {
+  const t = String(text || '').replace(/```(?:json)?/gi, '');
+  const i = t.indexOf('{'), j = t.lastIndexOf('}');
+  if (i > -1 && j > i) {
+    const body = t.slice(i, j + 1);
+    try { return JSON.parse(body); } catch (e) {}
+    try { return JSON.parse(body.replace(/[\u0000-\u001f]+/g, ' ')); } catch (e) {}
+  }
+  const grab = function (k) { const m = t.match(new RegExp('"?' + k + '"?\\s*[:=]\\s*"?([\\s\\S]*?)"?\\s*(?:,\\s*"?(?:sms|email_subject|email_body)"?\\s*[:=]|\\}|$)', 'i')); return m ? m[1].trim() : ''; };
+  const sms = grab('sms'), email_body = grab('email_body');
+  return sms && email_body ? { sms: sms, email_subject: grab('email_subject'), email_body: email_body } : null;
+}
+
 exports.handler = async function (event) {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers: cors, body: '' };
   if (event.httpMethod !== 'POST') return { statusCode: 405, headers: cors, body: JSON.stringify({ error: 'Method Not Allowed' }) };
@@ -55,13 +71,14 @@ exports.handler = async function (event) {
   try {
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 600, messages: [{ role: 'user', content: prompt }] })
+      body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 1200, messages: [{ role: 'user', content: prompt }] })
     });
     const data = await resp.json();
     if (!resp.ok) { console.error('recapture-draft upstream', resp.status, (data.error && data.error.message) || ''); return reply({ error: 'unavailable', detail: String((data.error && data.error.message) || resp.status).slice(0, 300) }); }
-    let raw = ((data.content && data.content[0] && data.content[0].text) || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
-    const brace = raw.indexOf('{'); if (brace > 0) raw = raw.slice(brace);
-    let p; try { p = JSON.parse(raw); } catch (e) { return reply({ error: 'unparseable' }); }
+    const rawText = (data.content || []).filter(function (c) { return c && c.type === 'text'; }).map(function (c) { return c.text || ''; }).join('\n').trim();
+    if (data.stop_reason === 'max_tokens') console.warn('recapture-draft truncated');
+    const p = parseDraft(rawText);
+    if (!p) { console.error('recapture-draft unparseable:', rawText.slice(0, 300)); return reply({ error: 'unparseable' }); }
     const clean = (s, n) => String(s || '').replace(/\*\*/g, '').trim().slice(0, n);
     const out = { sms: clean(p.sms, 320), email_subject: clean(p.email_subject, 90), email_body: clean(p.email_body, 1200) };
     if (!out.sms || !out.email_body) return reply({ error: 'unparseable' });
