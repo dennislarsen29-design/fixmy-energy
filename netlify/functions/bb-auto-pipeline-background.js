@@ -177,10 +177,11 @@ exports.handler = async function(event) {
     const state  = 'CA';
     const zip    = String(p.address_zip || p.zipcode || p.zip_code || p.zip || '').replace(/\D/g, '').slice(0, 5);
     const full   = [street, city, state, zip].filter(Boolean).join(', ');
-    const rawDate = p.date_issued || p.issue_date || p.issued_date || p.applied_date || '';
+    const rawDate = p.applied_date || p.filed_date || p.date_issued || p.issue_date || p.issued_date || '';
     const installYear = rawDate ? new Date(rawDate).getFullYear() : null;
+    const permitDate = (rawDate && !isNaN(new Date(rawDate))) ? new Date(rawDate).toISOString().slice(0, 10) : null;
     const desc = p.work_description || p.project_description || p.description || p.scope_of_work || '';
-    return { street, city, state, zip, fullAddress: full, installYear, systemSizeKw: extractKw(desc) };
+    return { street, city, state, zip, fullAddress: full, installYear, permitDate, systemSizeKw: extractKw(desc) };
   }
 
   // Dedup key for "is this the same house". Compares STREET + ZIP, not the whole address.
@@ -657,7 +658,7 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
           if (!Array.isArray(batch) || !batch.length) break;
 
           for (const p of batch) {
-            const { street, city, state, zip, fullAddress, installYear, systemSizeKw } =
+            const { street, city, state, zip, fullAddress, installYear, permitDate, systemSizeKw } =
               extractSocrataAddress(p, defaultCity);
             if (!street || !isTarget(street, city, state, zip)) continue;
             const key = normAddr(fullAddress);
@@ -670,6 +671,7 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
               black_box: true,
               original_installer: installer.name,
               install_year: installYear || null,
+              permit_date: permitDate || null,
               system_size: systemSizeKw ? parseFloat(systemSizeKw) : null,
               notes: installer.name
                 + (systemSizeKw ? ' · ' + systemSizeKw + 'kW' : '')
@@ -780,10 +782,11 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
         const state = 'CA';
         const zip   = String(p.zip || p.zip_code || p.postal_code || '').replace(/\D/g, '').slice(0, 5);
         const full  = [street, city, state, zip].filter(Boolean).join(', ');
-        const rawDate = p.issue_date || p.issued_date || p.permit_date || p.filed_date || '';
+        const rawDate = p.filed_date || p.permit_date || p.issue_date || p.issued_date || '';
         const installYear = rawDate ? (new Date(rawDate).getFullYear() || null) : null;
+        const permitDate = (rawDate && !isNaN(new Date(rawDate))) ? new Date(rawDate).toISOString().slice(0, 10) : null;
         const desc = p.work_description || p.description || p.scope_of_work || '';
-        return { street, city, state, zip, fullAddress: full, installYear, systemSizeKw: extractKw(desc) };
+        return { street, city, state, zip, fullAddress: full, installYear, permitDate, systemSizeKw: extractKw(desc) };
       };
 
       // Flatten installer × city into one ordered rotation matrix — priority installers
@@ -836,7 +839,7 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
 
             const batchRecs = [];
             for (const p of batch) {
-              const { street, fullAddress, installYear, systemSizeKw } =
+              const { street, fullAddress, installYear, permitDate, systemSizeKw } =
                 extractPSAddress1c(p, city);
               if (!street || !/^\d/.test(street)) continue;
               const key = normAddr(fullAddress);
@@ -849,6 +852,7 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
                 black_box: true,
                 original_installer: installer.name,
                 install_year: installYear || null,
+              permit_date: permitDate || null,
                 system_size: systemSizeKw ? parseFloat(systemSizeKw) : null,
                 notes: installer.name
                   + (systemSizeKw ? ' · ' + systemSizeKw + 'kW' : '')
@@ -934,7 +938,7 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
 
           const batchRecs = [];
           for (const p of batch) {
-            const { street, city, state, zip, fullAddress, installYear, systemSizeKw } =
+            const { street, city, state, zip, fullAddress, installYear, permitDate, systemSizeKw } =
               extractSocrataAddress(p, '');
             if (!street || !isTarget(street, city, state, zip)) continue;
             const key = normAddr(fullAddress);
@@ -947,6 +951,7 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
               black_box: true,
               original_installer: installer.name,
               install_year: installYear || null,
+              permit_date: permitDate || null,
               system_size: systemSizeKw ? parseFloat(systemSizeKw) : null,
               notes: installer.name
                 + (systemSizeKw ? ' · ' + systemSizeKw + 'kW' : '')
@@ -1015,10 +1020,11 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
         const state = 'CA';
         const zip   = String(p.zip || p.zip_code || p.postal_code || '').replace(/\D/g, '').slice(0, 5);
         const full  = [street, city, state, zip].filter(Boolean).join(', ');
-        const rawDate = p.issue_date || p.issued_date || p.permit_date || p.filed_date || '';
+        const rawDate = p.filed_date || p.permit_date || p.issue_date || p.issued_date || '';
         const installYear = rawDate ? (new Date(rawDate).getFullYear() || null) : null;
+        const permitDate = (rawDate && !isNaN(new Date(rawDate))) ? new Date(rawDate).toISOString().slice(0, 10) : null;
         const desc = p.work_description || p.description || p.scope_of_work || '';
-        return { street, city, state, zip, fullAddress: full, installYear, systemSizeKw: extractKw(desc) };
+        return { street, city, state, zip, fullAddress: full, installYear, permitDate, systemSizeKw: extractKw(desc) };
       };
 
       outer1b: for (const installer of sortedInstallers) {
@@ -1059,7 +1065,7 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
 
               const batchRecs = [];
               for (const p of batch) {
-                const { street, city: pCity, state, zip, fullAddress, installYear, systemSizeKw } =
+                const { street, city: pCity, state, zip, fullAddress, installYear, permitDate, systemSizeKw } =
                   extractPSAddress(p, city);
                 if (!street || !/^\d/.test(street)) continue;
                 const key = normAddr(fullAddress);
@@ -1072,6 +1078,7 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
                   black_box: true,
                   original_installer: installer.name,
                   install_year: installYear || null,
+              permit_date: permitDate || null,
                   system_size: systemSizeKw ? parseFloat(systemSizeKw) : null,
                   notes: installer.name
                     + (systemSizeKw ? ' · ' + systemSizeKw + 'kW' : '')
