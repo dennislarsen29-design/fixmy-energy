@@ -2583,6 +2583,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var _doneS = _doneD.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
       var _p1 = _payDateShort(_payFridayAfter(_doneD));
       var _tail = c.solar_status === 'ns_pto' ? ' &middot; PTO reached' : ' &middot; awaiting inspection / PTO';
+      if (!c.ns_audit_at) return { text: '&#128269; Install completed ' + _doneS + ' &middot; <b>awaiting Audit</b> &mdash; Payment 1 is not payable until it is signed off', color: '#f59e0b' };
       return { text: '&#9989; Install completed ' + _doneS + ' &middot; Payment 1 pays ' + _p1 + _tail, color: COMM_COLOR_EARNED };
     }
     var dateVal = isDiag ? c.diagnostic_date : c.install_date;
@@ -2658,6 +2659,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var axRows = '';
     if (isNSJob) {
       var isAdm = typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE === 'admin';
+      if (isAdm && (c.install_completed_at || c.solar_status === 'ns_pto')) {
+        axRows += '<div style="margin-top:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;" onclick="event.stopPropagation();"><label style="font-size:0.62rem;font-weight:700;color:#888;white-space:nowrap;">&#128269; Install Audit</label>' +
+          (c.ns_audit_at ? '<span style="font-size:0.72rem;color:#8DC63F;">&#9989; Signed off ' + new Date(c.ns_audit_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + (c.ns_audit_note ? ' &middot; ' + esc(c.ns_audit_note) : '') + '</span><button onclick="nsClearAudit(\'' + c.id + '\')" style="width:auto;padding:2px 8px;font-size:0.62rem;background:transparent;border:1px solid rgba(255,255,255,0.2);color:#888;border-radius:6px;cursor:pointer;">Undo</button>'
+            : '<span style="font-size:0.72rem;color:#f59e0b;">Not yet &mdash; compare Aurora sold vs installed design (kW, base PPW, sun hours)</span><button onclick="nsMarkAudit(\'' + c.id + '\')" style="width:auto;padding:4px 12px;font-size:0.68rem;font-weight:800;background:#8DC63F;border:none;color:#000;border-radius:100px;cursor:pointer;">Mark audited</button>') + '</div>';
+      }
       var dRow = function(lbl, field, v, note) {
         var dv = v ? String(v).slice(0, 10) : '';
         return '<div style="margin-top:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;" onclick="event.stopPropagation();"><label style="font-size:0.62rem;font-weight:700;color:#888;white-space:nowrap;">' + lbl + '</label>' +
@@ -3119,6 +3125,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var installDoneAt = c.install_completed_at || (c.solar_status === 'ns_pto' ? (c.ns_pto_at || null) : null);
     var installDone = !!installDoneAt || c.solar_status === 'ns_pto';
     var ptoDone = c.solar_status === 'ns_pto';
+    // Audit gate (2026-10-13, per Dennis): sold design vs installed design can differ slightly (sun hours),
+    // so nobody is paid the first commission on an Axia job until its audit is signed off.
+    var audited = !!c.ns_audit_at;
     var s1 = core(0);
     var full = core(dcBonus);
     var cur = ptoDone ? full : s1;
@@ -3135,7 +3144,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       revenue: cur.gross, costs: r2(cur.closerAmt+cur.setterAmt),
       hasInputs: basePpw>0 && watts>0,
       // Earned (Payment 1) = the install is marked COMPLETED. PTO is Payment 2 only.
-      earned: installDone, earnedAt: installDoneAt, ptoDone: ptoDone, ptoAt: c.ns_pto_at || null
+      earned: installDone && audited, awaitingAudit: installDone && !audited, audited: audited, earnedAt: installDoneAt, ptoDone: ptoDone, ptoAt: c.ns_pto_at || null
     };
   }
   // Same async-cache pattern as _loadFixmyJobCommissions, but every formula input already
@@ -3209,6 +3218,25 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // Lock in the Axia/QCells split as SOLD → Payroll — mirrors edRecordFixmySplit exactly,
   // recomputing at click time and inserting whichever payout rows aren't recorded yet
   // (closer, setter if a distinct one is on file, and the company's override/net line).
+  window.nsMarkAudit = async function(cid) {
+    var note = prompt('Audit sign-off — what did you confirm? (e.g. "Aurora installed design matches sold: 4.3 kW, base $3.433, 1,255 kWh/kWp")', '');
+    if (note === null) return;
+    var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var r = await pc.from('customers').update({ ns_audit_at: new Date().toISOString(), ns_audit_note: (note || '').trim() || null }).eq('id', cid).select('id');
+    if (r.error || !r.data || !r.data.length) { alert('Could not save the audit: ' + ((r.error && r.error.message) || 'no row updated')); return; }
+    delete _axiaCommCache[cid];
+    var rec = (adminCustomers || []).find(function(x){ return x.id === cid; }); if (rec) { rec.ns_audit_at = new Date().toISOString(); rec.ns_audit_note = (note || '').trim() || null; }
+    if (typeof renderJobsView === 'function') renderJobsView();
+  };
+  window.nsClearAudit = async function(cid) {
+    if (!confirm('Undo the audit sign-off? Payment 1 goes back to "not payable yet".')) return;
+    var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var r = await pc.from('customers').update({ ns_audit_at: null, ns_audit_note: null }).eq('id', cid).select('id');
+    if (r.error || !r.data || !r.data.length) { alert('Could not undo: ' + ((r.error && r.error.message) || 'no row updated')); return; }
+    delete _axiaCommCache[cid];
+    var rec = (adminCustomers || []).find(function(x){ return x.id === cid; }); if (rec) { rec.ns_audit_at = null; rec.ns_audit_note = null; }
+    if (typeof renderJobsView === 'function') renderJobsView();
+  };
   window.edRecordAxiaSplit = async function(cid) {
     var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
     var rec = (adminCustomers||[]).find(function(x){ return x.id === cid; }) || {};
@@ -3217,6 +3245,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     await window.bbLoadSetterCompPlans(true);
     var calc = _nsCalcCommission(rec);
     if (!calc.hasInputs) { alert('Enter Base PPW and set System Size (kW) on the lead first — Gross Commission is $0 without them.'); return; }
+    if (!rec.ns_audit_at) { alert('Sign off the Install Audit on the Jobs card first (compare Aurora sold vs installed design). Payment 1 is not locked in until then.'); return; }
     try {
       var commRes = await pc.from('commissions').select('kind,note').eq('customer_id', cid).eq('line','new_solar');
       var have = {}, haveDc = {};
@@ -3289,7 +3318,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // nothing was ever miscalculated under the old $0 value — this is a forward-only fix.
   var AXIA_TPO_PRESETS = [
     { id:'cash',        label:'Cash / Loan', redline:2.19, dcBonus:0, isTpo:false },
-    { id:'enfin',       label:'EnFin',       redline:2.40, dcBonus:0.45, isTpo:true }, // 2026-10-03 per Dennis: $2.40 redline − $0.45 Domestic Content = $1.95 net (same net as before, now shown as its two parts)
+    { id:'enfin',       label:'EnFin',       redline:2.40, dcBonus:0.90, isTpo:true }, // 2026-10-13 per Dennis (Axia's Shirin Handjani sheet): DCA is $0.90/W, not $0.45. // 2026-10-03 per Dennis: $2.40 redline − $0.45 Domestic Content = $1.95 net (same net as before, now shown as its two parts)
     { id:'lightreach',  label:'Lightreach',  redline:2.30, dcBonus:0.25, isTpo:true }, // 2026-10-03 per Dennis: $2.30 redline − $0.25 Domestic Content = $2.05 net
     { id:'participate', label:'Participate', redline:2.19, dcBonus:0, isTpo:true }
   ];
@@ -20145,7 +20174,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       Object.keys(pendByCust).forEach(function(cid){
         var rows = pendByCust[cid], x0 = rows[0];
         var need = x0.note==='dc_bonus' ? 'Waiting for <b>PTO</b> (Permission to Operate)'
-                 : x0.line==='new_solar' ? 'Waiting for <b>Install Completed</b> to be marked'
+                 : x0.line==='new_solar' ? ((_axiaCommCache[cid] && _axiaCommCache[cid].awaitingAudit) ? 'Waiting for the <b>Install Audit</b> to be signed off' : 'Waiting for <b>Install Completed</b> to be marked')
                  : 'Waiting for the job to be marked <b>Installed</b>';
         h += '<div class="fin-card">';
         h += '<div style="font-size:0.85rem;font-weight:800;color:#ddd;">'+_payJobLink(cid, esc(finCustName(cid)))+' <span style="color:#666;font-weight:500;">&middot; '+(lineLbl[x0.line]||x0.line)+'</span></div>';
