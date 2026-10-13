@@ -2641,7 +2641,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       document.querySelectorAll('[data-jobappt]').forEach(function(el){ var id = el.getAttribute('data-jobappt'); if (_jobApptCache[id]) el.innerHTML = _jobApptsHtml(id); });
     }, 60);
   }
-  window._jobApptsInvalidate = function(cid){ if (cid) delete _jobApptCache[cid]; else _jobApptCache = {}; };
+  window._jobApptsInvalidate = function(cid){ if (cid) delete _jobApptCache[cid]; else _jobApptCache = {}; if (typeof _schedApptCache !== 'undefined') _schedApptCache.at = 0; };
   function _installDateBlockHtml(c) {
     var isNSJob = c.lead_category === 'new_solar';
     var isDiag = !isNSJob && c.sold_type === 'diagnostic';
@@ -5697,7 +5697,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   function schedMonthStart(offset) {
     var d=new Date(); d.setDate(1); d.setMonth(d.getMonth()+offset); d.setHours(0,0,0,0); return d;
   }
-  var SCHED_TYPE_CLR  = {'Diagnostic Eval':'#8DC63F','Evaluation':'#4a9eff','Welcome Call':'#9b6de8','Install':'#f97316','NS Install':'#4a9eff'};
+  var SCHED_TYPE_CLR  = {'Solar Evaluation':'#4a9eff','Diagnostic Visit':'#8DC63F','Repair Service Visit':'#8DC63F','Battery Install':'#f97316','Site Survey':'#14b8a6','Inspection':'#eab308','Diagnostic Eval':'#8DC63F','Evaluation':'#4a9eff','Welcome Call':'#9b6de8','Install':'#f97316','NS Install':'#4a9eff'};
   var SCHED_MONTHS    = ['January','February','March','April','May','June','July','August','September','October','November','December'];
   var SCHED_DAY_SHORT = ['Su','Mo','Tu','We','Th','Fr','Sa'];
   var SCHED_DAY_MED   = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
@@ -5761,7 +5761,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           var tc=SCHED_TYPE_CLR[a.type]||'#888';
           var ts=a.date.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true});
           var fn=(a.customer.first_name||'?');
-          var df=(a.type==='Install'||a.type==='NS Install')?'install_date':'diagnostic_date';
+          var df=a.fromEvent?'__event__':(a.type==='Install'||a.type==='NS Install')?'install_date':'diagnostic_date';
           html+='<div onclick="quickReschedule(\''+a.customer.id+'\',\''+df+'\',\''+fn+' '+(a.customer.last_name||'')+'\',\''+(a.customer[df]||'')+'\',\''+(a.customer.arrival_end||'')+'\')" title="'+fn+' '+(a.customer.last_name||'')+'" style="cursor:pointer;font-size:0.58rem;padding:2px 3px;border-radius:3px;background:'+tc+'22;color:'+tc+';border-left:2px solid '+tc+';margin-bottom:2px;line-height:1.3;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">'+ts+' '+fn+'</div>';
         });
         if (extra) html+='<div style="font-size:0.58rem;color:#555;text-align:center;">+'+extra+' more</div>';
@@ -5799,7 +5799,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           cA2.slice(0,2).forEach(function(a){
             var tc2=SCHED_TYPE_CLR[a.type]||'#888';
             var fn2=(a.customer.first_name||'?');
-            var df2=(a.type==='Install'||a.type==='NS Install')?'install_date':'diagnostic_date';
+            var df2=a.fromEvent?'__event__':(a.type==='Install'||a.type==='NS Install')?'install_date':'diagnostic_date';
             html+='<div onclick="quickReschedule(\''+a.customer.id+'\',\''+df2+'\',\''+fn2+' '+(a.customer.last_name||'')+'\',\''+(a.customer[df2]||'')+'\',\''+(a.customer.arrival_end||'')+'\')" title="'+fn2+'" style="cursor:pointer;font-size:0.58rem;padding:2px 3px;border-radius:3px;background:'+tc2+'22;color:'+tc2+';border-left:2px solid '+tc2+';margin-bottom:2px;line-height:1.3;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">'+fn2+'</div>';
           });
           if (extra2) html+='<div style="font-size:0.58rem;color:#555;text-align:center;">+'+extra2+'</div>';
@@ -5813,6 +5813,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   }
 
   window.quickReschedule = function(id, dateField, name, currentISO, currentEnd) {
+    if (dateField === '__event__') { if (typeof openLeadEditor === 'function') openLeadEditor(id); return; } // events from the Schedule box are edited there
     var existing=document.getElementById('qrModal'); if (existing) existing.remove();
     var d=currentISO?new Date(currentISO):new Date();
     var dv=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
@@ -5897,6 +5898,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   };
 
   // ── SCHEDULE TAB ─────────────────────────────────────────────────────────────
+  // Events saved in the lead editor's Schedule box (appointments table). Shown on the internal Schedule tab only —
+  // nothing here touches the GHL/info@ sales calendar (only a FixMy Solar Evaluation is booked there, from the box itself).
+  var _schedApptCache = { rows: null, at: 0, loading: false };
+  function _schedApptsEnsure() {
+    if (_schedApptCache.loading || (_schedApptCache.rows && Date.now() - _schedApptCache.at < 60000)) return;
+    _schedApptCache.loading = true;
+    var from = new Date(Date.now() - 8*86400000).toISOString(), to = new Date(Date.now() + 91*86400000).toISOString();
+    supabase.createClient(SUPA_URL, SUPA_KEY).from('appointments').select('customer_id,event_type,starts_at,ends_at,notes').eq('status', 'scheduled').gte('starts_at', from).lte('starts_at', to)
+      .then(function(r){ _schedApptCache.rows = (r && !r.error && r.data) || []; }, function(){ _schedApptCache.rows = []; })
+      .then(function(){ _schedApptCache.at = Date.now(); _schedApptCache.loading = false; if (typeof adminView !== 'undefined' && adminView === 'schedule') renderScheduleView(); });
+  }
   function renderScheduleView() {
     if (_adminOnlyGuard()) return;
     adminView = 'schedule';
@@ -5933,6 +5945,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         }
       }
     });
+    _schedApptsEnsure();
+    (_schedApptCache.rows || []).forEach(function(r) {
+      var cu = adminCustomers.find(function(x){ return x.id === r.customer_id; }); if (!cu) return;
+      var rd = new Date(r.starts_at);
+      if (appts.some(function(a){ return a.customer.id === cu.id && Math.abs(a.date - rd) < 120000; })) return; // already listed from the date columns
+      appts.push({ customer: cu, date: rd, type: r.event_type, endTime: null, dateOnly: r.notes === 'date_only', fromEvent: true });
+    });
     appts.sort(function(a,b){ return a.date - b.date; });
 
     // Group by date for the list below the calendar
@@ -5961,7 +5980,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           var isPast = a.date < now;
           var tc = SCHED_TYPE_CLR[a.type]||'#888';
           var bdr = isPast ? 'rgba(239,68,68,0.3)' : isToday ? 'rgba(141,198,63,0.3)' : 'rgba(255,255,255,0.1)';
-          var df = (a.type==='Install'||a.type==='NS Install')?'install_date':'diagnostic_date';
+          var df = a.fromEvent?'__event__':(a.type==='Install'||a.type==='NS Install')?'install_date':'diagnostic_date';
           var name = (c.first_name||'')+' '+(c.last_name||'');
           listHtml += '<div style="background:rgba(255,255,255,0.04);border:1px solid '+bdr+';border-radius:12px;padding:14px;margin-bottom:8px;">';
           listHtml += '<div style="display:flex;justify-content:space-between;align-items:flex-start;">';
@@ -9263,6 +9282,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var newNotes = _appendNote(fresh.data && fresh.data[0] ? fresh.data[0].notes : c.notes, '📍 Check-in — ' + who, text);
       var up = await client.from('customers').update({ notes: newNotes }).eq('id', id).select('id');
       if (up.error || !up.data || !up.data.length) return fail('Check-in could not be saved' + (up.error ? ': ' + up.error.message : '') + '. Try again.');
+      if (window._opsOnCheckIn) window._opsOnCheckIn(id, newNotes);
       [typeof adminCustomers !== 'undefined' ? adminCustomers : [], (typeof allRecords !== 'undefined' ? allRecords : [])].forEach(function(arr) {
         (arr || []).forEach(function(r) { if (r.id === id) r.notes = newNotes; });
       });
@@ -28525,6 +28545,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         edField('Email','edEmail',c.email||'','email')+edField('Phone','edPhone',c.phone||'','tel')+
         edField('Address','edAddr',c.address||'','text')+(isNSEdit?'':edField('System Size (kW)','edSys',c.system_size||'','text'))+
         edField('Utility','edUtil',c.utility||'','text')+
+        edField('What the homeowner reported','edReported',c.reported_issue||'','text')+
         '<div><label class="ed-label">Monthly Bill ($)</label>'+
           '<div style="display:flex;gap:5px;align-items:center;">'+
             '<input type="text" id="edBill" class="ed-input" value="'+(c.monthly_bill||'')+'" style="flex:1;min-width:0;"/>'+
@@ -29370,6 +29391,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // Quoya's qualification form just wrote, breaking the Axia commission math it feeds.
       system_size: document.getElementById('edSys') ? (document.getElementById('edSys').value||null) : (cRec.system_size||null),
       utility: document.getElementById('edUtil').value||null,
+      reported_issue: document.getElementById('edReported') ? (document.getElementById('edReported').value.trim()||null) : (cRec.reported_issue||null),
       monthly_bill: document.getElementById('edBill').value||null,
       step: stepVal,
       diagnostic_date: diagDate,
@@ -34015,6 +34037,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<div class="editor-section-title">Property</div>'+
         '<div class="ed-grid">'+
           '<div><label class="ed-label">Service Address</label><input type="text" id="seAddr" class="ed-input" value="'+esc(l.address||'')+'"/></div>'+
+          '<div><label class="ed-label">What the homeowner reported</label><input type="text" id="seReported" class="ed-input" placeholder="e.g. inverter shows a red light, no production since Tuesday" value="'+esc(l.reported_issue||'')+'"/></div>'+
           '<div><label class="ed-label">Monthly Bill ($)</label>'+
             '<div style="display:flex;gap:5px;align-items:center;">'+
               '<input type="number" id="seBill" class="ed-input" value="'+(l.monthly_bill||'')+'" style="flex:1;min-width:0;"/>'+
@@ -34119,6 +34142,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           phone: document.getElementById('sePhone').value || null,
           email: document.getElementById('seEmail').value || null,
           address: document.getElementById('seAddr').value || null,
+          reported_issue: (document.getElementById('seReported')||{}).value ? document.getElementById('seReported').value.trim() : null,
           monthly_bill: billRaw ? parseFloat(billRaw) : null,
           lead_source: (document.getElementById('seLeadSource')||{}).value || null,
         };
@@ -36103,6 +36127,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
 
     var activeJobId = null;
+    // Check-in (shared apptCheckIn) stamps notes with who did it — make sure that's this partner, never a prompt.
+    window._bbDialerPersonName = ops.name; window._bbDialerPersonId = ops.id;
+    window._opsOnCheckIn = function(id, notes) { var j = jobs.find(function(x){ return x.id === id; }); if (j) j.notes = notes; };
     var opsEvalCache = {};   // job id -> {row} once the diagnostic briefing data has been fetched (success or not)
     async function opsLoadEval(jid) {
       opsEvalCache[jid] = { row: null, loading: true };
@@ -36356,7 +36383,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             (job.phone ? '<div style="font-size:0.72rem;color:#555;margin-top:3px;">&#128222; ' + (job.phone||'') + '</div>' : '') +
             (job.email ? '<div style="font-size:0.72rem;color:#555;margin-top:2px;">&#9993; ' + (job.email||'') + '</div>' : '') +
             '</div>' +
-            '<div class="tech-job-date">' + dateHtml + '</div></div>' +
+            '<div class="tech-job-date">' + dateHtml + (job.diag_visit_confirmed_at && window._checkinBtnHtml ? '<div style="margin-top:8px;">' + window._checkinBtnHtml(job) + '</div>' : '') + '</div></div>' +
           '<div class="tech-actions">' +
             (job.phone ? '<a href="tel:' + (job.phone||'').replace(/\D/g,'') + '" class="tech-btn tech-btn-call">&#128222; Call</a>' : '') +
             (job.email ? '<a href="mailto:' + (job.email||'') + '" class="tech-btn tech-btn-secondary">&#9993; Email</a>' : '') +
@@ -36374,6 +36401,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             var a = (ev && ev.answers) || {}, ts = (ev && ev.troubleshoot && ev.troubleshoot.status === 'ready' && ev.troubleshoot.result) || null;
             var sys = ev ? [ev.inverter_brand, ev.inverter_model].filter(Boolean).join(' ') : '';
             var rowsHtml = '';
+            if (job.reported_issue) rowsHtml += row('Reported', esc(job.reported_issue), true);
             rowsHtml += row('System', sys ? esc(sys) + (ev.inverter_serial ? '<div style="font-weight:500;font-size:0.74rem;color:#555;">Serial ' + esc(ev.inverter_serial) + '</div>' : '') : (loading ? 'Loading…' : 'Not captured yet — check the photos below'), !sys && !loading);
             var sizeBits = [job.system_size ? esc(job.system_size) + ' kW' : '', (ev && ev.utility) || job.utility || ''].filter(Boolean).join(' · ');
             if (sizeBits) rowsHtml += row('Size · Utility', esc(sizeBits));
