@@ -10045,7 +10045,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return p.label || p.Label || '';
   }
   function _evHas(label) {
-    return _evPhotos().filter(function(p){ return _evPhotoSlotLabel(p) === label; });
+    return _evPhotos().filter(function(p){ return _evPhotoSlotLabel(p) === label && !(label === 'Utility Bill' && _gbdIsDataFile(p)); });
   }
   function _evSlotDone(slot) {
     return _evHas(slot.label).length > 0 || !!_evLocal.skipped[slot.key];
@@ -11209,7 +11209,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     for (i = hi + 1; i < lines.length; i++) {
       if (!lines[i]) continue;
       var c = sp(lines[i]); if (!c[cDate]) continue;
-      var ms = Date.parse(c[cDate] + (cTime > -1 && cTime !== cDate ? ' ' + c[cTime] : '')); if (isNaN(ms)) continue;
+      var ms = Date.parse(c[cDate] + (cTime > -1 && cTime !== cDate && !/\d:\d/.test(c[cDate]) ? ' ' + c[cTime] : '')); if (isNaN(ms)) continue;
       vals.forEach(function(k){
         var v = parseFloat(c[k]); if (isNaN(v)) return;
         var ex = /(receiv|export|generat|to grid)/.test(hd[k]) || (cType > -1 && /(export|generat|receiv|to grid)/i.test(c[cType]));
@@ -11265,17 +11265,87 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     bits.push('evenings ~' + g.evening_kwh_per_day + ' kWh/day imported (4–9pm)');
     return bits.join(' · ');
   }
+  // ── Excel (.xlsx) reader for Green Button files (2026-10-13) ── an .xlsx is a zip of XML;
+  // read it with the browser's own DecompressionStream (no library). Returns CSV text that
+  // _gbdParse already understands. Excel date serials in date/time columns become real dates.
+  function _gbdIsDataFile(p) { return /\.(xlsx|xls|csv|xml)(\?|$)/i.test(String((p && (p.path || p.url)) || '')); }
+  async function _gbdXlsxToCsv(buf) {
+    var u8 = new Uint8Array(buf), dv = new DataView(buf), td = new TextDecoder();
+    var eocd = -1; for (var i = u8.length - 22; i >= Math.max(0, u8.length - 70000); i--) { if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; } }
+    if (eocd < 0) throw new Error('not an xlsx');
+    var n = dv.getUint16(eocd + 10, true), off = dv.getUint32(eocd + 16, true), files = {};
+    for (var k = 0; k < n; k++) {
+      if (dv.getUint32(off, true) !== 0x02014b50) break;
+      var meth = dv.getUint16(off + 10, true), csz = dv.getUint32(off + 20, true), nl = dv.getUint16(off + 28, true), el = dv.getUint16(off + 30, true), cl = dv.getUint16(off + 32, true), lo = dv.getUint32(off + 42, true);
+      files[td.decode(u8.subarray(off + 46, off + 46 + nl))] = { meth: meth, csz: csz, lo: lo };
+      off += 46 + nl + el + cl;
+    }
+    async function read(name) {
+      var f = files[name]; if (!f) return null;
+      var ds = f.lo + 30 + dv.getUint16(f.lo + 26, true) + dv.getUint16(f.lo + 28, true), data = u8.subarray(ds, ds + f.csz);
+      if (f.meth === 0) return td.decode(data);
+      var st = new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+      return td.decode(await new Response(st).arrayBuffer());
+    }
+    var sheetName = Object.keys(files).filter(function(x){ return /^xl\/worksheets\/sheet\d+\.xml$/.test(x); }).sort()[0];
+    if (!sheetName) throw new Error('no sheet');
+    var ss = [], sx = await read('xl/sharedStrings.xml');
+    var unesc = function(t){ return t.replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&apos;/g,"'").replace(/&amp;/g,'&'); };
+    if (sx) { var rs = /<si>([\s\S]*?)<\/si>/g, m; while ((m = rs.exec(sx))) { var tt = '', rt = /<t[^>]*>([\s\S]*?)<\/t>/g, mm; while ((mm = rt.exec(m[1]))) tt += mm[1]; ss.push(unesc(tt)); } }
+    var xml = await read(sheetName), rows = [], rr = /<row[^>]*>([\s\S]*?)<\/row>/g, rm;
+    while ((rm = rr.exec(xml))) {
+      var row = [], rc = /<c ([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g, cm;
+      while ((cm = rc.exec(rm[1]))) {
+        var at = cm[1], body = cm[2] || '', ref = (at.match(/r="([A-Z]+)\d+"/) || [])[1], ty = (at.match(/t="(\w+)"/) || [])[1], v = (body.match(/<v>([\s\S]*?)<\/v>/) || [])[1], val = '';
+        if (ty === 's') val = ss[+v] || ''; else if (ty === 'inlineStr') val = unesc((body.match(/<t[^>]*>([\s\S]*?)<\/t>/) || [])[1] || ''); else if (v != null) val = unesc(v);
+        var ci = 0; for (var q = 0; q < (ref || '').length; q++) ci = ci * 26 + ref.charCodeAt(q) - 64;
+        row[ci - 1] = val;
+      }
+      rows.push(row);
+    }
+    var hi = -1; for (var r = 0; r < Math.min(rows.length, 40); r++) { var line = (rows[r] || []).join(','); if (/(start|date)/i.test(line) && /(usage|value|kwh|deliver|receiv|export|generat|consum)/i.test(line)) { hi = r; break; } }
+    var dcols = {};
+    if (hi >= 0) (rows[hi] || []).forEach(function(h, c){ if (/date|start|time/i.test(h || '') && !/end/i.test(h || '')) dcols[c] = 1; });
+    var p2 = function(x){ return (x < 10 ? '0' : '') + x; };
+    return rows.map(function(row, ri) {
+      var out = []; for (var c = 0; c < row.length; c++) {
+        var x = row[c] == null ? '' : String(row[c]);
+        if (ri > hi && hi >= 0 && dcols[c] && /^\d+(\.\d+)?$/.test(x)) {
+          var num = parseFloat(x);
+          if (num > 36526 && num < 73050) { var d = new Date(Math.round((num - 25569) * 86400000)); x = d.getUTCFullYear() + '-' + p2(d.getUTCMonth()+1) + '-' + p2(d.getUTCDate()) + (num % 1 ? ' ' + p2(d.getUTCHours()) + ':' + p2(d.getUTCMinutes()) : ''); }
+          else if (num >= 0 && num < 1) { var mn = Math.round(num * 1440); x = p2(Math.floor(mn / 60) % 24) + ':' + p2(mn % 60); }
+        }
+        out.push('"' + x.replace(/"/g, '""') + '"');
+      }
+      return out.join(',');
+    }).join('\n');
+  }
+  window._gbdXlsxToCsv = _gbdXlsxToCsv;
+  async function _gbdFromBuffer(buf, name) {
+    var isX = /\.xlsx(\?|$)/i.test(name || '') || (new Uint8Array(buf, 0, 2)[0] === 0x50 && new Uint8Array(buf, 0, 2)[1] === 0x4b);
+    if (!isX && /\.xls(\?|$)/i.test(name || '')) return { ok: false, msg: 'That is an old .xls file — open it and save as .xlsx or CSV, then upload again.' };
+    return _gbdAnalyze(_gbdParse(isX ? await _gbdXlsxToCsv(buf) : new TextDecoder().decode(buf)));
+  }
+  var _gbdAutoTried = {};
+  function _gbdUploadedFiles() { return _evPhotos().filter(_gbdIsDataFile); }
+  window.evGbdFromUpload = async function(id) {
+    var p = _gbdUploadedFiles().filter(function(x){ return String(x.id) === String(id); })[0]; if (!p) return;
+    _gbdAutoTried[id] = true;
+    var st = document.getElementById('gbdStatus'); if (st) st.textContent = 'Reading the homeowner\'s file…';
+    var g;
+    try { var r = await fetch(p.url); if (!r.ok) throw new Error('http ' + r.status); g = await _gbdFromBuffer(await r.arrayBuffer(), p.path || p.url); }
+    catch (e) { g = { ok: false, msg: 'Couldn\'t read the homeowner\'s file automatically — download it and upload it below.' }; }
+    if (!g.ok) { _gbdAutoTried[id] = g.msg; if (st) st.textContent = g.msg; _evRender(); return; }
+    _evLocal.answers.gbd = g; _evSave({ answers: _evLocal.answers }); _evRender();
+  };
   window._gbdParse = _gbdParse; window._gbdAnalyze = _gbdAnalyze; window._gbdSummaryLine = _gbdSummaryLine;
   window.evGbdFile = function(inp) {
     var f = inp.files && inp.files[0]; if (!f) return;
     var st = document.getElementById('gbdStatus'); if (st) st.textContent = 'Reading…';
-    var rd = new FileReader();
-    rd.onload = function() {
-      var g; try { g = _gbdAnalyze(_gbdParse(rd.result)); } catch (e) { g = { ok: false, msg: 'Could not read that file.' }; }
+    f.arrayBuffer().then(function(buf){ return _gbdFromBuffer(buf, f.name); }).catch(function(){ return { ok: false, msg: 'Could not read that file.' }; }).then(function(g){
       if (!g.ok) { if (st) st.textContent = g.msg || 'Could not read that file — try the CSV from the SDG&E Green Button page.'; return; }
       _evLocal.answers.gbd = g; _evSave({ answers: _evLocal.answers }); _evRender();
-    };
-    rd.readAsText(f);
+    });
   };
   window.evGbdClear = function() { delete _evLocal.answers.gbd; _evSave({ answers: _evLocal.answers }); _evRender(); };
   function _evGbdHtml() {
@@ -11286,7 +11356,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       h += '<div style="font-size:0.74rem;line-height:1.55;color:#8DC63F;">' + _gbdSummaryLine(g).replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</div>' +
         '<button onclick="evGbdClear()" style="width:auto;margin-top:8px;padding:5px 12px;background:transparent;border:1px solid rgba(255,255,255,0.2);color:#999;border-radius:100px;font-size:0.7rem;cursor:pointer;">Remove</button>';
     } else {
-      h += '<input type="file" accept=".csv,.xml,text/csv,text/xml" onchange="evGbdFile(this)" style="font-size:0.75rem;"/><div id="gbdStatus" style="font-size:0.7rem;color:#f59e0b;margin-top:6px;"></div>';
+      var up = _gbdUploadedFiles()[0];
+      if (up) {
+        if (!_gbdAutoTried[up.id]) setTimeout(function(){ window.evGbdFromUpload(up.id); }, 0);
+        h += '<div style="font-size:0.72rem;color:#8DC63F;margin-bottom:6px;">&#128193; The homeowner sent a data file' + (typeof _gbdAutoTried[up.id] === 'string' ? ' — ' + _gbdAutoTried[up.id].replace(/&/g,'&amp;').replace(/</g,'&lt;') : ' — reading it…') + '</div>';
+      }
+      h += '<input type="file" accept=".csv,.xml,.xlsx,text/csv,text/xml" onchange="evGbdFile(this)" style="font-size:0.75rem;"/><div id="gbdStatus" style="font-size:0.7rem;color:#f59e0b;margin-top:6px;"></div>';
     }
     return h + '</div>';
   }
