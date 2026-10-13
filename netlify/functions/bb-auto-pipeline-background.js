@@ -328,6 +328,7 @@ exports.handler = async function(event) {
     return /AbortError|aborted|timeout|timed out/i.test(msg) ? 'timeout' : 'net_error';
   }
   async function checkpoint(phase) {
+    try { await flushPermitQueue(); } catch (e) { /* queue not initialised yet */ }
     try {
       const ts = new Date().toISOString();
       const rows = [
@@ -600,16 +601,36 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
   // Load all existing addresses into a Set for O(1) dedup
   stamp('Loading existing addresses...');
   const existingAddrs = new Set();
+  // Existing leads with no permit_date yet, key -> id. When a permit pull below returns a permit for
+  // an address we already have, its filed date is written onto that lead (backfill, only ever fills
+  // a blank permit_date). The pull otherwise skips known addresses, so without this they never get one.
+  const needPermit = new Map();
+  let permitBackfilled = 0;
+  const permitQueue = [];
+  async function flushPermitQueue() {
+    while (permitQueue.length) {
+      const chunk = permitQueue.splice(0, 20);
+      await Promise.all(chunk.map(async q => {
+        try { if (await supaUpdate(q.id, { permit_date: q.date })) permitBackfilled++; } catch (e) {}
+      }));
+    }
+  }
+  async function queuePermit(key, permitDate) {
+    if (!permitDate || !needPermit.has(key)) return;
+    permitQueue.push({ id: needPermit.get(key), date: permitDate });
+    needPermit.delete(key);
+    if (permitQueue.length >= 20) await flushPermitQueue();
+  }
   let addrOffset = 0;
   while (true) {
     if (overGlobal()) break;
-    const r = await supaFetch(`/customers?lead_source=eq.orphaned_list&select=address&order=id.asc&limit=1000&offset=${addrOffset}`);
+    const r = await supaFetch(`/customers?lead_source=eq.orphaned_list&select=id,address,permit_date&order=id.asc&limit=1000&offset=${addrOffset}`);
     if (!r.ok || !Array.isArray(r.data) || !r.data.length) break;
-    r.data.forEach(row => existingAddrs.add(normAddr(row.address)));
+    r.data.forEach(row => { const k = normAddr(row.address); existingAddrs.add(k); if (!row.permit_date && k) needPermit.set(k, row.id); });
     if (r.data.length < 1000) break;
     addrOffset += 1000;
   }
-  stamp(`Loaded ${existingAddrs.size} existing addresses`);
+  stamp(`Loaded ${existingAddrs.size} existing addresses (${needPermit.size} without a permit date)`);
 
   // Apply AI-suggested missing name variants from previous Phase 0 run
   try {
@@ -662,6 +683,7 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
               extractSocrataAddress(p, defaultCity);
             if (!street || !isTarget(street, city, state, zip)) continue;
             const key = normAddr(fullAddress);
+            if (key && existingAddrs.has(key)) await queuePermit(key, permitDate);
             if (!key || seenLocal.has(key) || existingAddrs.has(key)) continue;
             const candidate = {
               address: fullAddress,
@@ -843,6 +865,7 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
                 extractPSAddress1c(p, city);
               if (!street || !/^\d/.test(street)) continue;
               const key = normAddr(fullAddress);
+              if (key && existingAddrs.has(key)) await queuePermit(key, permitDate);
               if (!key || seenLocal1c.has(key) || existingAddrs.has(key)) continue;
               const candidate = {
                 address: fullAddress,
@@ -897,6 +920,7 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
 
 
   progress.phase1c_new_permits = inserted1c;
+  try { await flushPermitQueue(); progress.permit_dates_backfilled = permitBackfilled; stamp('Permit dates backfilled onto existing leads: ' + permitBackfilled); } catch (e) {}
   await checkpoint('phase1c');
   // ══════════════════════════════════════════════════════════════════════════
   // PHASE 1d — SD COUNTY OPEN DATA (Socrata / unincorporated areas)
@@ -942,6 +966,7 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
               extractSocrataAddress(p, '');
             if (!street || !isTarget(street, city, state, zip)) continue;
             const key = normAddr(fullAddress);
+            if (key && existingAddrs.has(key)) await queuePermit(key, permitDate);
             if (!key || seenLocal1d.has(key) || existingAddrs.has(key)) continue;
             const candidate = {
               address: fullAddress,
@@ -1069,6 +1094,7 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
                   extractPSAddress(p, city);
                 if (!street || !/^\d/.test(street)) continue;
                 const key = normAddr(fullAddress);
+                if (key && existingAddrs.has(key)) await queuePermit(key, permitDate);
                 if (!key || seenLocal1b.has(key) || existingAddrs.has(key)) continue;
                 const candidate = {
                   address: fullAddress,
