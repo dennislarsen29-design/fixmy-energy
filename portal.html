@@ -7794,7 +7794,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           var privCount = _parseNotes(jobNotes).length;
           var body =
             '<label style="'+lbl+'">What did '+esc(inst)+' tell you?</label>'+
-            '<textarea id="drNotes" rows="4" style="'+ta+'min-height:84px;" placeholder="Type or paste it your way — shorthand is fine. Only you see this box."></textarea>'+
+            '<textarea id="drNotes" rows="4" style="'+ta+'min-height:84px;" placeholder="Type or paste it your way — shorthand is fine. Only you see this box.">'+esc((function(){ var f = c.diag_findings; if (!f || hasResults) return ''; var fx = {swap:'swap/replace',repair:'repair',nothing:'nothing needed',unsure:'not sure yet'}[f.fix] || ''; return [f.cause && ('Cause: ' + f.cause), f.codes && ('Error codes: ' + f.codes), fx && ('Fix: ' + fx), f.warranty && ('Under warranty: ' + f.warranty), f.parts && ('Parts: ' + f.parts), f.working && ('Working now: ' + f.working)].filter(Boolean).join('\n'); })())+'</textarea>'+
             '<button class="job-save-btn" id="drDraftBtn" style="margin-top:8px;background:linear-gradient(135deg,#7c3aed,#8DC63F);" onclick="draftDiagReport(\''+c.id+'\')">&#10024; Quoya Assist: write the customer version</button>'+
             '<div id="drDraftMsg" style="font-size:0.74rem;margin-top:6px;min-height:1em;"></div>'+
             '<label style="'+lbl+'">Customer report <span style="text-transform:none;letter-spacing:0;color:#999;font-weight:400;">&mdash; exactly what the customer will see (edit freely)</span></label>'+
@@ -10869,6 +10869,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
       if (step.key === 'triage')      h += _evTriageHtml();
       if (step.key === 'hardware')    h += _evHardwareFieldsHtml();
+      if (step.key === 'hardware' && _evLocal.answers.system_issue !== 'yes') h += _evNotesHtml();
       if (step.key === 'powercycle')  h += _evPowerCycleHtml();
       if (step.key === 'production')  h += _evProductionHelpHtml();
       // Utility picker sits UNDER Quoya's bill analysis once a bill is uploaded (it is auto-filled
@@ -10880,9 +10881,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       step.slots.forEach(function(s){ h += _evSlotHtml(s); });
       if (_utilBelow) h += _evUtilityHelpHtml();
       if (step.key === 'consumption') h += _evBillAnalysisHtml();
+      if (step.key === 'consumption') h += _evGbdHtml();
       // Troubleshoot card sits BELOW the Error Codes slot — its button needs those
       // photos, so the upload comes first in reading order.
       if (step.key === 'powercycle') h += _evTroubleshootHtml();
+      if (step.key === 'powercycle') h += _evNotesHtml();
 
       // Footer nav. On triage with "no solar" answered, the Move-to-Axia CTA inside
       // _evTriageHtml IS the exit — a Next button there would imply a FixMy eval
@@ -11171,6 +11174,123 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     _evSave({ answers: _evLocal.answers });
     _evRender();
   };
+  // ── Evaluation notes + optional Green Button step (2026-10-13, per Dennis) ──
+  window.evNote = function(val) {
+    _evLocal.answers.eval_notes = String(val || '').slice(0, 1500);
+    _evSave({ answers: _evLocal.answers });
+  };
+  function _evNotesHtml() {
+    var v = (_evLocal.answers.eval_notes || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+    return '<div style="margin:14px 0;"><div style="font-size:0.8rem;font-weight:800;margin-bottom:4px;">&#128221; Evaluation notes</div>' +
+      '<div style="font-size:0.68rem;color:#999;margin-bottom:6px;">What you saw on site, in your own words — the electrician reads this before the diagnostic.</div>' +
+      '<textarea rows="3" maxlength="1500" onchange="evNote(this.value)" onblur="evNote(this.value)" placeholder="e.g. Inverter display dark, breaker was tripped, panels dusty, no roof access…" style="width:100%;box-sizing:border-box;padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.14);background:rgba(255,255,255,0.05);color:inherit;font-size:0.82rem;font-family:inherit;">' + v + '</textarea></div>';
+  }
+  // Green Button: customer-downloaded CSV/XML, parsed in the browser; only a small SUMMARY
+  // is saved. Heuristics only — the meter sees the grid boundary (WHEN, not how big).
+  function _gbdParse(text) {
+    var rows = [], t = String(text || '');
+    if (/<IntervalReading|<espi:|<feed/i.test(t)) {
+      var re = /<(?:espi:)?IntervalReading>([\s\S]*?)<\/(?:espi:)?IntervalReading>/g, m;
+      while ((m = re.exec(t))) {
+        var b = m[1], st = (b.match(/<(?:espi:)?start>(\d+)</) || [])[1], du = (b.match(/<(?:espi:)?duration>(\d+)</) || [])[1], va = (b.match(/<(?:espi:)?value>(-?[\d.]+)</) || [])[1];
+        if (st && va) rows.push({ t: +st * 1000, mins: du ? +du / 60 : 15, kwh: +va / 1000, dir: 'import' });
+      }
+      if ((t.match(/flowDirection>(\d+)</) || [])[1] === '19') rows.forEach(function(r){ r.dir = 'export'; });
+      return rows;
+    }
+    var lines = t.split(/\r?\n/), hi = -1, i;
+    for (i = 0; i < Math.min(lines.length, 40); i++) { if (/(start|date)/i.test(lines[i]) && /(usage|value|kwh|deliver|receiv|export|generat|consum)/i.test(lines[i])) { hi = i; break; } }
+    if (hi < 0) return rows;
+    var sp = function(l){ return l.split(',').map(function(x){ return x.replace(/^"|"$/g,'').trim(); }); };
+    var hd = sp(lines[hi]).map(function(x){ return x.toLowerCase(); });
+    var find = function(re){ for (var k = 0; k < hd.length; k++) if (re.test(hd[k])) return k; return -1; };
+    var cDate = find(/date|^start/), cTime = find(/start time|^time/), cType = find(/type|direction|flow/);
+    var vals = []; hd.forEach(function(h, k){ if (/(usage|value|kwh|deliver|receiv|export|generat|consum)/.test(h) && !/(cost|price|\$|temp)/.test(h)) vals.push(k); });
+    for (i = hi + 1; i < lines.length; i++) {
+      if (!lines[i]) continue;
+      var c = sp(lines[i]); if (!c[cDate]) continue;
+      var ms = Date.parse(c[cDate] + (cTime > -1 && cTime !== cDate ? ' ' + c[cTime] : '')); if (isNaN(ms)) continue;
+      vals.forEach(function(k){
+        var v = parseFloat(c[k]); if (isNaN(v)) return;
+        var ex = /(receiv|export|generat|to grid)/.test(hd[k]) || (cType > -1 && /(export|generat|receiv|to grid)/i.test(c[cType]));
+        var d = ex ? 'export' : 'import';
+        if (v < 0) { v = -v; d = 'export'; }
+        rows.push({ t: ms, mins: 0, kwh: v, dir: d });
+      });
+    }
+    if (rows.length > 2) { var ts = rows.map(function(r){ return r.t; }).sort(function(a,b){ return a-b; }), best = 1e12; for (var q = 1; q < Math.min(ts.length, 400); q++) { var df = ts[q] - ts[q-1]; if (df > 0 && df < best) best = df; } var mn = Math.round(best / 60000) || 15; rows.forEach(function(r){ r.mins = mn; }); }
+    return rows;
+  }
+  function _gbdAnalyze(rows) {
+    var out = { ok: false, intervals: rows.length };
+    if (rows.length < 96) { out.msg = 'Too little data (need at least a day of readings).'; return out; }
+    var mins = rows[0].mins || 15; out.interval_min = mins;
+    var days = {}, hasExp = false;
+    rows.forEach(function(r){
+      var d = new Date(r.t), key = d.getFullYear() + '-' + (d.getMonth()+1) + '-' + d.getDate(), h = d.getHours() + d.getMinutes()/60;
+      var o = days[key] || (days[key] = { ms: r.t, exp: [], eve: 0, night: [], mid: 0 });
+      var kw = r.kwh * 60 / (r.mins || mins);
+      if (r.dir === 'export') { hasExp = true; o.exp.push(kw); if (h >= 10 && h < 15) o.mid += r.kwh; }
+      else { if (h >= 16 && h < 21) o.eve += r.kwh; if (h < 5) o.night.push(kw); }
+    });
+    var keys = Object.keys(days).sort(function(a,b){ return days[a].ms - days[b].ms; });
+    out.days = keys.length; out.has_export = hasExp;
+    var med = function(a){ a = a.slice().sort(function(x,y){ return x-y; }); return a.length ? a[Math.floor(a.length/2)] : 0; };
+    out.evening_kwh_per_day = +med(keys.map(function(k){ return days[k].eve; })).toFixed(1);
+    out.baseload_kw = +med(keys.map(function(k){ return med(days[k].night); })).toFixed(2);
+    if (!hasExp) { out.msg = 'No export readings in this file — it looks like usage only, so it can\'t say anything about the solar system.'; out.ok = true; return out; }
+    var pk = keys.map(function(k){ return Math.max.apply(null, days[k].exp.length ? days[k].exp : [0]); });
+    var top = pk.slice().sort(function(a,b){ return a-b; })[Math.floor(pk.length*0.9)] || 0;
+    out.peak_export_kw = +top.toFixed(2);
+    var flat = 0, strong = 0;
+    keys.forEach(function(k, i){ if (pk[i] > top * 0.6) { strong++; var near = days[k].exp.filter(function(x){ return x >= pk[i] * 0.97; }).length; if (near >= 3 && pk[i] >= top * 0.9) flat++; } });
+    out.flat_top_share = strong ? +(flat / strong).toFixed(2) : 0;
+    var runs = [], run = null, seen = false, mids = keys.map(function(k){ return days[k].mid; }), ref = med(mids.filter(function(x){ return x > 0; })) || 0;
+    keys.forEach(function(k, i){
+      var low = ref > 0 && mids[i] < ref * 0.08;
+      if (mids[i] > 0 && !low) seen = true;
+      if (seen && low) { if (!run) run = { from: days[k].ms, to: days[k].ms, n: 0 }; run.to = days[k].ms; run.n++; }
+      else { if (run && run.n >= 3) runs.push(run); run = null; }
+    });
+    if (run && run.n >= 3) runs.push(run);
+    out.down_runs = runs.slice(-3).map(function(r){ return { from: new Date(r.from).toISOString().slice(0,10), to: new Date(r.to).toISOString().slice(0,10), days: r.n }; });
+    out.ok = true; return out;
+  }
+  function _gbdSummaryLine(g) {
+    if (!g) return '';
+    if (g.msg && !g.has_export) return g.msg;
+    var bits = [g.days + ' days of ' + g.interval_min + '-min data', 'peak export ~' + g.peak_export_kw + ' kW'];
+    if (g.flat_top_share >= 0.4) bits.push('export flat-tops on ' + Math.round(g.flat_top_share*100) + '% of strong days (possible clipping — inverter may be undersized)');
+    if (g.down_runs && g.down_runs.length) { var d = g.down_runs[g.down_runs.length-1]; bits.push('~no midday export ' + d.from + ' to ' + d.to + ' (' + d.days + ' days — possible outage/fault)'); }
+    bits.push('evenings ~' + g.evening_kwh_per_day + ' kWh/day imported (4–9pm)');
+    return bits.join(' · ');
+  }
+  window._gbdParse = _gbdParse; window._gbdAnalyze = _gbdAnalyze; window._gbdSummaryLine = _gbdSummaryLine;
+  window.evGbdFile = function(inp) {
+    var f = inp.files && inp.files[0]; if (!f) return;
+    var st = document.getElementById('gbdStatus'); if (st) st.textContent = 'Reading…';
+    var rd = new FileReader();
+    rd.onload = function() {
+      var g; try { g = _gbdAnalyze(_gbdParse(rd.result)); } catch (e) { g = { ok: false, msg: 'Could not read that file.' }; }
+      if (!g.ok) { if (st) st.textContent = g.msg || 'Could not read that file — try the CSV from the SDG&E Green Button page.'; return; }
+      _evLocal.answers.gbd = g; _evSave({ answers: _evLocal.answers }); _evRender();
+    };
+    rd.readAsText(f);
+  };
+  window.evGbdClear = function() { delete _evLocal.answers.gbd; _evSave({ answers: _evLocal.answers }); _evRender(); };
+  function _evGbdHtml() {
+    var g = _evLocal.answers.gbd, h = '<div style="margin:16px 0;padding:12px;border:1px dashed rgba(141,198,63,0.5);border-radius:10px;">' +
+      '<div style="font-size:0.8rem;font-weight:800;margin-bottom:3px;">&#9889; Green Button data <span style="font-weight:600;color:#999;">(optional)</span></div>' +
+      '<div style="font-size:0.68rem;color:#999;line-height:1.5;margin-bottom:8px;">If the homeowner can download their 15-minute data (SDG&amp;E account &rarr; Green Button &rarr; CSV), upload it here. It can hint at clipping or a down period. It is a hint only — the meter can\'t see equipment size or string faults.</div>';
+    if (g) {
+      h += '<div style="font-size:0.74rem;line-height:1.55;color:#8DC63F;">' + _gbdSummaryLine(g).replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</div>' +
+        '<button onclick="evGbdClear()" style="width:auto;margin-top:8px;padding:5px 12px;background:transparent;border:1px solid rgba(255,255,255,0.2);color:#999;border-radius:100px;font-size:0.7rem;cursor:pointer;">Remove</button>';
+    } else {
+      h += '<input type="file" accept=".csv,.xml,text/csv,text/xml" onchange="evGbdFile(this)" style="font-size:0.75rem;"/><div id="gbdStatus" style="font-size:0.7rem;color:#f59e0b;margin-top:6px;"></div>';
+    }
+    return h + '</div>';
+  }
+
   function _evPowerCycleHtml() {
     var a = _evLocal.answers || {};
     var h = '';
@@ -36107,6 +36227,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
               var oc = { restored:'Back online after the tech restarted it', partial:'Only partly back after a restart', still_down:'Still down after the tech restarted it' }[a.pc_outcome];
               rowsHtml += row('Problem', 'System has an issue' + (oc ? ' &mdash; ' + oc : ''), true);
             } else if (a.system_issue === 'no') rowsHtml += row('Problem', 'None reported &mdash; system looks healthy');
+            var pcDone = 0; for (var pi = 0; pi < 8; pi++) if (a['pc_' + pi]) pcDone++;
+            if (a.system_issue === 'yes') rowsHtml += row('Restart', pcDone ? ('Tech did ' + pcDone + ' of 8 restart steps') : 'Not tried yet');
+            if (a.eval_notes) rowsHtml += row('Tech notes', esc(a.eval_notes).replace(/\n/g,'<br>'));
+            if (a.gbd && window._gbdSummaryLine) rowsHtml += row('Meter data', esc(window._gbdSummaryLine(a.gbd)) + '<div style="font-weight:500;font-size:0.7rem;color:#777;">Hint from the homeowner\'s utility data — not proof.</div>');
             var codes = ts && Array.isArray(ts.identified) ? ts.identified.filter(function(c){ return c && c.code; }) : [];
             if (codes.length) rowsHtml += row('Error codes', codes.map(function(c){ return '<div><b>' + esc(c.code) + '</b>' + (c.meaning ? ' <span style="font-weight:500;color:#555;">&mdash; ' + esc(c.meaning) + '</span>' : '') + '</div>'; }).join(''), true);
             if (ts && ts.diagnosis) rowsHtml += row('Likely cause', esc(ts.diagnosis));
@@ -36186,6 +36310,23 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             '<div id="photoStatus" style="font-size:0.78rem;color:#4a9eff;margin:4px 0;min-height:18px;"></div>' +
             (photoThumbsHtml ? '<div class="tech-photo-grid">' + photoThumbsHtml + '</div>' : '');
 
+          h += (function(){
+            var f = job.diag_findings || {}, e = function(t){ return String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;'); };
+            var sel = function(k, opts){ return '<select data-ff="' + k + '" style="width:100%;padding:9px;border-radius:8px;border:1px solid #ccc;font-size:0.84rem;margin-bottom:8px;">' + opts.map(function(o){ return '<option value="' + o[0] + '"' + (f[k] === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select>'; };
+            var lb = function(t){ return '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#666;margin:6px 0 3px;">' + t + '</div>'; };
+            var inp = 'width:100%;box-sizing:border-box;padding:9px;border-radius:8px;border:1px solid #ccc;font-size:0.84rem;font-family:inherit;margin-bottom:8px;';
+            return '<div class="tech-section-title">&#129514; Diagnostic Findings</div>' +
+              '<div id="opsFind_' + jid + '" style="background:#fff;border:1px solid rgba(0,0,0,0.1);border-radius:10px;padding:12px;margin-bottom:10px;">' +
+              '<div style="font-size:0.72rem;color:#777;margin-bottom:6px;">Fill this in after the paid diagnostic visit. No prices &mdash; just what you found.' + (f.submitted_at ? ' <b style="color:#3d6b12;">Submitted ' + e(String(f.submitted_at).slice(0,10)) + ' &mdash; you can update it.</b>' : '') + '</div>' +
+              lb('What is wrong / the cause') + '<textarea data-ff="cause" rows="3" style="' + inp + '">' + e(f.cause) + '</textarea>' +
+              lb('Error codes seen') + '<input data-ff="codes" value="' + e(f.codes) + '" style="' + inp + '"/>' +
+              lb('Fix needed') + sel('fix', [['','Choose…'],['swap','Swap / replace'],['repair','Repair'],['nothing','Nothing needed'],['unsure','Not sure yet']]) +
+              lb('Under warranty?') + sel('warranty', [['','Choose…'],['yes','Yes'],['no','No'],['unsure','Unsure']]) +
+              lb('Parts needed') + '<input data-ff="parts" value="' + e(f.parts) + '" style="' + inp + '"/>' +
+              lb('Working now?') + sel('working', [['','Choose…'],['yes','Yes'],['partly','Partly'],['no','No']]) +
+              '<button class="tech-save-btn" onclick="saveOpsFindings(\'' + jid + '\', this)">Submit Findings</button>' +
+              '<div data-ff-msg style="font-size:0.74rem;margin-top:6px;min-height:1em;"></div></div>';
+          }());
           h += '<div class="tech-section-title">📝 Ops Notes</div>' +
             '<div id="opsNotesLog_' + jid + '">' + _renderNotesLog(_parseNotes(job.assessment_notes), true) + '</div>' +
             '<textarea class="tech-notes-area" data-notes-jid="' + jid + '" placeholder="Observations, issues found, materials used..."></textarea>' +
@@ -36249,6 +36390,21 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       checklistState[checkKey][key] = !checklistState[checkKey][key];
       sessionStorage.setItem('checklist_ops_' + ops.id, JSON.stringify(checklistState));
       renderOps();
+    };
+    window.saveOpsFindings = async function(jid, btn) {
+      var box = document.getElementById('opsFind_' + jid); if (!box) return;
+      var f = {}; box.querySelectorAll('[data-ff]').forEach(function(el){ if (el.dataset.ff && el.value != null && el.tagName !== 'DIV') f[el.dataset.ff] = String(el.value).trim().slice(0, 1500); });
+      var msg = box.querySelector('[data-ff-msg]');
+      if (!f.cause && !f.fix) { if (msg) { msg.style.color = '#b06a00'; msg.textContent = 'Add at least what is wrong, or the fix needed.'; } return; }
+      f.submitted_at = new Date().toISOString(); f.by = ops.name || 'Ops';
+      if (btn) btn.disabled = true;
+      var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var res = await c2.from('customers').update({ diag_findings: f }).eq('id', jid).select('id');
+      if (btn) btn.disabled = false;
+      if (res.error || !res.data || !res.data.length) { if (msg) { msg.style.color = '#c0392b'; msg.textContent = 'Could not save — check your signal and try again.'; } return; }
+      var job = jobs.find(function(j){ return j.id === jid; }); if (job) job.diag_findings = f;
+      try { await fetch('/.netlify/functions/notify-staff', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ event: 'diag_findings', customerId: jid }) }); } catch (e) {}
+      if (msg) { msg.style.color = '#3d6b12'; msg.textContent = '✓ Submitted — Solar Review has been notified.'; }
     };
     window.saveOpsNotes = async function(jid) {
       var ta = document.querySelector('[data-notes-jid="' + jid + '"]');
