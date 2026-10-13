@@ -9,7 +9,7 @@ const SUPA_URL = process.env.SUPABASE_URL || 'https://kbtobyoumvbcxfbugsid.supab
 const out = (code, o) => ({ statusCode: code, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(o) });
 function safeEqual(a, b) { const x = Buffer.from(String(a || '')), y = Buffer.from(String(b || '')); return x.length === y.length && crypto.timingSafeEqual(x, y); }
 function parseNotes(n) { try { const a = JSON.parse(n || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return n ? [{ by: 'Legacy', ts: null, text: String(n) }] : []; } }
-const STOP_RE = /^\s*(stop|stopall|unsubscribe|cancel|end|quit)\s*[.!]*\s*$/i;
+const STOP_RE = /^\s*(stop|stopall|unsubscribe|cancel|end|quit|revoke|opt[\s-]?out|remove me|do not (text|contact|call)|don'?t (text|contact|call))\b/i;
 
 exports.handler = async function (event, context, deps) {
   const doFetch = (deps && deps.fetch) || fetch;
