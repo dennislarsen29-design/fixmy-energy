@@ -4,6 +4,7 @@
 // (type+time+status) — a repeat call for the same state is a no-op, so a double-tap can't double-text.
 // ENV: SUPA_SERVICE_KEY, GHL_API_KEY, RESEND_API_KEY.
 const notify = require('./lib/notify');
+const ics = require('./lib/ics');
 const SUPA_URL = 'https://kbtobyoumvbcxfbugsid.supabase.co';
 const cors = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' };
 const out = (code, obj) => ({ statusCode: code, headers: cors, body: JSON.stringify(obj) });
@@ -45,7 +46,7 @@ exports.handler = async function (event, context, deps) {
   if (a.notified_for === stateKey) return out(200, { ok: false, reason: 'already_notified' });
   if (a.status === 'completed') return out(200, { ok: false, reason: 'completed' });
 
-  const cr = await doFetch(SUPA_URL + '/rest/v1/customers?id=eq.' + a.customer_id + '&select=id,first_name,last_name,email,phone,access_code&limit=1', { headers: H });
+  const cr = await doFetch(SUPA_URL + '/rest/v1/customers?id=eq.' + a.customer_id + '&select=id,first_name,last_name,email,phone,access_code,address&limit=1', { headers: H });
   const c = ((await cr.json().catch(() => [])) || [])[0];
   if (!c) return out(404, { error: 'Customer not found' });
   if (!notify.toE164(c.phone) && !notify.validEmail(c.email)) return out(200, { ok: false, reason: 'no_contact' });
@@ -62,9 +63,10 @@ exports.handler = async function (event, context, deps) {
   } else {
     const changed = !!prev;
     const lead = changed ? 'has been rescheduled to' : 'is scheduled for';
-    sms = 'Hi ' + first + '! Your Solar Review ' + copy.noun + ' ' + lead + ' ' + when + '. ' + copy.note + ' Details: ' + link;
+    const gUrl = ics.googleUrl(a, copy.noun, copy.note, c.address || '', link), iUrl = ics.icsUrl(id);
+    sms = 'Hi ' + first + '! Your Solar Review ' + copy.noun + ' ' + lead + ' ' + when + '. ' + copy.note + ' Details: ' + link + ' Add to your calendar: ' + iUrl;
     mail = { subject: 'Your ' + copy.noun + (changed ? ' was rescheduled' : ' is scheduled') + ' — ' + fmtDate(a.starts_at), heading: changed ? 'Your ' + copy.noun + ' was rescheduled' : 'Your ' + copy.noun + ' is scheduled',
-      lines: ['Hi ' + first + ', your ' + copy.noun + ' ' + lead + ':', '<b>' + when + '</b>', copy.note], cta: { url: link, label: 'View in my portal' } };
+      lines: ['Hi ' + first + ', your ' + copy.noun + ' ' + lead + ':', '<b>' + when + '</b>', copy.note, '<b>Put it on your calendar:</b> <a href="' + gUrl + '">Google Calendar</a> &nbsp;|&nbsp; <a href="' + iUrl + '">Apple / Outlook (.ics)</a>'], cta: { url: link, label: 'View in my portal' } };
   }
 
   const result = await notify.sendBoth(c, sms, mail, doFetch);
