@@ -11,7 +11,7 @@ const out = (code, obj) => ({ statusCode: code, headers: cors, body: JSON.string
 // What the customer is told each visit is. Internal-only types are never messaged.
 const COPY = {
   'Solar Evaluation': { noun: 'solar evaluation', note: 'A technician will review your system and answer your questions. Please be home during the window.' },
-  'Welcome Call': { noun: 'welcome call', note: 'We will call you from (619) 777-6527 — please keep your phone nearby.' },
+  'Welcome Call': { noun: 'FAQs and Enrollment call', note: 'We will call you from (619) 777-6527 — please keep your phone nearby.' },
   'Diagnostic Visit': { noun: 'diagnostic visit', note: 'Our technician will inspect and test your system. Please be home during the window.' },
   'Repair Service Visit': { noun: 'repair service visit', note: 'Our technician will arrive during the window. Please be home.' },
   'Battery Install': { noun: 'battery installation', note: 'Our crew will arrive during the window. Please be home.' },
