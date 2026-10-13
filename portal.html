@@ -10466,6 +10466,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         reading_method: out.reading_method || 'none',
         monthly_breakdown: Array.isArray(out.monthly_breakdown) ? out.monthly_breakdown : [],
         generation_provider: (reads.filter(function(x){ return x.generation_provider && x.generation_provider !== 'unknown'; })[0] || {}).generation_provider || 'unknown',
+        nem_version: (reads.filter(function(x){ return x.nem_version && x.nem_version !== 'unknown'; })[0] || {}).nem_version || 'unknown',
+        nem_start_date: (reads.filter(function(x){ return x.nem_start_date; })[0] || {}).nem_start_date || null,
         bills_read: _billsRead, primary_period_end: reads[0].statement_period_end || null,
         analyzed_at: new Date().toISOString(), edited: prevEdited
       };
@@ -11597,10 +11599,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // production chart. The tech is in the home, so these render the moment the data exists.
   function _evNemInfo() {
     var a = _evLocal.answers || {}, rec = _evRec || {};
-    var ver = a.nem_version || (/3/.test(rec.nem_status || '') ? '3' : /2/.test(rec.nem_status || '') ? '2' : /1/.test(rec.nem_status || '') ? '1' : '');
-    var d = a.nem_app_date || '', est = false;
-    if (!d && rec.install_year) { d = String(rec.install_year) + '-07-01'; est = true; }
-    var out = { ver: ver, date: d, est: est, text: '', tone: 'info' };
+    var ba = (_evLocal.billAnalysis && !_evLocal.billAnalysis._err) ? _evLocal.billAnalysis : null;
+    var an = (_evRow && _evRow.analysis && _evRow.analysis.nem) || {};
+    var pickV = function(t){ t = String(t || ''); return /3/.test(t) ? '3' : /2/.test(t) ? '2' : /1/.test(t) ? '1' : ''; };
+    // Who said so, strongest first: the rep, the bill itself, Quoya's full read, the lead record.
+    var ver = '', src = '';
+    if (a.nem_version) { ver = a.nem_version; src = 'entered by you'; }
+    else if (ba && ['1','2','3'].indexOf(ba.nem_version) > -1) { ver = ba.nem_version; src = 'read off the utility bill'; }
+    else if (pickV(an.version)) { ver = pickV(an.version); src = 'from Quoya\'s read'; }
+    else if (pickV(rec.nem_status)) { ver = pickV(rec.nem_status); src = 'from the lead record'; }
+    var d = a.nem_app_date || '', est = false, dsrc = d ? 'entered by you' : '';
+    if (!d && ba && ba.nem_start_date) { d = ba.nem_start_date; dsrc = 'NEM start date on the bill'; }
+    if (!d && an.expires && /^\d{4}-\d{2}-\d{2}$/.test(an.expires)) { var ee = new Date(an.expires + 'T12:00:00'); ee.setFullYear(ee.getFullYear() - 20); d = ee.toISOString().slice(0, 10); dsrc = 'from Quoya\'s read'; }
+    if (!d && rec.install_year) { d = String(rec.install_year) + '-07-01'; est = true; dsrc = 'install year'; }
+    var inferred = false;
+    if (!ver && d) { ver = d >= '2023-04-14' ? '3' : d < '2016-06-01' ? '1' : '2'; src = 'inferred from the ' + (est ? 'install year' : 'date') + ' (confirm on the bill)'; inferred = true; }
+    var out = { ver: ver, date: d, est: est, src: src, dsrc: dsrc, inferred: inferred, text: '', tone: 'info' };
     if (!ver) { out.text = 'Pick the NEM version (it is printed on the bill, or ask the homeowner).'; return out; }
     if (ver === '3') { out.text = 'NEM 3.0 / Net Billing: different credit structure, no 20-year lock. Does not show as a version on the bill.'; return out; }
     if (!d) { out.text = 'Enter the interconnection application date to get the 20-year end date.'; return out; }
@@ -11640,7 +11654,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '<div style="display:flex;gap:8px;margin-bottom:8px;"><select onchange="evNemSet(\'nem_version\',this.value)" style="flex:1;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:9px;color:#fff;padding:9px;font-size:0.8rem;">'
       + [['', 'NEM version…'], ['1', 'NEM 1.0'], ['2', 'NEM 2.0'], ['3', 'NEM 3.0 / Net Billing']].map(function(o){ return '<option value="' + o[0] + '"' + (String(nem.ver) === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('')
       + '</select><input type="date" value="' + esc(a.nem_app_date || '') + '" onchange="evNemSet(\'nem_app_date\',this.value)" title="Interconnection application date" style="flex:1;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:9px;color:#fff;padding:9px;font-size:0.8rem;"></div>';
-    h += '<div style="font-size:0.74rem;line-height:1.5;color:' + col[nem.tone] + ';margin-bottom:8px;">' + nem.text + '</div>';
+    h += '<div style="font-size:0.74rem;line-height:1.5;color:' + col[nem.tone] + ';margin-bottom:8px;">' + (nem.ver && nem.src ? '<b>NEM ' + (nem.ver === '3' ? '3.0' : nem.ver + '.0') + '</b> <span style="color:#999;">(' + nem.src + (nem.date && nem.dsrc ? '; date: ' + nem.dsrc : '') + ')</span><br>' : '') + nem.text + '</div>';
     _evSystemRead().forEach(function(r){ h += '<div style="font-size:0.74rem;line-height:1.5;color:' + col[r.tone] + ';margin-bottom:5px;">&bull; ' + r.t + '</div>'; });
     h += '</div>';
     return h;
