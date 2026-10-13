@@ -2672,6 +2672,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (idx > -1) { adminCustomers[idx][field] = iso; if (isDiag) adminCustomers[idx].diag_visit_confirmed_at = upd.diag_visit_confirmed_at; }
       if (typeof adminView !== 'undefined' && adminView === 'jobs') renderJobsView();
       else if (typeof salesView !== 'undefined' && salesView === 'jobs' && typeof renderSales === 'function') renderSales();
+      var _rc = (adminCustomers || [])[idx];
+      if (_rc && window._schedAfterDatePick) window._schedAfterDatePick(id, isDiag ? 'Diagnostic Visit' : window._schedTypeForField(_rc, 'install_date'), iso, null, { dateOnly:true });
     } catch (e) { alert('Could not save date: ' + e.message); }
   };
   // Axia/QCells milestone dates (2026-10-07): crew start (internal), inspection + PTO (customer-visible).
@@ -2688,6 +2690,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       _installDurationFetchedAt = 0; // crew-start changes the live median
       if (typeof adminView !== 'undefined' && adminView === 'jobs') renderJobsView();
       else if (typeof salesView !== 'undefined' && salesView === 'jobs' && typeof renderSales === 'function') renderSales();
+      if (field === 'inspection_date' && window._schedAfterDatePick) window._schedAfterDatePick(id, 'Inspection', iso, null, { dateOnly:true });
     } catch (e) { alert('Could not save date: ' + e.message); }
   };
   // Axia/QCells "Install Completed" (2026-10-03) — drives Payment 1 (M2). 'today' = one-tap mark.
@@ -5893,6 +5896,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var m=document.getElementById('qrModal'); if(m) m.remove();
       if (adminView==='schedule') renderScheduleView();
       else if (typeof window.salesRefresh==='function') window.salesRefresh();
+      var _qc=adminCustomers[idx]; var _qt=_qc && window._schedTypeForField(_qc, dateField);
+      if (_qt && window._schedAfterDatePick) window._schedAfterDatePick(id, _qt, newISO, (dateField==='diagnostic_date' && ev) ? new Date(dv+'T'+ev).toISOString() : null, {});
     } catch(e) { alert('Save failed: '+e.message); }
   };
 
@@ -24717,7 +24722,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       function row(a){
         var s = new Date(a.starts_at);
         var d = s.toLocaleDateString('en-US', Object.assign({ weekday:'long', month:'long', day:'numeric' }, tz));
-        var t = s.toLocaleTimeString('en-US', Object.assign({ hour:'numeric', minute:'2-digit' }, tz)) + (a.ends_at ? ' – ' + new Date(a.ends_at).toLocaleTimeString('en-US', Object.assign({ hour:'numeric', minute:'2-digit' }, tz)) : '');
+        var t = a.notes === 'date_only' ? 'Arrival time to be confirmed' : s.toLocaleTimeString('en-US', Object.assign({ hour:'numeric', minute:'2-digit' }, tz)) + (a.ends_at ? ' – ' + new Date(a.ends_at).toLocaleTimeString('en-US', Object.assign({ hour:'numeric', minute:'2-digit' }, tz)) : '');
         var done = a.status === 'completed', canc = a.status === 'canceled';
         return '<div style="display:flex;gap:12px;align-items:flex-start;padding:11px 0;border-top:1px solid rgba(255,255,255,0.06);'+(canc?'opacity:.55;':'')+'">'+
           '<span style="font-size:1.3rem;">'+(ic[a.event_type]||'&#128197;')+'</span>'+
@@ -29559,6 +29564,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (error) throw error;
       var idx = adminCustomers.findIndex(function(x){ return x.id === id; });
       if (idx > -1) adminCustomers[idx] = Object.assign(adminCustomers[idx], updates);
+      // Event row for the customer's portal list; no second text — the webhook below already notifies them.
+      if (window.schedSaveQuiet) window.schedSaveQuiet(id, 'Diagnostic Visit', diagISO, updates.arrival_end, { notify:false });
       // Fire customer notification webhook
       if (GHL_DIAG_SCHEDULE_WEBHOOK) {
         fetch(GHL_DIAG_SCHEDULE_WEBHOOK, {
@@ -30488,6 +30495,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var tz = { timeZone: 'America/Los_Angeles' };
     var s = new Date(a.starts_at);
     var d = s.toLocaleDateString('en-US', Object.assign({ weekday:'short', month:'short', day:'numeric' }, tz));
+    if (a.notes === 'date_only') return d + ' · date only';
     var t = s.toLocaleTimeString('en-US', Object.assign({ hour:'numeric', minute:'2-digit' }, tz));
     if (a.ends_at) t += ' – ' + new Date(a.ends_at).toLocaleTimeString('en-US', Object.assign({ hour:'numeric', minute:'2-digit' }, tz));
     return d + ' · ' + t;
@@ -30598,6 +30606,46 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var ins = await cl.from('appointments').insert({ customer_id: cid, event_type: type, starts_at: startISO, ends_at: endISO||null, status:'scheduled', created_by:'ghl_slot_picker', notified_at:new Date().toISOString(), notified_for:'scheduled|'+key }).select().single();
       if (!ins.error) { (_schedRows[cid] = _schedRows[cid] || []).push(ins.data); _schedRender(cid); }
     } catch (e) { console.warn('schedRecordOnly', e); }
+  };
+
+  // One shared "save an event" path for the places that only pick a date (job-card pickers, the
+  // Schedule-tab reschedule popup, the diagnostic scheduler). Keeps the appointments row — and
+  // therefore the customer's portal list and the text/email notice — in step with the date columns
+  // those callers already write themselves. Returns a short status string ('' when nothing to say).
+  window._schedTypeForField = function(c, field){
+    var ns = (c.lead_category === 'new_solar');
+    if (field === 'install_date') return ns ? 'Install' : 'Battery Install';
+    if (field === 'inspection_date') return 'Inspection';
+    if (field === 'diagnostic_date') return (c.diag_visit_confirmed_at || c.sold_type === 'diagnostic' || (c.step||1) >= 3) ? 'Diagnostic Visit' : 'Solar Evaluation';
+    return null;
+  };
+  window.schedSaveQuiet = async function(cid, type, startISO, endISO, opts){
+    opts = opts || {};
+    try {
+      var cl = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var ex = await cl.from('appointments').select('*').eq('customer_id', cid).eq('event_type', type).eq('status', 'scheduled').order('starts_at', { ascending:false }).limit(1);
+      var prior = ex.data && ex.data[0];
+      var now = new Date().toISOString();
+      if (!startISO) { // date cleared: close out the open event, never text about it
+        if (prior) await cl.from('appointments').update({ status:'canceled', updated_at:now }).eq('id', prior.id);
+        return '';
+      }
+      if (prior && new Date(prior.starts_at).getTime() === new Date(startISO).getTime() && (prior.ends_at ? new Date(prior.ends_at).getTime() : 0) === (endISO ? new Date(endISO).getTime() : 0)) return '';
+      var payload = { event_type:type, starts_at:startISO, ends_at:endISO || null, status:'scheduled', notes: opts.dateOnly ? 'date_only' : null, updated_at:now };
+      var res = prior ? await cl.from('appointments').update(payload).eq('id', prior.id).select().single()
+                      : await cl.from('appointments').insert(Object.assign({ customer_id:cid, created_by: (typeof CURRENT_ROLE !== 'undefined' ? CURRENT_ROLE : '') }, payload)).select().single();
+      if (res.error || !res.data) throw (res.error || new Error('nothing was saved'));
+      if (_schedRows[cid]) { _schedRows[cid] = _schedRows[cid].filter(function(x){ return x.id !== res.data.id; }); _schedRows[cid].push(res.data); }
+      if (!opts.notify) return '';
+      return await _schedNotify(res.data.id, prior ? { starts_at: prior.starts_at } : null);
+    } catch (e) { return '&#9888; The date saved, but the appointment record/notice did not (' + _schedEsc(e.message || e) + ').'; }
+  };
+  // Asks whether to tell the customer, runs the save, and shows the outcome only when it matters.
+  window._schedAfterDatePick = async function(cid, type, startISO, endISO, opts){
+    var notify = !!startISO && confirm('Date saved. Text & email the customer about this ' + type.toLowerCase() + '?\n\nOK = send   Cancel = save without notifying');
+    var note = await window.schedSaveQuiet(cid, type, startISO, endISO, Object.assign({}, opts, { notify: notify }));
+    if (note && /NOT notified|did not|could not/i.test(note)) alert(note.replace(/<[^>]+>/g, '').replace(/&#9888;/g, '⚠'));
+    else if (notify && note) alert(note.replace(/<[^>]+>/g, ''));
   };
   window.schedSubmit = async function(){
     var cid = (document.getElementById('edId')||{}).value;

@@ -38,7 +38,7 @@ exports.handler = async function (event, context, deps) {
   const ar = await doFetch(SUPA_URL + '/rest/v1/appointments?id=eq.' + id + '&select=*&limit=1', { headers: H });
   const a = ((await ar.json().catch(() => [])) || [])[0];
   if (!a) return out(404, { error: 'Appointment not found' });
-  const copy = COPY[a.event_type];
+  const copy = COPY[a.event_type] && Object.assign({}, COPY[a.event_type]);
   if (!copy) return out(200, { ok: false, reason: 'not_customer_facing' });
 
   const stateKey = a.status + '|' + a.event_type + '|' + new Date(a.starts_at).toISOString();
@@ -52,7 +52,9 @@ exports.handler = async function (event, context, deps) {
 
   const first = (c.first_name || 'there').trim();
   const link = notify.magicLink(c);
-  const when = fmtDate(a.starts_at) + ', ' + fmtTime(a.starts_at) + (a.ends_at ? ' – ' + fmtTime(a.ends_at) : '');
+  const dateOnly = a.notes === 'date_only'; // set by job-card date pickers: no time was chosen, so don't invent one
+  const when = dateOnly ? fmtDate(a.starts_at) : fmtDate(a.starts_at) + ', ' + fmtTime(a.starts_at) + (a.ends_at ? ' – ' + fmtTime(a.ends_at) : '');
+  if (dateOnly) copy.note = copy.note.replace('during the window', 'that day').replace(' Please be home.', ' We will confirm the arrival time with you.');
   let sms, mail;
   if (a.status === 'canceled') {
     sms = 'Hi ' + first + '! Your ' + copy.noun + ' on ' + fmtDate(a.starts_at) + ' has been canceled. We will be in touch to reschedule. Questions? Call (619) 777-6527.';
