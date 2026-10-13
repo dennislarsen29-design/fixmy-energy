@@ -11710,7 +11710,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     out.tone = yrs <= 0 ? 'bad' : yrs < 5 ? 'warn' : 'good';
     var hint = d >= '2023-04-14' ? '3' : d < '2016-06-01' ? '1' : '2';
     if ((ver === '1' && hint !== '1' && d >= '2017-01-01') || (ver === '2' && (hint === '3' || d < '2016-01-01'))) out.text += '<br><span style="color:#ffaa00;">The date and version don&rsquo;t fit together &mdash; double-check both.</span>';
-    out.text += '<br><span style="color:#999;">Before selling panels or a battery on a grandfathered system, confirm with the utility how it affects NEM.</span>';
+    out.text += '<br><span style="color:#999;">Adding a battery generally keeps NEM status; adding panels beyond roughly 10% of the original size (or 1 kW) can move the system to Net Billing unless the extra panels are non-export. Confirm the exact limit with SDG&amp;E before quoting, and file the expansion as a revised interconnection application. Sources differ on whether the 20 years counts from the application or from Permission to Operate: check the utility letter.</span>';
     return out;
   }
   window.evNemSet = function(k, v) {
@@ -25514,6 +25514,28 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     });
   };
 
+  // ── E-sign consent (2026-10-13, deep-research finding) ── California UETA requires each party to have agreed
+  // to transact electronically (J.B.B. Investment Partners v. Fair). One explicit, recorded agreement per
+  // signing session, before the one-time code and before any signature is accepted.
+  window._custAskEsignConsent = function(customerId) {
+    window._custEsignOk = window._custEsignOk || {};
+    if (window._custEsignOk[customerId]) return Promise.resolve(true);
+    return new Promise(function(resolve) {
+      var ov = document.createElement('div'); ov.id = 'esignConsentOv';
+      ov.style.cssText = 'position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.78);display:flex;align-items:center;justify-content:center;padding:18px;';
+      ov.innerHTML = '<div style="background:#16171a;border:1px solid rgba(255,255,255,.14);border-radius:16px;max-width:420px;width:100%;padding:20px;color:#eee;font-size:.82rem;line-height:1.55;">'
+        + '<div style="font-size:1rem;font-weight:800;margin-bottom:8px;">Sign electronically?</div>'
+        + '<div style="color:#bbb;margin-bottom:12px;">To sign these documents online you must agree to use electronic records and signatures. Your electronic signature is as legally binding as ink on paper. You may ask for paper copies, or withdraw this agreement before signing, by calling (619) 777-6527. You can download or print each signed copy from your portal afterward.</div>'
+        + '<label style="display:flex;gap:10px;align-items:flex-start;margin-bottom:14px;cursor:pointer;"><input id="esignChk" type="checkbox" style="display:inline-block;width:20px;height:20px;margin:2px 0 0;flex-shrink:0;"> <span>I agree to receive and sign these documents electronically, and I can open and keep a copy on this device.</span></label>'
+        + '<div style="display:flex;gap:8px;"><button id="esignNo" style="flex:1;padding:12px;background:transparent;border:1px solid rgba(255,255,255,.25);border-radius:10px;color:#ccc;cursor:pointer;">Cancel</button>'
+        + '<button id="esignYes" disabled style="flex:2;padding:12px;background:#8DC63F;border:none;border-radius:10px;color:#000;font-weight:800;opacity:.4;cursor:pointer;">Agree &amp; continue</button></div></div>';
+      document.body.appendChild(ov);
+      var chk = ov.querySelector('#esignChk'), yes = ov.querySelector('#esignYes');
+      chk.onchange = function() { yes.disabled = !chk.checked; yes.style.opacity = chk.checked ? '1' : '.4'; };
+      ov.querySelector('#esignNo').onclick = function() { ov.remove(); resolve(false); };
+      yes.onclick = function() { window._custEsignOk[customerId] = new Date().toISOString(); ov.remove(); resolve(true); };
+    });
+  };
   window._custDocSubmit = async function(customerId, docType) {
     if (!_custDocState) return;
     var vals = _custDocState.values;
@@ -25549,6 +25571,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // fingerprints into deal_documents.data.audit. Nothing here can choose those values.
       var _who = (typeof currentUser !== 'undefined' && currentUser && currentUser.id === customerId) ? currentUser : null;
       if (!_who) throw new Error('Session expired \u2014 please refresh and sign in again.');
+      if (!(await window._custAskEsignConsent(customerId))) { if (btn) { btn.disabled = false; btn.innerHTML = '&#9989; Sign &amp; Submit'; } return; }
       var _acc = _who.access_code || (_who.phone || '').replace(/\D/g, '');
       // The code is per customer (not per document): reuse a verified one for ~8 min so the
       // auto-advance through several documents doesn't re-prompt each time.
@@ -25560,7 +25583,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           customerId: customerId, docType: docType, accessCode: _acc, code: _otpCode,
-          name: name, initials: initials, initialsData: initialsData, signatureData: sig
+          name: name, initials: initials, initialsData: initialsData, signatureData: sig, esignConsent: true, esignConsentAt: (window._custEsignOk || {})[customerId] || null
         })
       });
       var signJson = {};

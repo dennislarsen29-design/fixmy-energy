@@ -172,8 +172,10 @@ exports.handler = async function (event, context, deps) {
     }
   } catch (e) { /* ignore */ }
 
+  if (body.esignConsent !== true) return out(400, { error: 'Please agree to sign electronically first. Refresh the page and try again.' });
   const signedAt = new Date().toISOString(); // server clock
   const audit = {
+    esign_consent: { agreed: true, client_time: typeof body.esignConsentAt === 'string' ? body.esignConsentAt.slice(0, 40) : null, text: 'ESIGN/UETA electronic records and signature agreement v1 (2026-10-13)' },
     signed_at: signedAt,
     ip: sigAudit.clientIp(event),
     user_agent: sigAudit.userAgent(event),
