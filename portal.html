@@ -36103,6 +36103,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
 
     var activeJobId = null;
+    var opsEvalCache = {};   // job id -> {row} once the diagnostic briefing data has been fetched (success or not)
+    async function opsLoadEval(jid) {
+      opsEvalCache[jid] = { row: null, loading: true };
+      try {
+        var r = await client.from('lead_evaluations').select('inverter_brand,inverter_model,inverter_serial,utility,answers,troubleshoot').eq('customer_id', jid).limit(1);
+        opsEvalCache[jid] = { row: (!r.error && r.data && r.data[0]) || null };
+      } catch (e) { opsEvalCache[jid] = { row: null }; }
+      if (activeJobId === jid) renderOps();
+    }
     var checklistState = JSON.parse(sessionStorage.getItem('checklist_ops_' + ops.id) || '{}');
     var opsSolarCache = {};
     var opsView = sessionStorage.getItem('opsView_' + ops.id) || 'jobs';
@@ -36352,11 +36361,33 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             (job.phone ? '<a href="tel:' + (job.phone||'').replace(/\D/g,'') + '" class="tech-btn tech-btn-call">&#128222; Call</a>' : '') +
             (job.email ? '<a href="mailto:' + (job.email||'') + '" class="tech-btn tech-btn-secondary">&#9993; Email</a>' : '') +
             (job.address ? '<a href="https://maps.apple.com/?q=' + encodeURIComponent(job.address) + '" target="_blank" class="tech-btn tech-btn-secondary">&#128506; Directions</a>' : '') +
-            '<button onclick="opsArchiveJob(\'' + jid + '\')" class="tech-btn tech-btn-secondary" title="Archive job" style="color:#ef4444;border-color:rgba(239,68,68,0.25);padding:7px 10px;">&#128451;</button>' +
+            '<button onclick="opsArchiveJob(\'' + jid + '\')" class="tech-btn tech-btn-secondary" title="Archive job" style="width:auto;flex:none;color:#ef4444;border-color:rgba(239,68,68,0.25);padding:7px 10px;">&#128451;</button>' +
             '<button class="tech-btn tech-btn-primary" onclick="opsToggleJob(this.closest(\'[data-jid]\').dataset.jid)">' + (isOpen?'&#9650; Close':'&#9660; Open Job') + '</button>' +
           '</div>';
 
         if (isOpen) {
+          // Diagnostic Brief — the answers a partner wants first: what system, what's wrong, what to bring.
+          h += (function(){
+            var ev = (opsEvalCache[jid] || {}).row, loading = !!(opsEvalCache[jid] && opsEvalCache[jid].loading);
+            var esc = function(t){ return String(t == null ? '' : t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); };
+            var row = function(lbl, val, warn){ return '<div style="display:flex;gap:10px;padding:7px 0;border-top:1px solid rgba(0,0,0,0.07);"><div style="width:96px;flex:none;font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#666;">' + lbl + '</div><div style="flex:1;font-size:0.84rem;color:' + (warn ? '#b06a00' : '#1A1A1A') + ';font-weight:600;line-height:1.45;">' + val + '</div></div>'; };
+            var a = (ev && ev.answers) || {}, ts = (ev && ev.troubleshoot && ev.troubleshoot.status === 'ready' && ev.troubleshoot.result) || null;
+            var sys = ev ? [ev.inverter_brand, ev.inverter_model].filter(Boolean).join(' ') : '';
+            var rowsHtml = '';
+            rowsHtml += row('System', sys ? esc(sys) + (ev.inverter_serial ? '<div style="font-weight:500;font-size:0.74rem;color:#555;">Serial ' + esc(ev.inverter_serial) + '</div>' : '') : (loading ? 'Loading…' : 'Not captured yet — check the photos below'), !sys && !loading);
+            var sizeBits = [job.system_size ? esc(job.system_size) + ' kW' : '', (ev && ev.utility) || job.utility || ''].filter(Boolean).join(' · ');
+            if (sizeBits) rowsHtml += row('Size · Utility', esc(sizeBits));
+            if (a.system_issue === 'yes') {
+              var oc = { restored:'Back online after the tech restarted it', partial:'Only partly back after a restart', still_down:'Still down after the tech restarted it' }[a.pc_outcome];
+              rowsHtml += row('Problem', 'System has an issue' + (oc ? ' &mdash; ' + oc : ''), true);
+            } else if (a.system_issue === 'no') rowsHtml += row('Problem', 'None reported &mdash; system looks healthy');
+            var codes = ts && Array.isArray(ts.identified) ? ts.identified.filter(function(c){ return c && c.code; }) : [];
+            if (codes.length) rowsHtml += row('Error codes', codes.map(function(c){ return '<div><b>' + esc(c.code) + '</b>' + (c.meaning ? ' <span style="font-weight:500;color:#555;">&mdash; ' + esc(c.meaning) + '</span>' : '') + '</div>'; }).join(''), true);
+            if (ts && ts.diagnosis) rowsHtml += row('Likely cause', esc(ts.diagnosis));
+            if (job.field_notes) { /* admin notes shown below */ }
+            return '<div style="background:#fff;border:2px solid rgba(141,198,63,0.5);border-radius:12px;padding:12px 14px;margin-bottom:12px;">' +
+              '<div style="font-size:0.72rem;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;color:#3d6b12;margin-bottom:4px;">&#128295; Diagnostic Brief</div>' + rowsHtml + '</div>';
+          }());
           // Quoya Assist — the photo-based equipment analysis from the proposal, so the
           // partner reviews likely issues / recalls / warranty before the diagnostic appt.
           var _qi = (job.proposal && job.proposal.insight) ? String(job.proposal.insight) : '';
@@ -36446,7 +36477,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (activeJobId) {
         currentJobId = activeJobId;
         var _opsActiveJob = jobs.find(function(j){ return j.id === activeJobId; });
-        loadJobPhotos(activeJobId).then(renderOps);
+        // NOTE: do not call loadJobPhotos(...).then(renderOps) here — renderOps would call itself forever
+        // (re-render → refetch → re-render), which flickered the open job and wiped typed notes.
+        // Photos load in opsToggleJob / after an upload; the briefing loads once per job below.
+        if (!opsEvalCache[activeJobId]) opsLoadEval(activeJobId);
         // Trigger first solar load if not yet cached
         if (_opsActiveJob && _opsActiveJob.address && !opsSolarCache[activeJobId]) {
           setTimeout(function() { loadOpsSolarPanel(_opsActiveJob.address, activeJobId); }, 250);
