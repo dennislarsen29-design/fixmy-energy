@@ -37,7 +37,8 @@ function applicableDocs(customer, opt) {
   const items = (opt.line_items || []).map(function (l) { return { id: String((l && l.id) || ''), name: String((l && l.name) || '') }; });
   const hasBattery = items.some(function (l) { return /powerwall|battery|tesla pw|tpw3|pw3|expansion/i.test(l.name); });
   const out = [];
-  if (opt.participate || opt.participate_price) out.push('participate_customer_agreement');
+  // Maxwell HDM agreements are generated in the Maxwell portal, so only Participate gets our document.
+  if ((opt.participate || opt.participate_price) && opt.lto_provider !== 'hdm') out.push('participate_customer_agreement');
   if ((opt.sdcp_rebate || 0) > 0) { out.push('sdcp_enrollment_form'); out.push('tesla_sdcp'); }
   if (hasBattery) {
     // Dennis's rule (2026-10-08): a Powerwall 3 plus 0-4 added panels does NOT change the customer's NEM

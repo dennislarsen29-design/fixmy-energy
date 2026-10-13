@@ -26177,7 +26177,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       build.price      = opt.price || 0;
       build.participate= !!opt.participate;
       build.partPrice  = opt.participate_price != null ? opt.participate_price : null;
-      build.partPriceManual = build.partPrice != null && Math.round(build.partPrice) !== Math.round((opt.price||0) * 0.70);
+      build.ltoProvider = opt.lto_provider || 'participate';
+      build.ltoPct = (opt.lto_pct != null) ? opt.lto_pct : ((opt.price > 0 && build.partPrice != null) ? Math.round((1 - build.partPrice / opt.price) * 1000) / 10 : 30);
+      build.partPriceManual = false;
       build.teslaRebate= opt.tesla_rebate || 0;
       build.sdcpRebate = opt.sdcp_rebate  || 0;
       // A saved proposal only ever carries a non-zero sdcp_rebate when the rep had
@@ -26628,6 +26630,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         price: price,
         participate: build.participate,
         participate_price: partPrice,
+        lto_provider: build.ltoProvider || 'participate',
+        lto_pct: window._ltoPct(build),
         milestones: milestones,
         line_items: build.lineItems.map(function(li){ return { id: li.id || null, name: li.name, price: li.price, isCustom: !!li.isCustom }; })
       };
@@ -27024,7 +27028,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (!build) return;
     _propRecalcRedline(optIdx);
     if (build.participate && !build.partPriceManual) {
-      build.partPrice = Math.round(build.price * 0.70);
+      build.partPrice = Math.round(build.price * window._ltoFactor(build));
       var ppEl = document.getElementById('propPartPrice_' + optIdx);
       if (ppEl) ppEl.value = build.partPrice;
     }
@@ -27466,7 +27470,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // Participate Program — 30% off lease-to-own (very visible, per Dennis 2026-07-16).
       // Renders the propPartPrice_<idx> input that sendProposal/previewProposal already read.
       var _partOn = !!build.participate;
-      var _partAuto = Math.round((build.price || 0) * 0.70);
+      var _partAuto = Math.round((build.price || 0) * window._ltoFactor(build));
       var _partVal = (build.partPrice != null && build.partPrice > 0) ? Math.round(build.partPrice) : _partAuto;
       var _partSave = Math.max(0, Math.round(build.price) - _partVal);
       // ⚠️ 2026-09-03: this used to be a bare `\b(\d{5})\b` with no /g flag, which
@@ -27482,18 +27486,28 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       h += '<div style="border:1px solid '+(_partOn?'rgba(141,198,63,0.55)':'rgba(141,198,63,0.25)')+';background:'+(_partOn?'rgba(141,198,63,0.09)':'rgba(141,198,63,0.03)')+';border-radius:10px;padding:12px;margin-bottom:10px;">';
       h += '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">';
       h += '<div onclick="_propTogglePart('+optIdx+')" style="cursor:pointer;user-select:none;flex:1;min-width:180px;">';
-      h += '<div style="font-size:0.78rem;font-weight:800;color:'+(_partOn?'#8DC63F':'#ddd')+';">&#129309; Participate Program &mdash; 30% Off</div>';
-      h += '<div style="font-size:0.62rem;color:#666;margin-top:2px;">Wheelhouse CU lease-to-own &middot; customer sees strikethrough retail + 10/20-yr payment picker</div>';
+      h += '<div style="font-size:0.78rem;font-weight:800;color:'+(_partOn?'#8DC63F':'#ddd')+';">&#129309; Prepaid 5 Year LTO Discount &mdash; '+window._ltoPct(build)+'% (subject to approval)</div>';
+      h += '<div style="font-size:0.62rem;color:#666;margin-top:2px;">Prepaid 5-year lease-to-own &middot; price shown as an estimate until the financing partner approves</div>';
       h += '</div>';
       h += '<button onclick="_propTogglePart('+optIdx+')" style="width:auto;flex-shrink:0;padding:7px 16px;border-radius:100px;font-size:0.72rem;font-weight:800;cursor:pointer;'+(_partOn?'background:#8DC63F;color:#000;border:none;':'background:rgba(141,198,63,0.12);color:#8DC63F;border:1px solid rgba(141,198,63,0.4);')+'">'+(_partOn?'ON &#10003;':'Turn On')+'</button>';
       h += '</div>';
       if (_partOn) {
+        var _lp = build.ltoProvider || 'participate';
+        h += '<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">';
+        [['participate','Participate (30%)'],['hdm','Maxwell HDM (23%)']].forEach(function(o){
+          var on = _lp === o[0];
+          h += '<button onclick="_propSetLtoProvider('+optIdx+',\''+o[0]+'\')" style="width:auto;padding:7px 14px;border-radius:100px;font-size:0.72rem;font-weight:800;cursor:pointer;'+(on?'background:#8DC63F;color:#000;border:none;':'background:transparent;color:#8DC63F;border:1px solid rgba(141,198,63,0.4);')+'">'+o[1]+'</button>';
+        });
+        h += '</div>';
+        h += '<div style="font-size:0.62rem;color:#777;margin-top:4px;">'+(_lp==='hdm'?'Agreement is generated in the Maxwell portal (no Participate document).':'Uses the Participate customer agreement.')+'</div>';
         h += '<div style="display:flex;align-items:end;gap:12px;margin-top:10px;flex-wrap:wrap;">';
-        h += '<div><label style="font-size:0.6rem;color:#8DC63F;display:block;margin-bottom:2px;">Participate price ($)</label>';
+        h += '<div><label style="font-size:0.6rem;color:#8DC63F;display:block;margin-bottom:2px;">Discount (%)</label>';
+        h += '<input type="number" value="'+window._ltoPct(build)+'" step="0.5" min="0" max="99" onchange="_propSetLtoPct('+optIdx+',this.value)" style="width:80px;background:#0e0e0e;border:1px solid rgba(141,198,63,0.35);border-radius:6px;color:#8DC63F;font-weight:800;padding:6px 8px;font-size:0.85rem;box-sizing:border-box;"/></div>';
+        h += '<div><label style="font-size:0.6rem;color:#8DC63F;display:block;margin-bottom:2px;">Estimated prepaid price ($)</label>';
         h += '<input type="number" id="propPartPrice_'+optIdx+'" value="'+_partVal+'" step="1" onchange="_propSetPartPrice('+optIdx+',this.value)" style="width:120px;background:#0e0e0e;border:1px solid rgba(141,198,63,0.35);border-radius:6px;color:#8DC63F;font-weight:800;padding:6px 8px;font-size:0.85rem;box-sizing:border-box;"/></div>';
         h += '<div style="padding-bottom:4px;"><span style="font-size:0.68rem;color:#888;">Customer saves </span><span style="font-size:0.9rem;font-weight:800;color:#8DC63F;">$'+_partSave.toLocaleString('en-US')+'</span></div>';
         h += '</div>';
-        h += '<div style="font-size:0.62rem;color:#555;margin-top:5px;">'+(build.partPriceManual ? 'Manual override &mdash; no longer tracking 70% of System Price.' : 'Auto-tracks 70% of System Price &mdash; edit to override.')+'</div>';
+        h += '<div style="font-size:0.62rem;color:#555;margin-top:5px;">'+(build.partPriceManual ? 'Manual price override &mdash; no longer tracking the discount %.' : 'Auto-tracks System Price less the discount % &mdash; edit to override.')+'</div>';
       }
       var _zipMixed = !_billNotSdcp && !!(_zipCode2 && typeof SDCP_MIXED_ZIPS !== 'undefined' && SDCP_MIXED_ZIPS.has(_zipCode2));
       var _showSdcp = _isSdcpZip || build.sdcpQualified || build.sdcpRebate > 0 && build.sdcpTouched;
@@ -27557,7 +27571,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       h += '</div>';
       if (build.participate && build.partPrice) {
         h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">';
-        h += '<span style="font-size:0.7rem;color:#666;">Participate savings</span><span style="font-size:0.78rem;color:#8DC63F;">&minus;$'+Math.round(_partSavings).toLocaleString('en-US')+'</span>';
+        h += '<span style="font-size:0.7rem;color:#666;">Prepaid LTO discount (est.)</span><span style="font-size:0.78rem;color:#8DC63F;">&minus;$'+Math.round(_partSavings).toLocaleString('en-US')+'</span>';
         h += '</div>';
         h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">';
         h += '<span style="font-size:0.72rem;color:#aaa;font-weight:700;">Customer pays</span><span style="font-size:0.88rem;color:#fff;font-weight:800;">$'+Math.round(_custPays).toLocaleString('en-US')+'</span>';
@@ -27863,19 +27877,38 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     _propRenderBuilds();
   };
 
+  // Prepaid 5-Year LTO financing (2026-10-13): the rep picks the provider; the discount is a typed
+  // percent (defaults: Participate 30%, Maxwell HDM 23%), never a fixed 30. Internal names (participate,
+  // participate_price) are unchanged so older proposals keep working.
+  var LTO_DEFAULT_PCT = { participate: 30, hdm: 23 };
+  window._ltoPct = function(b) { var n = parseFloat(b && b.ltoPct); return (n >= 0 && n < 100) ? n : 30; };
+  window._ltoFactor = function(b) { return 1 - window._ltoPct(b) / 100; };
+  window._propSetLtoProvider = function(optIdx, prov) {
+    var b = _propBuilds[optIdx]; if (!b) return;
+    b.ltoProvider = prov; b.ltoPct = LTO_DEFAULT_PCT[prov]; b.partPriceManual = false;
+    b.partPrice = Math.round((b.price || 0) * window._ltoFactor(b));
+    _propRenderBuilds();
+  };
+  window._propSetLtoPct = function(optIdx, val) {
+    var b = _propBuilds[optIdx]; if (!b) return;
+    var n = parseFloat(val); if (!(n >= 0 && n < 100)) return;
+    b.ltoPct = n; b.partPriceManual = false;
+    b.partPrice = Math.round((b.price || 0) * window._ltoFactor(b));
+    _propRenderBuilds();
+  };
   window._propTogglePart = function(optIdx) {
     var b = _propBuilds[optIdx];
     if (!b) return;
     b.participate = !b.participate;
-    if (b.participate && !b.partPriceManual) b.partPrice = Math.round((b.price || 0) * 0.70);
+    if (b.participate && !b.partPriceManual) b.partPrice = Math.round((b.price || 0) * window._ltoFactor(b));
     _propRenderBuilds();
   };
   window._propSetPartPrice = function(optIdx, val) {
     var b = _propBuilds[optIdx];
     if (!b) return;
     var p = parseFloat(val);
-    if (p > 0) { b.partPrice = p; b.partPriceManual = Math.round(p) !== Math.round((b.price || 0) * 0.70); }
-    else { b.partPrice = Math.round((b.price || 0) * 0.70); b.partPriceManual = false; }
+    if (p > 0) { b.partPrice = p; b.partPriceManual = Math.round(p) !== Math.round((b.price || 0) * window._ltoFactor(b)); }
+    else { b.partPrice = Math.round((b.price || 0) * window._ltoFactor(b)); b.partPriceManual = false; }
     _propRenderBuilds();
   };
 
@@ -31528,7 +31561,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
                   '<button id="term20_'+_i+'" onclick="selectLoanTerm(\''+_oid+'\',20,'+_i+')" style="flex:1;padding:10px 6px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:8px;color:#aaa;cursor:pointer;font-weight:700;font-size:0.75rem;text-align:center;">20 yr loan<br><span style="font-size:0.9rem;">~$'+_mo20+'/mo</span></button>'+
                   '<button id="termPrepaid_'+_i+'" onclick="selectLoanTerm(\''+_oid+'\',\'prepaid\','+_i+')" style="flex:1;padding:10px 6px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:8px;color:#aaa;cursor:pointer;font-weight:700;font-size:0.75rem;text-align:center;">Prepaid<br><span style="font-size:0.9rem;">$'+parseFloat(_pp).toLocaleString('en-US',{minimumFractionDigits:2})+'</span></button>'+
                 '</div>'+
-                '<div style="font-size:0.68rem;color:#555;line-height:1.6;">Wheelhouse CU &middot; 7.99% APR &middot; Participate lease-to-own. Monthly payments after 30% Participate discount. Select a payment option above then tap Accept below.</div>'+
+                '<div style="font-size:0.68rem;color:#555;line-height:1.6;">Estimated pricing, subject to financing approval. Prepaid 5 Year LTO discount of '+(opt.lto_pct!=null?opt.lto_pct:30)+'% is not guaranteed until approved. Select a payment option above then tap Accept below.</div>'+
               '</div>';
           }
           var _optNumLabel = 'Option ' + (_i + 1);
@@ -31552,7 +31585,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             _whFinHtml =
               '<div style="margin-top:12px;background:rgba(74,158,255,0.04);border:1px solid rgba(74,158,255,0.18);border-radius:10px;padding:14px;">'+
                 '<div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#4a9eff;margin-bottom:4px;">Finance with Wheelhouse CU</div>'+
-                '<div style="font-size:0.72rem;color:#888;margin-bottom:10px;">'+(WHEELHOUSE_APR*100).toFixed(2)+'% APR &middot; '+WHEELHOUSE_TERM_YEARS+'-year term &middot; on your Participate price ($'+Math.round(_whPrincipal).toLocaleString('en-US')+')</div>'+
+                '<div style="font-size:0.72rem;color:#888;margin-bottom:10px;">'+(WHEELHOUSE_APR*100).toFixed(2)+'% APR &middot; '+WHEELHOUSE_TERM_YEARS+'-year term &middot; on your estimated prepaid LTO price, subject to approval ($'+Math.round(_whPrincipal).toLocaleString('en-US')+')</div>'+
                 '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">'+
                   '<span style="font-size:1.1rem;font-weight:800;color:#4a9eff;">~$'+_whMonthly.toLocaleString('en-US')+'/mo</span>'+
                   '<button onclick="acceptProposal(\''+c.id+'\',\''+opt.id+'\',\'wheelhouse\','+WHEELHOUSE_TERM_YEARS+')" style="width:auto;padding:9px 18px;background:rgba(74,158,255,0.14);border:1px solid rgba(74,158,255,0.45);border-radius:100px;color:#4a9eff;font-weight:700;font-size:0.78rem;cursor:pointer;">Finance &amp; Accept</button>'+
