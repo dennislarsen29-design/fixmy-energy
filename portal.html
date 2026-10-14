@@ -1971,14 +1971,38 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       + '<div style="font-size:0.66rem;color:#888;margin-top:3px;">' + label + '</div>'
       + '</button>';
   }
-  function _cmdHealthRow(dot, label, detail, onclick) {
+  // Dismiss (x) on Command Center rows. Alert rows are hidden per browser for 7 days, and come back sooner
+  // if the alert's text changes (a new name, a new error). Agent reports are marked reviewed in the database.
+  function _cmdDismissMap() { try { return JSON.parse(localStorage.getItem('cmdDismissed') || '{}') || {}; } catch (e) { return {}; } }
+  window._cmdDismissKey = function(k) {
+    try { var m = _cmdDismissMap(); m[k] = Date.now(); localStorage.setItem('cmdDismissed', JSON.stringify(m)); } catch (e) {}
+    renderAdminHomeView();
+  };
+  window._cmdReportRead = async function(id) {
+    try { var ac = supabase.createClient(SUPA_URL, SUPA_KEY); var r = await ac.from('agent_reports').update({ reviewed: true }).eq('id', id); if (r.error) throw r.error; }
+    catch (e) { alert('Could not clear: ' + e.message); return; }
+    renderAdminHomeView();
+  };
+  window._cmdReportsAllRead = async function(ids) {
+    if (!confirm('Mark all ' + ids.length + ' reports as read?')) return;
+    try { var ac = supabase.createClient(SUPA_URL, SUPA_KEY); var r = await ac.from('agent_reports').update({ reviewed: true }).in('id', ids); if (r.error) throw r.error; }
+    catch (e) { alert('Could not clear: ' + e.message); return; }
+    renderAdminHomeView();
+  };
+  function _cmdHealthRow(dot, label, detail, onclick, dis) {
+    var _xBtn = '';
+    if (dis) {
+      var _k = dis.report ? null : String(label + '|' + (detail || '')).replace(/<[^>]*>/g, '').slice(0, 300);
+      if (_k) { var _at = _cmdDismissMap()[_k]; if (_at && Date.now() - _at < 7 * 86400000) return ''; }
+      _xBtn = '<button type="button" title="Dismiss" aria-label="Dismiss" onclick="event.stopPropagation();' + (dis.report ? '_cmdReportRead(\'' + dis.report + '\')' : '_cmdDismissKey(' + JSON.stringify(_k).replace(/"/g, '&quot;') + ')') + '" style="width:26px;height:26px;min-width:26px;padding:0;margin:0;border-radius:50%;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.05);color:#aaa;font-size:0.8rem;line-height:1;cursor:pointer;flex-shrink:0;">&#10005;</button>';
+    }
     var colors = { ok: '#8DC63F', warn: '#f59e0b', bad: '#ef4444', unknown: '#666' };
     var col = colors[dot] || colors.unknown;
     return '<div onclick="' + (onclick || '') + '" style="display:flex;align-items:flex-start;gap:10px;padding:9px 0;border-top:1px solid rgba(255,255,255,0.06);' + (onclick ? 'cursor:pointer;' : '') + '">'
       + '<span style="width:9px;height:9px;border-radius:50%;background:' + col + ';flex-shrink:0;margin-top:5px;box-shadow:0 0 8px ' + col + '99;"></span>'
       + '<div style="flex:1;min-width:0;"><div style="font-size:0.82rem;font-weight:700;color:#eee;">' + label + '</div>'
       + (detail ? '<div style="font-size:0.72rem;color:#888;margin-top:1px;line-height:1.4;">' + detail + '</div>' : '')
-      + '</div></div>';
+      + '</div>' + _xBtn + '</div>';
   }
 
   async function renderAdminHomeView() {
@@ -2070,10 +2094,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (og && typeof og === 'object' && og.failed_at) _jobAlerts.push(['warn', 'Outage feed is failing', esc(String(og.error || '')) + ' (Black Box outage badges may be stale)']);
     } catch (e) { /* health strip must never block the page */ }
     var actionItemsHtml = '';
-    _jobAlerts.forEach(function(a){ actionItemsHtml += _cmdHealthRow(a[0], a[1], a[2], "renderAdminCanvassView()"); });
+    _jobAlerts.forEach(function(a){ actionItemsHtml += _cmdHealthRow(a[0], a[1], a[2], "renderAdminCanvassView()", {}); });
     if (hisSoon.length) {
       actionItemsHtml += _cmdHealthRow('warn', hisSoon.length + ' HIS license' + (hisSoon.length > 1 ? 's' : '') + ' expired or expiring within 60 days',
-        hisSoon.map(function(m){ return esc(m.name); }).join(', '), "renderTeamView()");
+        hisSoon.map(function(m){ return esc(m.name); }).join(', '), "renderTeamView()", {});
     }
     // New FixMy leads with no real calendar booking. arrival_window is only ever written by
     // ghl-book.js after the GHL appointment is actually created (or by the diagnostic scheduler),
@@ -2087,16 +2111,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     });
     var _fuDue = (typeof window._followUpsDue === 'function') ? window._followUpsDue() : [];
     if (_fuDue.length) {
-      actionItemsHtml += _cmdHealthRow('warn', '&#128172; Follow-ups due (' + _fuDue.length + ')', _fuDue.slice(0, 6).map(function(c){ return esc(((c.first_name || '') + ' ' + (c.last_name || '')).trim() || 'Unnamed'); }).join(', '), 'openFollowUps()');
+      actionItemsHtml += _cmdHealthRow('warn', '&#128172; Follow-ups due (' + _fuDue.length + ')', _fuDue.slice(0, 6).map(function(c){ return esc(((c.first_name || '') + ' ' + (c.last_name || '')).trim() || 'Unnamed'); }).join(', '), 'openFollowUps()', {});
     }
     if (offCal.length) {
       actionItemsHtml += _cmdHealthRow('bad', '&#9888; NEW LEAD not yet on Calendar!' + (offCal.length > 1 ? ' (' + offCal.length + ')' : ''),
         offCal.slice(0, 6).map(function(c){ return esc(((c.first_name || '') + ' ' + (c.last_name || '')).trim() || c.address || 'Unnamed'); }).join(', ') + (offCal.length > 6 ? ' +' + (offCal.length - 6) + ' more' : ''),
-        "renderAdminView('dashboard')");
+        "renderAdminView('dashboard')", {});
     }
     if (window._regridHealth && window._regridHealth.status === 'bad') {
       actionItemsHtml += _cmdHealthRow('bad', '&#9888; Owner lookup is down &mdash; Regrid API token rejected' + (window._regridHealth.code ? ' (' + esc(String(window._regridHealth.code)) + ')' : ''),
-        'New-lead owner names can&rsquo;t auto-fill (the free county backups never return owners). Put a working paid token in Netlify &rarr; REGRID_KEY. Clears itself once Regrid answers again.', null);
+        'New-lead owner names can&rsquo;t auto-fill (the free county backups never return owners). Put a working paid token in Netlify &rarr; REGRID_KEY. Clears itself once Regrid answers again.', null, {});
     }
     if (!actionItemsHtml) actionItemsHtml = '<div style="font-size:0.78rem;color:#666;padding:8px 0;">Nothing needs you right now.</div>';
 
@@ -2129,7 +2153,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       c.from('commissions').select('amount').eq('status', 'sold').then(function(r){ return r; }).catch(function(){ return { error: true }; }),
       c.from('payments').select('amount').eq('category', 'revenue').gte('created_at', monthStartIso).then(function(r){ return r; }).catch(function(){ return { error: true }; }),
       c.from('rep_shifts').select('rep_name,started_at').is('ended_at', null).then(function(r){ return r; }).catch(function(){ return { error: true }; }),
-      c.from('agent_reports').select('priority,title,agent').eq('reviewed', false).order('created_at', { ascending: false }).limit(20).then(function(r){ return r; }).catch(function(){ return { error: true }; }),
+      c.from('agent_reports').select('id,priority,title,agent').eq('reviewed', false).order('created_at', { ascending: false }).limit(20).then(function(r){ return r; }).catch(function(){ return { error: true }; }),
       c.from('pipeline_state').select('key,value').in('key', ['last_run_at', 'last_run_phase']).then(function(r){ return r; }).catch(function(){ return { error: true }; }),
       c.from('pipeline_state').select('value').eq('key', 'seo_sync_status').limit(1).then(function(r){ return r; }).catch(function(){ return { error: true }; })
     ]);
@@ -2209,8 +2233,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         agHtml = (urgent.length ? '<div style="font-size:0.8rem;color:#f87171;font-weight:700;margin-bottom:8px;">&#9888; ' + urgent.length + ' urgent</div>' : '')
           + reports.slice(0, 5).map(function(r){
               var col = r.priority === 'urgent' ? 'bad' : r.priority === 'high' ? 'warn' : 'unknown';
-              return _cmdHealthRow(col, esc(r.title || r.agent), esc(r.agent), "renderAgentsView()");
+              return _cmdHealthRow(col, esc(r.title || r.agent), esc(r.agent), "renderAgentsView()", { report: r.id });
             }).join('')
+          + (reports.length > 1 ? '<div style="margin-top:8px;"><button type="button" onclick="_cmdReportsAllRead(' + JSON.stringify(reports.map(function(r){ return r.id; })).replace(/"/g, '&quot;') + ')" style="width:auto;margin:0;padding:6px 12px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.05);color:#aaa;font-size:0.72rem;font-weight:700;cursor:pointer;">Mark all ' + reports.length + ' as read</button></div>' : '')
           + (reports.length > 5 ? '<div style="font-size:0.72rem;color:#666;margin-top:6px;">+' + (reports.length - 5) + ' more</div>' : '');
       }
       agEl.innerHTML = _cmdCard('Agent Reports Unread (' + reports.length + ')', agHtml);
