@@ -26,7 +26,7 @@ exports.handler = async function (event, context, deps) {
   let b; try { b = JSON.parse(event.body || '{}'); } catch (e) { return out(400, { error: 'Invalid JSON' }); }
   const id = String(b.customerId || ''); if (!/^[0-9a-fA-F-]{36}$/.test(id)) return out(400, { error: 'Bad customerId' });
 
-  const r = await doFetch(SUPA + '/customers?id=eq.' + id + '&select=id,first_name,last_name,email,phone,access_code,disposition_exit,recapture_touches,recapture_sensitive,recapture_last_at,notes&limit=1', { headers: H });
+  const r = await doFetch(SUPA + '/customers?id=eq.' + id + '&select=id,first_name,last_name,email,phone,rep_id,access_code,disposition_exit,recapture_touches,recapture_sensitive,recapture_last_at,notes&limit=1', { headers: H });
   const rows = await r.json().catch(() => null); const c = Array.isArray(rows) && rows[0];
   if (!c) return out(404, { error: 'Customer not found' });
 
@@ -48,8 +48,16 @@ exports.handler = async function (event, context, deps) {
   const body = String(b.email_body || '').trim().slice(0, 1200);
   if (sms.length < 10 && body.length < 10) return out(400, { error: 'empty_message' });
   const esc = s => String(s).replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
-  const smsFull = sms + '\nReply STOP to opt out.';
-  const mail = { subject, heading: subject, lines: body.split(/\n+/).filter(Boolean).map(esc).concat(['If you would rather not hear from us, just reply and we will stop.']), cta: null };
+  // Template line at the bottom of every follow-up: how to reach their Tech (the lead's assigned rep, else Dennis).
+  let techLine = '';
+  try {
+    const tr = await doFetch(SUPA + '/team_members?id=eq.' + encodeURIComponent(c.rep_id || 'tech4') + '&select=name,phone&limit=1', { headers: H });
+    const t = (await tr.json().catch(() => null) || [])[0];
+    const d = t && String(t.phone || '').replace(/\D/g, '').replace(/^1(?=\d{10}$)/, '');
+    if (t && t.name && d && d.length === 10) techLine = 'You can call your Tech, ' + String(t.name).trim() + ', directly at (' + d.slice(0, 3) + ') ' + d.slice(3, 6) + '-' + d.slice(6) + '.';
+  } catch (e) {}
+  const smsFull = sms + (techLine ? '\n' + techLine : '') + '\nReply STOP to opt out.';
+  const mail = { subject, heading: subject, lines: body.split(/\n+/).filter(Boolean).map(esc).concat(techLine ? [esc(techLine)] : [], ['If you would rather not hear from us, just reply and we will stop.']), cta: null };
 
   const result = await notify.sendBoth(c, smsFull, mail, doFetch);
   if (!result.ok) return out(200, result);
