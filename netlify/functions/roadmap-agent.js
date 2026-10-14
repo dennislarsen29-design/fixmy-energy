@@ -225,9 +225,10 @@ exports.handler = async function() {
 
   try {
     const today = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    const _fb = await require('./lib/agent-replies').loadFeedback('roadmap', key);
     const messages = [{
       role: 'user',
-      content: 'Run your weekly roadmap review. Today is ' + today + '. Gather the business model, current roadmap, and growth metrics; web_search current solar growth tactics; then add 2–4 new high-leverage tasks and file your report.'
+      content: _fb.text + 'Run your weekly roadmap review. Today is ' + today + '. Gather the business model, current roadmap, and growth metrics; web_search current solar growth tactics; then add 2–4 new high-leverage tasks and file your report.'
     }];
 
     // Phase 1 — gather + research (data tools + web_search, no writes)

@@ -211,9 +211,10 @@ exports.handler = async function() {
     const DATA_TOOLS = TOOLS.filter(function(t) { return t.name !== 'write_task'; });
     const WRITE_TOOL = TOOLS.find(function(t) { return t.name === 'write_task'; });
 
+    const _fb = await require('./lib/agent-replies').loadFeedback('crm-dev', key);
     const messages = [{
       role: 'user',
-      content: `Run your weekly CRM audit. Today is ${today}. Use audit_data_completeness, audit_pipeline_health, get_volume_trends, and get_ops_assignment_health to gather all the data you need.`
+      content: _fb.text + `Run your weekly CRM audit. Today is ${today}. Use audit_data_completeness, audit_pipeline_health, get_volume_trends, and get_ops_assignment_health to gather all the data you need.`
     }];
 
     // Phase 1: Data gathering only (write tool not available)

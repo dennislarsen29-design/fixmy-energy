@@ -265,9 +265,10 @@ exports.handler = async function () {
     const DATA_TOOLS = TOOLS.filter(t => t.name !== 'write_recommendation').concat([WEB_SEARCH_TOOL]);
     const WRITE_TOOL = TOOLS.find(t => t.name === 'write_recommendation');
 
+    const _fb = await require('./lib/agent-replies').loadFeedback('finance', key);
     const messages = [{
       role: 'user',
-      content: `Run tonight's financial review. Today is ${today}. Start with get_recent_reports, then gather: get_pnl_snapshot, get_expense_breakdown, get_recurring_charges, get_commissions_summary, get_cash_position. Use web_search only where a tax rule or rate needs confirming.`
+      content: _fb.text + `Run tonight's financial review. Today is ${today}. Start with get_recent_reports, then gather: get_pnl_snapshot, get_expense_breakdown, get_recurring_charges, get_commissions_summary, get_cash_position. Use web_search only where a tax rule or rate needs confirming.`
     }];
 
     // Phase 1: data gathering (client tools + server-side web search)

@@ -324,9 +324,10 @@ exports.handler = async function() {
     const DATA_TOOLS = TOOLS.filter(function(t) { return t.name !== 'write_action_item'; });
     const WRITE_TOOL = TOOLS.find(function(t) { return t.name === 'write_action_item'; });
 
+    const _fb = await require('./lib/agent-replies').loadFeedback('bizdev', key);
     const messages = [{
       role: 'user',
-      content: `Run your weekly business development and CRM audit. Today is ${today}. Use all data tools: get_conversion_funnel, get_stalled_leads, get_rep_performance, get_referral_pipeline, audit_data_completeness, audit_pipeline_health, get_volume_trends, and get_ops_assignment_health.`
+      content: _fb.text + `Run your weekly business development and CRM audit. Today is ${today}. Use all data tools: get_conversion_funnel, get_stalled_leads, get_rep_performance, get_referral_pipeline, audit_data_completeness, audit_pipeline_health, get_volume_trends, and get_ops_assignment_health.`
     }];
 
     // Phase 1: Data gathering only (write tool not available)

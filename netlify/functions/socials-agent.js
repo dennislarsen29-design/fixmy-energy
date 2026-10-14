@@ -165,9 +165,10 @@ exports.handler = async function() {
     const DATA_TOOLS = TOOLS.filter(function(t) { return t.name !== 'write_post'; });
     const WRITE_TOOL = TOOLS.find(function(t) { return t.name === 'write_post'; });
 
+    const _fb = await require('./lib/agent-replies').loadFeedback('socials', key);
     const messages = [{
       role: 'user',
-      content: `Generate today's social content for FixMy.Energy. Today is ${today} (${dayOfWeek}). Use get_recent_wins and get_pipeline_snapshot to find real material for today's posts.`
+      content: _fb.text + `Generate today's social content for FixMy.Energy. Today is ${today} (${dayOfWeek}). Use get_recent_wins and get_pipeline_snapshot to find real material for today's posts.`
     }];
 
     // Phase 1: Data gathering only (write tool not available)

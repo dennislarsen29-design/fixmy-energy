@@ -131,9 +131,10 @@ exports.handler = async function() {
   }
 
   const today = new Date().toISOString().slice(0, 10);
+  const _fb = await require('./lib/agent-replies').loadFeedback('seo', key);
   const messages = [{
     role: 'user',
-    content: 'Run your weekly SEO analysis. Today is ' + today + '. Gather data with get_seo_metrics (90 days), get_top_queries, and get_lead_outcomes, then write your recommendations.'
+    content: _fb.text + 'Run your weekly SEO analysis. Today is ' + today + '. Gather data with get_seo_metrics (90 days), get_top_queries, and get_lead_outcomes, then write your recommendations.'
   }];
 
   try {

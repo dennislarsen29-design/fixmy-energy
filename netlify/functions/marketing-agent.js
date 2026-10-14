@@ -242,9 +242,10 @@ exports.handler = async function() {
     const DATA_TOOLS = TOOLS.filter(function(t) { return t.name !== 'write_recommendation'; });
     const WRITE_TOOL = TOOLS.find(function(t) { return t.name === 'write_recommendation'; });
 
+    const _fb = await require('./lib/agent-replies').loadFeedback('marketing', key);
     const messages = [{
       role: 'user',
-      content: 'Run your weekly marketing analysis. Today is ' + today + '. Use get_pipeline_stats (30 days), get_zip_performance (90 days), get_marketing_spend, and get_referral_stats to gather all the data you need.'
+      content: _fb.text + 'Run your weekly marketing analysis. Today is ' + today + '. Use get_pipeline_stats (30 days), get_zip_performance (90 days), get_marketing_spend, and get_referral_stats to gather all the data you need.'
     }];
 
     // Phase 1: Data gathering only (write tool not available)

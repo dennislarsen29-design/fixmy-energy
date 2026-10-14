@@ -128,9 +128,10 @@ exports.handler = async function() {
     let corpus = '';
     reps.forEach(function(rep) { notesByRep[rep] = groups[rep].length; corpus += repBlockFor(rep, groups[rep]) + '\n'; });
 
+    const _fb = await require('./lib/agent-replies').loadFeedback('coaching', key);
     const messages = [{
       role: 'user',
-      content: 'Here are the recent rep notes (' + periodStr + '). Analyze each rep and return the structured coaching via submit_coaching.\n\n' + corpus.slice(0, 24000)
+      content: _fb.text + 'Here are the recent rep notes (' + periodStr + '). Analyze each rep and return the structured coaching via submit_coaching.\n\n' + corpus.slice(0, 24000)
     }];
 
     const response = await callClaude(messages, [SUBMIT_TOOL], SYSTEM, { type: 'tool', name: 'submit_coaching' });

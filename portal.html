@@ -2073,6 +2073,36 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var t = String(r.title || '').toLowerCase().replace(/\$[\d,\.]+|\d+(\.\d+)?%?|[^a-z ]/g, ' ').replace(/\b(the|a|an|and|or|of|to|in|on|for|now|still|days?|weeks?|left|past|vs|is|are|at|with|by)\b/g, ' ').replace(/\s+/g, ' ').trim();
     return (r.agent || '') + '|' + t.split(' ').slice(0, 4).join(' ');
   }
+  // Reply to an agent. Stored in agent_replies; the agent reads it at the start of its next run
+  // (netlify/functions/lib/agent-replies.js). Used by the Agent Inbox and S.U.N. agent issues.
+  window._agentReplyOpen = function(agent, idsJson, title) {
+    var old = document.getElementById('agentReplyModal'); if (old) old.remove();
+    var m = document.createElement('div'); m.id = 'agentReplyModal';
+    m.style.cssText = 'position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;padding:16px;';
+    m.innerHTML = '<div style="background:#1b1b1b;border:1px solid #333;border-radius:14px;max-width:520px;width:100%;padding:18px;color:#eee;">'
+      + '<div style="font-weight:800;margin-bottom:4px;">Reply to the ' + String(agent).replace(/[<>&"]/g, '') + ' agent</div>'
+      + '<div style="font-size:.78rem;color:#999;margin-bottom:10px;">About: ' + String(title || '').replace(/[<>&"]/g, '') + '</div>'
+      + '<select id="agentReplyKind" style="width:100%;padding:9px;border-radius:8px;background:#111;color:#eee;border:1px solid #333;margin-bottom:8px;"><option value="answer">Answer its question / give it information</option><option value="off_track">It is off track — change course</option><option value="stop">Stop recommending this</option></select>'
+      + '<textarea id="agentReplyBody" rows="5" placeholder="What should it know or do differently?" style="width:100%;padding:10px;border-radius:8px;background:#111;color:#eee;border:1px solid #333;font-size:.9rem;"></textarea>'
+      + '<div style="font-size:.72rem;color:#888;margin:6px 0 10px;">The agent reads this the next time it runs and follows it. Replies stay in effect for 60 days.</div>'
+      + '<div style="display:flex;gap:8px;justify-content:flex-end;"><button onclick="document.getElementById(\'agentReplyModal\').remove()" style="width:auto;padding:8px 14px;border-radius:8px;background:transparent;border:1px solid #444;color:#aaa;">Cancel</button>'
+      + '<button id="agentReplySend" style="width:auto;padding:8px 16px;border-radius:8px;background:#8DC63F;border:none;color:#1a1a1a;font-weight:800;">Send reply</button></div></div>';
+    document.body.appendChild(m);
+    document.getElementById('agentReplySend').onclick = async function() {
+      var body = document.getElementById('agentReplyBody').value.trim();
+      if (!body) { alert('Type a reply first.'); return; }
+      var ids; try { ids = JSON.parse(idsJson); } catch (e) { ids = []; }
+      var btn = this; btn.disabled = true; btn.textContent = 'Sending…';
+      try {
+        var ac = supabase.createClient(SUPA_URL, SUPA_KEY);
+        var r = await ac.from('agent_replies').insert({ agent: agent, kind: document.getElementById('agentReplyKind').value, body: body, report_id: ids[0] || null, report_title: String(title || '').slice(0, 200) });
+        if (r.error) throw r.error;
+        m.remove();
+        alert('Sent. The ' + agent + ' agent will read this on its next run.');
+        if (document.getElementById('agentsContainer') && typeof loadAgentInbox === 'function') loadAgentInbox();
+      } catch (e) { btn.disabled = false; btn.textContent = 'Send reply'; alert('Could not send: ' + e.message); }
+    };
+  };
   window._sunResolveIssue = async function(idsJson) {
     var ids; try { ids = JSON.parse(idsJson); } catch (e) { return; }
     if (!ids || !ids.length) return;
@@ -2264,7 +2294,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     else if (!O.issues.length) h += '<div class="sun-empty">No open agent issues.</div>';
     else h += O.issues.slice(0, 4).map(function(i){
       return '<div class="sun-row"><span class="sun-dot sun-d-' + i.sev + '"></span><div class="b"><strong>' + _sunEsc(i.title) + '</strong><span>' + _sunEsc(i.agent) + ' · ' + i.n + ' report' + (i.n > 1 ? 's' : '') + ' · first seen ' + _sunAgo(new Date(i.first).getTime()) + ' ago · open</span>'
-        + '<div class="sun-acts" style="margin-top:6px"><button class="sun-btn sm" onclick="renderAgentsView()">Open reports</button><button class="sun-btn sm gh" onclick="window._sunResolveIssue(\'' + JSON.stringify(i.ids).replace(/"/g, '&quot;') + '\')">Resolve</button></div></div></div>';
+        + '<div class="sun-acts" style="margin-top:6px"><button class="sun-btn sm" onclick="renderAgentsView()">Open reports</button><button class="sun-btn sm" onclick="window._agentReplyOpen(\'' + _sunEsc(i.agent).replace(/'/g, '') + '\', \'' + JSON.stringify(i.ids).replace(/"/g, '&quot;') + '\', \'' + _sunEsc(i.title).replace(/'/g, '') + '\')">Reply</button><button class="sun-btn sm gh" onclick="window._sunResolveIssue(\'' + JSON.stringify(i.ids).replace(/"/g, '&quot;') + '\')">Resolve</button></div></div></div>';
     }).join('') + (O.issues.length > 4 ? '<div class="sun-note">+' + (O.issues.length - 4) + ' more issues in Agents.</div>' : '');
     h += '</section><section class="sun-panel" aria-label="System health"><div class="sun-ph"><h2>' + _sunIco('pulse') + 'System health</h2><span class="sun-note">checked ' + ref + '</span></div>';
     var rows = [];
@@ -7772,6 +7802,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var { data, error } = await ac.from('agent_reports').select('*').order('reviewed', {ascending:true}).order('created_at', {ascending:false}).limit(200);
       if (error) throw error;
       var reports = data || [];
+      var repliesBy = {};
+      try { var rr = await ac.from('agent_replies').select('*').order('created_at', {ascending:true}).limit(400); (rr.data || []).forEach(function(x){ (repliesBy[x.report_id] = repliesBy[x.report_id] || []).push(x); }); } catch (e) {}
       var unreviewed = reports.filter(function(r){ return !r.reviewed; });
       var agentNames = reports.map(function(r){ return r.agent; }).filter(function(v,i,a){ return a.indexOf(v)===i; });
       var filterState = window._agentFilter || 'all';
@@ -7802,6 +7834,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '<div style="font-weight:700;font-size:0.95rem;color:#fff;margin-bottom:6px;">'+r.title+'</div>'+
           '<div style="font-size:0.83rem;color:#aaa;line-height:1.6;white-space:pre-wrap;">'+r.body+'</div>'+
           (r.action_url?'<div style="margin-top:10px;"><a href="'+r.action_url+'" target="_blank" style="font-size:0.75rem;color:#4a9eff;text-decoration:none;">&#128279; Open Resource</a></div>':'')+
+          (repliesBy[r.id]||[]).map(function(x){ return '<div style="margin-top:8px;padding:8px 10px;border-left:3px solid #8DC63F;background:rgba(141,198,63,0.07);border-radius:6px;font-size:0.78rem;color:#cfe8a8;"><strong>You'+(x.kind==='stop'?' (stop)':x.kind==='off_track'?' (off track)':'')+':</strong> '+String(x.body).replace(/[<>&]/g,'')+'<div style="font-size:0.66rem;color:#777;margin-top:3px;">'+(x.seen_at?'&#10003; agent read this '+new Date(x.seen_at).toLocaleDateString('en-US',{month:'short',day:'numeric'}):'waiting for the agent\'s next run')+'</div></div>'; }).join('')+
+          '<div style="margin-top:10px;text-align:right;"><button onclick="window._agentReplyOpen(\''+String(r.agent).replace(/\'/g,'')+'\', \'[&quot;'+r.id+'&quot;]\', \''+String(r.title||'').replace(/[\'"<>&]/g,'')+'\')" style="padding:5px 16px;background:rgba(74,158,255,0.12);border:1px solid rgba(74,158,255,0.4);color:#4a9eff;border-radius:8px;font-size:0.75rem;font-weight:700;cursor:pointer;">&#128172; Reply to agent</button></div>'+
           (!r.reviewed?'<div style="margin-top:12px;text-align:right;"><button onclick="markAgentReportReviewed(\''+r.id+'\')" style="padding:5px 16px;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:8px;font-size:0.75rem;font-weight:700;cursor:pointer;">&#10003; Mark Reviewed</button></div>':'<div style="margin-top:8px;text-align:right;font-size:0.7rem;color:#444;">&#10003; Reviewed</div>')+
         '</div>';
       }).join('') : '<p style="color:#555;padding:30px 0;text-align:center;">No reports yet — use Run Now above or wait for the scheduled runs.</p>';
