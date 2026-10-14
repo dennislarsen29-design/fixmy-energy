@@ -2583,7 +2583,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var _doneS = _doneD.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
       var _p1 = _payDateShort(_payFridayAfter(_doneD));
       var _tail = c.solar_status === 'ns_pto' ? ' &middot; PTO reached' : ' &middot; awaiting inspection / PTO';
-      if (!c.ns_audit_at) return { text: '&#128269; Install completed ' + _doneS + ' &middot; <b>awaiting Audit</b> &mdash; Payment 1 is not payable until it is signed off', color: '#f59e0b' };
+      if (!c.ns_audit_at && c.lead_source !== 'kin') return { text: '&#128269; Install completed ' + _doneS + ' &middot; <b>awaiting Audit</b> &mdash; Payment 1 is not payable until it is signed off', color: '#f59e0b' };
       return { text: '&#9989; Install completed ' + _doneS + ' &middot; Payment 1 pays ' + _p1 + _tail, color: COMM_COLOR_EARNED };
     }
     var dateVal = isDiag ? c.diagnostic_date : c.install_date;
@@ -2659,7 +2659,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var axRows = '';
     if (isNSJob) {
       var isAdm = typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE === 'admin';
-      if (isAdm && (c.install_completed_at || c.solar_status === 'ns_pto')) {
+      if (isAdm && c.lead_source !== 'kin' && (c.install_completed_at || c.solar_status === 'ns_pto')) {
         axRows += '<div style="margin-top:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;" onclick="event.stopPropagation();"><label style="font-size:0.62rem;font-weight:700;color:#888;white-space:nowrap;">&#128269; Install Audit</label>' +
           (c.ns_audit_at ? '<span style="font-size:0.72rem;color:#8DC63F;">&#9989; Signed off ' + new Date(c.ns_audit_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + (c.ns_audit_note ? ' &middot; ' + esc(c.ns_audit_note) : '') + '</span><button onclick="nsClearAudit(\'' + c.id + '\')" style="width:auto;padding:2px 8px;font-size:0.62rem;background:transparent;border:1px solid rgba(255,255,255,0.2);color:#888;border-radius:6px;cursor:pointer;">Undo</button>'
             : '<span style="font-size:0.72rem;color:#f59e0b;">Not yet &mdash; compare Aurora sold vs installed design (kW, base PPW, sun hours)</span><button onclick="nsMarkAudit(\'' + c.id + '\')" style="width:auto;padding:4px 12px;font-size:0.68rem;font-weight:800;background:#8DC63F;border:none;color:#000;border-radius:100px;cursor:pointer;">Mark audited</button>') + '</div>';
@@ -3094,8 +3094,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var redline = parseFloat(c.ns_redline_ppw) || 0;
     var dcBonus = parseFloat(c.ns_dc_bonus_ppw) || 0;
     var watts = Math.round((parseFloat(c.system_size) || 0) * 1000);
-    var isBlackBox = _nsIsBlackBoxSourced(c);
+    var isKin = c.lead_source === 'kin';
+    var isBlackBox = !isKin && _nsIsBlackBoxSourced(c);
+    // Kin-provided leads cost nothing and pay the 70% pool (per Dennis, 2026-10-14); company-provided Axia leads stay 50%.
     var poolPct = isBlackBox ? 0.50 : 0.70;
+    var kinPrice = parseFloat(c.kin_price) || 0, kinPct = parseFloat(c.kin_lto_pct) || 0, kinRedline = (c.kin_redline != null && c.kin_redline !== '') ? (parseFloat(c.kin_redline) || 0) : 14000;
     var setterName = (c.setter_name || '').trim();
     var closerNm = repName(c.rep_id || '');
     var hasSetter = !!setterName && setterName.toLowerCase() !== 'none' && _repCanonical(setterName).toLowerCase() !== _repCanonical(closerNm||'').toLowerCase();
@@ -3110,6 +3113,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var netRedline = redline - dcApplied;
       var netPpw = basePpw - netRedline;
       var gross = Math.max(0, Math.round(netPpw * watts * 100) / 100);
+      // Kin: Kin keeps the LTO discount on top of its $14,000 redline, so gross = (price - discount) - redline.
+      if (isKin) { netRedline = kinRedline; netPpw = 0; gross = Math.max(0, Math.round((kinPrice * (1 - kinPct / 100) - kinRedline) * 100) / 100); }
       var closerAmt = c.rep_id ? Math.round(gross*closerPct*100)/100 : 0;
       var setterAmt = hasSetter ? Math.round(gross*setterPct*100)/100 : 0;
       // Setter Comp Plan election (2026-09-18) — Axia/QCells is always an eligible line;
@@ -3127,7 +3132,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var ptoDone = c.solar_status === 'ns_pto';
     // Audit gate (2026-10-13, per Dennis): sold design vs installed design can differ slightly (sun hours),
     // so nobody is paid the first commission on an Axia job until its audit is signed off.
-    var audited = !!c.ns_audit_at;
+    var audited = !!c.ns_audit_at || isKin;   // the sold-vs-installed design audit is an Axia step; Kin jobs skip it
     var s1 = core(0);
     var full = core(dcBonus);
     var cur = ptoDone ? full : s1;
@@ -3142,7 +3147,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       dcCloserAmt:r2(Math.max(0, full.closerAmt - s1.closerAmt)), dcSetterAmt:r2(Math.max(0, full.setterAmt - s1.setterAmt)), dcCompanyAmt:r2(Math.max(0, full.companyAmt - s1.companyAmt)),
       setterCompPlan: _nsSetterPlanApplied,
       revenue: cur.gross, costs: r2(cur.closerAmt+cur.setterAmt),
-      hasInputs: basePpw>0 && watts>0,
+      isKin: isKin, kinPrice: kinPrice, kinPct: kinPct, kinRedline: kinRedline, kinDiscount: Math.round(kinPrice * kinPct) / 100,
+      hasInputs: isKin ? kinPrice > 0 : (basePpw>0 && watts>0),
       // Earned (Payment 1) = the install is marked COMPLETED. PTO is Payment 2 only.
       earned: installDone && audited, awaitingAudit: installDone && !audited, audited: audited, earnedAt: installDoneAt, ptoDone: ptoDone, ptoAt: c.ns_pto_at || null
     };
@@ -3244,8 +3250,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // the actual money-locking action, so it must never use a stale/empty cache.
     await window.bbLoadSetterCompPlans(true);
     var calc = _nsCalcCommission(rec);
-    if (!calc.hasInputs) { alert('Enter Base PPW and set System Size (kW) on the lead first — Gross Commission is $0 without them.'); return; }
-    if (!rec.ns_audit_at) { alert('Sign off the Install Audit on the Jobs card first (compare Aurora sold vs installed design). Payment 1 is not locked in until then.'); return; }
+    if (!calc.hasInputs) { alert(calc.isKin ? 'Enter the Kin sale price first — Gross Commission is $0 without it.' : 'Enter Base PPW and set System Size (kW) on the lead first — Gross Commission is $0 without them.'); return; }
+    if (!rec.ns_audit_at && rec.lead_source !== 'kin') { alert('Sign off the Install Audit on the Jobs card first (compare Aurora sold vs installed design). Payment 1 is not locked in until then.'); return; }
     try {
       var commRes = await pc.from('commissions').select('kind,note').eq('customer_id', cid).eq('line','new_solar');
       var have = {}, haveDc = {};
@@ -28452,6 +28458,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   window._axiaCommDraft = null;
   function openAxiaCommModal(id, pendingUpdates, rec, finish) {
     var c = rec || {};
+    if (c.lead_source === 'kin') {   // Kin deals have no PPW/TPO setup: save the disposition change and move on; price/LTO/redline live in the Accounting panel
+      (async function(){ try { var kc = supabase.createClient(SUPA_URL, SUPA_KEY); var ku = await kc.from('customers').update(pendingUpdates||{}).eq('id', id); if (ku.error) alert('Could not save: ' + ku.error.message); } catch (e) { alert('Could not save: ' + e.message); } if (typeof finish === 'function') finish(); })();
+      return;
+    }
     var tpoType = _axiaTpoTypeFor(c);
     window._axiaCommPending = { id: id, updates: pendingUpdates||{}, rec: c, finish: finish };
     window._axiaCommDraft = { tpoType: tpoType };
@@ -28850,7 +28860,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           edSelect('Assigned Rep','edRepId',c.rep_id||'none',[['none','— Unassigned —'],['tech4','Dennis Larsen'],['tech2','Ranie'],['tech3','Michael Smith'],['tech5','Cristina Huang'],['rep1','Ronda Larsen'],['setter1','Setter']])+
           edSelect('Ops Partner (Installer)','edAssignedOps',c.assigned_ops||'none',[['none','— Unassigned —'],['ops1','Klos Electric'],['ops2','John Espinoza'],['ops3','Cosmic Solar'],['ops4','Axia'],['dennis','Dennis (Self)']])+
           edSelect('Ops Payout','edOpsPayout',c.ops_payout_status||'pending',[['pending','Pending'],['paid','Paid']])+
-          edSelect('Lead Source','edLeadSource',c.lead_source||'',[['','— Unknown —'],['direct_mail','Direct Mail Response'],['self_generated','Self-Generated (Black Box)'],['referral','Referral'],['inbound_web','Inbound / Web'],['orphaned_list','Orphaned Installer List'],['lead_locker','Lead Locker (purchased)']])+
+          edSelect('Lead Source','edLeadSource',c.lead_source||'',[['','— Unknown —'],['direct_mail','Direct Mail Response'],['self_generated','Self-Generated (Black Box)'],['referral','Referral'],['inbound_web','Inbound / Web'],['orphaned_list','Orphaned Installer List'],['lead_locker','Lead Locker (purchased)'],['kin','Kin Appointment']])+
           (c.lead_source==='orphaned_list'||c.original_installer ?
             '<div class="ed-grid">'+
               edField('Original Installer','edOrigInstaller',c.original_installer||'','text')+
@@ -29075,7 +29085,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var calc = _nsCalcCommission(nsRec);
         var m2 = function(n){ return '$'+(parseFloat(n)||0).toLocaleString(undefined,{maximumFractionDigits:2}); };
         var nsTpoSel = _axiaTpoTypeFor(nsRec);
-        h += '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 12px;margin-bottom:8px;">';
+        if (calc.isKin) {
+          h += '<div style="background:rgba(232,121,58,0.07);border:1px solid rgba(232,121,58,0.3);border-radius:10px;padding:10px 12px;margin-bottom:8px;">';
+          h += '<div style="font-size:0.66rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#E8793A;margin-bottom:8px;">Kin Deal &mdash; commission inputs</div>';
+          h += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px;">';
+          h += '<div><label style="font-size:0.6rem;color:#888;display:block;margin-bottom:2px;">Sale price ($)</label><input type="number" step="1" value="'+(nsRec.kin_price!=null?nsRec.kin_price:'')+'" onchange="edSaveNsField(\''+cid+'\',\'kin_price\',this.value)" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:6px;color:#fff;padding:6px 8px;font-size:0.8rem;box-sizing:border-box;"/></div>';
+          h += '<div><label style="font-size:0.6rem;color:#888;display:block;margin-bottom:2px;">LTO discount (%)</label><input type="number" step="0.5" value="'+(nsRec.kin_lto_pct!=null?nsRec.kin_lto_pct:'')+'" onchange="edSaveNsField(\''+cid+'\',\'kin_lto_pct\',this.value)" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:6px;color:#fff;padding:6px 8px;font-size:0.8rem;box-sizing:border-box;"/></div>';
+          h += '<div><label style="font-size:0.6rem;color:#888;display:block;margin-bottom:2px;">Kin redline ($)</label><input type="number" step="1" value="'+calc.kinRedline+'" onchange="edSaveNsField(\''+cid+'\',\'kin_redline\',this.value)" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:6px;color:#fff;padding:6px 8px;font-size:0.8rem;box-sizing:border-box;"/></div>';
+          h += '</div>';
+          h += '<div style="font-size:0.72rem;color:#aaa;line-height:1.8;">'+m2(calc.kinPrice)+' &minus; LTO discount '+m2(calc.kinDiscount)+' = customer price <b style="color:#ddd;">'+m2(calc.kinPrice-calc.kinDiscount)+'</b> &minus; redline '+m2(calc.kinRedline)+' = Gross Commission <b style="color:#4a9eff;">'+m2(calc.revenue)+'</b></div>';
+          h += '<div style="font-size:0.68rem;margin-top:4px;color:#E8793A;">Kin-provided lead (no lead cost) &mdash; '+Math.round(calc.poolPct*100)+'% pool</div>';
+          h += '</div>';
+        }
+        h += '<div style="'+(calc.isKin?'display:none;':'')+'background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 12px;margin-bottom:8px;">';
         h += '<div style="font-size:0.66rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#4a9eff;margin-bottom:8px;">&#9889; PPW Commission Inputs</div>';
         h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">';
         h += '<div><label style="font-size:0.6rem;color:#888;display:block;margin-bottom:2px;">System Size (kW)</label><input type="text" value="'+esc(nsRec.system_size||'')+'" onchange="edSaveNsSystemSize(\''+cid+'\',this.value)" style="width:100%;background:#0e0e0e;border:1px solid rgba(255,255,255,0.12);border-radius:6px;color:#ccc;padding:5px 7px;font-size:0.78rem;box-sizing:border-box;"/></div>';
@@ -29897,7 +29919,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<div class="editor-section-title">Note to Tech</div>'+
         '<div style="margin-bottom:16px;"><textarea id="nlNotes" class="ed-input" rows="3" style="resize:vertical;" placeholder="Gate code, concerns, system issues..." oninput="nlUpdateCal()"></textarea></div>'+
         '<div class="editor-section-title">Lead Source</div>'+
-        '<div class="ed-grid" style="margin-bottom:8px;"><div><label class="ed-label">Lead Source</label><select id="nlLeadSource" class="ed-input" onchange="nlLeadSourceChanged(this.value)"><option value="">Customer Called In</option><option value="self_generated">Self-Generated (Black Box)</option><option value="referral">Referral</option><option value="inbound_web">Inbound / Web</option><option value="orphaned_list">Orphaned Installer List</option></select></div></div>'+
+        '<div class="ed-grid" style="margin-bottom:8px;"><div><label class="ed-label">Lead Source</label><select id="nlLeadSource" class="ed-input" onchange="nlLeadSourceChanged(this.value)"><option value="">Customer Called In</option><option value="self_generated">Self-Generated (Black Box)</option><option value="referral">Referral</option><option value="inbound_web">Inbound / Web</option><option value="orphaned_list">Orphaned Installer List</option><option value="kin">Kin Appointment</option></select></div></div>'+
         '<div id="nlReferralNote" style="display:none;padding:10px 14px;background:rgba(141,198,63,0.07);border:1px solid rgba(141,198,63,0.2);border-radius:8px;margin-bottom:16px;font-size:0.75rem;color:#aaa;line-height:1.6;">'+
           '&#127381; <strong style="color:#8DC63F;">$1,000 Referral Incentive</strong> &mdash; The referring customer earns a $1,000 credit toward their next service when this lead closes a job. '+
           '<br><label class="ed-label" style="margin-top:8px;display:block;">Referring Customer Name (optional)</label>'+
@@ -31007,6 +31029,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var type=(document.getElementById('nlType')?document.getElementById('nlType').value:'')||'tech';
     var setter=(document.getElementById('nlType')?document.getElementById('nlType').value:'').replace('setter-','').replace('-',' ');
     var leadCat=(document.getElementById('nlLeadCat')||{}).value||'fixmy';
+    // Kin appointments (2026-10-14): Kin schedules the visit and its installers do the work, so the lead rides the
+    // Axia-style pipeline (commission only) and never books our Evaluation calendar.
+    if (((document.getElementById('nlLeadSource')||{}).value) === 'kin') leadCat = 'new_solar';
     var notes=(document.getElementById('nlNotes').value||'').trim();
     var owned=(document.getElementById('nlOwned').value||'').trim();
     var roof=(document.getElementById('nlRoof').value||'').trim();
