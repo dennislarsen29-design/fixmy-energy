@@ -56,6 +56,10 @@ exports.handler = async function(event) {
   if (!startISO || (!phone && !email))
     return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'startISO + phone or email required' }) };
 
+  // A phone that is present but not a real number (e.g. "858") is refused so nobody is booked with no way to reach them.
+  if (phone && String(phone).replace(/\D/g, '').replace(/^1(?=\d{10})/, '').length < 10)
+    return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Please enter a full 10-digit phone number.' }) };
+
   // Setter-entered leads (Ronda's mail/phone-sourced appointments, etc.) still need
   // a real GHL calendar appointment so ops/techs see them — they just must not
   // trigger the calendar's automated confirmation SMS/email, since the homeowner
