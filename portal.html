@@ -14530,6 +14530,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // only handle. Falls back to the role so admin-side logging still records something.
   function bbRepId() { return window._bbDialerPersonId || CURRENT_ROLE; }
 
+  // Writes "Status → X" to the activity log whenever a lead's FixMy step or Axia pipeline status changes
+  // (both pipelines; reps see progress without opening the lead). Fire-and-forget, never blocks a save.
+  var _FM_STEP_LABELS = ['Eval Booked','Photos Uploaded','Diagnostic Booked','Analysis Done','Proposal Sent','Sold / Deposit','Not Sold / Dead','Install Booked','Installed','Monitoring'];
+  window._logStatusChange = function(id, rec, oldStep, oldSolar, newStep, newSolar) {
+    try {
+      var parts = [];
+      if (newSolar && newSolar !== oldSolar) parts.push('Status \u2192 ' + ((NS_STATUSES[newSolar] && NS_STATUSES[newSolar].label) || newSolar));
+      else if (newStep && parseInt(newStep) !== parseInt(oldStep || 0) && !newSolar) parts.push('Status \u2192 ' + (_FM_STEP_LABELS[parseInt(newStep) - 1] || ('Step ' + newStep)));
+      if (parts.length) bbLogActivity(id, 'note', null, parts[0], rec ? { rec: rec } : {});
+    } catch (e) { console.warn('status note skipped:', e.message); }
+  };
   async function bbLogActivity(id, channel, outcome, note, opts) {
     opts = opts || {};
     var client = supabase.createClient(SUPA_URL, SUPA_KEY);
@@ -29656,12 +29667,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // Step-5 "Proposal Sent" no longer auto-opens the proposal builder — the Proposal
     // Tools cluster in the editor is the entry point now. Step 5 saves like any other step.
     if (isFixMySave && stepVal === 7 && (cRec.step||1) !== 7) updates.archived = true;
+    var _oldStepLog = cRec.step, _oldSolarLog = cRec.solar_status;
     try {
       var client=supabase.createClient(SUPA_URL,SUPA_KEY);
       var { error }=await client.from('customers').update(updates).eq('id',id);
       if (error) throw error;
       var idx=adminCustomers.findIndex(function(x){return x.id===id;});
       if (idx>-1) adminCustomers[idx]=Object.assign(adminCustomers[idx],updates);
+      window._logStatusChange(id, idx>-1 ? adminCustomers[idx] : null, _oldStepLog, _oldSolarLog, ('step' in updates) ? updates.step : null, (updates.lead_category==='new_solar' || cRec.lead_category==='new_solar') ? updates.solar_status : null);
       if ('step' in updates) delete _fixmyCommCache[id]; // Potential/Earned gates on step — force a recompute
       // Axia's formula reads system_size/setter_name/rep_id/black_box/lead_source, any of
       // which this editor can change — simplest correct rule is "any save invalidates it".
@@ -31277,6 +31290,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var client = supabase.createClient(SUPA_URL, SUPA_KEY);
     var res = await client.from('customers').update({step: next}).eq('id', id);
     if (res.error) { alert('Error: ' + res.error.message); return; }
+    window._logStatusChange(id, c, step, null, next, null);
     c.step = next;
     renderAdminView(adminView);
   }
@@ -34370,6 +34384,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var res = await c2.from('customers').update(updates).eq('id', id);
         if (res.error) { alert('Save failed: ' + res.error.message); return; }
         var rec = allRecords.find(function(r){ return r.id === id; });
+        window._logStatusChange(id, rec, existingRec.step, existingRec.solar_status, ('step' in updates) ? updates.step : null, cat === 'new_solar' ? solarSt : null);
         if (rec) Object.assign(rec, updates);
         var sv = document.getElementById('seSaved'); if (sv) sv.style.display = 'inline';
         setTimeout(function() { if (typeof window.salesRefresh === 'function') window.salesRefresh(); }, 1200);
@@ -34551,7 +34566,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         return;
       }
       var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var _oldS = rec.step;
       await c2.from('customers').update({step: newStep}).eq('id', id);
+      window._logStatusChange(id, rec, _oldS, null, newStep, null);
       rec.step = newStep;
       delete _fixmyCommCache[id]; // step change can flip Potential/Earned — force a recompute
       renderSales();
