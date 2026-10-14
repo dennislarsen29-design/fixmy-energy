@@ -30,6 +30,7 @@ function parseDraft(text) {
   return sms && email_body ? { sms: sms, email_subject: grab('email_subject'), email_body: email_body } : null;
 }
 
+const { techLineFor } = require('./lib/tech-line');
 exports.handler = async function (event) {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers: cors, body: '' };
   if (event.httpMethod !== 'POST') return { statusCode: 405, headers: cors, body: JSON.stringify({ error: 'Method Not Allowed' }) };
@@ -82,6 +83,11 @@ exports.handler = async function (event) {
     const clean = (s, n) => String(s || '').replace(/\*\*/g, '').trim().slice(0, n);
     const out = { sms: clean(p.sms, 320), email_subject: clean(p.email_subject, 90), email_body: clean(p.email_body, 1200) };
     if (!out.sms || !out.email_body) return reply({ error: 'unparseable' });
+    // The draft is the WHOLE message: Tech contact line + opt-out footer included, so the rep sees and can edit
+    // exactly what the customer receives (recapture-send only re-adds the opt-out footer if it was deleted).
+    const techLine = await techLineFor(b.customerId, process.env.SUPA_SERVICE_KEY);
+    out.sms = out.sms + (techLine ? '\n' + techLine : '') + '\nReply STOP to opt out.';
+    out.email_body = out.email_body + (techLine ? '\n\n' + techLine : '') + '\n\nIf you would rather not hear from us, just reply and we will stop.';
     return reply(out);
   } catch (e) { console.error('recapture-draft failed:', e.message); return reply({ error: 'unavailable', detail: String(e.message || e).slice(0, 200) }); }
 };
