@@ -101,6 +101,19 @@ const TOOL = {
       confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
       notes: { type: 'string', description: 'Anything the rep should know before trusting these numbers: illegible sections, which figures are estimated vs. actual, an unusual rate schedule, multiple accounts/meters on one bill, etc. Empty string if nothing to flag.' },
       reading_method: { type: 'string', enum: ['table_exact', 'chart_estimated', 'single_month_only', 'none'], description: 'table_exact = an exact numeric usage table (e.g. a NEM True-Up summary table) was printed and read directly, no eyeballing needed. chart_estimated = monthly_breakdown was derived by visually reading a bar chart against its labeled axis gridlines — this is expected and normal, not a fallback to apologize for. single_month_only = this bill shows only the current billing period, no history chart or table at all. none = no usable monthly usage data found anywhere on the document.' },
+      nem_summary_rows: {
+        type: 'array',
+        description: 'ONLY for a Net Energy Metering (NEM) True-Up statement or any bill that prints a "Net Energy Metering Summary" / NEM history table (usually near the end of the PDF, rows by Bill Date). Return EVERY row of that table, one entry per Bill Date, including rows for earlier months of the true-up year. Do not skip rows and do not stop at the months that also appear in the usage chart. Leave empty only if the document has no such table.',
+        items: {
+          type: 'object',
+          properties: {
+            bill_date: { type: 'string', description: 'The row\'s Bill Date as YYYY-MM-DD (e.g. 06/05/2025 -> 2025-06-05).' },
+            total_kwh: { type: 'number', description: 'The Total kWh printed on that row (net, as printed; may be negative). If only On/Off/Super-Off-Peak are printed, their sum.' },
+            on_peak_kwh: { type: 'number' }, off_peak_kwh: { type: 'number' }, super_off_peak_kwh: { type: 'number' }
+          },
+          required: ['bill_date', 'total_kwh']
+        }
+      },
       monthly_breakdown: {
         type: 'array',
         description: 'One entry per real month visible in a usage-history chart (e.g. "Electric Usage History") or table on this bill. A stacked bar chart with labeled y-axis gridlines (e.g. 0/148/296/444/592/740) but no printed number on each individual bar is STILL READABLE — estimate each bar\'s total height, and each color segment\'s share of it, by eye against the nearest gridlines, exactly the way a rep standing at the customer\'s kitchen table would read the printed chart. Do this for every month with a visible bar. Only omit a month if its bar is genuinely too small or obscured to place against the gridlines at all — do not fabricate a month with no bar. Leave this array empty only when reading_method is single_month_only or none.',
@@ -133,7 +146,7 @@ What to look for:
 
 SOURCE PRIORITY for kWh (2026-10-02, per Dennis — Mohan Krishnan): ALWAYS use printed numbers before eyeballing any chart.
 1. The exact "kWh used" figure printed beside the Electric Usage History chart on page 1 (with "Days in billing cycle" and daily avg) is the exact usage for THAT bill's month — record it with estimated:false.
-2. TRUE-UP / NEM SUMMARY HISTORY (critical): when the document is a True-Up statement or carries a Net Energy Metering Summary table, return EVERY row of that table as its own monthly_breakdown entry (up to 12 or more), even if the main usage chart shows fewer months. Label each month "Mon YYYY" using the Bill Date's month and year (e.g. a 06/05/2025 bill date -> "Jun 2025"). Never return only the most recent months and omit older table rows: the older rows are how we reconstruct a full 12-month usage history across several uploaded bills. Any Net Energy Metering Summary table (usually page ~7 of 8): its Bill Date rows give exact On-Pk / Off-Pk / Super-Off-Pk / Total kWh for each billing period, and "YTD Totals" gives the running total for the true-up year. These are exact too (estimated:false). Also read System Size (kW), Start Date / True-Up Date and Version (NEM 1.0/2.0/3.0) from this table when present.
+2. TRUE-UP / NEM SUMMARY HISTORY (critical): when the document is a True-Up statement or carries a Net Energy Metering Summary table, fill nem_summary_rows with EVERY row of that table (one per Bill Date; also fine to mirror them in monthly_breakdown), even if the main usage chart shows fewer months. Label each month "Mon YYYY" using the Bill Date's month and year (e.g. a 06/05/2025 bill date -> "Jun 2025"). Never return only the most recent months and omit older table rows: the older rows are how we reconstruct a full 12-month usage history across several uploaded bills. Any Net Energy Metering Summary table (usually page ~7 of 8): its Bill Date rows give exact On-Pk / Off-Pk / Super-Off-Pk / Total kWh for each billing period, and "YTD Totals" gives the running total for the true-up year. These are exact too (estimated:false). Also read System Size (kW), Start Date / True-Up Date and Version (NEM 1.0/2.0/3.0) from this table when present.
 3. The "Summary of Current Charges" line (e.g. "Electric … 288 kWh") is also exact.
 4. ONLY months with no printed number anywhere get eyeballed from the bar chart (estimated:true). Never overwrite an exact printed figure with a chart estimate, and anchor chart estimates to the exact months you do have (the chart's printed-month bar must match its printed number — use that to calibrate the rest).
 NEM CAUTION: for solar/NEM customers these printed kWh are NET (usage minus solar export) and can be negative (e.g. -197 kWh in a month = net exporter). Report them exactly as printed, but a net figure is NOT gross household consumption — say so in notes, do not present a sum of net months as annual consumption, and never let a net/negative total silently become annual_kwh. Dollar amounts: use the printed "Total Charges this Month" / current charges for monthly_amount_paid, not the credit balance or total account balance.
@@ -210,7 +223,7 @@ exports.handler = async function (event) {
       },
       body: JSON.stringify({
         model: MODEL,
-        max_tokens: 1200,
+        max_tokens: 3000,   // 12+ NEM table rows with on/off/super splits don't fit in 1200 and a cut-off tool call drops the arrays
         system: SYSTEM,
         tools: [TOOL],
         tool_choice: { type: 'tool', name: 'report_bill_analysis' },
@@ -244,8 +257,28 @@ exports.handler = async function (event) {
           };
         }).filter(function (m) { return m.month && typeof m.total_kwh === 'number'; })
       : [];
+    // NEM Summary table rows (dedicated field) -> month entries. An exact printed row never gets replaced by a chart estimate,
+    // and a month already read exactly from the usage table keeps its own value.
+    const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    let nemRows = 0;
+    if (Array.isArray(out.nem_summary_rows)) {
+      out.nem_summary_rows.slice(0, 36).forEach(function (r) {
+        r = r || {};
+        const m = /^(\d{4})-(\d{2})-\d{2}$/.exec(String(r.bill_date || ''));
+        let kwh = typeof r.total_kwh === 'number' ? r.total_kwh : null;
+        if (kwh == null) { const parts = [r.on_peak_kwh, r.off_peak_kwh, r.super_off_peak_kwh].filter(function (x) { return typeof x === 'number'; }); if (parts.length) kwh = parts.reduce(function (t, x) { return t + x; }, 0); }
+        if (!m || kwh == null) return;
+        const label = MON[parseInt(m[2], 10) - 1] + ' ' + m[1];
+        nemRows++;
+        const hit = monthlyBreakdown.filter(function (x) { return x.month === label; })[0];
+        if (hit && hit.estimated === false) return;
+        const row = { month: label, total_kwh: kwh, on_peak_kwh: typeof r.on_peak_kwh === 'number' ? r.on_peak_kwh : null, off_peak_kwh: typeof r.off_peak_kwh === 'number' ? r.off_peak_kwh : null, super_off_peak_kwh: typeof r.super_off_peak_kwh === 'number' ? r.super_off_peak_kwh : null, estimated: false };
+        if (hit) Object.assign(hit, row); else monthlyBreakdown.push(row);
+      });
+    }
     return reply(200, {
       readable: out.readable !== false,
+      nem_rows_read: nemRows,
       utility_detected: ['sdge', 'sce', 'ladwp', 'other', 'unknown'].indexOf(out.utility_detected) >= 0 ? out.utility_detected : 'unknown',
       annual_kwh: typeof out.annual_kwh === 'number' ? out.annual_kwh : null,
       avg_rate_per_kwh: typeof out.avg_rate_per_kwh === 'number' ? out.avg_rate_per_kwh : null,
