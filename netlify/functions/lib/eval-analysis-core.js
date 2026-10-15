@@ -265,7 +265,7 @@ async function runEvalAnalysis(anthropicKey, body) {
     const answerKeys = Object.keys(answers);
     if (answerKeys.length) {
       ctx.push('Rep answered your previous questions:\n' +
-        answerKeys.map(k => { const v = answers[k]; const t = (v && typeof v === 'object') ? JSON.stringify(v) : String(v); return `- ${k}: ${t.slice(0, 900)}`; }).join('\n'));
+        answerKeys.map(k => { const v = answers[k]; const t = (v && typeof v === 'object') ? JSON.stringify(v) : String(v); return `- ${k}: ${t.slice(0, (k === 'bill' || k === 'gbd') ? 2000 : 900)}`; }).join('\n'));
     }
 
     if (catalog.length) {

@@ -199,6 +199,13 @@ async function runSync({ anthropicKey, jobId, limit, delayMs }) {
     if (i > 0 && delayMs) await new Promise(function (r) { setTimeout(r, delayMs); });
     const p = photos[i];
     try {
+      // Already labeled by the upload slot the rep/customer used (e.g. "Utility Bill", "Inverter Photo")? No AI call needed:
+      // the label is known. Only unlabeled / "Additional Photos" files go to vision (2026-10-15, per Dennis: save credits).
+      if (p.label && p.label !== 'Additional Photos' && PHOTO_CATEGORIES.indexOf(p.label) >= 0) {
+        await markDone(p, { label: p.label, flag: 'good', note: '' });
+        results.push({ id: p.id, ok: true, label: p.label, flag: 'good', skippedAi: true });
+        continue;
+      }
       const result = await categorizeOne(p, anthropicKey);
       await markDone(p, result);
       results.push({ id: p.id, ok: true, label: result.label, flag: result.flag });

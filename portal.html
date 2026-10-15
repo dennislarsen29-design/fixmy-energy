@@ -3,6 +3,7 @@
 <html lang="en">
 <head>
 <!-- Google Tag Manager -->
+<script src="/assets/bill-math.js"></script>
 <script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
 new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
 j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
@@ -10964,35 +10965,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   function _evMonthsFilled(ba) {
     return (ba.monthly_breakdown || []).filter(function(m){ return m && m.total_kwh != null && !isNaN(m.total_kwh); });
   }
-  // Annual usage from the bill's monthly history (2026-10-15, per Dennis): previous records (the NEM Summary table's
-  // prior months) are the base, and NEWER months replace older ones, so the latest two months trump earlier data.
-  // 12+ distinct months -> sum of the newest 12. 6-11 months -> missing calendar months filled with the average of
-  // the known ones. Fewer -> null (caller falls back to the printed annual figure).
-  function _billMonthKey(label) {
-    var m = /^\s*([A-Za-z]{3})[A-Za-z]*\.?\s*,?\s*(\d{4})?/.exec(String(label || '')); if (!m) return null;
-    var mi = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'].indexOf(m[1].toLowerCase()); if (mi < 0) return null;
-    return { moy: mi, ord: m[2] ? parseInt(m[2], 10) * 12 + mi : null };
-  }
-  function _billUsageFromMonths(rows) {
-    var seen = {}, list = [];
-    (rows || []).forEach(function (r) {
-      var k = _billMonthKey(r && r.month), v = parseFloat(r && r.total_kwh);
-      if (!k || k.ord == null || !isFinite(v)) return;   // net-metered months can be negative (export > use); they count in the sum like any other month
-      seen[k.ord] = { ord: k.ord, moy: k.moy, kwh: v };   // later rows (newer reads) overwrite earlier ones for the same month
-    });
-    Object.keys(seen).forEach(function (o) { list.push(seen[o]); });
-    list.sort(function (a, b) { return b.ord - a.ord; });
-    list = list.slice(0, 12);
-    if (list.length >= 12) return { kwh: Math.round(list.reduce(function (t, x) { return t + x.kwh; }, 0)), months: 12, filled: false };
-    if (list.length >= 6) {
-      var avg = list.reduce(function (t, x) { return t + x.kwh; }, 0) / list.length, byMoy = {};
-      list.forEach(function (x) { byMoy[x.moy] = x.kwh; });
-      var tot = 0; for (var i = 0; i < 12; i++) tot += (byMoy[i] != null ? byMoy[i] : avg);
-      return { kwh: Math.round(tot), months: list.length, filled: true };
-    }
-    return null;
-  }
-  window._billMonthKey = _billMonthKey; window._billUsageFromMonths = _billUsageFromMonths;
   function _evRecalcAnnualFromMonths(ba) {
     var f = _evMonthsFilled(ba);
     if (f.length < 12) { ba.annual_auto = false; return false; }
@@ -11100,6 +11072,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // and polls lead_evaluations for the result instead of waiting on one HTTP response.
   // The background function owns writing analysis/questions/status/error to the row;
   // this only ever reads it back.
+  // Compact, rep-corrected bill facts for Quoya's full analysis (null when no usable bill read exists yet).
+  function _evBillForAnalysis() {
+    var ba = _evLocal && _evLocal.billAnalysis;
+    if (!ba || ba._err) return null;
+    var months = (ba.monthly_breakdown || []).filter(function(m){ return m && m.total_kwh != null; }).map(function(m){ return m.month + ': ' + m.total_kwh + ' kWh' + (m.on_peak_kwh != null ? ' (on-peak ' + m.on_peak_kwh + ')' : ''); });
+    if (!(parseFloat(ba.annual_kwh) || months.length)) return null;
+    return { annual_kwh: ba.annual_kwh, avg_rate_per_kwh: ba.avg_rate_per_kwh, monthly_amount_paid: ba.monthly_amount_paid, nem_version: ba.nem_version, care: !!ba.care, months: months.slice(-12), note: 'Net-metered kWh as printed on the bill (can be negative); already read and rep-corrected. Do not re-read the bill photo.' };
+  }
   window.evRunAnalysis = async function() {
     if (_evAnalyzing || !_evId) return;
     _evAnalyzing = true;
@@ -11132,11 +11112,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           evalId: _evRow.id,
-          photos: _evPhotos().map(function(p){ return { url: p.url, label: p.label || p.Label || '' }; }),
+          // The bill is read ONCE (Quoya's Bill Analysis). When that read exists, the bill photo is not sent to vision again; its
+          // figures ride in answers.bill instead (saves a large image + tokens on every full analysis).
+          photos: _evPhotos().filter(function(p){ return !(_evBillForAnalysis() && (p.label || p.Label) === 'Utility Bill'); }).map(function(p){ return { url: p.url, label: p.label || p.Label || '' }; }),
           hardware: { brand: _evLocal.brand, model: _evLocal.model, serial: _evLocal.serial, platform: _evLocal.platform },
           utility: (UTILITY_HELP[_evLocal.utility] || {}).label || _evLocal.utility,
           notes: notes,
-          answers: _evLocal.answers,
+          answers: Object.assign({}, _evLocal.answers, _evBillForAnalysis() ? { bill: _evBillForAnalysis() } : {}),
           catalog: catalog,
           lead: {
             address: _evRec.address || '', system_size: _evRec.system_size || '',
@@ -26831,7 +26813,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var _bpBills = [];
         [].concat(_bpJob.data||[], _bpCust.data||[]).forEach(function(p){
           if (_bpSeen[p.id]) return; _bpSeen[p.id] = true;
-          if (p.label === 'Utility Bill' || p.expected_label === 'Utility Bill') _bpBills.push(p);
+          // Skip Green Button / spreadsheet data files: they are not the bill document and would hide the real PDF behind them.
+          if ((p.label === 'Utility Bill' || p.expected_label === 'Utility Bill') && !/\.(xlsx?|csv|xml)(\?|$)/i.test(String(p.url || ''))) _bpBills.push(p);
         });
         // ⚠️ Not upload order — sort newest-first by id (bigint, autoincrement) so a
         // replaced bill is the one read, same "never trust array order" rule documented
@@ -26858,12 +26841,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
                   if (!_bpIns.error && _bpIns.data && _bpIns.data[0]) _propEvalRowId = _bpIns.data[0].id;
                 }
               } catch (e) { /* table not applied, or a genuine write failure — the in-session read above still works for this open */ }
-              if (typeof _bpFull.monthly_amount_paid === 'number' && _bpFull.monthly_amount_paid > 0) {
-                await _bpClient.from('customers').update({ monthly_bill: _bpFull.monthly_amount_paid }).eq('id', id);
-                c.monthly_bill = _bpFull.monthly_amount_paid;
-                var _bpRec = adminCustomers.find(function(x){ return x.id === id; });
-                if (_bpRec) _bpRec.monthly_bill = _bpFull.monthly_amount_paid;
-              } else {
+              // ONE place decides the customer's monthly bill from a bill read (a True-Up's "monthly" figure is not the household bill).
+              var _bpRec = adminCustomers.find(function(x){ return x.id === id; });
+              var _bpSynced = false;
+              try { _bpSynced = await window._syncMonthlyBillFromAnalysis(id, _bpFull, _bpRec || c); } catch (e) {}
+              if (_bpSynced || (_bpRec && parseFloat(_bpRec.monthly_bill) > 0)) { if (_bpRec) c.monthly_bill = _bpRec.monthly_bill; }
+              else {
                 _propBillFileExistsButUnread = true;
               }
             } else {
