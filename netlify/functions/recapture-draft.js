@@ -31,6 +31,37 @@ function parseDraft(text) {
 }
 
 const { techLineFor } = require('./lib/tech-line');
+// Real facts about this lead (notes, proposal, bill read) so the message can be specific. Best-effort: any failure = no context.
+async function loadContext(customerId) {
+  const sk = process.env.SUPA_SERVICE_KEY, url = 'https://kbtobyoumvbcxfbugsid.supabase.co/rest/v1';
+  if (!customerId || !sk) return {};
+  const H = { apikey: sk, Authorization: 'Bearer ' + sk };
+  const ctx = {};
+  try {
+    const r = await fetch(url + '/customers?id=eq.' + encodeURIComponent(customerId) + '&select=notes,monthly_bill,proposal,diagnostic_findings,lead_category,utility,system_size', { headers: H });
+    const c = ((await r.json()) || [])[0] || {};
+    let notes = c.notes; try { if (typeof notes === 'string') notes = JSON.parse(notes); } catch (e) {}
+    if (Array.isArray(notes)) ctx.notes = notes.filter(function (n) { return n && n.text; }).slice(-8).map(function (n) { return String(n.text).replace(/\s+/g, ' ').slice(0, 220); });
+    else if (typeof notes === 'string' && notes) ctx.notes = [notes.replace(/\s+/g, ' ').slice(0, 600)];
+    if (c.monthly_bill) ctx.monthly_bill = c.monthly_bill;
+    if (c.diagnostic_findings) ctx.findings = String(c.diagnostic_findings).replace(/\s+/g, ' ').slice(0, 500);
+    const pr = c.proposal;
+    if (pr && Array.isArray(pr.options)) {
+      ctx.proposal_status = pr.status || '';
+      ctx.options = pr.options.slice(0, 3).map(function (o) {
+        return { title: o.title, price: o.price, participate_price: o.participate_price, savings: o.savings && (o.savings.moderate || o.savings), sdcp_rebate: o.sdcp_rebate };
+      });
+      if (pr.insight) ctx.proposal_note = String(pr.insight).replace(/\s+/g, ' ').slice(0, 400);
+    }
+  } catch (e) {}
+  try {
+    const r = await fetch(url + '/lead_evaluations?customer_id=eq.' + encodeURIComponent(customerId) + '&select=bill_analysis', { headers: H });
+    const e = ((await r.json()) || [])[0];
+    if (e && e.bill_analysis) { const ba = e.bill_analysis; ctx.bill = { annual_kwh: ba.annual_kwh, avg_rate_per_kwh: ba.avg_rate_per_kwh, monthly_amount_paid: ba.monthly_amount_paid, annual_amount_paid: ba.annual_amount_paid, source: ba.source }; }
+  } catch (e) {}
+  return ctx;
+}
+
 exports.handler = async function (event) {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers: cors, body: '' };
   if (event.httpMethod !== 'POST') return { statusCode: 405, headers: cors, body: JSON.stringify({ error: 'Method Not Allowed' }) };
@@ -48,6 +79,9 @@ exports.handler = async function (event) {
   const rep = String(b.rep_name || 'the Solar Review team').slice(0, 60);
   const lastNote = String(b.last_note || '').slice(0, 500);
 
+  const ctx = await loadContext(b.customerId);
+  const hasCtx = !!(ctx.notes || ctx.options || ctx.bill || ctx.monthly_bill);
+
   const prompt = [
     'You write a SHORT follow-up for Solar Review, a San Diego solar company, to a homeowner who asked to pause or decided not to move forward on ' + service + '. A human rep will review and edit before anything is sent.',
     '',
@@ -58,13 +92,19 @@ exports.handler = async function (event) {
     'This is follow-up number ' + touch + ' of ' + (sensitive ? 2 : 3) + '. Sender: ' + rep + '.',
     sensitive ? 'SENSITIVE: the reason involves health, family or hardship. Be warm and brief, express care, ask for nothing, push nothing, do not mention solar savings, offers or scheduling beyond "whenever you are ready".' : '',
     '',
+    hasCtx ? 'WHAT WE KNOW ABOUT THIS HOMEOWNER (real records; use only these facts, never invent any):\n' + JSON.stringify(ctx) : '',
+    '',
+    sensitive ? '' : 'GOAL: get them to act this week. Write like a confident, caring expert who has already done the homework on THEIR home, not a generic check-in.',
     'RULES:',
-    '- Respectful, warm, low-pressure. Never guilt, never urgency, never "last chance". No emojis, no markdown.',
-    '- Never quote a price, a savings figure or an incentive. Never promise results. Never talk down any other company.',
-    '- If the reason is personal (health/family), acknowledge it kindly in one short clause without repeating details back; never make it sound like we are using it.',
-    '- Follow-up 1: acknowledge and say we are here whenever ready. Follow-up 2: a light check-in with one easy reply option. Follow-up 3: a final gentle note that the door is open and they can ignore this; say we will not keep messaging.',
-    '- SMS: under 300 characters, plain text, signed "- Solar Review". Do NOT add opt-out wording (it is appended automatically).',
-    '- Email: subject under 60 characters, 2-3 short sentences in "body". Plain text.',
+    sensitive ? '- SENSITIVE lead: stay warm and brief, ask for nothing, no urgency language at all.' : '- Be direct, specific and persuasive. Lead with the single most compelling real fact from the records: what their bill costs them every month they wait (monthly or annual amount paid), what the proposal we built for them would change, or what the tech found. Show the cost of waiting in their own numbers (e.g. "$X a month is $Y by the end of the year").',
+    sensitive ? '' : '- Create urgency ONLY from true things: their own bill figures, the proposal we already gave them, system age/condition findings, that every month of delay is another bill at today\'s rates, utility rates having risen over time. Never invent a deadline, an expiring offer, limited slots, a rebate expiry or a price increase. Never say "last chance" unless this is follow-up 3, and then it means "we will stop messaging you".',
+    '- Only quote a dollar figure that appears in the records above, attributed correctly (their bill, or the proposal we sent). Never promise a specific savings result; say "projected" or "estimated" for proposal numbers. Never mention incentives or rebates unless the proposal records include one, and then only as "included in your proposal".',
+    '- Persuasive, never manipulative: no guilt, shaming, fear tactics or false claims.',
+    '- Reference what was actually discussed (from the notes) in plain words so it feels personal. Never repeat sensitive personal details back, and never talk down another company.',
+    '- If there are no records beyond the reason, write short and confident about the cost of waiting in general terms without inventing numbers.',
+    sensitive ? '' : '- Follow-up 1: cost of waiting + their specific situation + one clear next step ("reply YES and I will hold a 2-hour window this week" / "I can call you today"). Follow-up 2: a new angle (a different fact from the records, or the objection from the notes answered head-on) + the same easy next step. Follow-up 3: honest close: the numbers one last time, then say we will stop messaging after this.',
+    '- SMS: under 320 characters, plain text, ends with one clear call to action, signed "- Solar Review". Do NOT add opt-out wording (appended automatically).',
+    '- Email: subject under 60 characters that names a real number or their situation (not generic), 3-5 short sentences in "body", one clear call to action. Plain text, no emojis, no markdown.',
     '',
     'Respond with ONLY valid JSON: { "sms": "...", "email_subject": "...", "email_body": "..." }'
   ].filter(function (l) { return l !== ''; }).join('\n');
@@ -72,7 +112,7 @@ exports.handler = async function (event) {
   try {
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 1200, messages: [{ role: 'user', content: prompt }] })
+      body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 1400, messages: [{ role: 'user', content: prompt }] })
     });
     const data = await resp.json();
     if (!resp.ok) { console.error('recapture-draft upstream', resp.status, (data.error && data.error.message) || ''); return reply({ error: 'unavailable', detail: String((data.error && data.error.message) || resp.status).slice(0, 300) }); }
