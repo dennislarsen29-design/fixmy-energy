@@ -1524,19 +1524,21 @@ button.component-chip.open{border-color:var(--dark);}
     PROP = CUST.proposal ? (typeof CUST.proposal === 'string' ? JSON.parse(CUST.proposal) : CUST.proposal) : null;
     // No annual usage saved on the proposal -> use the utility-bill read (rep-corrected figure wins). In memory only.
     // Without it TOU savings read "Needs usage data" and added panels can't be valued.
-    if (PROP && !(PROP.usage_kwh > 0)) {
+    if (PROP) {
       try {
         var ev = await client.from('lead_evaluations').select('bill_analysis').eq('customer_id', custId).limit(1);
         var ba = ev && ev.data && ev.data[0] && ev.data[0].bill_analysis;
         var prof = ba && _billUsageFromMonths((ba.monthly_history || []).concat(ba.monthly_breakdown || []));
         var kwh = (ba && (ba.annual_auto || (ba.edited && ba.edited.annual_kwh)) && parseFloat(ba.annual_kwh) > 0) ? parseFloat(ba.annual_kwh)
                 : (prof ? prof.kwh : (ba && parseFloat(ba.annual_kwh) > 0 ? parseFloat(ba.annual_kwh) : 0));
-        if (kwh > 0) PROP.usage_kwh = kwh;
+        // A usage figure the rep typed on this page wins; otherwise the bill read supplies it.
+        if (kwh > 0 && !(PROP.usage_kwh > 0)) PROP.usage_kwh = kwh;
+        var useKwh = PROP.usage_kwh > 0 ? PROP.usage_kwh : kwh;
         // "Bill today" self-check: a setter's intake figure far below what the bill's own usage x rate implies is replaced
         // by the usage-based estimate (in memory only; the customer record is untouched).
         var rate = ba && parseFloat(ba.avg_rate_per_kwh);
-        if (kwh > 0 && rate > 0) {
-          var est = Math.round(kwh * rate / 12);
+        if (useKwh > 0 && rate > 0) {
+          var est = Math.round(useKwh * rate / 12);
           if (!((parseFloat(CUST.monthly_bill) || 0) >= 0.7 * est)) { CUST.monthly_bill = String(est); CUST._billDerived = true; }
         }
       } catch (e) {}
