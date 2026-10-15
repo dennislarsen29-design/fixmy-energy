@@ -81,6 +81,7 @@ async function buildBooks(key) {
 
 function pnlSnapshot(b) {
   const months = {};
+  const isOwnerEquity = n => /distribution|shareholder|owner.?(draw|contribution)/i.test(n || '');
   const bump = (m, section, account, amt) => {
     if (!m || m.length !== 7) return;
     months[m] = months[m] || { income: {}, cogs: {}, expense: {} };
@@ -99,7 +100,20 @@ function pnlSnapshot(b) {
     const d = m.expense_date || m.date || m.created_at;
     bump(monthKey(d), 'cogs', 'Lead Generation', parseFloat(m.amount || m.cost) || 0);
   });
-  b.expenses.forEach(e => bump(monthKey(e.txn_date), 'expense', e.account_name || 'Uncategorized', parseFloat(e.amount) || 0));
+  // Shareholder Distributions is EQUITY, not an expense (the portal keeps it off the P&L too). Its sign matters:
+  // positive = money taken OUT by the owner, negative = money put IN (reverse transfers / contributions).
+  // Summing absolute values once reported $23.9k "taken" when the net was $12.2k put in.
+  b.expenses.forEach(e => {
+    const amt = parseFloat(e.amount) || 0;
+    if (isOwnerEquity(e.account_name)) {
+      const mk = monthKey(e.txn_date); if (!mk || mk.length !== 7) return;
+      months[mk] = months[mk] || { income: {}, cogs: {}, expense: {} };
+      months[mk].owner = months[mk].owner || { out: 0, in: 0 };
+      if (amt >= 0) months[mk].owner.out += amt; else months[mk].owner.in += -amt;
+      return;
+    }
+    bump(monthKey(e.txn_date), 'expense', e.account_name || 'Uncategorized', amt);
+  });
 
   const out = {};
   Object.keys(months).sort().forEach(m => {
@@ -110,6 +124,11 @@ function pnlSnapshot(b) {
       expenses: sum(v.expense), netIncome: sum(v.income) - sum(v.cogs) - sum(v.expense),
       expenseByAccount: Object.fromEntries(Object.entries(v.expense).map(([k, x]) => [k, Math.round(x * 100) / 100]))
     };
+    if (v.owner) {
+      const o = Math.round(v.owner.out * 100) / 100, i = Math.round(v.owner.in * 100) / 100;
+      out[m].ownerEquity = { takenOut: o, putIn: i, net: Math.round((o - i) * 100) / 100,
+        direction: o > i ? 'owner took out more than put in' : (i > o ? 'owner put in more than took out (net contribution)' : 'even') };
+    }
   });
   return out;
 }
@@ -143,7 +162,7 @@ async function executeTool(name, input, key, cache) {
     case 'get_expense_breakdown': {
       const monthsBack = Math.min(Math.max(parseInt(input.months_back, 10) || 6, 1), 24);
       const since = new Date(); since.setMonth(since.getMonth() - monthsBack);
-      const rows = b.expenses.filter(e => new Date(e.txn_date) >= since);
+      const rows = b.expenses.filter(e => new Date(e.txn_date) >= since && !/distribution|shareholder|owner.?(draw|contribution)/i.test(e.account_name || ''));
       const byAccount = {}, byAccountMonth = {};
       rows.forEach(e => {
         const acct = e.account_name || 'Uncategorized', amt = parseFloat(e.amount) || 0;
@@ -248,6 +267,7 @@ Your analysis, in priority order:
 Rules:
 - Check get_recent_reports FIRST and do not repeat a recommendation made in the last 7 days unless the numbers changed materially.
 - If the books are empty or nothing material changed, write ONE brief "books are quiet" note at normal priority — never invent findings.
+- Owner money: each month's "ownerEquity" shows takenOut, putIn and net. Judge distributions by the NET over the period, never the sum of monthly sizes. Owner transfers in from personal accounts are not income and not expenses; they reduce net distributions, and a net contribution means no distribution-vs-salary issue from those months. Flag a distribution-without-salary concern only when the cumulative net taken out is positive, and quote that net.
 - Be specific: dollar amounts, merchant names, month names, exact next actions. No generic advice.
 - You are not a licensed CPA or tax attorney and never present yourself as one.`;
 
