@@ -282,7 +282,17 @@ ${RESEARCH_CONTEXT}`;
     }
     if (!result.insight) return { statusCode: 200, headers: CORS, body: JSON.stringify({ error: 'No insight returned' }) };
 
-    return { statusCode: 200, headers: CORS, body: JSON.stringify({ insight: result.insight, photo_warning: photoWarning }) };
+    // Split the tech-facing "QUOYA INSIGHT (tech)" block from the customer paragraph HERE, so the tech block can never
+    // travel into a customer-facing field (2026-10-15 fix). The customer paragraph is only ever what follows the '---' line.
+    let tech = '', customer = result.insight;
+    const sep = /(?:^|\n)\s*-{3,}\s*(?:\n|$)/.exec(result.insight);
+    if (sep) { tech = result.insight.slice(0, sep.index).trim(); customer = result.insight.slice(sep.index + sep[0].length).trim(); }
+    else if (/^\s*QUOYA INSIGHT/i.test(result.insight)) { tech = result.insight.trim(); customer = ''; }
+    customer = customer.replace(/^\s*\[[^\]]*\]\s*/, '').trim();
+    if (/QUOYA INSIGHT/i.test(customer)) customer = '';   // never ship a tech block as the customer paragraph
+    if (!customer) return { statusCode: 200, headers: CORS, body: JSON.stringify({ error: 'Quoya did not return a customer paragraph this time — tap Generate again.', tech_insight: tech || null }) };
+
+    return { statusCode: 200, headers: CORS, body: JSON.stringify({ insight: customer, tech_insight: tech || null, photo_warning: photoWarning }) };
   } catch (e) {
     return { statusCode: 200, headers: CORS, body: JSON.stringify({ error: e.message }) };
   }

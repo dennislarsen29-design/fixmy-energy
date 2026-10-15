@@ -10183,7 +10183,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         })
       });
       var d = await r.json();
-      if (d.insight && ta) ta.value = (d.photo_warning ? '[' + d.photo_warning + ']\n\n' : '') + d.insight;
+      // Customer paragraph only goes in the (customer-facing) box. The tech block + any photo warning stay rep-only, below it.
+      window._propTechInsight = d.tech_insight || '';
+      var _tiEl = document.getElementById('propTechInsight');
+      if (!_tiEl && ta && ta.parentNode) { _tiEl = document.createElement('div'); _tiEl.id = 'propTechInsight'; _tiEl.style.cssText = 'margin-top:8px;padding:10px 12px;border-radius:10px;background:rgba(249,115,22,0.08);border:1px solid rgba(249,115,22,0.3);font-size:0.74rem;color:#e8b98f;line-height:1.55;white-space:pre-wrap;'; ta.parentNode.insertBefore(_tiEl, ta.nextSibling); }
+      if (_tiEl) { var _tw = (d.photo_warning ? d.photo_warning + '\n\n' : '') + (d.tech_insight || ''); _tiEl.style.display = _tw ? 'block' : 'none'; _tiEl.textContent = _tw ? 'REP ONLY — never shown to the customer\n\n' + _tw : ''; }
+      if (d.insight && ta) ta.value = d.insight;
       else if (ta) ta.value = 'Could not generate insight: ' + (d.error || 'unknown error');
     } catch(e) {
       if (ta) ta.value = 'Error: ' + e.message;
@@ -26356,6 +26361,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return Math.max(0, Math.round((price - redline) * 0.40));
   }
 
+  // Customer-safe version of a proposal note: drops a leading bracketed warning and any "QUOYA INSIGHT (tech)" block
+  // (everything before the '---' line). Used on save AND wherever a note is shown to a customer, incl. older saved proposals.
+  window._custInsightText = function(txt) {
+    var t = String(txt || '').trim();
+    t = t.replace(/^\s*\[[^\]]*\]\s*/, '');
+    if (/QUOYA INSIGHT/i.test(t)) { var m = /(?:^|\n)\s*-{3,}\s*(?:\n|$)/.exec(t); t = m ? t.slice(m.index + m[0].length).trim() : ''; }
+    return t.trim();
+  };
   window._propToast = function(msg) {
     var t = document.createElement('div');
     t.textContent = msg;
@@ -27039,6 +27052,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // which already has a clean, honest fallback everywhere it's consumed ("Ask your
     // rep what this evaluation found").
     if (insight && /^(Error:|Could not generate insight:)/.test(insight)) insight = null;
+    // Belt and braces: a tech block or bracketed warning pasted/left in the box must never reach the customer.
+    if (insight) { insight = window._custInsightText(insight); if (!insight) insight = null; }
 
     if (sendBtn) { sendBtn.disabled = true; sendBtn.textContent = 'Saving…'; }
 
@@ -27227,6 +27242,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }
       var proposal = { status: isDraft ? 'draft' : 'sent', created_at: new Date().toISOString(), options: options, accepted_option: null, financing: null, loan_term: null, approvalRequired: !!approvalRequest };
       if (insight) proposal.insight = insight;
+      var _techIns = window._propTechInsight || (existing && existing.tech_insight) || '';
+      if (_techIns) proposal.tech_insight = _techIns;   // rep/Ops only; no customer view reads this
       proposal.insight_bill = parseFloat((adminCustomers.find(function(x){ return x.id===id; })||{}).monthly_bill) || null;
       // Carry over page-level presentation settings set on the proposal page itself
       // (hide previous-bill comparison, usage override) so a re-save from the builder never drops them.
@@ -32134,7 +32151,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             var _insightHtml = (_i === 0 && _prop.insight) ?
               '<div style="background:rgba(255,170,0,0.05);border-left:3px solid rgba(255,170,0,0.4);border-radius:0 8px 8px 0;padding:10px 12px;margin-bottom:10px;">'+
                 '<div style="font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#ffaa00;margin-bottom:5px;">Why this upgrade makes sense</div>'+
-                '<div style="font-size:0.75rem;color:#aaa;line-height:1.65;font-style:italic;">'+_prop.insight.replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</div>'+
+                '<div style="font-size:0.75rem;color:#aaa;line-height:1.65;font-style:italic;">'+window._custInsightText(_prop.insight).replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</div>'+
               '</div>' : '';
 
             // Payback period
@@ -37225,7 +37242,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           // partner reviews likely issues / recalls / warranty before the diagnostic appt.
           var _qi = (job.proposal && job.proposal.insight) ? String(job.proposal.insight) : '';
           if (_qi) {
-            var _qiTech = _qi.split('---')[0].trim();
+            var _qiTech = (job.proposal && job.proposal.tech_insight) ? String(job.proposal.tech_insight) : (/QUOYA INSIGHT/i.test(_qi) ? _qi.split('---')[0].trim() : _qi);
             h += '<div style="background:rgba(249,115,22,0.06);border:1px solid rgba(249,115,22,0.25);border-radius:10px;padding:14px;margin-bottom:12px;">' +
               '<div style="font-size:0.68rem;font-weight:800;text-transform:uppercase;letter-spacing:0.06em;color:#c2410c;margin-bottom:6px;">🤖 Quoya Assist</div>' +
               '<div style="font-size:0.8rem;color:#333;line-height:1.6;white-space:pre-wrap;">' + _qiTech.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</div>' +
