@@ -940,6 +940,35 @@ button.component-chip.open{border-color:var(--dark);}
   // inverter down?, current working battery kWh) and saved on the proposal; nothing is invented —
   // a missing input hides that line rather than guessing.
   function nemVersion(){ var v = parseInt(PROP && PROP.nem_version, 10); return (v === 1 || v === 2 || v === 3) ? v : 2; }
+
+  // Annual usage from the bill's monthly history (2026-10-15, per Dennis): previous records (the NEM Summary table's
+  // prior months) are the base, and NEWER months replace older ones, so the latest two months trump earlier data.
+  // 12+ distinct months -> sum of the newest 12. 6-11 months -> missing calendar months filled with the average of
+  // the known ones. Fewer -> null (caller falls back to the printed annual figure).
+  function _billMonthKey(label) {
+    var m = /^\s*([A-Za-z]{3})[A-Za-z]*\.?\s*,?\s*(\d{4})?/.exec(String(label || '')); if (!m) return null;
+    var mi = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'].indexOf(m[1].toLowerCase()); if (mi < 0) return null;
+    return { moy: mi, ord: m[2] ? parseInt(m[2], 10) * 12 + mi : null };
+  }
+  function _billUsageFromMonths(rows) {
+    var seen = {}, list = [];
+    (rows || []).forEach(function (r) {
+      var k = _billMonthKey(r && r.month), v = parseFloat(r && r.total_kwh);
+      if (!k || k.ord == null || !(v > 0)) return;
+      seen[k.ord] = { ord: k.ord, moy: k.moy, kwh: v };   // later rows (newer reads) overwrite earlier ones for the same month
+    });
+    Object.keys(seen).forEach(function (o) { list.push(seen[o]); });
+    list.sort(function (a, b) { return b.ord - a.ord; });
+    list = list.slice(0, 12);
+    if (list.length >= 12) return { kwh: Math.round(list.reduce(function (t, x) { return t + x.kwh; }, 0)), months: 12, filled: false };
+    if (list.length >= 6) {
+      var avg = list.reduce(function (t, x) { return t + x.kwh; }, 0) / list.length, byMoy = {};
+      list.forEach(function (x) { byMoy[x.moy] = x.kwh; });
+      var tot = 0; for (var i = 0; i < 12; i++) tot += (byMoy[i] != null ? byMoy[i] : avg);
+      return { kwh: Math.round(tot), months: list.length, filled: true };
+    }
+    return null;
+  }
   function postfixBillFor(){ var v = parseFloat(PROP && PROP.postfix_monthly_bill); return v > 0 ? v : 15; }
   function effectiveRate(){
     var bill = parseFloat(CUST.monthly_bill) || 0;
@@ -1499,7 +1528,17 @@ button.component-chip.open{border-color:var(--dark);}
       try {
         var ev = await client.from('lead_evaluations').select('bill_analysis').eq('customer_id', custId).limit(1);
         var ba = ev && ev.data && ev.data[0] && ev.data[0].bill_analysis;
-        if (ba && parseFloat(ba.annual_kwh) > 0) PROP.usage_kwh = parseFloat(ba.annual_kwh);
+        var prof = ba && _billUsageFromMonths((ba.monthly_history || []).concat(ba.monthly_breakdown || []));
+        var kwh = (ba && (ba.annual_auto || (ba.edited && ba.edited.annual_kwh)) && parseFloat(ba.annual_kwh) > 0) ? parseFloat(ba.annual_kwh)
+                : (prof ? prof.kwh : (ba && parseFloat(ba.annual_kwh) > 0 ? parseFloat(ba.annual_kwh) : 0));
+        if (kwh > 0) PROP.usage_kwh = kwh;
+        // "Bill today" self-check: a setter's intake figure far below what the bill's own usage x rate implies is replaced
+        // by the usage-based estimate (in memory only; the customer record is untouched).
+        var rate = ba && parseFloat(ba.avg_rate_per_kwh);
+        if (kwh > 0 && rate > 0) {
+          var est = Math.round(kwh * rate / 12);
+          if (!((parseFloat(CUST.monthly_bill) || 0) >= 0.7 * est)) { CUST.monthly_bill = String(est); CUST._billDerived = true; }
+        }
       } catch (e) {}
     }
     if (!PROP || !PROP.options || !PROP.options.length) {

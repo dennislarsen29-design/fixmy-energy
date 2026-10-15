@@ -10848,6 +10848,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var hit = merged.monthly_breakdown.filter(function(m){ return m.month && m.month === pm.month; })[0];
         if (hit) { hit.total_kwh = pm.total_kwh; hit.estimated = false; hit.manual = true; } else merged.monthly_breakdown.push(pm);
       });
+      // 2026-10-15, per Dennis: build ONE month history from EVERY bill read (the older true-up's NEM Summary table
+      // carries the prior months); a newer read replaces an older one for the same month, so the latest months win.
+      try {
+        var _hist = {};
+        reads.slice().reverse().forEach(function(rd){ (rd.monthly_breakdown || []).forEach(function(m){ var k = _billMonthKey(m.month); if (k && k.ord != null && m.total_kwh != null) _hist[k.ord] = m; }); });
+        var _hl = Object.keys(_hist).map(function(o){ return { o: +o, m: _hist[o] }; }).sort(function(x, y){ return x.o - y.o; }).map(function(x){ return x.m; });
+        if (_hl.length > merged.monthly_breakdown.length) {
+          merged.monthly_history = _hl.slice(-24);
+          var _man = merged.monthly_breakdown.filter(function(m){ return m && m.manual; });
+          merged.monthly_breakdown = _hl.slice(-12);
+          _man.forEach(function(pm){ var hit = merged.monthly_breakdown.filter(function(m){ return m.month === pm.month; })[0]; if (hit) { hit.total_kwh = pm.total_kwh; hit.estimated = false; hit.manual = true; } });
+        }
+      } catch (e) {}
       _evLocal.billAnalysis = merged;
       _evRecalcAnnualFromMonths(merged);
       // 2026-09-28, per Dennis: "the select Utility feature is not necessary — if
@@ -10941,6 +10954,35 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   function _evMonthsFilled(ba) {
     return (ba.monthly_breakdown || []).filter(function(m){ return m && m.total_kwh != null && !isNaN(m.total_kwh); });
   }
+  // Annual usage from the bill's monthly history (2026-10-15, per Dennis): previous records (the NEM Summary table's
+  // prior months) are the base, and NEWER months replace older ones, so the latest two months trump earlier data.
+  // 12+ distinct months -> sum of the newest 12. 6-11 months -> missing calendar months filled with the average of
+  // the known ones. Fewer -> null (caller falls back to the printed annual figure).
+  function _billMonthKey(label) {
+    var m = /^\s*([A-Za-z]{3})[A-Za-z]*\.?\s*,?\s*(\d{4})?/.exec(String(label || '')); if (!m) return null;
+    var mi = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'].indexOf(m[1].toLowerCase()); if (mi < 0) return null;
+    return { moy: mi, ord: m[2] ? parseInt(m[2], 10) * 12 + mi : null };
+  }
+  function _billUsageFromMonths(rows) {
+    var seen = {}, list = [];
+    (rows || []).forEach(function (r) {
+      var k = _billMonthKey(r && r.month), v = parseFloat(r && r.total_kwh);
+      if (!k || k.ord == null || !(v > 0)) return;
+      seen[k.ord] = { ord: k.ord, moy: k.moy, kwh: v };   // later rows (newer reads) overwrite earlier ones for the same month
+    });
+    Object.keys(seen).forEach(function (o) { list.push(seen[o]); });
+    list.sort(function (a, b) { return b.ord - a.ord; });
+    list = list.slice(0, 12);
+    if (list.length >= 12) return { kwh: Math.round(list.reduce(function (t, x) { return t + x.kwh; }, 0)), months: 12, filled: false };
+    if (list.length >= 6) {
+      var avg = list.reduce(function (t, x) { return t + x.kwh; }, 0) / list.length, byMoy = {};
+      list.forEach(function (x) { byMoy[x.moy] = x.kwh; });
+      var tot = 0; for (var i = 0; i < 12; i++) tot += (byMoy[i] != null ? byMoy[i] : avg);
+      return { kwh: Math.round(tot), months: list.length, filled: true };
+    }
+    return null;
+  }
+  window._billMonthKey = _billMonthKey; window._billUsageFromMonths = _billUsageFromMonths;
   function _evRecalcAnnualFromMonths(ba) {
     var f = _evMonthsFilled(ba);
     if (f.length < 12) { ba.annual_auto = false; return false; }
@@ -13222,7 +13264,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var ba = _propBillAnalysis;
     // A NEM true-up statement reports NET usage after solar offset (Becky Phan: 109 kWh on a
     // home paying ~$490/mo) — it is not household consumption, so never use it as usage/rate.
-    if (ba && ba.source === 'true_up') ba = null;
+    if (ba && ba.source === 'true_up' && !(ba.annual_auto || (ba.edited && ba.edited.annual_kwh))) ba = null;   // unless built from 12 months of history or rep-corrected
     var rate = (ba && typeof ba.avg_rate_per_kwh === 'number' && ba.avg_rate_per_kwh > 0) ? ba.avg_rate_per_kwh : fallbackRate;
     var fromBill = !!(ba && typeof ba.annual_kwh === 'number' && ba.annual_kwh > 0);
     var kwh = fromBill ? ba.annual_kwh : (bill > 0 ? Math.round(bill * 12 / rate) : 0);
