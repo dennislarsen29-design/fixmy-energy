@@ -13329,8 +13329,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     });
 
     // Apply production confidence band (Conservative=85%, Moderate=100%, Impact=115%)
-    var panelKwh    = Math.round(prod.panelKwh    * cfg.confidence);
-    var inverterKwh = Math.round(prod.inverterKwh * cfg.confidence);
+    var _exF = (_propBuilds[0] && _propBuilds[0].nonExport) ? 0.75 : 1.0;   // non-export carries through the preview too
+    var panelKwh    = Math.round(prod.panelKwh    * cfg.confidence * _exF);
+    var inverterKwh = Math.round(prod.inverterKwh * cfg.confidence * _exF);
     var battArbitrageKwh = prod.batteryArbitrageKwh;
 
     // Value production with NEM true-up honesty: kWh beyond annual usage earns
@@ -13341,9 +13342,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var annualFromBattery  = battArbitrageKwh * 0.31; // arbitrage rate, not full blended
     var annualSaved = annualFromProduction + annualFromBattery;
     var monthlySaved = Math.round(annualSaved / 12);
+    // Savings can never exceed what the bill can actually drop by (bill - minimum charge); the rest is future consumption.
+    if (bill > 0) monthlySaved = Math.min(monthlySaved, Math.max(0, Math.round(bill - _propMinCharge())));
+    annualSaved = monthlySaved * 12;
 
-    // Bill comparison: compare production to estimated annual usage
-    var afterBill = (totalNewProdKwh > 0 && totalNewProdKwh >= annualUsageKwh) ? 24 : Math.max(24, Math.round(bill - monthlySaved));
+    // Bill comparison
+    var afterBill = Math.max(_propMinCharge(), Math.round(bill - monthlySaved));
 
     // 20-year geometric series: Year1 × [(1+r)^20 − 1] / r
     var factor20 = (Math.pow(1 + cfg.r, 20) - 1) / cfg.r;
@@ -26320,6 +26324,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   var _propPropId = null;     // customer ID for current open modal
   var _propOpenAdvanced = {}; // tracks which option Advanced sections are expanded
   var _propExisting = null;   // saved proposal for optional restore
+  var _propNemVer = 2;        // NEM version saved on the proposal (page setting); drives the minimum-bill floor
+  // Lowest a bill can fall to (Dennis, 2026-10-15): ~$10 on NEM 1.0/2.0, ~$24 on NEM 3.0 / Net Billing. Same rule as proposal-preview.html.
+  function _propMinCharge() { return _propNemVer === 3 ? 24 : 10; }
   var _propSolarData = null;  // cached Google Solar API result {lat,lng,panels,...} | {loading:true} | {error:str}
   var _propBillAnalysis = null; // cached Quoya's Bill Analysis {annual_kwh,avg_rate_per_kwh,...} for the open lead, or null
   // Confirmed by Dennis, 2026-09-22: "$4725 is for Care." — the real SDCP battery incentive
@@ -27189,8 +27196,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var annualFromBattery  = battKwh * 0.31;
         var annualSaved  = annualFromProduction + annualFromBattery;
         var monthly      = Math.round(annualSaved / 12);
+        if (bill > 0) monthly = Math.min(monthly, Math.max(0, Math.round(bill - _propMinCharge())));   // cap at bill - minimum
+        annualSaved      = monthly * 12;
         var total20yr    = Math.round(annualSaved * (Math.pow(1 + s.r, 20) - 1) / s.r);
-        var afterBill    = (totalNewProd > 0 && totalNewProd >= annualUsageKwh) ? 24 : Math.max(24, Math.round(bill - monthly));
+        var afterBill    = Math.max(_propMinCharge(), Math.round(bill - monthly));
         if (s.key === 'moderate') _modSurplus = split.surplus;
         scen[s.key] = { monthly: monthly, annual: Math.round(annualSaved), total20yr: total20yr, afterBill: afterBill };
       });
@@ -28510,6 +28519,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     _propBuilds.push(_propInitBuild());
     // Store existing for optional restore
     _propExisting = (existing && existing.options && existing.options.length) ? existing : null;
+    _propNemVer = parseInt(existing && existing.nem_version, 10) === 3 ? 3 : 2;
     window._propRenderBuilds();
     _propApplyPrefill();
     // A previous proposal for this lead loads automatically — no "Load Previous"

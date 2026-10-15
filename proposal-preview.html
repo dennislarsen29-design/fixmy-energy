@@ -477,7 +477,7 @@ button.component-chip.open{border-color:var(--dark);}
     var use = PROP && PROP.usage_kwh > 0 ? PROP.usage_kwh : 0;
     var kw = PROP && parseFloat(PROP.system_kw) > 0 ? parseFloat(PROP.system_kw) : 0;
     if (!(PROP && PROP.inverter_down) || !(kw > 0) || !(use > 0) || !/inverter/.test(componentText(opt))) return 0;
-    return Math.round(Math.min(kw * SOLAR_KWH_PER_KW_YR, use * 0.9));
+    return Math.round(kw * SOLAR_KWH_PER_KW_YR * (opt.non_export ? 0.75 : 1));   // total savings are capped at bill - minimum below, not here
   }
   function annualBatteryKwhFor(opt){
     if (!hasPowerwall(opt)) return null;   // no battery in this option: never use stale saved battery numbers
@@ -635,9 +635,14 @@ button.component-chip.open{border-color:var(--dark);}
   // Savings figure used everywhere on the page (same source for every card): the saved scenario, else the
   // improvements model.
   function monthlySavingsFor(opt){
-    var mod = opt.savings && opt.savings.moderate;
-    var m = (mod && mod.monthly > 0) ? mod.monthly : 0;
-    if (!(m > 0)) { try { m = improvementsFor(opt).totalMonthly; } catch(e) { m = 0; } }
+    // 2026-10-15, per Dennis: the NEM-aware model is the one source of truth (saved flat-rate savings are legacy). The
+    // saved figure is only a fallback when the model has no usage/rate to work with, and is then capped at bill - minimum.
+    var m = 0; try { m = improvementsFor(opt).totalMonthly; } catch(e) { m = 0; }
+    if (!(m > 0)) {
+      var mod = opt.savings && opt.savings.moderate, bill = parseFloat(CUST && CUST.monthly_bill) || 0;
+      m = (mod && mod.monthly > 0) ? mod.monthly : 0;
+      if (bill > 0) m = Math.min(m, Math.max(0, Math.round(bill - minCharge())));
+    }
     return m;
   }
   // Splits the savings figure into named parts that always add back up to monthlySavingsFor(opt), so the monthly
@@ -648,7 +653,7 @@ button.component-chip.open{border-color:var(--dark);}
     var pd = opt.prod_data || {};
     var mod = opt.savings && opt.savings.moderate;
     var P = { tou:0, panels:0, inverter:0, other:0, total: total };
-    if (mod && mod.monthly > 0) {
+    if (!(im && im.totalMonthly > 0) && mod && mod.monthly > 0) {
       var tkwh = (pd.batteryArbitrageKwh > 0) ? pd.batteryArbitrageKwh : (annualBatteryKwhFor(opt) || 0);
       P.tou = hasPowerwall(opt) ? Math.min(total, Math.round(tkwh * BATTERY_TOU_RATE_DEFAULT / 12)) : 0;
       var rem = Math.max(0, total - P.tou), pk = pd.panelKwh || 0, ik = pd.inverterKwh || 0;
@@ -695,7 +700,7 @@ button.component-chip.open{border-color:var(--dark);}
     var billToday = PROP && PROP.hide_bill ? 0 : (parseFloat(CUST.monthly_bill) || 0);
     var sav = monthlySavingsFor(opt);
     var rows = '';
-    var estGrid = billToday > 0 ? Math.max(sav > 0 ? MIN_MONTHLY_CHARGE : 0, Math.round(billToday - sav)) : null;
+    var estGrid = billToday > 0 ? Math.max(sav > 0 ? minCharge() : 0, Math.round(billToday - sav)) : null;
     var PT = savingsPartsFor(opt);
     if (billToday > 0) rows += '<div class="compare-row"><div class="lbl">Your bill today<span class="sub">before any upgrade</span></div><div class="amt">'+moneyRound(billToday)+'/mo</div></div>';
     var DET = {}; try { DET = impDetailMap(opt); } catch(e) {}
@@ -704,8 +709,8 @@ button.component-chip.open{border-color:var(--dark);}
     // The rows below show each part's full estimate; the bill itself can only fall to the minimum charge.
     // Whatever the parts add up to beyond that is the buffer (sav is already capped, so use the parts' sum).
     var partsSum = (PT.tou||0) + (PT.panels||0) + (PT.inverter||0) + (PT.other||0);
-    var cappedNow = billToday > 0 && partsSum > billToday - MIN_MONTHLY_CHARGE;
-    var buffer = cappedNow ? Math.round(partsSum - (billToday - MIN_MONTHLY_CHARGE)) : 0;
+    var cappedNow = billToday > 0 && partsSum > billToday - minCharge();
+    var buffer = cappedNow ? Math.round(partsSum - (billToday - minCharge())) : 0;
     if (billToday > 0 && sav > 0) {
       [['tou','Battery shifts your power use off peak',PT.tou],['panels','Added solar panels',PT.panels],['inverter','Restored solar production',PT.inverter],['other','Solar production',PT.other]].forEach(function(x){
         if (x[2] > 0) rows += row(x[1], '', '&minus;'+moneyRound(x[2])+'/mo', 'neg', DET[x[0]]);
@@ -713,14 +718,14 @@ button.component-chip.open{border-color:var(--dark);}
     }
     if (buffer > 0) {
       rows += row('Future consumption buffer', 'extra savings beyond your bill today &middot; not counted in your total', moneyRound(buffer)+'/mo', 'buf',
-        '<b>What this is.</b> Together the battery and panels are estimated to save about '+moneyRound(partsSum)+'/mo, but your bill today is only '+moneyRound(billToday)+'/mo and can never fall below about '+moneyRound(MIN_MONTHLY_CHARGE)+'/mo.<br>'+
-        '<b>The math.</b> '+moneyRound(billToday)+' &minus; '+moneyRound(partsSum)+' = '+(billToday-partsSum<0?'&minus;':'')+moneyRound(Math.abs(billToday-partsSum))+', which stops at the '+moneyRound(MIN_MONTHLY_CHARGE)+' minimum &rarr; '+moneyRound(partsSum)+' &minus; '+moneyRound(billToday-MIN_MONTHLY_CHARGE)+' = '+moneyRound(buffer)+'/mo left over.<br>'+
+        '<b>What this is.</b> Together the battery and panels are estimated to save about '+moneyRound(partsSum)+'/mo, but your bill today is only '+moneyRound(billToday)+'/mo and can never fall below about '+moneyRound(minCharge())+'/mo.<br>'+
+        '<b>The math.</b> '+moneyRound(billToday)+' &minus; '+moneyRound(partsSum)+' = '+(billToday-partsSum<0?'&minus;':'')+moneyRound(Math.abs(billToday-partsSum))+', which stops at the '+moneyRound(minCharge())+' minimum &rarr; '+moneyRound(partsSum)+' &minus; '+moneyRound(billToday-minCharge())+' = '+moneyRound(buffer)+'/mo left over.<br>'+
         'That leftover is real production capacity. If your usage grows (an EV, new A/C, a pool) your system covers it before it shows up on your bill. We don&rsquo;t count it as savings today, so your total stays conservative.');
     }
     if (estGrid !== null) {
       var capped = cappedNow;
-      rows += row('Utility bill after the upgrade', (capped ? 'estimated &middot; stops at the '+moneyRound(MIN_MONTHLY_CHARGE)+' minimum charge' : 'estimated'), moneyRound(estGrid)+'/mo', '',
-        'Your bill today ('+moneyRound(billToday)+') minus the estimated savings above'+(capped ? ', limited to what a bill can actually drop by. A utility always charges a base amount of about '+moneyRound(MIN_MONTHLY_CHARGE)+'/mo, and extra solar beyond what you use is credited at a low wholesale rate, not the full retail rate.' : '.'));
+      rows += row('Utility bill after the upgrade', (capped ? 'estimated &middot; stops at the '+moneyRound(minCharge())+' minimum charge' : 'estimated'), moneyRound(estGrid)+'/mo', '',
+        'Your bill today ('+moneyRound(billToday)+') minus the estimated savings above'+(capped ? ', limited to what a bill can actually drop by. A utility always charges a base amount of about '+moneyRound(minCharge())+'/mo, and extra solar beyond what you use is credited at a low wholesale rate, not the full retail rate.' : '.'));
     }
     if (fin) {
       var _fp = cashPriceFor(opt, true).price;
@@ -758,7 +763,7 @@ button.component-chip.open{border-color:var(--dark);}
     var tag = function(t){ return '<span class="g-tag">'+t+'</span>'; };
     var sav = monthlySavingsFor(opt);
     var mod = opt.savings && opt.savings.moderate;
-    var annual = ((mod && mod.annual > 0) ? mod.annual : sav * 12) + outageMonthly() * 12 + (perfMonthly||0) * 12;
+    var annual = sav * 12 + outageMonthly() * 12 + (perfMonthly||0) * 12;
     if (!(annual > 0)) return '';
     var price = cashPriceFor(opt, hasParticipate).price;
     var yrs = (PROP && PROP.hide_payback) ? null : paybackYearsFor(price, annual);
@@ -840,6 +845,8 @@ button.component-chip.open{border-color:var(--dark);}
   // override of that rate, right here on the page — no trip back into the builder needed.
   var BATTERY_TOU_RATE_DEFAULT = 0.31;
   var MIN_MONTHLY_CHARGE = 10; // SDG&E base services charge — a bill never reaches $0
+  // Lowest a bill can fall to (per Dennis, 2026-10-15): about $10 on NEM 1.0/2.0, about $24 on NEM 3.0 / Net Billing.
+  function minCharge(){ return nemVersion() === 3 ? 24 : MIN_MONTHLY_CHARGE; }
   var touRate = BATTERY_TOU_RATE_DEFAULT;
   function touSavingsAnnualFor(opt, rate){
     var kwh = annualBatteryKwhFor(opt);
@@ -988,7 +995,7 @@ button.component-chip.open{border-color:var(--dark);}
     if (_pm && out.rate > 0) {
       out.panelCount = parseInt(_pm[1], 10);
       out.panelKwh = Math.round(out.panelCount * 0.42 * SOLAR_KWH_PER_KW_YR);
-      if (use > 0) out.panelKwh = Math.min(out.panelKwh, Math.round(use * 0.9));
+      if (opt.non_export) out.panelKwh = Math.round(out.panelKwh * 0.75);   // non-export: 25% of production can't be credited
       out.panelMonthly = Math.round(out.panelKwh * out.rate / 12);
     }
     var sk = solarRecoveredKwh(opt);
@@ -1013,7 +1020,7 @@ button.component-chip.open{border-color:var(--dark);}
       // The saved post-fix bill ($9-21 from her true-up history) is the bill with the FULL system running,
       // battery shifting included. Without a battery (Option 2) she still buys the evening-peak energy a
       // Powerwall would have shifted, so that option's remaining bill = anchor + the shift value.
-      var anchor = Math.max(MIN_MONTHLY_CHARGE, postfixBillFor());
+      var anchor = Math.max(minCharge(), postfixBillFor());
       var useYr = PROP && PROP.usage_kwh > 0 ? PROP.usage_kwh : 0;
       var shiftKwh = out.touKwh;
       if (!(shiftKwh > 0) && useYr > 0) shiftKwh = Math.round(Math.min(1 * 13.5 * 1.5 * 365, 0.6 * Math.max(0, useYr - sk)));
@@ -1024,11 +1031,11 @@ button.component-chip.open{border-color:var(--dark);}
       else { out.touMonthly = 0; out.touKwh = 0; }
       out.remaining = hasPowerwall(opt) ? anchor : noBattRemaining;
       out.batteryCapped = false;
-      out.totalMonthly = Math.min(out.solarMonthly + out.touMonthly + out.panelMonthly, Math.max(0, Math.round(billMo - MIN_MONTHLY_CHARGE)));   // never more than the bill
+      out.totalMonthly = Math.min(out.solarMonthly + out.touMonthly + out.panelMonthly, Math.max(0, Math.round(billMo - minCharge())));   // never more than the bill
       return out;
     }
     // The upgrade can't remove more than the customer pays today.
-    if (billMo > 0 && out.totalMonthly > billMo - MIN_MONTHLY_CHARGE) out.totalMonthly = Math.max(0, Math.round(billMo - MIN_MONTHLY_CHARGE));
+    if (billMo > 0 && out.totalMonthly > billMo - minCharge()) out.totalMonthly = Math.max(0, Math.round(billMo - minCharge()));
     return out;
   }
   function improvementsHtml(opt){
@@ -1082,8 +1089,8 @@ button.component-chip.open{border-color:var(--dark);}
     var use = PROP.usage_kwh > 0 ? PROP.usage_kwh : 0;
     var im = improvementsFor(opt);
     var solarKwhMo = Math.round(im.solarKwh/12), shiftKwhMo = Math.round(im.touKwh/12);
-    var afterSolarBill = Math.max(MIN_MONTHLY_CHARGE, Math.round(bill - im.solarMonthly));
-    var afterBill = (im.totalMonthly > 0) ? Math.max(MIN_MONTHLY_CHARGE, Math.round(bill - im.totalMonthly)) : Math.round(bill);
+    var afterSolarBill = Math.max(minCharge(), Math.round(bill - im.solarMonthly));
+    var afterBill = (im.totalMonthly > 0) ? Math.max(minCharge(), Math.round(bill - im.totalMonthly)) : Math.round(bill);
     var pay = financingAvailable(opt) ? wheelhouseMonthly(participatePriceFor(opt)) : 0;
     var units = hasPowerwall(opt) ? (powerwallUnitCountFor(opt)||1) : 0;
     var vpp = units ? Math.round(units * TESLA_VPP_ANNUAL_PER_POWERWALL / 12) : 0;
@@ -1119,7 +1126,7 @@ button.component-chip.open{border-color:var(--dark);}
     ov.innerHTML = '<div class="cmp-box"><button class="cmp-x" onclick="closeCompare()" aria-label="Close">&times;</button>'+
       '<h3>Your options, side by side</h3><div class="cmp-sub">What your monthly cost looks like today and with each option.</div>'+
       '<table class="cmp-table">'+head+body+'</table>'+
-      '<div class="cmp-note">Estimates based on your bill and system size, confirmed in your usage review. The Powerwall doesn&rsquo;t produce power &mdash; it stores solar and off-peak energy and uses it during the 4&ndash;9 PM peak. Financed payment is on the Participate price at '+(WHEELHOUSE_APR*100).toFixed(2)+'% for '+WHEELHOUSE_TERM_YEARS+' years (Wheelhouse CU), subject to approval. Incentives are not guaranteed and depend on program qualification. A minimum monthly utility charge of about '+moneyRound(MIN_MONTHLY_CHARGE)+' always applies.</div></div>';
+      '<div class="cmp-note">Estimates based on your bill and system size, confirmed in your usage review. The Powerwall doesn&rsquo;t produce power &mdash; it stores solar and off-peak energy and uses it during the 4&ndash;9 PM peak. Financed payment is on the Participate price at '+(WHEELHOUSE_APR*100).toFixed(2)+'% for '+WHEELHOUSE_TERM_YEARS+' years (Wheelhouse CU), subject to approval. Incentives are not guaranteed and depend on program qualification. A minimum monthly utility charge of about '+moneyRound(minCharge())+' always applies.</div></div>';
     document.body.appendChild(ov);
   }
   function closeCompare(){ var o = document.getElementById('cmpOverlay'); if (o) o.remove(); }
@@ -1524,6 +1531,7 @@ button.component-chip.open{border-color:var(--dark);}
     PROP = CUST.proposal ? (typeof CUST.proposal === 'string' ? JSON.parse(CUST.proposal) : CUST.proposal) : null;
     // No annual usage saved on the proposal -> use the utility-bill read (rep-corrected figure wins). In memory only.
     // Without it TOU savings read "Needs usage data" and added panels can't be valued.
+    var _repUsage = !!(PROP && PROP.usage_kwh > 0);   // usage a rep typed on this page wins over everything
     if (PROP) {
       try {
         var ev = await client.from('lead_evaluations').select('bill_analysis').eq('customer_id', custId).limit(1);
@@ -1532,7 +1540,7 @@ button.component-chip.open{border-color:var(--dark);}
         var kwh = (ba && (ba.annual_auto || (ba.edited && ba.edited.annual_kwh)) && parseFloat(ba.annual_kwh) > 0) ? parseFloat(ba.annual_kwh)
                 : (prof ? prof.kwh : (ba && parseFloat(ba.annual_kwh) > 0 ? parseFloat(ba.annual_kwh) : 0));
         // A usage figure the rep typed on this page wins; otherwise the bill read supplies it.
-        if (kwh > 0 && !(PROP.usage_kwh > 0)) PROP.usage_kwh = kwh;
+        if (kwh > 0 && !_repUsage) PROP.usage_kwh = kwh;
         var useKwh = PROP.usage_kwh > 0 ? PROP.usage_kwh : kwh;
         // "Bill today" self-check: a setter's intake figure far below what the bill's own usage x rate implies is replaced
         // by the usage-based estimate (in memory only; the customer record is untouched).
@@ -1542,6 +1550,11 @@ button.component-chip.open{border-color:var(--dark);}
           if (!((parseFloat(CUST.monthly_bill) || 0) >= 0.7 * est)) { CUST.monthly_bill = String(est); CUST._billDerived = true; }
         }
       } catch (e) {}
+    }
+    // Older proposals keep usage only inside prod_data; use it when nothing else supplies annual usage.
+    if (PROP && !(PROP.usage_kwh > 0)) {
+      var _pdU = 0; (PROP.options || []).forEach(function(o){ var u = o && o.prod_data && parseFloat(o.prod_data.annualUsageKwh); if (u > _pdU) _pdU = u; });
+      if (_pdU > 0) PROP.usage_kwh = _pdU;
     }
     if (!PROP || !PROP.options || !PROP.options.length) {
       app.innerHTML = '<div class="state">No proposal has been built for this lead yet.</div>'; return;
