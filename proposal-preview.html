@@ -480,6 +480,7 @@ button.component-chip.open{border-color:var(--dark);}
     return Math.round(Math.min(kw * SOLAR_KWH_PER_KW_YR, use * 0.9));
   }
   function annualBatteryKwhFor(opt){
+    if (!hasPowerwall(opt)) return null;   // no battery in this option: never use stale saved battery numbers
     var pd = opt.prod_data;
     var base = null;
     if (pd && pd.batteryArbitrageKwh > 0) base = pd.batteryArbitrageKwh;
@@ -511,6 +512,9 @@ button.component-chip.open{border-color:var(--dark);}
   var POWERWALL_UNIT_KWH = 13.5;
   function powerwallUnitCountFor(opt){
     var pd = opt.prod_data;
+    // The option's real line items are authoritative. prod_data can be stale (saved from another option while
+    // building), which gave a no-battery option a phantom Powerwall and a VPP incentive.
+    if (opt.line_items && opt.line_items.length && !hasPowerwall(opt)) return null;
     if (pd && pd.storageKwh > 0) return Math.max(1, Math.round(pd.storageKwh / POWERWALL_UNIT_KWH));
     // Older/partial proposals carry no prod_data — count Powerwall line items instead.
     var n = 0;
@@ -1489,6 +1493,15 @@ button.component-chip.open{border-color:var(--dark);}
     if (error || !data || !data[0]) { app.innerHTML = '<div class="state">Could not load this customer.</div>'; return; }
     CUST = data[0];
     PROP = CUST.proposal ? (typeof CUST.proposal === 'string' ? JSON.parse(CUST.proposal) : CUST.proposal) : null;
+    // No annual usage saved on the proposal -> use the utility-bill read (rep-corrected figure wins). In memory only.
+    // Without it TOU savings read "Needs usage data" and added panels can't be valued.
+    if (PROP && !(PROP.usage_kwh > 0)) {
+      try {
+        var ev = await client.from('lead_evaluations').select('bill_analysis').eq('customer_id', custId).limit(1);
+        var ba = ev && ev.data && ev.data[0] && ev.data[0].bill_analysis;
+        if (ba && parseFloat(ba.annual_kwh) > 0) PROP.usage_kwh = parseFloat(ba.annual_kwh);
+      } catch (e) {}
+    }
     if (!PROP || !PROP.options || !PROP.options.length) {
       app.innerHTML = '<div class="state">No proposal has been built for this lead yet.</div>'; return;
     }
