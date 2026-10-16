@@ -88,11 +88,31 @@ exports.handler = async (event) => {
   const firstName = parts[0] || 'Unknown';
   const lastName  = parts.slice(1).join(' ') || 'Caller';
 
+  // Where did this person come from? Built from the visit's first-touch attribution (check page only).
+  const attr = (isCheckPage && body.attribution && typeof body.attribution === 'object') ? body.attribution : {};
+  const clip = (v, n) => String(v == null ? '' : v).slice(0, n);
+  function sourceLabel(a) {
+    const ref = clip(a.referrer, 80).toLowerCase();
+    if (a.gclid || a.gbraid || a.wbraid) return 'Google Ads';
+    if (a.fbclid) return 'Meta ads (Facebook/Instagram)';
+    if (a.utm_source) return clip(a.utm_source, 40) + (a.utm_medium ? ' / ' + clip(a.utm_medium, 30) : '');
+    if (/google\./.test(ref)) return 'Google search (organic)';
+    if (/bing\.|duckduckgo|yahoo\./.test(ref)) return 'Search engine (' + ref + ')';
+    if (/chatgpt|openai|perplexity|claude\.ai|gemini|copilot/.test(ref)) return 'AI search (' + ref + ')';
+    if (/facebook|instagram|fb\.com|l\.facebook/.test(ref)) return 'Facebook/Instagram (organic)';
+    if (ref) return 'Website: ' + ref;
+    return 'Direct / unknown';
+  }
+  const srcLine = isCheckPage
+    ? '\nSource: ' + sourceLabel(attr) + (attr.utm_campaign ? ' · campaign ' + clip(attr.utm_campaign, 60) : '') + (attr.landing_page ? ' · landed on ' + clip(attr.landing_page, 80) : '') + (attr.referrer ? ' · referrer ' + clip(attr.referrer, 60) : '')
+    : '';
+
   const noteEntry = `[${new Date().toISOString().slice(0,16).replace('T',' ')}] ` +
     (isCheckPage
       ? `Check page submission — installer: ${body.installer || 'unknown'}${body.install_year ? ' (' + body.install_year + ')' : ''}` +
         (body.system_status ? ` — SYSTEM STATUS: ${body.system_status}` : '')
       : `Inbound call (Smith.AI): ${body.status || body.event || 'received'}`) +
+    srcLine +
     (body.notes || body.call_summary || body.transcript ? '\n' + (body.notes || body.call_summary || body.transcript) : '');
 
   // Check for existing lead
@@ -114,6 +134,9 @@ exports.handler = async (event) => {
     };
     if (isCheckPage && body.address)   row.address = body.address;
     if (isCheckPage && body.installer) row.original_installer = body.installer;
+    if (isCheckPage) {
+      ['utm_source','utm_medium','utm_campaign','utm_term','utm_content','gclid','fbclid','landing_page'].forEach(function(k){ if (attr[k]) row[k] = clip(attr[k], 200); });
+    }
     await supaInsert(key, row);
   }
 
