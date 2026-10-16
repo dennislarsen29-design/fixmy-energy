@@ -2163,9 +2163,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       wrap('commissions', c.from('commissions').select('id,customer_id,line,kind,payee,payee_name,amount,status,sold_at,note').eq('status', 'sold').limit(3000)),
       wrap('team', c.from('rep_shifts').select('rep_name,started_at').is('ended_at', null)),
       wrap('agents', c.from('agent_reports').select('id,priority,title,agent,created_at').eq('reviewed', false).order('created_at', { ascending: false }).limit(300)),
-      wrap('systems', c.from('pipeline_state').select('key,value,updated_at').in('key', ['last_run_at', 'last_run_phase', 'seo_sync_status']))
+      wrap('systems', c.from('pipeline_state').select('key,value,updated_at').in('key', ['last_run_at', 'last_run_phase', 'seo_sync_status'])),
+      wrap('search metrics', c.from('seo_metrics').select('date,clicks,impressions,position,ga_sessions,ga_organic_sessions,ga_conversions').gte('date', new Date(now.getTime() - 60 * 86400000).toISOString().slice(0, 10)).order('date', { ascending: true }).limit(100)),
+      wrap('search queries', c.from('seo_queries').select('date,dimension,key,clicks,impressions,position').order('date', { ascending: false }).limit(150))
     ]);
-    var D = { now: now, pay: res[0], comm: res[1], shifts: res[2], agents: res[3], sys: res[4], monthStart: monthStart, prevStart: prevStart, prevCut: prevCut, refreshed: new Date() };
+    var D = { now: now, pay: res[0], comm: res[1], shifts: res[2], agents: res[3], sys: res[4], seo: res[5], seoq: res[6], monthStart: monthStart, prevStart: prevStart, prevCut: prevCut, refreshed: new Date() };
     // Earned dates need the per-job commission caches (same ones payroll uses).
     var commIds = {}; (D.comm.data || []).forEach(function(x){ commIds[x.customer_id] = x.line; });
     var ptoIds = (adminCustomers || []).filter(function(x){ return x.lead_category === 'new_solar' && x.sold_type && x.install_completed_at && !x.ns_pto_at && x.solar_status !== 'ns_pto'; }).map(function(x){ return x.id; });
@@ -2286,6 +2288,42 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         + '<button class="sun-btn sm gh" data-t="' + _sunEsc(i.title) + '" onclick="window._agentReplyOpen(\'S.U.N. queue\',\'[]\',this.dataset.t)">Reply</button></div></div></div>';
     }).join('') + (O.queue.length > 5 ? '<div class="sun-note" style="margin-top:8px">' + (O.queue.length - 5) + ' more in the queue. Resolve or snooze the top items to reach them.</div>' : '');
   }
+  // Search & traffic panel (Search Console + GA4 via seo_metrics / seo_queries). Every figure is from the last 28 days vs the 28 before.
+  function _sunSeoHtml(D) {
+    var head = '<section class="sun-panel" aria-label="Search and traffic"><div class="sun-ph"><h2>' + _sunIco('pulse') + 'Search &amp; traffic</h2><span class="sun-note">Google Search Console + Analytics</span></div>';
+    if (!D.seo || !D.seo.ok) return head + '<div class="sun-empty">Unknown: search data could not be loaded.</div></section>';
+    var rows = D.seo.data || [];
+    if (!rows.length) return head + '<div class="sun-empty">No search data yet. The nightly sync has not recorded anything.</div></section>';
+    var last = rows[rows.length - 1].date, ageDays = Math.floor((Date.now() - new Date(last + 'T00:00:00').getTime()) / 86400000);
+    var cur = rows.slice(-28), prev = rows.slice(-56, -28);
+    var sm = function(a, f) { return a.reduce(function(t, r){ return t + (parseFloat(r[f]) || 0); }, 0); };
+    var av = function(a, f) { var v = a.filter(function(r){ return r[f] != null; }); return v.length ? v.reduce(function(t, r){ return t + parseFloat(r[f]); }, 0) / v.length : null; };
+    var dl = function(n, p, inv) { if (!prev.length || !p) return ''; var d = Math.round((n - p) / p * 100); return ' · ' + (d >= 0 ? '+' : '') + d + '% vs prior 28d'; };
+    var clicks = sm(cur, 'clicks'), impr = sm(cur, 'impressions'), pos = av(cur, 'position'), posP = av(prev, 'position');
+    var sess = sm(cur, 'ga_sessions'), org = sm(cur, 'ga_organic_sessions'), ke = sm(cur, 'ga_conversions');
+    var hasGa = rows.some(function(r){ return r.ga_sessions != null; });
+    var src = 'Source: Search Console and GA4 daily sync (seo_metrics). Latest data day ' + last + ' (Google reports about 2 days late).';
+    var h = head + '<div class="sun-metrics">'
+      + _sunMetric('seo_imp', 'Search impressions', impr.toLocaleString(), 'last ' + cur.length + ' days' + dl(impr, sm(prev, 'impressions')), '<b>Definition:</b> times a fixmy.energy page appeared in Google results.<br>' + src)
+      + _sunMetric('seo_clk', 'Search clicks', clicks.toLocaleString(), (impr ? (clicks / impr * 100).toFixed(1) + '% click rate' : 'no impressions') + dl(clicks, sm(prev, 'clicks')), '<b>Definition:</b> clicks from Google results to the site.<br>' + src)
+      + _sunMetric('seo_pos', 'Average position', pos != null ? pos.toFixed(1) : 'Unknown', pos != null && posP ? (pos <= posP ? 'improved from ' : 'slipped from ') + posP.toFixed(1) : 'no prior period to compare', '<b>Definition:</b> average rank in Google results (1 = top). Lower is better.<br>' + src, pos == null)
+      + _sunMetric('seo_ga', 'Site visits (GA4)', hasGa ? sess.toLocaleString() : 'Unknown', hasGa ? org.toLocaleString() + ' from organic search · ' + ke + ' key events' : 'Analytics data not synced', '<b>Definition:</b> Google Analytics sessions. Key events = bookings and other conversions marked in GA4.<br><b>Limit:</b> Google does not report which searches led to phone calls.<br>' + src, !hasGa)
+      + '</div>';
+    var qs = (D.seoq && D.seoq.ok) ? (D.seoq.data || []) : [];
+    var newest = qs.length ? qs[0].date : null, snap = qs.filter(function(q){ return q.date === newest; });
+    var queries = snap.filter(function(q){ return q.dimension === 'query'; }), pages = snap.filter(function(q){ return q.dimension === 'page'; });
+    var sp = queries.filter(function(q){ return /sunpower|sun power|complete solar/i.test(q.key); });
+    var spI = sp.reduce(function(t, q){ return t + (q.impressions || 0); }, 0), spC = sp.reduce(function(t, q){ return t + (q.clicks || 0); }, 0);
+    if (newest) {
+      h += '<div class="sun-row"><span class="sun-dot ' + (sp.length ? 'sun-d-ok' : 'sun-d-unk') + '"></span><div class="b"><strong>SunPower searches: ' + (sp.length ? spI + ' impression' + (spI === 1 ? '' : 's') + ', ' + spC + ' click' + (spC === 1 ? '' : 's') : 'none in the top queries') + '</strong><span>' + (sp.length ? sp.slice(0, 3).map(function(q){ return _sunEsc(q.key) + ' (pos ' + parseFloat(q.position).toFixed(0) + ')'; }).join(' · ') : 'Searches are matched on "sunpower" in the tracked top queries.') + ' &middot; snapshot ' + newest + '</span></div></div>';
+      var tp = pages.slice().sort(function(a, b){ return (b.clicks || 0) - (a.clicks || 0) || (b.impressions || 0) - (a.impressions || 0); }).slice(0, 3);
+      if (tp.length) h += '<div class="sun-row"><span class="sun-dot sun-d-ok"></span><div class="b"><strong>Top pages in search</strong><span>' + tp.map(function(p){ return _sunEsc(String(p.key).replace(/^https?:\/\/(www\.)?fixmy\.energy/, '') || '/') + ' (' + (p.clicks || 0) + ' clicks, ' + (p.impressions || 0) + ' impr)'; }).join(' · ') + '</span></div></div>';
+    }
+    var stale = ageDays > 4;
+    h += '<div class="sun-row"><span class="sun-dot ' + (stale ? 'sun-d-amb' : 'sun-d-ok') + '"></span><div class="b"><strong>' + (stale ? 'Search data is ' + ageDays + ' days old' : 'Search data is current') + '</strong><span>' + (stale ? 'The nightly sync may have stopped. Check System health.' : 'Newest day ' + last + '.') + '</span></div></div>';
+    h += '<div class="sun-acts" style="margin-top:8px"><button class="sun-btn sm" onclick="renderMarketingView()">Open full SEO Pulse</button></div></section>';
+    return h;
+  }
   function _sunAdminHtml(D, O, ctx, portalNav) {
     var greet = (function(){ var h = new Date().getHours(); return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening'; })();
     var rng = D.monthStart.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' – ' + new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
@@ -2318,6 +2356,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     else if (O.clocked.length) h += '<div class="sun-row"><span class="sun-dot sun-d-ok"></span><div class="b"><strong>' + O.clocked.length + ' clocked in</strong><span>' + O.clocked.map(_sunEsc).join(', ') + '</span></div></div>';
     else h += '<div class="sun-row"><span class="sun-dot ' + (O.inHours ? 'sun-d-amb' : 'sun-d-unk') + '"></span><div class="b"><strong>0 clocked in</strong><span>' + (O.inHours ? 'It is working hours (' + SUN_WORK.start + ':00 to ' + SUN_WORK.end + ':00 weekdays) and nobody has logged activity yet.' : 'Outside working hours (' + SUN_WORK.start + ':00 to ' + SUN_WORK.end + ':00 weekdays), so this is expected.') + '</span></div></div>';
     h += '<div class="sun-row"><span class="sun-dot ' + (O.noOwner ? 'sun-d-amb' : 'sun-d-ok') + '"></span><div class="b"><strong>' + O.noOwner + ' job' + (O.noOwner === 1 ? '' : 's') + ' without an owner</strong><span>' + (O.noOwner ? 'Assign an owner in the job.' : 'Every sold job has an owner.') + '</span></div></div></section></div>';
+    h += _sunSeoHtml(D);
     // agent issues + health
     h += '<div class="sun-two"><section class="sun-panel" id="sunIssues" aria-label="Agent issues"><div class="sun-ph"><h2>' + _sunIco('bot') + 'Agent issues</h2><span class="sun-note">' + (D.agents.ok ? (D.agents.data.length + ' unread reports grouped into ' + O.issues.length + ' issues') : 'reports could not be loaded') + '</span></div>';
     if (!D.agents.ok) h += '<div class="sun-empty">Unknown: agent reports could not be loaded.</div>';
