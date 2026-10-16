@@ -29816,6 +29816,18 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     } catch(e) { console.warn('Auto-seed diagnostic COGS failed:', e.message); }
   }
 
+  // A diagnostic fee paid by check converts the lead to a Diagnostic Job (Invoice = Paid IS the sale),
+  // same as saveLeadEditor and the server-side payment sweeps. The two "Paid by Check" buttons used to
+  // flip invoice_status only, so a check-paid lead stayed a lead. (2026-10-16, Richard Go.)
+  async function _promoteCheckPaid(client, id, rec) {
+    if (!rec || rec.sold_type || rec.lead_category === 'new_solar') return {};
+    var upd = { sold_type: 'diagnostic', sold_at: new Date().toISOString() };
+    var r = await client.from('customers').update(upd).eq('id', id).is('sold_type', null);
+    if (r.error) { console.warn('check-paid promote failed:', r.error.message); return {}; }
+    await _seedDiagnosticCogs(client, id);
+    return upd;
+  }
+  window._promoteCheckPaid = _promoteCheckPaid;
   window.edAddCost = async function(cid) {
     // ⚠️ This label renders verbatim on the assigned Ops partner's own portal (their COGS
     // view, 2026-08-30) — never put a customer revenue/invoice figure in it.
@@ -31080,8 +31092,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var cl = supabase.createClient(SUPA_URL, SUPA_KEY);
     var { error } = await cl.from('customers').update({ invoice_status: 'paid' }).eq('id', id);
     if (error) { alert('Error: ' + error.message); return; }
+    var _pu = await _promoteCheckPaid(cl, id, c);
     var idx = adminCustomers.findIndex(function(x){ return x.id === id; });
-    if (idx > -1) adminCustomers[idx].invoice_status = 'paid';
+    if (idx > -1) { adminCustomers[idx].invoice_status = 'paid'; Object.assign(adminCustomers[idx], _pu); }
     if (adminView === 'jobs') renderJobsView();
     else renderAdminView(adminView);
   }
@@ -34987,7 +35000,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
                 (l.sign_token && l.phone ?
                   '<a href="sms:'+l.phone.replace(/\D/g,'')+';?&body='+encodeURIComponent('Hi '+(l.first_name||'')+'! Here\'s your Sign & Pay link for your Solar Diagnostic: https://fixmy.energy/sign?t='+l.sign_token)+'" style="padding:6px 12px;background:rgba(255,170,0,0.12);border:1px solid rgba(255,170,0,0.4);border-radius:8px;color:#ffaa00;font-size:0.72rem;font-weight:700;text-decoration:none;white-space:nowrap;display:inline-block;">&#128172; Text It</a>'
                 : '')+
-                '<button onclick="(async function(){if(!confirm(\'Mark invoice as paid by check for '+(l.first_name||'')+' '+(l.last_name||'')+' ($'+(l.invoice_amount||'—')+')?\')){return;}var c3=supabase.createClient(SUPA_URL,SUPA_KEY);await c3.from(\'customers\').update({invoice_status:\'paid\'}).eq(\'id\',\''+l.id+'\');var ri=allRecords.findIndex(function(r){return r.id===\''+l.id+'\';});if(ri>-1)allRecords[ri].invoice_status=\'paid\';document.getElementById(\'editorSlot\').innerHTML=\'\';renderSales();})()" style="padding:6px 12px;background:#8DC63F;border:none;border-radius:8px;color:#1A1A1A;font-size:0.72rem;font-weight:700;cursor:pointer;white-space:nowrap;">&#10003; Paid by Check</button>'+
+                '<button onclick="(async function(){if(!confirm(\'Mark invoice as paid by check for '+(l.first_name||'')+' '+(l.last_name||'')+' ($'+(l.invoice_amount||'—')+')?\')){return;}var c3=supabase.createClient(SUPA_URL,SUPA_KEY);await c3.from(\'customers\').update({invoice_status:\'paid\'}).eq(\'id\',\''+l.id+'\');var ri=allRecords.findIndex(function(r){return r.id===\''+l.id+'\';});var pu=await _promoteCheckPaid(c3,\''+l.id+'\',ri>-1?allRecords[ri]:null);if(ri>-1){allRecords[ri].invoice_status=\'paid\';Object.assign(allRecords[ri],pu);}document.getElementById(\'editorSlot\').innerHTML=\'\';renderSales();})()" style="padding:6px 12px;background:#8DC63F;border:none;border-radius:8px;color:#1A1A1A;font-size:0.72rem;font-weight:700;cursor:pointer;white-space:nowrap;">&#10003; Paid by Check</button>'+
               '</div>'+
             '</div>'+
           '</div>'
