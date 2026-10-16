@@ -2165,9 +2165,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       wrap('agents', c.from('agent_reports').select('id,priority,title,agent,created_at').eq('reviewed', false).order('created_at', { ascending: false }).limit(300)),
       wrap('systems', c.from('pipeline_state').select('key,value,updated_at').in('key', ['last_run_at', 'last_run_phase', 'seo_sync_status'])),
       wrap('search metrics', c.from('seo_metrics').select('date,clicks,impressions,position,ga_sessions,ga_organic_sessions,ga_conversions').gte('date', new Date(now.getTime() - 60 * 86400000).toISOString().slice(0, 10)).order('date', { ascending: true }).limit(100)),
+      wrap('applicants', c.from('candidates').select('id,first_name,last_name,position,city,created_at').eq('status', 'applied').order('created_at', { ascending: false }).limit(50)),
       wrap('search queries', c.from('seo_queries').select('date,dimension,key,clicks,impressions,position').order('date', { ascending: false }).limit(150))
     ]);
-    var D = { now: now, pay: res[0], comm: res[1], shifts: res[2], agents: res[3], sys: res[4], seo: res[5], seoq: res[6], monthStart: monthStart, prevStart: prevStart, prevCut: prevCut, refreshed: new Date() };
+    var D = { now: now, pay: res[0], comm: res[1], shifts: res[2], agents: res[3], sys: res[4], seo: res[5], apps: res[6], seoq: res[7], monthStart: monthStart, prevStart: prevStart, prevCut: prevCut, refreshed: new Date() };
     // Earned dates need the per-job commission caches (same ones payroll uses).
     var commIds = {}; (D.comm.data || []).forEach(function(x){ commIds[x.customer_id] = x.line; });
     var ptoIds = (adminCustomers || []).filter(function(x){ return x.lead_category === 'new_solar' && x.sold_type && x.install_completed_at && !x.ns_pto_at && x.solar_status !== 'ns_pto'; }).map(function(x){ return x.id; });
@@ -2203,6 +2204,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var items = [];
     function add(i) { if (!_sunSnoozed(i.key)) items.push(i); }
     var kindBase = { block: 90, over: 80, today: 70, opp: 50, clean: 20 };
+    // New job applicants waiting for a first response (the SOP: reach out within 24 hours).
+    ((D.apps && D.apps.ok && D.apps.data) || []).forEach(function(a){
+      var ageMs = Date.now() - new Date(a.created_at).getTime(), hrs = Math.floor(ageMs / 3600000);
+      add({ key: 'applicant_' + a.id, kind: hrs >= 24 ? 'over' : 'today', title: ((a.first_name || '') + ' ' + (a.last_name || '')).trim() + ' applied as a ' + (a.position === 'setter' ? 'Setter' : 'Consultant'), why: 'Waiting for a first response for ' + _sunAgo(new Date(a.created_at).getTime()) + (hrs >= 24 ? ' — past the 24-hour mark.' : '. Reach out within 24 hours.') + ' Follow the Setter onboarding steps below.', owner: 'Dennis', age: _sunAgo(new Date(a.created_at).getTime()), impact: null, due: null, primary: ['Open Hiring', "renderTeamView('hiring')"] });
+    });
     (ctx.offCal || []).forEach(function(l){
       var picked = l.diagnostic_date ? 'Customer picked ' + new Date(l.diagnostic_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ', but ' : '';
       add({ key: 'offcal_' + l.id, kind: 'block', title: _sunNameOf(l) + ' is not on the calendar', why: picked + 'no calendar booking is recorded (no arrival window). Created ' + _sunAgo(new Date(l.created_at).getTime()) + ' ago.', owner: l.rep_id === 'tech4' ? 'Dennis' : (l.rep_id || 'Unassigned'), age: _sunAgo(new Date(l.created_at).getTime()), impact: null, due: l.diagnostic_date ? new Date(l.diagnostic_date) : null, primary: ['Open lead', "_sunOpenLead('" + l.id + "')"] });
@@ -2288,6 +2294,23 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         + '<button class="sun-btn sm gh" data-t="' + _sunEsc(i.title) + '" onclick="window._agentReplyOpen(\'S.U.N. queue\',\'[]\',this.dataset.t)">Reply</button></div></div></div>';
     }).join('') + (O.queue.length > 5 ? '<div class="sun-note" style="margin-top:8px">' + (O.queue.length - 5) + ' more in the queue. Resolve or snooze the top items to reach them.</div>' : '');
   }
+  // Setter onboarding protocol (per Dennis, 2026-10-16). Static checklist; each step names where it happens.
+  function _sunOnboardSopHtml() {
+    var steps = [
+      ['Application arrives', 'You get a text and an email the moment someone applies on the careers page. They also show in Administration → Hiring as "Applied", and in the mission queue above.'],
+      ['Reach out within 24 hours', 'Call or text them. Set the status to "Contacted" in Hiring so the queue clears.'],
+      ['Interview', 'Move them to Scheduled, then Interviewed. Note anything to remember in the application notes.'],
+      ['Decide', 'Offered, Hired or Rejected. Only mark Hired once you are sure: onboarding creates a real login and texts the new hire.'],
+      ['Create their account', 'Administration → Team → 🚀 Onboard New Hire. Everyone starts as a Setter. This creates the login, adds them to GHL and emails the welcome message with their access code.'],
+      ['Have them sign the agreement', 'On first login they sign the Rep Agreement and choose a Setter Comp Plan (20% Net Commission, or 10% + $200 per sale).'],
+      ['Training before dialing', 'They finish the New Hire Walkthrough in the Training tab. Dialing and Doors stay locked until they are certified.'],
+      ['First shift check', 'After their first shift, open Administration → Dialers to see dials and hours, and Administration → 1:1s for a first check-in.'],
+      ['Closer access (later)', 'Only if they should close deals: Administration → Team → tick "Closing (Tech) enabled". Until then their bookings go to Dennis.']
+    ];
+    return '<section class="sun-panel" aria-label="Setter onboarding protocol"><details><summary style="cursor:pointer;list-style:none;"><div class="sun-ph"><h2>' + _sunIco('users') + 'Setter onboarding protocol</h2><span class="sun-note">tap to open</span></div></summary>'
+      + '<ol style="margin:10px 0 0;padding-left:20px;">' + steps.map(function(x){ return '<li style="margin:0 0 9px;line-height:1.5;"><strong>' + x[0] + '.</strong> <span style="opacity:.85;">' + x[1] + '</span></li>'; }).join('') + '</ol>'
+      + '<div class="sun-acts" style="margin-top:8px"><button class="sun-btn sm" onclick="renderTeamView(\'hiring\')">Open Hiring</button></div></details></section>';
+  }
   // Search & traffic panel (Search Console + GA4 via seo_metrics / seo_queries). Every figure is from the last 28 days vs the 28 before.
   function _sunSeoHtml(D) {
     var head = '<section class="sun-panel" aria-label="Search and traffic"><div class="sun-ph"><h2>' + _sunIco('pulse') + 'Search &amp; traffic</h2><span class="sun-note">Google Search Console + Analytics</span></div>';
@@ -2356,6 +2379,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     else if (O.clocked.length) h += '<div class="sun-row"><span class="sun-dot sun-d-ok"></span><div class="b"><strong>' + O.clocked.length + ' clocked in</strong><span>' + O.clocked.map(_sunEsc).join(', ') + '</span></div></div>';
     else h += '<div class="sun-row"><span class="sun-dot ' + (O.inHours ? 'sun-d-amb' : 'sun-d-unk') + '"></span><div class="b"><strong>0 clocked in</strong><span>' + (O.inHours ? 'It is working hours (' + SUN_WORK.start + ':00 to ' + SUN_WORK.end + ':00 weekdays) and nobody has logged activity yet.' : 'Outside working hours (' + SUN_WORK.start + ':00 to ' + SUN_WORK.end + ':00 weekdays), so this is expected.') + '</span></div></div>';
     h += '<div class="sun-row"><span class="sun-dot ' + (O.noOwner ? 'sun-d-amb' : 'sun-d-ok') + '"></span><div class="b"><strong>' + O.noOwner + ' job' + (O.noOwner === 1 ? '' : 's') + ' without an owner</strong><span>' + (O.noOwner ? 'Assign an owner in the job.' : 'Every sold job has an owner.') + '</span></div></div></section></div>';
+    h += _sunOnboardSopHtml();
     h += _sunSeoHtml(D);
     // agent issues + health
     h += '<div class="sun-two"><section class="sun-panel" id="sunIssues" aria-label="Agent issues"><div class="sun-ph"><h2>' + _sunIco('bot') + 'Agent issues</h2><span class="sun-note">' + (D.agents.ok ? (D.agents.data.length + ' unread reports grouped into ' + O.issues.length + ' issues') : 'reports could not be loaded') + '</span></div>';

@@ -97,6 +97,33 @@ exports.handler = async function(event) {
     }
   }
 
+  // 3. Tell Dennis right away — SMS (to his team_members phone) + email. Awaited so the function
+  //    can't be frozen before they send; failures are logged and never fail the application.
+  //    (2026-10-16, per Dennis — Robert Larson applied and nobody was notified.)
+  try {
+    const notify = require('./lib/notify');
+    const name = (first_name + ' ' + (last_name || '')).trim();
+    const roleLbl = position === 'setter' ? 'Setter' : 'Consultant';
+    const where = [city, zip].filter(Boolean).join(' ');
+    let dennisPhone = null;
+    try {
+      const tr = await fetch(SUPA_URL + '/rest/v1/team_members?id=eq.tech4&select=phone&limit=1', { headers: supaHeaders });
+      const tj = await tr.json().catch(function () { return []; });
+      dennisPhone = tj && tj[0] && tj[0].phone;
+    } catch (e) { console.error('careers notify phone lookup:', e.message); }
+    const smsText = 'New ' + roleLbl + ' applicant: ' + name + (where ? ' (' + where + ')' : '') + ' — ' + phone + '. Open Administration > Hiring to review.';
+    const jobs = [];
+    if (dennisPhone) jobs.push(notify.sendSms({ phone: dennisPhone, first_name: 'Dennis' }, smsText).then(function (r) { if (!r.ok) console.error('careers sms failed:', r.reason); return r; }));
+    else console.error('careers sms skipped: no phone on file for tech4');
+    const to = process.env.AGENT_REPORT_EMAIL || 'dennislarsen29@gmail.com';
+    const esc = function (v) { return String(v == null ? '' : v).replace(/[&<>"]/g, function (ch) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]; }); };
+    jobs.push(notify.sendEmail({ email: to }, 'New ' + roleLbl + ' applicant: ' + name, 'New ' + roleLbl + ' application',
+      ['<b>' + esc(name) + '</b>' + (where ? ' &middot; ' + esc(where) : ''), 'Email: ' + esc(email) + '<br>Phone: ' + esc(phone),
+       sales_experience ? 'Experience: ' + esc(sales_experience) : '', why_solar ? 'In their words: &ldquo;' + esc(why_solar) + '&rdquo;' : ''].filter(Boolean),
+      { url: 'https://fixmy.energy/portal', label: 'Open Hiring in the portal' }).then(function (r) { if (!r.ok) console.error('careers email failed:', r.reason); return r; }));
+    await Promise.all(jobs);
+  } catch (e) { console.error('careers notify error (non-fatal):', e.message); }
+
   return {
     statusCode: 200,
     headers: CORS,
