@@ -2209,6 +2209,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var ageMs = Date.now() - new Date(a.created_at).getTime(), hrs = Math.floor(ageMs / 3600000);
       add({ key: 'applicant_' + a.id, kind: hrs >= 24 ? 'over' : 'today', title: ((a.first_name || '') + ' ' + (a.last_name || '')).trim() + ' applied as a ' + (a.position === 'setter' ? 'Setter' : 'Consultant'), why: 'Waiting for a first response for ' + _sunAgo(new Date(a.created_at).getTime()) + (hrs >= 24 ? ' — past the 24-hour mark.' : '. Reach out within 24 hours.') + ' Follow the Setter onboarding steps below.', owner: 'Dennis', age: _sunAgo(new Date(a.created_at).getTime()), impact: null, due: null, primary: ['Open Hiring', "renderTeamView('hiring')"] });
     });
+    // Newly sold diagnostic jobs that still need an Ops partner, then a confirmed visit date.
+    (adminCustomers || []).forEach(function(j){
+      if (j.archived || j.sold_type !== 'diagnostic' || j.lead_category === 'new_solar' || j.disposition_exit) return;
+      if ((parseInt(j.step, 10) || 1) > 3) return;
+      var soldMs = new Date(j.sold_at || j.created_at || 0).getTime();
+      if (!soldMs || Date.now() - soldMs > 45 * 86400000) return;
+      var nm = _sunNameOf(j), age = _sunAgo(soldMs);
+      if (!j.assigned_ops) add({ key: 'assignops_' + j.id, kind: 'block', title: nm + ': assign an Ops partner', why: 'Diagnostic fee is paid (sold ' + age + ' ago) but no Ops partner is assigned yet, so nobody can schedule the visit.', owner: 'Dennis', age: age, impact: null, due: null, primary: ['Open job', "_sunOpenJob('" + j.id + "')"] });
+      else if (!j.diag_visit_confirmed_at) add({ key: 'schedvisit_' + j.id, kind: 'block', title: nm + ': schedule the diagnostic visit', why: 'Assigned to ' + ((typeof OPS_PARTNERS !== 'undefined' && (OPS_PARTNERS.filter(function(o){ return o.id === j.assigned_ops; })[0] || {}).name) || 'Ops') + ' (sold ' + age + ' ago), but no visit date is confirmed yet.', owner: 'Dennis', age: age, impact: null, due: null, primary: ['Open job', "_sunOpenJob('" + j.id + "')"] });
+    });
     (ctx.offCal || []).forEach(function(l){
       var picked = l.diagnostic_date ? 'Customer picked ' + new Date(l.diagnostic_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ', but ' : '';
       add({ key: 'offcal_' + l.id, kind: 'block', title: _sunNameOf(l) + ' is not on the calendar', why: picked + 'no calendar booking is recorded (no arrival window). Created ' + _sunAgo(new Date(l.created_at).getTime()) + ' ago.', owner: l.rep_id === 'tech4' ? 'Dennis' : (l.rep_id || 'Unassigned'), age: _sunAgo(new Date(l.created_at).getTime()), impact: null, due: l.diagnostic_date ? new Date(l.diagnostic_date) : null, primary: ['Open lead', "_sunOpenLead('" + l.id + "')"] });
@@ -29820,11 +29830,28 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // same as saveLeadEditor and the server-side payment sweeps. The two "Paid by Check" buttons used to
   // flip invoice_status only, so a check-paid lead stayed a lead. (2026-10-16, Richard Go.)
   async function _promoteCheckPaid(client, id, rec) {
-    if (!rec || rec.sold_type || rec.lead_category === 'new_solar') return {};
-    var upd = { sold_type: 'diagnostic', sold_at: new Date().toISOString() };
-    var r = await client.from('customers').update(upd).eq('id', id).is('sold_type', null);
-    if (r.error) { console.warn('check-paid promote failed:', r.error.message); return {}; }
-    await _seedDiagnosticCogs(client, id);
+    // One click does everything: revenue record (ledger), job conversion, $300 COGS line.
+    // Each step guards against duplicating itself, so repeat clicks / the editor path are safe.
+    var upd = {};
+    try {
+      var amt = parseFloat(rec && rec.invoice_amount) || 0;
+      var pay = await client.from('payments').select('id', { count: 'exact', head: true }).eq('customer_id', id).eq('category', 'revenue');
+      if (!pay.error && !(pay.count > 0) && amt > 0) {
+        var who = '';
+        try { who = (window.CURRENT_ROLE === 'admin') ? 'admin' : ((typeof person !== 'undefined' && person && person.name) || 'rep'); } catch (e) { who = 'rep'; }
+        var pi = await client.from('payments').insert({ customer_id: id, amount: amt, method: 'check', source: 'manual', category: 'revenue', note: 'Diagnostic fee paid by check (marked paid in portal)', recorded_by: who, paid_at: new Date().toISOString() });
+        if (pi.error) console.warn('check-paid payment record failed:', pi.error.message);
+        else if (window.finCache !== undefined) { try { finCache = null; } catch (e) {} }
+      }
+    } catch (e) { console.warn('check-paid payment step:', e.message); }
+    if (rec && !rec.sold_type && rec.lead_category !== 'new_solar') {
+      var u = { sold_type: 'diagnostic', sold_at: new Date().toISOString() };
+      var r = await client.from('customers').update(u).eq('id', id).is('sold_type', null);
+      if (r.error) console.warn('check-paid promote failed:', r.error.message);
+      else upd = u;
+    }
+    if ((rec && rec.sold_type === 'diagnostic') || upd.sold_type) await _seedDiagnosticCogs(client, id);
+    try { delete _fixmyCommCache[id]; } catch (e) {}
     return upd;
   }
   window._promoteCheckPaid = _promoteCheckPaid;
