@@ -37,6 +37,49 @@ async function diagFindings(id, doFetch, H) {
   return out(200, { ok: results.some(r => r.ok), results });
 }
 
+// An Ops partner checked in at a diagnostic job (portal check-in writes a "📍 Check-in" note).
+// State-checked against that note (must be this job, recent, by someone other than staff alerts),
+// one alert per check-in. SMS + email to the assigned Tech and to Dennis (admin).
+async function opsCheckin(id, doFetch, H) {
+  const get = async (path) => (await (await doFetch(SUPA_URL + '/rest/v1' + path, { headers: H })).json().catch(() => null));
+  const c = ((await get('/customers?id=eq.' + id + '&select=first_name,last_name,rep_id,assigned_ops,sold_type,notes&limit=1')) || [])[0];
+  if (!c || !c.assigned_ops || !c.sold_type) return out(409, { ok: false, reason: 'state' });
+  let notes = []; try { notes = JSON.parse(c.notes || '[]'); } catch (e) { notes = []; }
+  const ci = (Array.isArray(notes) ? notes : []).filter(n => n && String(n.by || '').indexOf('📍 Check-in') === 0).pop();
+  if (!ci || !ci.ts || Date.now() - new Date(ci.ts).getTime() > 15 * 60000) return out(409, { ok: false, reason: 'no_recent_checkin' });
+  const rlKey = 'staffalert_ops_checkin_' + id + '_' + String(ci.ts).slice(0, 19);
+  const rl = ((await get('/pipeline_state?key=eq.' + encodeURIComponent(rlKey) + '&select=value')) || [])[0];
+  if (rl) return out(200, { ok: true, skipped: 'already_sent' });
+  const partner = String(ci.by).replace(/^📍 Check-in\s*[—-]\s*/, '').trim() || 'The Ops partner';
+  const name = ((c.first_name || '') + ' ' + (c.last_name || '')).trim() || 'a customer';
+  const t = String(ci.text || '');
+  const dm = t.match(/\|\s*([^|]*from the address[^|]*)/);
+  const late = /LATE check-in/.test(t) ? ' (late)' : '';
+  const far = /NOT at the address yet/.test(t) ? ' ⚠ not at the address yet' : '';
+  const when = new Date(ci.ts).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/Los_Angeles' });
+  const msg = partner + ' checked in at ' + name + "'s diagnostic" + late + ' at ' + when + '.' + (dm ? ' ' + dm[1].trim() + '.' : '') + far + ' Notes and findings will follow in the job.';
+  const ids = [c.rep_id || DEFAULT_REP]; if (ids.indexOf(DEFAULT_REP) === -1) ids.push(DEFAULT_REP);
+  const results = [], emails = [];
+  for (const tid of ids) {
+    const tm = ((await get('/team_members?id=eq.' + encodeURIComponent(tid) + '&select=name,phone,email&limit=1')) || [])[0];
+    if (!tm) { results.push({ to: tid, ok: false, reason: 'no_member' }); continue; }
+    if (tm.email && tid !== DEFAULT_REP) emails.push(tm.email);
+    if (!tm.phone) { results.push({ to: tid, ok: false, reason: 'no_phone' }); continue; }
+    const r = await notify.sendSms({ phone: tm.phone, first_name: tm.name }, msg, doFetch);
+    results.push({ to: tid, ok: r.ok, reason: r.reason });
+  }
+  emails.push(process.env.AGENT_REPORT_EMAIL || 'dennislarsen29@gmail.com');
+  const sent = {}; const emailResults = [];
+  for (const em of emails) {
+    if (sent[em.toLowerCase()]) continue; sent[em.toLowerCase()] = 1;
+    const r = await notify.sendEmail({ email: em }, partner + ' checked in: ' + name, 'Ops check-in', [msg, 'Open the job in the portal to see their notes and diagnostic findings as they come in.'], { url: notify.SITE + '/portal', label: 'Open the portal' }, doFetch);
+    emailResults.push({ to: em, ok: r.ok, reason: r.reason });
+  }
+  const anyOk = results.some(r => r.ok) || emailResults.some(r => r.ok);
+  if (anyOk) await doFetch(SUPA_URL + '/rest/v1/pipeline_state', { method: 'POST', headers: Object.assign({}, H, { Prefer: 'resolution=merge-duplicates,return=minimal' }), body: JSON.stringify({ key: rlKey, value: JSON.stringify({ ts: Date.now() }), updated_at: new Date().toISOString() }) }).catch(() => {});
+  return out(200, { ok: anyOk, results, emailResults });
+}
+
 exports.handler = async function (event, context, deps) {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers: cors, body: '' };
   if (event.httpMethod !== 'POST') return out(405, { error: 'Method Not Allowed' });
@@ -46,10 +89,11 @@ exports.handler = async function (event, context, deps) {
   const H = { apikey: KEY, Authorization: 'Bearer ' + KEY, 'Content-Type': 'application/json' };
   let b; try { b = JSON.parse(event.body); } catch (e) { return out(400, { error: 'Invalid JSON' }); }
   const ev = b.event, id = String(b.customerId || ''), docType = String(b.docType || '');
-  if (['document_opened', 'document_signed', 'diag_findings'].indexOf(ev) === -1) return out(400, { error: 'Unknown event' });
-  if (!/^[0-9a-fA-F-]{36}$/.test(id) || (ev !== 'diag_findings' && !/^[a-z0-9_]{1,60}$/.test(docType))) return out(400, { error: 'Bad request' });
+  if (['document_opened', 'document_signed', 'diag_findings', 'ops_checkin'].indexOf(ev) === -1) return out(400, { error: 'Unknown event' });
+  if (!/^[0-9a-fA-F-]{36}$/.test(id) || (ev !== 'diag_findings' && ev !== 'ops_checkin' && !/^[a-z0-9_]{1,60}$/.test(docType))) return out(400, { error: 'Bad request' });
 
   if (ev === 'diag_findings') return diagFindings(id, doFetch, H);
+  if (ev === 'ops_checkin') return opsCheckin(id, doFetch, H);
 
   const get = async (path) => (await (await doFetch(SUPA_URL + '/rest/v1' + path, { headers: H })).json().catch(() => null));
   const c = ((await get('/customers?id=eq.' + id + '&select=first_name,last_name,rep_id&limit=1')) || [])[0];
