@@ -1467,6 +1467,23 @@ No Meta API/MCP connector exists in this environment, so none of this can be aut
 10. **Budget** — start at $20–40/day per campaign, minimum 7-day test before judging, optimize toward cost-per-Schedule (not cost-per-Purchase, not raw CTR/CPM) as the real north-star metric until Purchase volume is large enough for value-based bidding.
 11. ⚠️ **Special Ad Category check** — solar/home-improvement itself isn't automatically Meta's "Housing" special category (that's real-estate listings/mortgage/rental), so normal age/gender/zip-radius targeting should be available. If a campaign gets auto-flagged into Special Ad Category anyway (it happens on miscategorized home-services ads), targeting options shrink — appeal it rather than assuming it's permanent.
 
+### Meta setup — what is ALREADY DONE vs still open (status as of 2026-10-18, confirmed by Dennis's own screenshots)
+Do not re-ask Dennis to create or find any of the "done" items below.
+- ✅ **Business portfolio ("Solar Review") exists** in Meta Business Settings (business.facebook.com). People: *Dennis T. Larsen (you)* — `info@fixmy.energy`, Full access, active — and *Dennis Larsen* (the Instagram-linked identity, `@dennis_t_larsen`, Full access, shows Inactive).
+- ✅ **Facebook Page connected:** **SOLAReview**, Page ID `102222084816801`, owned by Solar Review, Dennis T. Larsen has Full access. A second Page in the portfolio, *Tom Larsen Construction*, is unrelated to this business — ignore it.
+- ✅ **Instagram connected:** **@dennis_t_larsen**, ID `17841401567772745`, owned by Solar Review. Dennis T. Larsen has *partial* access (Content, Messages, Community activity, Ads and Insights) — enough for ads and insights.
+- ⬜ **Not yet checked:** whether an **Ad account** exists (Accounts → Ad accounts) and whether billing/payment is set up (Billing & payments).
+- ⬜ **Domain verification for `fixmy.energy` — NEXT STEP.** Path: Business Settings → Brand safety and suitability → Domains → Add `fixmy.energy` (no https/www) → choose the **meta-tag** method → Dennis pastes the exact `<meta name="facebook-domain-verification" content="…">` line to Claude → Claude adds it to every public page's `<head>` → Dennis deploys → THEN Dennis clicks Verify in Meta. ⚠️ The code value must come from Meta; never invent it.
+- ⬜ Pixel `955546210177969` ownership check + Test Events pass; Conversions API token (`META_CAPI_TOKEN`, Netlify env — never pasted into chat); Aggregated Event Measurement priority; Custom Audiences; first campaign. The full recommended order and campaign design are in "Meta Ads Setup (2026-09-16)" above.
+- Landing pages for ads are the installer pages (`/sunpower`, `/titan`, `/sunnova`, `/freedom-forever`, etc. → `check-preview.html?installer=…`), redesigned 2026-10-17 (photo hero, Call Now, phone-click tracking, lead source written into each lead's note log). Phone clicks fire GA4 + `fbq('track','Contact')`.
+
+### Search Console / SEO — progress log (2026-10-15 → 18)
+- Search Console showed 10 pages indexed, 21 not: 15 "Discovered – currently not indexed" (never crawled — all installer pages, `/contact`, and six blog posts), 3 "Page with redirect" (the http/www homepage variants — expected, no action), 2 `noindex` (`/book` and `/booked`, intentional). `/freedom-forever` was missing from `sitemap.xml` and was added 2026-10-18.
+- **Request-indexing batches** (Search Console → URL inspection → Request indexing, ~5/day): **Day 1 done 2026-10-18:** `/sunpower`, `/blog/solaredge-inverter-error-codes`, `/titan`, `/sunnova`, `/freedom-forever`. **Day 2 (reminder scheduled 2026-10-19 9am PT):** `/blog/freedom-forever-bankruptcy`, `/blog/sunnova-bankruptcy`, `/sunrun`, `/mosaic`, `/sullivan`. **Day 3:** `/petersen-dean`, `/sungevity`, `/blog/sunrun-vivint-evening-bills-battery`, `/blog/vitl-power`, `/blog/sdge-electric-rates-2026`.
+- Still Dennis's to do: 2–3 outside links (Google Business Profile website link + SunPower guide post, Cosmic link-back, local directory listing); re-check the Pages report in ~2 weeks (the 15 should drop). S.U.N. Admin has a "Search & traffic" panel (Search Console + GA4).
+- Public rating display: homepage and installer pages show **"5.0 on Google"** with no review count (34 reviews is still low, per Dennis 2026-10-18). The hidden structured-data `reviewCount` in `index.html` was deliberately left at its real value.
+- Installer-page URLs are served by rewrites, so `/*.html` cache headers never matched them; explicit no-cache headers were added for each in `netlify.toml` (2026-10-18). A tab opened before that deploy may still show the old page until site data is cleared.
+
 ## Known Pending Items
 
 ### High Priority
