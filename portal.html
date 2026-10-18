@@ -2166,9 +2166,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       wrap('systems', c.from('pipeline_state').select('key,value,updated_at').in('key', ['last_run_at', 'last_run_phase', 'seo_sync_status'])),
       wrap('search metrics', c.from('seo_metrics').select('date,clicks,impressions,position,ga_sessions,ga_organic_sessions,ga_conversions').gte('date', new Date(now.getTime() - 60 * 86400000).toISOString().slice(0, 10)).order('date', { ascending: true }).limit(100)),
       wrap('applicants', c.from('candidates').select('id,first_name,last_name,position,city,created_at').eq('status', 'applied').order('created_at', { ascending: false }).limit(50)),
-      wrap('search queries', c.from('seo_queries').select('date,dimension,key,clicks,impressions,position').order('date', { ascending: false }).limit(150))
+      wrap('search queries', c.from('seo_queries').select('date,dimension,key,clicks,impressions,position').order('date', { ascending: false }).limit(150)),
+      wrap('roadmap', c.from('roadmap_items').select('key,title,status,priority,effort,dennis_action,group_key,blocked_by,description').neq('group_key', 'history').limit(150))
     ]);
-    var D = { now: now, pay: res[0], comm: res[1], shifts: res[2], agents: res[3], sys: res[4], seo: res[5], apps: res[6], seoq: res[7], monthStart: monthStart, prevStart: prevStart, prevCut: prevCut, refreshed: new Date() };
+    var D = { now: now, pay: res[0], comm: res[1], shifts: res[2], agents: res[3], sys: res[4], seo: res[5], apps: res[6], seoq: res[7], road: res[8], monthStart: monthStart, prevStart: prevStart, prevCut: prevCut, refreshed: new Date() };
     // Earned dates need the per-job commission caches (same ones payroll uses).
     var commIds = {}; (D.comm.data || []).forEach(function(x){ commIds[x.customer_id] = x.line; });
     var ptoIds = (adminCustomers || []).filter(function(x){ return x.lead_category === 'new_solar' && x.sold_type && x.install_completed_at && !x.ns_pto_at && x.solar_status !== 'ns_pto'; }).map(function(x){ return x.id; });
@@ -2304,6 +2305,28 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         + '<button class="sun-btn sm gh" data-t="' + _sunEsc(i.title) + '" onclick="window._agentReplyOpen(\'S.U.N. queue\',\'[]\',this.dataset.t)">Reply</button></div></div></div>';
     }).join('') + (O.queue.length > 5 ? '<div class="sun-note" style="margin-top:8px">' + (O.queue.length - 5) + ' more in the queue. Resolve or snooze the top items to reach them.</div>' : '');
   }
+  // Roadmap panel (per Dennis, 2026-10-18): the top 3 open roadmap items, same ordering as the Roadmap's "Do Now" list
+  // (priority 1 = highest, then smaller effort first; items still blocked by an unfinished item are skipped).
+  function _sunRoadmapHtml(D) {
+    var head = '<section class="sun-panel" aria-label="Roadmap"><div class="sun-ph"><h2>' + _sunIco('spark') + 'Roadmap: top 3 priorities</h2><span class="sun-note">from the Business Model roadmap</span></div>';
+    if (!D.road || !D.road.ok) return head + '<div class="sun-empty">Unknown: the roadmap could not be loaded.</div></section>';
+    var rows = D.road.data || [], doneKeys = {};
+    rows.forEach(function(r){ if (r.status === 'done') doneKeys[r.key] = true; });
+    var effRank = { quick: 0, small: 0, medium: 1, large: 2 };
+    var open = rows.filter(function(r){
+      if (r.status === 'done') return false;
+      if (r.blocked_by && !doneKeys[r.blocked_by]) return false;
+      return true;
+    }).sort(function(a, b){
+      return (a.priority - b.priority) || ((effRank[a.effort] != null ? effRank[a.effort] : 1) - (effRank[b.effort] != null ? effRank[b.effort] : 1));
+    }).slice(0, 3);
+    if (!open.length) return head + '<div class="sun-empty">Nothing open on the roadmap.</div></section>';
+    var h = head + open.map(function(r, i){
+      return '<div class="sun-row"><span class="sun-dot sun-d-' + (r.priority <= 1 ? 'red' : 'amb') + '"></span><div class="b"><strong>' + (i + 1) + '. ' + _sunEsc(r.title) + '</strong>'
+        + '<span>' + _sunEsc(r.group_key || '') + (r.effort ? ' · ' + _sunEsc(r.effort) + ' effort' : '') + (r.dennis_action ? ' · ' + _sunEsc(r.dennis_action) : '') + '</span></div></div>';
+    }).join('');
+    return h + '<div class="sun-acts" style="margin-top:8px"><button class="sun-btn sm" onclick="window.open(\'/business-model.html?t=fixmybp26\',\'_blank\')">Open full roadmap</button></div></section>';
+  }
   // Setter onboarding protocol (per Dennis, 2026-10-16). Static checklist; each step names where it happens.
   function _sunOnboardSopHtml() {
     var steps = [
@@ -2389,6 +2412,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     else if (O.clocked.length) h += '<div class="sun-row"><span class="sun-dot sun-d-ok"></span><div class="b"><strong>' + O.clocked.length + ' clocked in</strong><span>' + O.clocked.map(_sunEsc).join(', ') + '</span></div></div>';
     else h += '<div class="sun-row"><span class="sun-dot ' + (O.inHours ? 'sun-d-amb' : 'sun-d-unk') + '"></span><div class="b"><strong>0 clocked in</strong><span>' + (O.inHours ? 'It is working hours (' + SUN_WORK.start + ':00 to ' + SUN_WORK.end + ':00 weekdays) and nobody has logged activity yet.' : 'Outside working hours (' + SUN_WORK.start + ':00 to ' + SUN_WORK.end + ':00 weekdays), so this is expected.') + '</span></div></div>';
     h += '<div class="sun-row"><span class="sun-dot ' + (O.noOwner ? 'sun-d-amb' : 'sun-d-ok') + '"></span><div class="b"><strong>' + O.noOwner + ' job' + (O.noOwner === 1 ? '' : 's') + ' without an owner</strong><span>' + (O.noOwner ? 'Assign an owner in the job.' : 'Every sold job has an owner.') + '</span></div></div></section></div>';
+    h += _sunRoadmapHtml(D);
     h += _sunOnboardSopHtml();
     h += _sunSeoHtml(D);
     // agent issues + health
