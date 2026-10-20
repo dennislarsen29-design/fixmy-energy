@@ -27,6 +27,16 @@ function magicLink(c) {
   return SITE + '/portal?email=' + encodeURIComponent(c.email) + '&code=' + encodeURIComponent(c.access_code || digits(c.phone));
 }
 
+// Record the last SMS failure (status + GHL's own message) so it can be read with a query instead of Netlify logs.
+async function logSmsFail(detail) {
+  try {
+    const K = process.env.SUPA_SERVICE_KEY; if (!K) return;
+    await fetch('https://kbtobyoumvbcxfbugsid.supabase.co/rest/v1/pipeline_state', { method: 'POST',
+      headers: { apikey: K, Authorization: 'Bearer ' + K, 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify({ key: 'sms_last_failure', value: JSON.stringify(Object.assign({ at: new Date().toISOString() }, detail)), updated_at: new Date().toISOString() }) });
+  } catch (e) {}
+}
+
 async function sendSms(c, message, doFetch, attachments) {
   doFetch = doFetch || fetch;
   const key = process.env.GHL_API_KEY;
@@ -41,7 +51,7 @@ async function sendSms(c, message, doFetch, attachments) {
       body: JSON.stringify({ locationId: GHL_LOC, phone, email: validEmail(c.email) ? c.email : undefined, firstName: c.first_name || undefined, lastName: c.last_name || undefined })
     });
     const ud = await u.json().catch(function () { return {}; });
-    if (!u.ok) return { ok: false, reason: 'ghl_contact_http_' + u.status };
+    if (!u.ok) { await logSmsFail({ step: 'contact_upsert', status: u.status, body: JSON.stringify(ud).slice(0, 300) }); return { ok: false, reason: 'ghl_contact_http_' + u.status }; }
     contactId = ud.contact && ud.contact.id;
   } catch (e) { return { ok: false, reason: 'ghl_contact_error' }; }
   if (!contactId) return { ok: false, reason: 'ghl_no_contact_id' };
@@ -50,7 +60,7 @@ async function sendSms(c, message, doFetch, attachments) {
     if (process.env.GHL_SMS_FROM_NUMBER) body.fromNumber = process.env.GHL_SMS_FROM_NUMBER;
     if (attachments && attachments.length) body.attachments = attachments;
     const r = await doFetch(GHL_BASE + '/conversations/messages', { method: 'POST', headers: Object.assign({}, H, { Version: '2021-04-15' }), body: JSON.stringify(body) });
-    if (!r.ok) { const t = await r.text().catch(function () { return ''; }); console.error('notify sms http', r.status, t.slice(0, 200)); return { ok: false, reason: 'ghl_sms_http_' + r.status }; }
+    if (!r.ok) { const t = await r.text().catch(function () { return ''; }); console.error('notify sms http', r.status, t.slice(0, 200)); await logSmsFail({ step: 'send', status: r.status, body: t.slice(0, 300) }); return { ok: false, reason: 'ghl_sms_http_' + r.status }; }
     return { ok: true };
   } catch (e) { return { ok: false, reason: 'ghl_sms_error' }; }
 }
