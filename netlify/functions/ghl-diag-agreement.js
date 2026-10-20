@@ -1,6 +1,7 @@
 // Creates/updates the GHL contact directly via API, then sends SMS to customer with sign link.
 // NOTE: The old "send-diag-agreement" tag flow (GHL agreement workflow) has been removed.
 // sign.html is the authoritative agreement; GHL agreement is retired.
+const notify = require('./lib/notify');
 exports.handler = async function(event) {
   const cors = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' };
 
@@ -97,7 +98,7 @@ exports.handler = async function(event) {
         'Tap here to review, sign, and pay:\n' + payload.signLink + '\n\n' +
         'Questions? Call (619) 777-6527. — Solar Review Corp';
 
-      const smsMsgBody = { type: 'SMS', contactId, message: smsMessage };
+      const smsMsgBody = { type: 'SMS', contactId, message: smsMessage, locationId: GHL_LOCATION_ID };
       if (GHL_FROM_NUMBER) smsMsgBody.fromNumber = GHL_FROM_NUMBER;
       if (phone) smsMsgBody.toNumber = phone;
 
@@ -114,9 +115,21 @@ exports.handler = async function(event) {
     }
   }
 
+  // Email copy of the same link (Resend) so a failed/blocked text never leaves the customer with nothing.
+  let emailResult = null;
+  if (payload.signLink) {
+    try {
+      const fee = payload.diagnostic_fee ? ' ($' + payload.diagnostic_fee + ')' : '';
+      emailResult = await notify.sendEmail({ email: payload.email }, 'Your Solar Review Diagnostic Agreement is ready', 'Your Diagnostic Agreement is ready',
+        ['Hi ' + (payload.firstName || 'there') + ', your Diagnostic Agreement' + fee + ' is ready to review, sign and pay.'],
+        { url: payload.signLink, label: 'Review, sign & pay' });
+    } catch (e) { emailResult = { ok: false, reason: 'email_error' }; }
+  }
+  const smsOk = smsStatus >= 200 && smsStatus < 300;
+  const delivered = !payload.signLink || smsOk || !!(emailResult && emailResult.ok);
   return {
     statusCode: 200,
     headers: cors,
-    body: JSON.stringify({ success: true, contactId, smsStatus, convDebug })
+    body: JSON.stringify({ success: true, delivered, smsOk, emailOk: !!(emailResult && emailResult.ok), emailReason: emailResult && emailResult.reason, contactId, smsStatus, convDebug })
   };
 };
