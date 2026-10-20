@@ -2167,9 +2167,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       wrap('search metrics', c.from('seo_metrics').select('date,clicks,impressions,position,ga_sessions,ga_organic_sessions,ga_conversions').gte('date', new Date(now.getTime() - 60 * 86400000).toISOString().slice(0, 10)).order('date', { ascending: true }).limit(100)),
       wrap('applicants', c.from('candidates').select('id,first_name,last_name,position,city,created_at').eq('status', 'applied').order('created_at', { ascending: false }).limit(50)),
       wrap('search queries', c.from('seo_queries').select('date,dimension,key,clicks,impressions,position').order('date', { ascending: false }).limit(150)),
-      wrap('roadmap', c.from('roadmap_items').select('key,title,status,priority,effort,dennis_action,group_key,blocked_by,description').neq('group_key', 'history').limit(150))
+      wrap('roadmap', c.from('roadmap_items').select('key,title,status,priority,effort,dennis_action,group_key,blocked_by,description').neq('group_key', 'history').limit(150)),
+      wrap('meta leads', c.from('customers').select('id,created_at,utm_source,utm_campaign,fbclid,arrival_window,diagnostic_date,sold_type,partial_capture,archived').or('fbclid.not.is.null,utm_source.ilike.%facebook%,utm_source.ilike.%instagram%,utm_source.ilike.%meta%').gte('created_at', new Date(now.getTime() - 30 * 86400000).toISOString()).order('created_at', { ascending: false }).limit(1000))
     ]);
-    var D = { now: now, pay: res[0], comm: res[1], shifts: res[2], agents: res[3], sys: res[4], seo: res[5], apps: res[6], seoq: res[7], road: res[8], monthStart: monthStart, prevStart: prevStart, prevCut: prevCut, refreshed: new Date() };
+    var D = { now: now, pay: res[0], comm: res[1], shifts: res[2], agents: res[3], sys: res[4], seo: res[5], apps: res[6], seoq: res[7], road: res[8], meta: res[9], monthStart: monthStart, prevStart: prevStart, prevCut: prevCut, refreshed: new Date() };
     // Earned dates need the per-job commission caches (same ones payroll uses).
     var commIds = {}; (D.comm.data || []).forEach(function(x){ commIds[x.customer_id] = x.line; });
     var ptoIds = (adminCustomers || []).filter(function(x){ return x.lead_category === 'new_solar' && x.sold_type && x.install_completed_at && !x.ns_pto_at && x.solar_status !== 'ns_pto'; }).map(function(x){ return x.id; });
@@ -2345,6 +2346,29 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       + '<div class="sun-acts" style="margin-top:8px"><button class="sun-btn sm" onclick="renderTeamView(\'hiring\')">Open Hiring</button></div></details></section>';
   }
   // Search & traffic panel (Search Console + GA4 via seo_metrics / seo_queries). Every figure is from the last 28 days vs the 28 before.
+  // Meta ads: counts leads our own database can attribute to Meta (fbclid or utm_source facebook/instagram/meta).
+  // It cannot see ad spend or pixel health (those live only in Meta), so spend is typed in and stored per device.
+  window._sunMetaSpend = function(v) { try { var n = parseFloat(String(v).replace(/[^0-9.]/g, '')); if (n > 0) localStorage.setItem('sunMetaSpend30', String(n)); else localStorage.removeItem('sunMetaSpend30'); } catch (e) {} if (typeof renderAdminHomeView === 'function') renderAdminHomeView(); };
+  function _sunMetaHtml(D) {
+    var head = '<section class="sun-panel" aria-label="Meta ads"><div class="sun-ph"><h2>' + _sunIco('spark') + 'Meta ads</h2><span class="sun-note">leads tied to Facebook / Instagram clicks</span></div>';
+    if (!D.meta || !D.meta.ok) return head + '<div class="sun-empty">Unknown: Meta-attributed leads could not be loaded.</div></section>';
+    var rows = (D.meta.data || []).filter(function(r){ return !r.archived && !r.partial_capture; });
+    var d7 = Date.now() - 7 * 86400000, r7 = rows.filter(function(r){ return new Date(r.created_at).getTime() >= d7; });
+    var booked = rows.filter(function(r){ return !!r.arrival_window; }), sold = rows.filter(function(r){ return !!r.sold_type; });
+    var spend = 0; try { spend = parseFloat(localStorage.getItem('sunMetaSpend30')) || 0; } catch (e) {}
+    var cpl = spend > 0 && booked.length ? '$' + Math.round(spend / booked.length).toLocaleString() : (spend > 0 ? 'No bookings yet' : 'Enter spend');
+    var last = rows.length ? new Date(rows[0].created_at) : null;
+    var h = head + '<div class="sun-metrics">'
+      + _sunMetric('meta_leads', 'Meta leads', rows.length.toLocaleString(), r7.length + ' in the last 7 days', '<b>Definition:</b> leads created in the last 30 days that carry a Facebook click id (fbclid) or a facebook / instagram / meta utm_source.<br><b>Source:</b> your customers table.<br><b>Limit:</b> people who saw the ad and later booked without clicking are not counted.')
+      + _sunMetric('meta_booked', 'Booked evaluations', booked.length.toLocaleString(), rows.length ? Math.round(booked.length / rows.length * 100) + '% of Meta leads' : 'no leads yet', '<b>Definition:</b> Meta leads that have an appointment on the calendar (an arrival window is set).')
+      + _sunMetric('meta_sold', 'Sold', sold.length.toLocaleString(), sold.length ? 'became jobs' : 'none yet', '<b>Definition:</b> Meta leads that became a job (a sold type is set).')
+      + _sunMetric('meta_cpb', 'Cost per booking', cpl, spend > 0 ? '$' + Math.round(spend).toLocaleString() + ' spent, last 30 days' : 'type your Ads Manager spend below', '<b>Definition:</b> the spend you enter divided by Meta bookings.<br><b>Note:</b> spend is not read from Meta. It is typed in and kept on this device.', spend <= 0)
+      + '</div>';
+    h += '<div class="sun-row"><span class="sun-dot ' + (last ? 'sun-d-ok' : 'sun-d-unk') + '"></span><div class="b"><strong>' + (last ? 'Latest Meta lead ' + last.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : 'No Meta-attributed leads yet') + '</strong><span>' + (last ? 'Counts update as leads arrive.' : 'Expected until the first ad is approved and people click. Check back after a few days of spend.') + '</span></div></div>';
+    h += '<div class="sun-row"><span class="sun-dot sun-d-unk"></span><div class="b"><strong>Pixel health: not visible here</strong><span>S.U.N. cannot read Meta. Check that events are arriving in Events Manager (dataset fixmy.energy), and ad spend in Ads Manager.</span></div></div>';
+    h += '<div class="sun-acts" style="margin-top:8px"><label style="font-size:.78rem;color:var(--mu)">Spend, last 30 days $ <input type="number" min="0" step="1" value="' + (spend || '') + '" onchange="window._sunMetaSpend(this.value)" style="width:90px;padding:4px 6px;margin-left:4px"></label> <button class="sun-btn sm" onclick="window.open(\'https://business.facebook.com/events_manager2/list/dataset/955546210177969\',\'_blank\')">Open Events Manager</button> <button class="sun-btn sm" onclick="window.open(\'https://adsmanager.facebook.com/adsmanager/manage/campaigns?act=2741612295961694\',\'_blank\')">Open Ads Manager</button></div></section>';
+    return h;
+  }
   function _sunSeoHtml(D) {
     var head = '<section class="sun-panel" aria-label="Search and traffic"><div class="sun-ph"><h2>' + _sunIco('pulse') + 'Search &amp; traffic</h2><span class="sun-note">Google Search Console + Analytics</span></div>';
     if (!D.seo || !D.seo.ok) return head + '<div class="sun-empty">Unknown: search data could not be loaded.</div></section>';
@@ -2415,6 +2439,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += _sunRoadmapHtml(D);
     h += _sunOnboardSopHtml();
     h += _sunSeoHtml(D);
+    h += _sunMetaHtml(D);
     // agent issues + health
     h += '<div class="sun-two"><section class="sun-panel" id="sunIssues" aria-label="Agent issues"><div class="sun-ph"><h2>' + _sunIco('bot') + 'Agent issues</h2><span class="sun-note">' + (D.agents.ok ? (D.agents.data.length + ' unread reports grouped into ' + O.issues.length + ' issues') : 'reports could not be loaded') + '</span></div>';
     if (!D.agents.ok) h += '<div class="sun-empty">Unknown: agent reports could not be loaded.</div>';
