@@ -100,9 +100,17 @@ exports.handler = async function (event) {
       .replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
     const brace = raw.indexOf('{'); if (brace > 0) raw = raw.slice(brace);
     let parsed;
-    try { parsed = JSON.parse(raw); } catch (e) { return reply({ error: 'unparseable' }); }
+    try { parsed = JSON.parse(raw); } catch (e) {
+      // The model often puts real line breaks inside the JSON string (invalid JSON). Recover the two fields instead of failing.
+      const m = raw.match(/"report"\s*:\s*"([\s\S]*?)"\s*,\s*"needs_detail"\s*:\s*(null|"([\s\S]*?)")\s*\}?\s*$/);
+      if (m) parsed = { report: m[1].replace(/\\n/g, '\n').replace(/\\"/g, '"'), needs_detail: m[3] ? m[3].replace(/\\n/g, ' ').replace(/\\"/g, '"') : null };
+      else {
+        console.error('diag-report-draft unparseable:', raw.slice(0, 300));
+        return reply({ error: 'unparseable', detail: 'Could not read the draft: ' + raw.slice(0, 120) });
+      }
+    }
     let report = String(parsed.report || '').replace(/\*\*/g, '').trim();
-    if (!report) return reply({ error: 'unparseable' });
+    if (!report) return reply({ error: 'unparseable', detail: 'Empty draft' });
     const needs = typeof parsed.needs_detail === 'string' && parsed.needs_detail.trim() ? parsed.needs_detail.trim().slice(0, 220) : null;
     return reply({ report: report.slice(0, 3500), needs_detail: needs });
   } catch (e) {
