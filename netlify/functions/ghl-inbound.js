@@ -342,6 +342,11 @@ exports.handler = async function(event) {
     } catch (e) { /* best-effort cleanup — never block the booking */ }
   }
 
+  // Home match: add what Black Box already knows about this address (fill blanks only, nothing overwritten).
+  if (!isPartial && address && resultId) {
+    try { await require('./lib/home-match').enrich(resultId); } catch (e) { /* never block the booking */ }
+  }
+
   console.log(existingId ? 'Updated' : 'Created', 'customer:', email || digits || address);
   return {
     statusCode: 200,

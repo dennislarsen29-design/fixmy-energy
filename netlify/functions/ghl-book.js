@@ -282,6 +282,9 @@ exports.handler = async function(event) {
     console.warn('Supabase upsert failed:', e.message);
   }
 
+  // Home match: add what Black Box already knows about this address (fill blanks only).
+  try { if (typeof existingId !== 'undefined' && existingId) await require('./lib/home-match').enrich(existingId); } catch (e) {}
+
   return {
     statusCode: 200,
     headers: cors,

@@ -31019,6 +31019,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '<input type="text" id="nlAddr" class="ed-input" placeholder="Start typing address..." autocomplete="off" oninput="nlAddrChanged();_qaLock(this.id)" onblur="if(this.value.trim())nlManualTitleLookup()" style="margin-bottom:8px;width:100%;font-size:1rem;padding:12px 14px;min-height:48px;box-sizing:border-box;"/>'+
           '<div id="nlSatWrap" style="margin-top:0;margin-bottom:8px;display:none;"><img id="nlSatImg" src="" style="width:100%;border-radius:8px;max-height:160px;object-fit:cover;"/></div>'+
           '<div id="nlSolarWrap" style="margin-bottom:8px;display:none;"><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;"><div id="nlS1" class="solar-stat-box"></div><div id="nlS2" class="solar-stat-box"></div><div id="nlS3" class="solar-stat-box"></div></div></div>'+
+          '<div id="nlHomeMatch" style="display:none;margin-bottom:8px;"></div>'+
           '<div id="nlOwnerLookupWrap">'+
             '<button type="button" onclick="nlManualTitleLookup()" style="width:100%;padding:11px 14px;background:rgba(141,198,63,0.12);border:1px solid rgba(141,198,63,0.3);border-radius:8px;color:#8DC63F;font-size:0.85rem;font-weight:700;cursor:pointer;margin-bottom:8px;">&#128269; Look Up Owner</button>'+
             '<div id="nlTitleWrap" style="display:none;padding:12px 14px;background:rgba(141,198,63,0.06);border:1px solid rgba(141,198,63,0.2);border-radius:10px;">'+
@@ -31354,7 +31355,21 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     try{ var r=await fetch('https://solar.googleapis.com/v1/buildingInsights:findClosest?location.latitude='+lat+'&location.longitude='+lng+'&requiredQuality=LOW&key='+GKEY); if(r.status!==200) return; var d=await r.json(); var s=d.solarPotential; if(!s) return; var kw=s.maxArrayPanelsCount?(s.maxArrayPanelsCount*0.4).toFixed(1):'--'; var hrs=s.maxSunshineHoursPerYear?Math.round(s.maxSunshineHoursPerYear):'--'; document.getElementById('nlS1').innerHTML='<div class="ssv">'+(s.maxArrayPanelsCount||'--')+'</div><div class="ssl">Max Panels</div>'; document.getElementById('nlS2').innerHTML='<div class="ssv">'+kw+' kW</div><div class="ssl">Max Capacity</div>'; document.getElementById('nlS3').innerHTML='<div class="ssv">'+hrs+' hrs</div><div class="ssl">Peak Sun/Yr</div>'; wrap.style.display='block'; }catch(e){}
   }
 
+  // "We already know this home" — read-only card from the Black Box record for the same address.
+  async function nlHomeMatchLookup(address) {
+    var box = document.getElementById('nlHomeMatch'); if (!box) return;
+    try {
+      var r = await (await fetch('/.netlify/functions/home-match', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({action:'preview', address:address})})).json();
+      if (!r || !r.found || !r.summary) { box.style.display = 'none'; return; }
+      box.innerHTML = '<div style="padding:10px 14px;background:rgba(155,109,232,0.10);border:1px solid rgba(155,109,232,0.35);border-radius:10px;">'
+        + '<div style="font-size:0.68rem;font-weight:700;color:#c4a3f0;margin-bottom:4px;">&#127968; We already have this home on file</div>'
+        + '<div style="font-size:0.78rem;color:#F3EDE3;line-height:1.5;">' + esc(r.summary) + '</div>'
+        + '<div style="font-size:0.66rem;color:#888;margin-top:4px;">Saved onto the lead automatically when you create it. Nothing you type here is overwritten.</div></div>';
+      box.style.display = 'block';
+    } catch(e) { box.style.display = 'none'; }
+  }
   async function checkTitleOwner(address, lat, lng) {
+    nlHomeMatchLookup(address);
     var wrap = document.getElementById('nlTitleWrap');
     var body = document.getElementById('nlTitleBody');
     if (!wrap || !body || !address) return;
@@ -32316,6 +32331,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var fb=await client.from('customers').select('*').eq('access_code',digits).order('created_at',{ascending:false}).limit(1).single();
         if(fb.data){ data=fb.data; } else { throw error; }
       }
+      // Home match: add what Black Box already knows about this address (fill blanks only — never overwrites this form).
+      try {
+        if (data && data.id) {
+          var _hm = await (await fetch('/.netlify/functions/home-match', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({action:'enrich', customerId:data.id})})).json();
+          if (_hm && _hm.matched) { var _fresh = await client.from('customers').select('*').eq('id', data.id).single(); if (_fresh.data) data = _fresh.data; }
+        }
+      } catch(_hme) {}
       adminCustomers.unshift(Object.assign({setter_name:setterLabel},data||Object.assign({id:'tmp-'+Date.now(),created_at:new Date().toISOString()},newLead)));
       var geo=await geocodeAddress(addr);
       var sheetRow=Object.assign({},newLead,{id:(data&&data.id)?data.id:'tmp-'+Date.now(),setter_name:setterLabel||type,lat:geo?geo.lat:'',lng:geo?geo.lng:'',maps_status:'needs-followup',postcard:postcard,utility_bill:utilityBill,two_hr_window:window2hr,years_owned:owned,roof_age:roof,created_at:new Date().toISOString()});
