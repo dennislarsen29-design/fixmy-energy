@@ -11816,9 +11816,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var days = {}, hasExp = false;
     rows.forEach(function(r){
       var d = new Date(r.t), key = d.getFullYear() + '-' + (d.getMonth()+1) + '-' + d.getDate(), h = d.getHours() + d.getMinutes()/60;
-      var o = days[key] || (days[key] = { ms: r.t, exp: [], eve: 0, night: [], mid: 0, tot: 0, nt: 0, pm: 0, mo: d.getFullYear() + '-' + (d.getMonth() < 9 ? '0' : '') + (d.getMonth()+1) });
+      var o = days[key] || (days[key] = { ms: r.t, exp: [], ex: 0, eve: 0, night: [], mid: 0, tot: 0, nt: 0, pm: 0, mo: d.getFullYear() + '-' + (d.getMonth() < 9 ? '0' : '') + (d.getMonth()+1) });
       var kw = r.kwh * 60 / (r.mins || mins);
-      if (r.dir === 'export') { hasExp = true; o.exp.push(kw); if (h >= 10 && h < 15) o.mid += r.kwh; }
+      if (r.dir === 'export') { hasExp = true; o.exp.push(kw); o.ex += r.kwh; if (h >= 10 && h < 15) o.mid += r.kwh; }
       else { o.tot += r.kwh; if (h < 6) o.nt += r.kwh; if (h >= 13 && h < 20) o.pm += r.kwh; if (h >= 16 && h < 21) o.eve += r.kwh; if (h < 5) o.night.push(kw); }
     });
     var keys = Object.keys(days).sort(function(a,b){ return days[a].ms - days[b].ms; });
@@ -11848,7 +11848,34 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       else { if (run && run.n >= 3) runs.push(run); run = null; }
     });
     if (run && run.n >= 3) runs.push(run);
-    out.down_runs = runs.slice(-3).map(function(r){ return { from: new Date(r.from).toISOString().slice(0,10), to: new Date(r.to).toISOString().slice(0,10), days: r.n }; });
+    // Phase 3 (2026-10-22): WHEN a problem started, how much energy it cost, year-over-year trend, shiftable export.
+    // The meter only sees what crosses the grid boundary (export = production minus what the house used), so every
+    // figure here is a floor/inference, never the inverter's own number.
+    var exd = keys.map(function(k){ return days[k].ex; }), refEx = med(exd.filter(function(x){ return x > 0; })) || 0;
+    out.export_kwh_per_day = +refEx.toFixed(1);
+    out.down_runs = runs.slice(-3).map(function(r){ return { from: new Date(r.from).toISOString().slice(0,10), to: new Date(r.to).toISOString().slice(0,10), days: r.n, lost_kwh: Math.round(r.n * refEx) }; });
+    var iso = function(ms){ return new Date(ms).toISOString().slice(0,10); }, midBy = {};
+    keys.forEach(function(k, i){ midBy[iso(days[k].ms)] = mids[i]; });
+    var win = function(endMs, from, to){ var a = []; for (var o = from; o <= to; o++) { var v = midBy[iso(endMs - o * 864e5)]; if (v != null) a.push(v); } return a; };
+    var drop = null, n = keys.length;
+    for (var i = 42; i < n && !drop; i++) {
+      var bef = med(mids.slice(i - 41, i - 13)), aft = med(mids.slice(i - 6, i + 1));
+      if (bef < 2 || aft > bef * 0.6) continue;
+      var tail = mids.slice(i, Math.min(n, i + 14)); if (tail.length < 7 || med(tail) > bef * 0.7) continue;
+      var j0 = i - 13; for (var j = i - 13; j <= i; j++) { if (mids[j] < bef * 0.6) { j0 = j; break; } }
+      drop = { date: iso(days[keys[j0]].ms), before_kwh: +bef.toFixed(1), after_kwh: +aft.toFixed(1), pct: Math.round((1 - aft / bef) * 100) };
+      // Same dip a year earlier means it is the season (shorter days, more cloud), not a fault.
+      var pyMs = days[keys[j0]].ms - 365 * 864e5, pb = win(pyMs, 14, 41), pa = win(pyMs, 0, 6);
+      if (pb.length >= 10 && pa.length >= 4) drop.seasonal = med(pb) > 2 && med(pa) < med(pb) * 0.6;
+    }
+    if (drop) out.drop = drop;
+    var yoy = {}, nyoy = 0;
+    Object.keys(mo).sort().forEach(function(m){
+      var pm = (+m.slice(0,4) - 1) + m.slice(4); if (!mo[pm] || mo[m].length < 10 || mo[pm].length < 10) return;
+      var cur = med(mo[m].map(function(d){ return d.ex; })), pri = med(mo[pm].map(function(d){ return d.ex; }));
+      if (pri > 1) { yoy[m] = Math.round((cur / pri - 1) * 100); nyoy++; }
+    });
+    if (nyoy) { var yk = Object.keys(yoy).slice(-6); out.export_yoy = {}; yk.forEach(function(k){ out.export_yoy[k] = yoy[k]; }); }
     out.ok = true; return out;
   }
   function _gbdSummaryLine(g) {
@@ -11857,6 +11884,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var bits = [g.days + ' days of ' + g.interval_min + '-min data', 'peak export ~' + g.peak_export_kw + ' kW'];
     if (g.flat_top_share >= 0.4) bits.push('export flat-tops on ' + Math.round(g.flat_top_share*100) + '% of strong days (possible clipping — inverter may be undersized)');
     if (g.down_runs && g.down_runs.length) { var d = g.down_runs[g.down_runs.length-1]; bits.push('~no midday export ' + d.from + ' to ' + d.to + ' (' + d.days + ' days — possible outage/fault)'); }
+    if (g.drop) bits.push('export fell ~' + g.drop.pct + '% around ' + g.drop.date + (g.drop.seasonal ? ' (a similar dip the year before — likely seasonal)' : ' and stayed low (possible fault or degradation)'));
     bits.push('evenings ~' + g.evening_kwh_per_day + ' kWh/day imported (4–9pm)');
     return bits.join(' · ');
   }
@@ -12391,6 +12419,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var diag = false;
     if (codes.length) { diag = true; reasons.push('Your inverter is reporting ' + codes.length + ' fault code' + (codes.length === 1 ? '' : 's') + ' (' + codes.map(function(c){ return esc(c.code); }).join(', ') + ').'); }
     if (g && g.down_runs && g.down_runs.length) { diag = true; var d = g.down_runs[g.down_runs.length - 1]; reasons.push('Your meter data shows almost no solar export from ' + esc(d.from) + ' to ' + esc(d.to) + ', so the system looks like it stopped producing.'); }
+    if (g && g.drop && !g.drop.seasonal) { diag = true; reasons.push('Your meter data shows solar export dropping about ' + g.drop.pct + '% around ' + esc(g.drop.date) + ' and staying low, which points to a problem that started then.'); }
     if (a.system_issue === 'yes' && (a.pc_outcome === 'partial' || a.pc_outcome === 'still_down')) { diag = true; reasons.push('The system did not fully recover after a restart.'); }
     if (series.yoy != null && series.yoy >= 15) reasons.push('Your electricity use is up about ' + series.yoy + '% compared with the same months last year.');
     if (yr && (new Date().getFullYear() - yr) >= 10) reasons.push('The system is about ' + (new Date().getFullYear() - yr) + ' years old, which is when inverters start to age out.');
@@ -12442,6 +12471,26 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     out.netNegative = out.grossSave > 0 && out.grossSave <= out.feeMonth;
     out.likely = evNight >= 4;                                  // under ~4 kWh/day overnight isn't a car (a Tesla adds ~10–15 kWh per charge)
     out.eveHeavy = eveHeavy;
+    return out;
+  }
+  // ── Phase 3 (2026-10-22): when a problem started + what the meter data says is worth doing ──────────────
+  // EXPORT_CREDIT_NB is an editable ESTIMATE of what SDG&E pays per exported kWh under NEM 3.0 / Net Billing; it is NOT read
+  // from a tariff. On NEM 1.0/2.0 exports already credit near retail, so a battery's value there is backup + VPP, not savings.
+  var EXPORT_CREDIT_NB = 0.05;
+  function _evTimeline() {
+    var a = _evLocal.answers || {}, g = a.gbd || null; if (!g || !g.has_export) return null;
+    var ba = (_evLocal.billAnalysis && !_evLocal.billAnalysis._err) ? _evLocal.billAnalysis : null, rate = ba && ba.avg_rate_per_kwh > 0 ? +ba.avg_rate_per_kwh : null;
+    var nem = _evNemInfo(), out = { drop: g.drop || null, runs: g.down_runs || [], yoy: g.export_yoy || null, rate: rate, nemVer: nem && nem.ver };
+    var eve = g.evening_kwh_per_day || 0, ex = g.export_kwh_per_day || 0;
+    if (eve >= 2 && ex >= 2) {
+      var units = Math.max(1, Math.min(3, Math.ceil(Math.min(eve, ex) / 12.15)));
+      var shift = Math.min(eve, ex, units * 12.15);
+      out.batt = { units: units, shift: +shift.toFixed(1), eve: eve, ex: ex };
+      if ((out.nemVer === '3' || !out.nemVer) && rate) { out.batt.yr = Math.round(shift * 365 * Math.max(0, rate - EXPORT_CREDIT_NB)); out.batt.value = true; }
+      else out.batt.value = false;
+    }
+    var yv = out.yoy ? Object.keys(out.yoy).map(function(k){ return out.yoy[k]; }) : [];
+    if (yv.length >= 3) { var avg = yv.reduce(function(t, v){ return t + v; }, 0) / yv.length; out.yoyAvg = Math.round(avg); }
     return out;
   }
   function _evAcCheck() {
@@ -12498,6 +12547,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     } else h += '<div style="font-size:0.82rem;color:#777;">Usage trend appears here once a utility bill is read.</div>';
     h += '</div>';
     // What Quoya checked.
+    var tl = _evTimeline();
+    if (tl && (tl.drop || tl.runs.length || tl.yoy || tl.batt)) {
+      h += '<div style="' + card + '"><div style="' + lab + '">What the meter data shows over time</div>';
+      if (tl.drop) h += '<div style="font-size:0.88rem;line-height:1.55;margin-bottom:8px;"><b>' + (tl.drop.seasonal ? 'A dip in solar export around ' : 'Solar export fell about ' + tl.drop.pct + '% around ') + esc(tl.drop.date) + '</b> (midday export ' + tl.drop.before_kwh + ' &rarr; ' + tl.drop.after_kwh + ' kWh/day). ' + (tl.drop.seasonal ? 'The same dip showed up a year earlier, so it is probably the season, not a fault.' : 'It has stayed low since, which usually means a fault or a failing string rather than weather.') + '</div>';
+      tl.runs.forEach(function(r) { h += '<div style="font-size:0.84rem;line-height:1.55;margin-bottom:6px;">Almost no export ' + esc(r.from) + ' to ' + esc(r.to) + ' (' + r.days + ' days): at least ~' + r.lost_kwh + ' kWh of solar went unexported' + (tl.rate ? ', roughly $' + Math.round(r.lost_kwh * tl.rate) + ' at your ~$' + tl.rate.toFixed(2) + '/kWh' : '') + '.</div>'; });
+      if (tl.yoy) {
+        var MNm = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+        h += '<div style="font-size:0.78rem;color:#555;margin:8px 0 4px;">Solar export vs the same month last year</div><div style="display:flex;gap:6px;flex-wrap:wrap;">';
+        Object.keys(tl.yoy).forEach(function(k) { var v = tl.yoy[k], bad = v <= -15; h += '<div style="flex:1;min-width:46px;text-align:center;background:' + (bad ? '#fff4e0' : '#f4f1e8') + ';border-radius:10px;padding:6px 2px;"><div style="font-size:0.64rem;color:#7a746c;">' + MNm[+k.slice(5) - 1] + '</div><div style="font-size:0.9rem;font-weight:800;color:' + (bad ? '#c27803' : '#333') + ';">' + (v > 0 ? '+' : '') + v + '%</div></div>'; });
+        h += '</div>' + (tl.yoyAvg != null && tl.yoyAvg <= -10 ? '<div style="font-size:0.78rem;color:#6b5d3e;margin-top:6px;">Down about ' + Math.abs(tl.yoyAvg) + '% on average. Panels lose roughly 0.5% a year, so a drop this size suggests a failing string, shading or soiling. Worth a check.</div>' : '');
+      }
+      if (tl.batt) {
+        h += '<div style="margin-top:10px;padding-top:10px;border-top:1px solid #f0eadc;font-size:0.84rem;line-height:1.55;"><b>Battery opportunity.</b> You export about ' + tl.batt.ex + ' kWh a day and buy about ' + tl.batt.eve + ' kWh in the 4&ndash;9pm window. ' + tl.batt.units + ' Powerwall' + (tl.batt.units > 1 ? 's' : '') + ' could move about ' + tl.batt.shift + ' kWh a day from the first to the second. ' + (tl.batt.value ? 'At the ~$' + tl.rate.toFixed(2) + '/kWh you pay now versus about ' + Math.round(EXPORT_CREDIT_NB * 100) + '&cent; for exports, that is roughly $' + tl.batt.yr.toLocaleString() + ' a year.' : 'On NEM ' + (tl.nemVer || '1.0/2.0') + ' your exports already earn close to the retail rate, so a battery&rsquo;s value here is backup power and utility programs, not a lower bill.') + '</div>';
+      }
+      h += '<div style="font-size:0.66rem;color:#8a8372;line-height:1.5;margin-top:8px;">Estimates from the meter&rsquo;s grid readings only. The meter sees what crosses to the grid, not the inverter&rsquo;s own output, so real production is at least this much. The export credit is an assumption, not a quoted rate.</div></div>';
+    }
     var ev = _evEvAudit(), ac = _evAcCheck();
     if (ev) {
       h += '<div style="' + card + '"><div style="' + lab + '">Electric vehicle &amp; your rate plan</div>';
