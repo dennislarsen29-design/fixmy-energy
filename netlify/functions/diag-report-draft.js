@@ -96,7 +96,7 @@ exports.handler = async function (event) {
       // Rep-safe generic error; raw cause only in the separate detail field (portal shows it to admin only).
       return reply({ error: 'unavailable', detail: String(upstream).slice(0, 300) });
     }
-    let raw = ((data.content && data.content[0] && data.content[0].text) || '').trim()
+    let raw = ((data.content || []).filter(function (b) { return b && b.type === 'text'; }).map(function (b) { return b.text; }).join('\n') || '').trim()
       .replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
     const brace = raw.indexOf('{'); if (brace > 0) raw = raw.slice(brace);
     let parsed;
