@@ -24301,7 +24301,24 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     document.getElementById('exitSave').disabled = true;
     try {
       var sc = supabase.createClient(SUPA_URL, SUPA_KEY);
-      var { data, error } = await sc.from('customers').update(upd).eq('id', id).select('id');
+      var data, error;
+      try {
+        var _r = await sc.from('customers').update(upd).eq('id', id).select('id');
+        data = _r.data; error = _r.error;
+      } catch (netErr) {
+        // A dropped connection can lose the reply AFTER the database already saved (seen 2026-10-22 on cellular).
+        // Re-read the row before telling the rep it failed.
+        var _chk = null;
+        for (var _try = 0; _try < 2 && !_chk; _try++) {
+          try {
+            var _c = await sc.from('customers').select('disposition_exit,pause_reason').eq('id', id).limit(1);
+            if (_c && _c.data && _c.data[0]) _chk = _c.data[0];
+          } catch (e2) {}
+          if (!_chk) await new Promise(function(r){ setTimeout(r, 1200); });
+        }
+        if (_chk && _chk.disposition_exit === t && _chk.pause_reason === reason) { data = [{ id: id }]; error = null; }
+        else throw new Error(_chk ? 'The connection dropped and the change did not save — tap Save again.' : 'No connection — check your signal and tap Save again.');
+      }
       if (error) throw error;
       if (!data || !data.length) throw new Error('No row was updated');
       Object.assign(rec, upd); rec.updated_at = new Date().toISOString();
