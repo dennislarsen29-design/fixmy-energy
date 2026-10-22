@@ -10750,6 +10750,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
   window.evGoStep = function(i) {
     if (i < 0 || i >= _evSteps().length) return;
+    // Quoya's Analysis ends in "Approve Diagnostic Visit", which needs the price — so the
+    // tech sets it BEFORE landing there (2026-10-22, per Dennis). Skipped once a fee exists.
+    var _gs = _evSteps()[i];
+    if (_gs && _gs.key === 'quoya' && !_evFee()) { window.evAskDiagFee(i); return; }
     _evStepIdx = i;
     _evRender();
     var w = document.getElementById('evalWrap'); if (w) w.scrollTop = 0;
@@ -12449,7 +12453,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // Tech-only controls (dark, below the page).
     var s = _evUpgradeSizing(), i = steps.map(function(x){ return x.key; }).indexOf('quoya');
     h += '<div style="display:flex;gap:8px;"><button onclick="evGoStep(' + Math.max(0, i - 1) + ')" style="width:auto;margin:0;flex:0 0 auto;padding:13px 20px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.14);color:#aaa;border-radius:100px;font-size:0.82rem;font-weight:700;cursor:pointer;">&#8592; Back</button>';
-    h += '<button onclick="evBuildUpgradeProposal(' + s.pw3 + ')" style="flex:1;margin:0;padding:13px;background:#8DC63F;border:none;color:#1A1A1A;border-radius:100px;font-size:0.86rem;font-weight:800;cursor:pointer;">&#128295; Build the Proposal &#8594;</button></div>';
+    var _fee = _evFee(), _inv = (rec.invoice_status || '');
+    var _paid = _inv === 'paid', _sent = _inv === 'sent' && !!rec.sign_token;
+    h += '<button ' + (_paid ? 'disabled ' : '') + 'onclick="evApproveDiagnostic()" style="flex:1;margin:0;padding:13px;background:' + (_paid ? '#3b4a2a' : '#8DC63F') + ';border:none;color:' + (_paid ? '#9ab87a' : '#1A1A1A') + ';border-radius:100px;font-size:0.86rem;font-weight:800;cursor:' + (_paid ? 'default' : 'pointer') + ';">' + (_paid ? '&#10003; Diagnostic fee paid' : _sent ? '&#8635; Resend Sign &amp; Pay link ($' + _fee + ')' : '&#10003; Approve Diagnostic Visit' + (_fee ? ' &middot; $' + _fee : '')) + '</button></div>';
+    h += '<div style="text-align:center;margin-top:10px;font-size:0.72rem;color:#777;">Diagnostic fee $' + _fee + ' &middot; <a href="#" onclick="evAskDiagFee(' + i + ');return false;" style="color:#8DC63F;">change price</a>' + (f.diag ? '' : ' &middot; <a href="#" onclick="evBuildUpgradeProposal(' + s.pw3 + ');return false;" style="color:#8DC63F;">build a proposal instead</a>') + '</div>';
     // Save a compact snapshot on the evaluation so it can be reopened/shown later (only when it changes).
     try {
       var snap = { diag: f.diag, reasons: f.reasons.map(function(r){ return r.replace(/<[^>]+>/g, ''); }), annual_kwh: ser.annual, yoy_pct: ser.yoy, codes: f.codes.map(function(c){ return c.code; }) };
@@ -12459,6 +12466,105 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return h;
   }
   var _evQuoyaSnapLast = '';
+  // ── Diagnostic fee price + Approve Diagnostic Visit (2026-10-22, per Dennis) ──
+  // Tech picks the price before Quoya's Analysis; the analysis page's bottom button then
+  // sends the customer the Sign & Pay link (same token/GHL/SMS+email path as the step-3
+  // disposition popups, which are unchanged).
+  function _evFee() {
+    var a = (_evLocal && _evLocal.answers) || {}, r = _evRec || {};
+    var f = parseFloat(a.diag_fee);
+    if (f > 0) return f;
+    if ((r.invoice_status === 'sent' || r.invoice_status === 'paid') && parseFloat(r.invoice_amount) > 0) return parseFloat(r.invoice_amount);
+    return 0;
+  }
+  window.evAskDiagFee = function(goIdx) {
+    var old = document.getElementById('evFeeModal'); if (old) old.remove();
+    var presets = [250, 349, 449, 499, 599], cur = _evFee() || 349;
+    window._evFeePick = cur;
+    var m = document.createElement('div');
+    m.id = 'evFeeModal';
+    m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:99998;display:flex;align-items:center;justify-content:center;padding:20px;';
+    m.innerHTML = '<div style="background:#1a1c17;border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:26px;max-width:440px;width:100%;">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><div style="font-size:0.62rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#ffaa00;">Diagnostic Visit Price</div><button onclick="document.getElementById(\'evFeeModal\').remove()" class="pv-close" title="Close" aria-label="Close">&#10005;</button></div>' +
+      '<div style="font-size:0.8rem;color:#999;margin-bottom:14px;line-height:1.5;">What will you charge for the diagnostic visit? It goes on the Sign &amp; Pay link the customer receives when you approve the visit.</div>' +
+      '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">' + presets.map(function(f){ var a = f === cur; return '<button id="evFeeBtn_' + f + '" onclick="evFeePick(' + f + ')" style="flex:1;min-width:64px;padding:11px 4px;background:' + (a ? 'rgba(141,198,63,0.15)' : 'rgba(255,255,255,0.04)') + ';border:1px solid ' + (a ? 'rgba(141,198,63,0.4)' : 'rgba(255,255,255,0.1)') + ';border-radius:10px;color:' + (a ? '#8DC63F' : '#aaa') + ';font-weight:700;cursor:pointer;">$' + f + '</button>'; }).join('') + '</div>' +
+      '<label style="font-size:0.68rem;color:#666;display:block;margin-bottom:6px;">Custom amount ($)</label>' +
+      '<input type="number" id="evFeeCustom" min="1" step="1" value="' + cur + '" oninput="evFeePick(parseFloat(this.value)||0,true)" style="width:100%;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:9px 12px;font-size:0.9rem;box-sizing:border-box;margin-bottom:12px;"/>' +
+      '<div style="background:rgba(255,170,0,0.06);border:1px solid rgba(255,170,0,0.2);border-radius:8px;padding:10px 14px;display:flex;justify-content:space-between;margin-bottom:14px;"><span style="font-size:0.8rem;color:#aaa;">Your commission</span><span id="evFeeComm" style="font-weight:700;color:#ffaa00;"></span></div>' +
+      '<div style="display:flex;gap:10px;justify-content:flex-end;"><button onclick="document.getElementById(\'evFeeModal\').remove()" style="padding:10px 18px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:100px;color:#aaa;cursor:pointer;font-size:0.85rem;">Cancel</button><button onclick="evFeeConfirm(' + (goIdx == null ? -1 : goIdx) + ')" style="padding:10px 22px;background:#8DC63F;color:#000;border:none;border-radius:100px;font-weight:700;cursor:pointer;font-size:0.85rem;">Set price &amp; continue</button></div></div>';
+    document.body.appendChild(m);
+    evFeePick(cur, true);
+  };
+  window.evFeePick = function(fee, fromInput) {
+    window._evFeePick = fee;
+    var inp = document.getElementById('evFeeCustom'); if (inp && !fromInput) inp.value = fee;
+    [250, 349, 449, 499, 599].forEach(function(f){
+      var b = document.getElementById('evFeeBtn_' + f); if (!b) return;
+      var a = f === fee;
+      b.style.background = a ? 'rgba(141,198,63,0.15)' : 'rgba(255,255,255,0.04)';
+      b.style.borderColor = a ? 'rgba(141,198,63,0.4)' : 'rgba(255,255,255,0.1)';
+      b.style.color = a ? '#8DC63F' : '#aaa';
+    });
+    var el = document.getElementById('evFeeComm');
+    if (el) { try { el.textContent = '$' + calcDiagCommission(fee).toFixed(2); } catch (e) { el.textContent = ''; } }
+  };
+  window.evFeeConfirm = function(goIdx) {
+    var fee = parseFloat(window._evFeePick) || 0;
+    if (fee < 1) { alert('Enter the diagnostic price first.'); return; }
+    _evLocal.answers = _evLocal.answers || {};
+    _evLocal.answers.diag_fee = fee;
+    _evSave({ answers: _evLocal.answers });
+    var m = document.getElementById('evFeeModal'); if (m) m.remove();
+    if (goIdx >= 0) evGoStep(goIdx); else _evRender();
+  };
+  window.evApproveDiagnostic = async function() {
+    var rec = _evRec, fee = _evFee();
+    if (!rec || !_evId) return;
+    if (!fee) { window.evAskDiagFee(null); return; }
+    if (rec.invoice_status === 'paid') return;
+    var isAdmin = (typeof CURRENT_ROLE !== 'undefined' && CURRENT_ROLE === 'admin');
+    if (!isAdmin && window._bbDialerHis === false) {
+      alert('⚠️ HIS License Required\n\nYou need an active California CSLB Home Improvement Salesperson (HIS) registration to send diagnostic agreements.\n\nAsk an HIS-licensed team member to send this one.');
+      return;
+    }
+    var resend = rec.invoice_status === 'sent' && rec.sign_token;
+    if (!confirm((resend ? 'Resend the Sign & Pay link' : 'Approve the diagnostic visit') + ' for $' + fee + ' and send ' + (rec.first_name || 'the customer') + ' the Sign & Pay link?')) return;
+    var token = rec.sign_token, expiry = rec.sign_token_expires_at;
+    if (!token || !expiry || new Date(expiry) < new Date()) {
+      token = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : (Math.random().toString(36).slice(2) + Date.now().toString(36));
+      expiry = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString();
+    }
+    var updates = { invoice_amount: fee, invoice_status: 'sent', sign_token: token, sign_token_expires_at: expiry };
+    if ((rec.step || 1) < 3) updates.step = 3;
+    try {
+      var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var up = await c2.from('customers').update(updates).eq('id', _evId).select('id');
+      if (up.error) throw up.error;
+      if (!up.data || !up.data.length) throw new Error('No record was updated');
+      Object.assign(rec, updates);
+      try { var ac = (typeof adminCustomers !== 'undefined') && adminCustomers.find(function(x){ return x.id === _evId; }); if (ac) Object.assign(ac, updates); } catch (e) {}
+      try { delete _fixmyCommCache[_evId]; } catch (e) {}
+      _evLocal.answers = _evLocal.answers || {};
+      _evLocal.answers.diag_approved_at = new Date().toISOString();
+      _evSave({ answers: _evLocal.answers });
+      var link = 'https://fixmy.energy/sign?t=' + token;
+      var repName = rec.setter_name || window._bbDialerPersonName || 'Solar Review';
+      fetch('/.netlify/functions/ghl-diag-agreement', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+        firstName: rec.first_name || '', lastName: rec.last_name || '', full_name: ((rec.first_name || '') + ' ' + (rec.last_name || '')).trim(),
+        email: rec.email || '', phone: rec.phone || '', address1: rec.address || '', diagnostic_fee: fee, rep_name: repName, source: 'Diagnostic Fee Set', signLink: link,
+        customField: { diagnostic_fee: fee, invoice_amount: fee, rep_commission: (function(){ try { return calcDiagCommission(fee); } catch (e) { return 0; } })(), rep_name: repName }
+      }) }).then(function(r){ return r.json(); }).then(function(d){
+        var ok = !!(d.success || (d.ghlStatus >= 200 && d.ghlStatus < 300)), smsOk = d.smsStatus >= 200 && d.smsStatus < 300;
+        var t = (d.smsStatus ? (smsOk ? 'SMS ✓' : 'SMS ✗ (' + d.smsStatus + ')') : 'SMS not sent') + ' · ' + (d.emailOk ? 'Email ✓' : 'Email ✗ (' + (d.emailReason || 'not sent') + ')') + (d.delivered === false ? ' — NOT DELIVERED: copy the link and send it yourself' : '');
+        var b = document.createElement('div');
+        b.style.cssText = 'position:fixed;bottom:90px;left:50%;transform:translateX(-50%);padding:10px 18px;border-radius:12px;z-index:100000;font-size:0.78rem;font-weight:700;max-width:90vw;text-align:center;background:' + (ok ? '#1e2a14' : '#2a1414') + ';border:1px solid ' + (ok ? 'rgba(141,198,63,0.4)' : 'rgba(239,68,68,0.4)') + ';color:' + (ok ? '#8DC63F' : '#ef4444') + ';';
+        b.textContent = ok ? '⚡ Sign & Pay sent · ' + t : '❌ ' + (d.error || 'Send failed') + ' — use Copy Link';
+        document.body.appendChild(b); setTimeout(function(){ b.remove(); }, 10000);
+      }).catch(function(e){ console.warn('diag-agreement', e); });
+      showSignPayLink(link, ((rec.first_name || '') + ' ' + (rec.last_name || '')).trim(), fee);
+      _evRender();
+    } catch (e) { alert('Could not send: ' + (e && e.message ? e.message : e)); }
+  };
   function _evUpgradeSizing() {
     var ba = (_evLocal.billAnalysis && !_evLocal.billAnalysis._err) ? _evLocal.billAnalysis : null;
     var billMo = (ba && ba.monthly_source === 'monthly_bill' && ba.monthly_amount_paid > 0) ? ba.monthly_amount_paid : (parseFloat(_evRec && _evRec.monthly_bill) || (ba && ba.monthly_amount_paid) || 0);
@@ -33887,6 +33993,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // string 'Rep', which was cached and stamped on every call they made after.
       window._bbDialerPersonName = person.name || null;
       window._bbDialerPersonId = person.id || null;
+      window._bbDialerHis = !!person.his_license; // read by the Eval wizard's Approve Diagnostic Visit
 
       // Welcome banner (first login after onboarding, shown once per session after agreement signed)
       var _showWelcome = agreementSigned && (function(){ try { return !!sessionStorage.getItem('showWelcome_' + person.id); } catch(e){ return false; } })();
