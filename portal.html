@@ -10516,7 +10516,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     },
     { key: 'gbd', title: 'Green Button Data', icon: '&#9889;', blurb: 'Optional — skip it if the homeowner can\'t get the file. It only adds a hint; nothing here blocks the evaluation.', slots: [] },
     { key: 'upgrade',  title: 'Upgrade Path', icon: '&#9889;',   blurb: '', slots: [] },
-    { key: 'analysis', title: 'Quoya\'s Read', icon: '&#129302;', blurb: '', slots: [] }
+    { key: 'analysis', title: 'Quoya\'s Read', icon: '&#129302;', blurb: '', slots: [] },
+    { key: 'quoya', title: 'Quoya\'s Analysis', icon: '&#128203;', blurb: '', slots: [] }
   ];
 
   // The active path for THIS evaluation, picked from the triage answers. Always returns
@@ -10535,12 +10536,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           return (s.key === 'serial' || s.key === 'meter') ? Object.assign({}, s, { required: false }) : s;
         })
       });
-      steps.push(hwLight, byKey.consumption, byKey.gbd, byKey.upgrade);
+      steps.push(hwLight, byKey.consumption, byKey.gbd, byKey.upgrade, byKey.quoya);
       return steps;
     }
     steps.push(byKey.hardware);
     if (ans.system_issue === 'yes') steps.push(byKey.powercycle);
-    steps.push(byKey.production, byKey.consumption, byKey.gbd, byKey.analysis);
+    steps.push(byKey.production, byKey.consumption, byKey.gbd, byKey.analysis, byKey.quoya);
     return steps;
   }
 
@@ -11423,9 +11424,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (step.key !== 'analysis') h += _evQuoyaStripHtml();
 
     if (step.key === 'analysis') {
-      h += _evChecksHtml() + _evAnalysisHtml();
+      h += _evChecksHtml() + _evAnalysisHtml() + _evOpenQuoyaBtn(steps);
     } else if (step.key === 'upgrade') {
-      h += _evChecksHtml() + _evUpgradeHtml();
+      h += _evChecksHtml() + _evUpgradeHtml() + _evOpenQuoyaBtn(steps);
+    } else if (step.key === 'quoya') {
+      h += _evQuoyaPageHtml(steps);
     } else {
       h += '<div style="font-size:1.05rem;font-weight:800;margin-bottom:4px;">' + step.icon + ' ' + step.title + '</div>';
       h += '<div style="font-size:0.76rem;color:#999;line-height:1.5;margin-bottom:16px;">' + step.blurb + '</div>';
@@ -11621,8 +11624,24 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
 
     if (a.has_solar === 'yes' && a.ownership_status) {
+      // EV + A/C (2026-10-22, per Dennis): they change how the usage data should be read — an EV
+      // adds evening/overnight demand, and A/C decides what a summer spike means. Quick taps, never blocking.
+      var _card = '<div style="background:rgba(255,255,255,0.035);border:1px solid rgba(255,255,255,0.1);border-radius:14px;padding:14px;margin-bottom:10px;">';
+      h += _card + '<div style="font-size:0.88rem;font-weight:700;margin-bottom:3px;">3. Does the homeowner have an EV?</div>';
+      h += '<div style="font-size:0.7rem;color:#888;line-height:1.45;margin-bottom:9px;">Charging adds demand the bill may not show yet.</div>';
+      h += _evYesNoPills('has_ev', '&#10003; Yes', 'No');
+      if (a.has_ev === 'yes') {
+        h += '<div style="font-size:0.82rem;font-weight:700;margin:12px 0 7px;">Did they buy it less than 12 months ago?</div>';
+        h += _evYesNoPills('ev_recent', 'Yes &mdash; recent', 'No &mdash; over a year');
+        if (a.ev_recent === 'yes') h += '<div style="font-size:0.72rem;color:#8DC63F;line-height:1.55;margin-top:9px;">&#10003; Noted &mdash; usage is likely higher than the bill shows. Quoya will treat the bill as a floor.</div>';
+      }
+      h += '</div>';
+      h += _card + '<div style="font-size:0.88rem;font-weight:700;margin-bottom:3px;">4. Does the home have air conditioning?</div>';
+      h += '<div style="font-size:0.7rem;color:#888;line-height:1.45;margin-bottom:9px;">Tells Quoya what a summer spike in the meter data means.</div>';
+      h += _evYesNoPills('has_ac', '&#10003; Yes', 'No');
+      h += '</div>';
       h += '<div style="background:rgba(255,255,255,0.035);border:1px solid rgba(255,255,255,0.1);border-radius:14px;padding:14px;margin-bottom:10px;">';
-      h += '<div style="font-size:0.88rem;font-weight:700;margin-bottom:3px;">3. Is there an issue with the system right now?</div>';
+      h += '<div style="font-size:0.88rem;font-weight:700;margin-bottom:3px;">5. Is there an issue with the system right now?</div>';
       h += '<div style="font-size:0.7rem;color:#888;line-height:1.45;margin-bottom:9px;">Downed system, outage, or clear signs of production problems.</div>';
       h += _evYesNoPills('system_issue', '&#9888; Yes &mdash; something\'s wrong', '&#10003; No &mdash; working fine');
       h += '</div>';
@@ -12316,6 +12335,130 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '<div style="font-size:0.66rem;color:#777;line-height:1.5;margin-top:6px;">Solar is an estimate (1 kW &asymp; 1,600 kWh/yr, typical California seasons), not measured output. A battery doesn&rsquo;t add production; it moves daytime solar into the 4&ndash;9pm hours' + (s.pw3 ? ' (about ' + s.pw3 + ' Powerwall' + (s.pw3 > 1 ? 's' : '') + ' for this usage).' : '.') + ' A new inverter restores output a failed one is losing.</div></div>';
     return h;
   }
+  // ── Quoya's Analysis (2026-10-22, per Dennis) ─────────────────────────────────────────────
+  // The last step of every evaluation: one clean, LIGHT page the tech can turn around and show the
+  // homeowner — what Quoya checked, how usage is trending, what it found on the system, and the
+  // recommended next step. Built only from data already collected (nothing new is asked or guessed);
+  // no prices, commissions or internal wording. Saved on the evaluation (answers.quoya_report).
+  function _evOpenQuoyaBtn(steps) {
+    var i = steps.map(function(x){ return x.key; }).indexOf('quoya');
+    if (i < 0) return '';
+    return '<button onclick="evGoStep(' + i + ')" style="width:100%;margin:14px 0 0;padding:14px;background:#8DC63F;border:none;color:#1A1A1A;border-radius:100px;font-size:0.9rem;font-weight:800;cursor:pointer;">&#128203; Open Quoya&rsquo;s Analysis to show the homeowner &#8594;</button>';
+  }
+  function _evUsageSeries() {
+    var ba = (_evLocal.billAnalysis && !_evLocal.billAnalysis._err) ? _evLocal.billAnalysis : null;
+    var rows = (ba && (ba.monthly_history && ba.monthly_history.length ? ba.monthly_history : ba.monthly_breakdown)) || [];
+    var MN = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'], map = {};
+    rows.forEach(function(r) {
+      var m = /^([A-Za-z]{3})[A-Za-z]*\s+(\d{4})/.exec(String(r.month || '')), v = parseFloat(r.total_kwh);
+      if (!m || isNaN(v)) return;
+      var mi = MN.indexOf(m[1].toLowerCase()); if (mi < 0) return;
+      map[m[2] + '-' + (mi < 9 ? '0' : '') + (mi + 1)] = { key: m[2] + '-' + (mi < 9 ? '0' : '') + (mi + 1), y: +m[2], m: mi, v: v };
+    });
+    var list = Object.keys(map).sort().map(function(k){ return map[k]; });
+    var out = { list: list, annual: null, yoy: null, yoyN: 0 };
+    if (list.length >= 12) out.annual = Math.round(list.slice(-12).reduce(function(t, r){ return t + r.v; }, 0));
+    var cur = 0, prev = 0, n = 0;
+    list.slice(-8).forEach(function(r){ var pk = (r.y - 1) + '-' + (r.m < 9 ? '0' : '') + (r.m + 1); if (map[pk]) { cur += r.v; prev += map[pk].v; n++; } });
+    if (n >= 3) { out.yoyN = n; out.cur = Math.round(cur); out.prev = Math.round(prev); out.yoy = prev >= 300 ? Math.round((cur - prev) / prev * 100) : null; } // a near-zero base (solar offsetting most use) makes a % meaningless
+    out.source = ba && (ba.source === 'true_up' ? 'true-up statement' : 'monthly bill');
+    return out;
+  }
+  function _evQuoyaFacts() {
+    var a = _evLocal.answers || {}, rec = _evRec || {}, g = a.gbd || null, row = _evRow || {};
+    var ts = row.troubleshoot && row.troubleshoot.status === 'ready' ? row.troubleshoot.result : null;
+    var codes = (ts && ts.codes) || [], series = _evUsageSeries(), reasons = [], checked = [];
+    var photos = _evPhotos().length, errPhotos = _evHas('Error Codes').length;
+    checked.push({ tone: photos ? 'good' : 'info', t: 'Equipment photos', d: photos ? photos + ' photo' + (photos === 1 ? '' : 's') + ' reviewed' : 'none uploaded yet' });
+    if (a.system_issue === 'yes') checked.push({ tone: errPhotos ? 'good' : 'warn', t: 'Inverter error codes', d: errPhotos ? errPhotos + ' photo' + (errPhotos === 1 ? '' : 's') + ' read' + (codes.length ? ' &middot; ' + codes.length + ' code' + (codes.length === 1 ? '' : 's') + ' found' : ' &middot; no codes identified') : 'not photographed' });
+    if (a.system_issue === 'yes' && a.pc_outcome) checked.push({ tone: a.pc_outcome === 'restored' ? 'good' : 'warn', t: 'Restart attempt', d: a.pc_outcome === 'restored' ? 'system came back online' : a.pc_outcome === 'partial' ? 'came back only partly' : 'did not come back' });
+    checked.push({ tone: series.list.length ? 'good' : 'info', t: 'Electricity usage', d: series.list.length ? series.list.length + ' months read from the ' + (series.source || 'bill') : 'no utility bill read yet' });
+    checked.push({ tone: g ? 'good' : 'info', t: 'Meter data (Green Button)', d: g ? (g.days || '?') + ' days of 15-minute readings' : 'not provided' });
+    var nem = _evNemInfo(); if (nem && nem.ver) checked.push({ tone: nem.tone === 'bad' ? 'warn' : 'good', t: 'Net metering plan', d: 'NEM ' + (nem.ver === '3' ? '3.0' : nem.ver + '.0') + (nem.src ? ' (' + nem.src + ')' : '') });
+    var yr = parseInt(rec.install_year, 10); if (yr) checked.push({ tone: (new Date().getFullYear() - yr) >= 10 ? 'warn' : 'good', t: 'System age', d: 'about ' + (new Date().getFullYear() - yr) + ' years' });
+    if (a.has_ev || a.has_ac) checked.push({ tone: 'info', t: 'Household', d: (a.has_ev === 'yes' ? 'electric vehicle' + (a.ev_recent === 'yes' ? ' (new)' : '') : a.has_ev === 'no' ? 'no EV' : '') + (a.has_ev && a.has_ac ? ' &middot; ' : '') + (a.has_ac === 'yes' ? 'air conditioning' : a.has_ac === 'no' ? 'no A/C' : '') });
+    var diag = false;
+    if (codes.length) { diag = true; reasons.push('Your inverter is reporting ' + codes.length + ' fault code' + (codes.length === 1 ? '' : 's') + ' (' + codes.map(function(c){ return esc(c.code); }).join(', ') + ').'); }
+    if (g && g.down_runs && g.down_runs.length) { diag = true; var d = g.down_runs[g.down_runs.length - 1]; reasons.push('Your meter data shows almost no solar export from ' + esc(d.from) + ' to ' + esc(d.to) + ', so the system looks like it stopped producing.'); }
+    if (a.system_issue === 'yes' && (a.pc_outcome === 'partial' || a.pc_outcome === 'still_down')) { diag = true; reasons.push('The system did not fully recover after a restart.'); }
+    if (series.yoy != null && series.yoy >= 15) reasons.push('Your electricity use is up about ' + series.yoy + '% compared with the same months last year.');
+    if (yr && (new Date().getFullYear() - yr) >= 10) reasons.push('The system is about ' + (new Date().getFullYear() - yr) + ' years old, which is when inverters start to age out.');
+    return { a: a, g: g, ts: ts, codes: codes, series: series, reasons: reasons, checked: checked, diag: diag };
+  }
+  function _evUsageChartLight(series) {
+    var list = series.list.slice(-15);
+    if (!list.length) return '<div style="font-size:0.82rem;color:#777;padding:14px 0;">Usage trend appears here once a utility bill is read.</div>';
+    var MN = ['J','F','M','A','M','J','J','A','S','O','N','D'], W = 340, H = 150, L = 6, B = 22, T = 10;
+    var mx = Math.max.apply(null, list.map(function(r){ return Math.max(0, r.v); }).concat([1])), bw = (W - L * 2) / list.length;
+    var y = function(v){ return (H - B) - (Math.max(0, v) / mx) * (H - B - T); };
+    var thisYr = list[list.length - 1].y, svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;height:auto;display:block;">';
+    list.forEach(function(r, i) {
+      svg += '<rect x="' + (L + i * bw + 2) + '" y="' + y(r.v) + '" width="' + Math.max(4, bw - 4) + '" height="' + Math.max(1, (H - B) - y(r.v)) + '" rx="3" fill="' + (r.y === thisYr ? '#8DC63F' : '#cbd5b0') + '"/>';
+      svg += '<text x="' + (L + i * bw + bw / 2) + '" y="' + (H - 8) + '" font-size="8" fill="#888" text-anchor="middle">' + MN[r.m] + '</text>';
+    });
+    return svg + '</svg><div style="display:flex;gap:14px;font-size:0.7rem;color:#777;margin-top:4px;"><span><b style="color:#8DC63F;">&#9632;</b> ' + thisYr + '</span><span><b style="color:#cbd5b0;">&#9632;</b> earlier</span><span>kWh bought from the grid, by month</span></div>';
+  }
+  function _evQuoyaPageHtml(steps) {
+    var f = _evQuoyaFacts(), rec = _evRec || {}, a = f.a, ser = f.series;
+    var name = ((rec.first_name || '') + ' ' + (rec.last_name || '')).trim() || 'your home';
+    var col = { good: '#5a8f1d', warn: '#c27803', bad: '#c0392b', info: '#7b8794' }, ico = { good: '&#10003;', warn: '&#9888;', bad: '&#10007;', info: '&middot;' };
+    var card = 'background:#fff;border:1px solid #e4dccd;border-radius:16px;padding:16px;margin-bottom:12px;';
+    var lab = 'font-size:0.68rem;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:#8a8372;margin-bottom:9px;';
+    var h = '<div style="background:#F3EDE3;color:#1A1A1A;border-radius:20px;padding:16px;margin:-4px -2px 12px;font-family:Inter,-apple-system,sans-serif;">';
+    h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;"><div><div style="font-family:Georgia,serif;font-size:1.35rem;font-weight:700;">Your solar system check</div><div style="font-size:0.78rem;color:#7a746c;">Prepared for ' + esc(name) + (rec.address ? ' &middot; ' + esc(String(rec.address).split(',')[0]) : '') + '</div></div><div style="font-size:0.7rem;font-weight:800;color:#5a8f1d;">SOLAR REVIEW</div></div>';
+    // Recommendation first: the point of the page.
+    if (f.diag) {
+      h += '<div style="background:#fff4e0;border:2px solid #e9a23b;border-radius:16px;padding:16px;margin-bottom:12px;"><div style="font-size:0.68rem;font-weight:800;letter-spacing:0.1em;color:#c27803;">RECOMMENDED NEXT STEP</div><div style="font-family:Georgia,serif;font-size:1.25rem;font-weight:700;margin:4px 0 8px;">A diagnostic visit</div>';
+      h += '<ul style="margin:0 0 4px 18px;padding:0;font-size:0.86rem;line-height:1.6;">' + f.reasons.map(function(r){ return '<li>' + r + '</li>'; }).join('') + '</ul>';
+      h += '<div style="font-size:0.78rem;color:#6b5d3e;line-height:1.5;margin-top:8px;">A licensed electrician finds the cause and tells you your options. Nothing is repaired without your approval.</div></div>';
+    } else {
+      h += '<div style="background:#eef6e2;border:2px solid #8DC63F;border-radius:16px;padding:16px;margin-bottom:12px;"><div style="font-size:0.68rem;font-weight:800;letter-spacing:0.1em;color:#5a8f1d;">WHAT WE FOUND</div><div style="font-family:Georgia,serif;font-size:1.2rem;font-weight:700;margin:4px 0 6px;">' + (a.system_issue === 'yes' ? 'No clear fault identified yet' : 'Your system looks healthy') + '</div>';
+      if (f.reasons.length) h += '<ul style="margin:0 0 0 18px;padding:0;font-size:0.86rem;line-height:1.6;">' + f.reasons.map(function(r){ return '<li>' + r + '</li>'; }).join('') + '</ul>';
+      h += '<div style="font-size:0.8rem;color:#4b6a24;line-height:1.5;margin-top:6px;">' + (a.system_issue === 'yes' ? 'Add the inverter photos or meter data above for a firmer answer.' : 'Next we look at how to lower your bill and add backup power.') + '</div></div>';
+    }
+    // Fault codes.
+    if (f.codes.length) {
+      h += '<div style="' + card + '"><div style="' + lab + '">Fault codes Quoya found</div>';
+      f.codes.forEach(function(c) {
+        var sev = String(c.severity || '').toLowerCase(), tone = sev === 'fault' || sev === 'critical' ? 'bad' : 'warn';
+        h += '<div style="display:flex;gap:10px;padding:9px 0;border-top:1px solid #f0eadc;"><div style="flex:0 0 auto;font-family:monospace;font-weight:800;font-size:0.82rem;color:#fff;background:' + col[tone] + ';border-radius:8px;padding:4px 8px;height:fit-content;">' + esc(c.code) + '</div><div style="font-size:0.82rem;line-height:1.5;color:#333;">' + esc(String(c.meaning || '').slice(0, 220)) + (String(c.meaning || '').length > 220 ? '&hellip;' : '') + '</div></div>';
+      });
+      if (f.ts && f.ts.homeowner_talking_point) h += '<div style="margin-top:8px;background:#f7f4ec;border-radius:12px;padding:11px 13px;font-size:0.84rem;line-height:1.55;font-style:italic;">' + esc(f.ts.homeowner_talking_point) + '</div>';
+      h += '</div>';
+    }
+    // Usage trend.
+    h += '<div style="' + card + '"><div style="' + lab + '">Your electricity use</div>';
+    if (ser.list.length) {
+      var tiles = '';
+      if (ser.annual != null) tiles += '<div style="flex:1;"><div style="font-size:1.5rem;font-weight:800;">' + ser.annual.toLocaleString() + '</div><div style="font-size:0.7rem;color:#7a746c;">kWh from the grid, last 12 months</div></div>';
+      if (ser.yoy != null) tiles += '<div style="flex:1;"><div style="font-size:1.5rem;font-weight:800;color:' + (ser.yoy >= 15 ? '#c27803' : ser.yoy <= -10 ? '#5a8f1d' : '#333') + ';">' + (ser.yoy > 0 ? '&#9650; ' : ser.yoy < 0 ? '&#9660; ' : '') + Math.abs(ser.yoy) + '%</div><div style="font-size:0.7rem;color:#7a746c;">vs the same months last year (' + ser.yoyN + ' months compared)</div></div>';
+      if (tiles) h += '<div style="display:flex;gap:12px;margin-bottom:10px;">' + tiles + '</div>';
+      h += _evUsageChartLight(ser);
+      h += '<div style="font-size:0.68rem;color:#8a8372;line-height:1.5;margin-top:6px;">Read from the ' + esc(ser.source || 'utility bill') + '. With solar, this is the net amount bought from the grid after your panels&rsquo; output, so it can sit near zero in sunny months.</div>';
+    } else h += '<div style="font-size:0.82rem;color:#777;">Usage trend appears here once a utility bill is read.</div>';
+    h += '</div>';
+    // What Quoya checked.
+    h += '<div style="' + card + '"><div style="' + lab + '">What Quoya checked</div>';
+    f.checked.forEach(function(c) {
+      h += '<div style="display:flex;gap:10px;align-items:baseline;padding:6px 0;border-top:1px solid #f4efe3;"><span style="flex:0 0 18px;color:' + col[c.tone] + ';font-weight:800;">' + ico[c.tone] + '</span><div style="font-size:0.84rem;line-height:1.45;"><b>' + c.t + '</b> <span style="color:#6b6b6b;">&mdash; ' + c.d + '</span></div></div>';
+    });
+    _evSystemRead().forEach(function(r) { h += '<div style="display:flex;gap:10px;align-items:baseline;padding:6px 0;border-top:1px solid #f4efe3;"><span style="flex:0 0 18px;color:' + col[r.tone] + ';font-weight:800;">' + ico[r.tone] + '</span><div style="font-size:0.82rem;line-height:1.5;color:#444;">' + r.t + '</div></div>'; });
+    h += '</div>';
+    h += '<div style="font-size:0.66rem;color:#8a8372;text-align:center;line-height:1.5;">Estimates from the information provided. This is a starting point, not a quote or a guarantee.</div>';
+    h += '</div>';
+    // Tech-only controls (dark, below the page).
+    var s = _evUpgradeSizing(), i = steps.map(function(x){ return x.key; }).indexOf('quoya');
+    h += '<div style="display:flex;gap:8px;"><button onclick="evGoStep(' + Math.max(0, i - 1) + ')" style="width:auto;margin:0;flex:0 0 auto;padding:13px 20px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.14);color:#aaa;border-radius:100px;font-size:0.82rem;font-weight:700;cursor:pointer;">&#8592; Back</button>';
+    h += '<button onclick="evBuildUpgradeProposal(' + s.pw3 + ')" style="flex:1;margin:0;padding:13px;background:#8DC63F;border:none;color:#1A1A1A;border-radius:100px;font-size:0.86rem;font-weight:800;cursor:pointer;">&#128295; Build the Proposal &#8594;</button></div>';
+    // Save a compact snapshot on the evaluation so it can be reopened/shown later (only when it changes).
+    try {
+      var snap = { diag: f.diag, reasons: f.reasons.map(function(r){ return r.replace(/<[^>]+>/g, ''); }), annual_kwh: ser.annual, yoy_pct: ser.yoy, codes: f.codes.map(function(c){ return c.code; }) };
+      var sj = JSON.stringify(snap);
+      if (sj !== _evQuoyaSnapLast) { _evQuoyaSnapLast = sj; setTimeout(function(){ _evLocal.answers.quoya_report = Object.assign({ at: new Date().toISOString() }, snap); _evSave({ answers: _evLocal.answers }); }, 0); }
+    } catch (e) {}
+    return h;
+  }
+  var _evQuoyaSnapLast = '';
   function _evUpgradeSizing() {
     var ba = (_evLocal.billAnalysis && !_evLocal.billAnalysis._err) ? _evLocal.billAnalysis : null;
     var billMo = (ba && ba.monthly_source === 'monthly_bill' && ba.monthly_amount_paid > 0) ? ba.monthly_amount_paid : (parseFloat(_evRec && _evRec.monthly_bill) || (ba && ba.monthly_amount_paid) || 0);
