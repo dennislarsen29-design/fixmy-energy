@@ -31358,6 +31358,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var wrap = document.getElementById('nlTitleWrap');
     var body = document.getElementById('nlTitleBody');
     if (!wrap || !body || !address) return;
+    // ⚠️ Overlapping lookups (address blur + Places pick + Look Up button all fire this)
+    // raced: a slower/second run that found only the APN (owner redacted) repainted over
+    // the first run's owner. Only the newest run may write; an older one just stops.
+    var _mySeq = window._nlTitleSeq = (window._nlTitleSeq || 0) + 1;
+    var _stale = function(){ return _mySeq !== window._nlTitleSeq; };
+    var _prevOwner = (document.getElementById('nlTitleOwner') || {}).value || '';
+    var _prevAddr = window._nlTitleAddr || '';
+    window._nlTitleAddr = address;
     wrap.style.display = 'block';
     body.innerHTML = '<span style="font-size:0.75rem;color:#888;">Checking parcel data…</span>';
     document.getElementById('nlTitleOwner').value = '';
@@ -31373,8 +31381,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
+      if (_stale()) return;
       if (rgResp.ok) {
         var rgData = await rgResp.json();
+        if (_stale()) return;
         if (rgData.owner) {
           owner       = rgData.owner;
           apn         = rgData.apn || null;
@@ -31413,9 +31423,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         }
       } catch(eFb) {}
     }
+    if (_stale()) return;
+    // A repeat lookup for the SAME address that comes back APN-only must not wipe an owner we already found.
+    if (!owner && _prevOwner && _prevAddr === address) { owner = _prevOwner; sourceLabel = 'Parcel Data'; }
     if (owner) {
       document.getElementById('nlTitleOwner').value = owner;
       document.getElementById('nlTitleApn').value   = apn || '';
+      nlAutoFillNameFromOwner(owner);
       body.innerHTML =
         '<div style="font-size:0.82rem;font-weight:700;color:#F3EDE3;margin-bottom:6px;">' + owner + '</div>' +
         (apn ? '<div style="font-size:0.68rem;color:#666;margin-bottom:8px;">APN: ' + apn +
@@ -31438,6 +31452,25 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     } else {
       body.innerHTML = '<span style="font-size:0.75rem;color:#666;">No parcel record found — verify manually with <a href="https://landglide.com" target="_blank" style="color:#4a9eff;">LandGlide</a>.</span>'+(debugInfo?'<div style="margin-top:6px;font-size:0.62rem;color:#444;word-break:break-all;">'+debugInfo+'</div>':'');
     }
+  }
+  // Owner of record → First/Last Name, automatically. Never overwrites a name the setter
+  // typed (or Quoya filled) — _qaLocked protects it — and leaves companies/trusts-with-no-person blank.
+  function nlAutoFillNameFromOwner(owner) {
+    try {
+      var f = document.getElementById('nlFirst'), l = document.getElementById('nlLast');
+      if (!f || !l) return;
+      var lk = window._qaLocked || {};
+      if (lk.nlFirst || lk.nlLast || (f.value||'').trim() || (l.value||'').trim()) return;
+      var people = (typeof _bbOwnerContacts === 'function') ? _bbOwnerContacts(owner) : [];
+      if (!people.length) return;
+      var cap = function(w){ return w ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : ''; };
+      window._qaWriting = true;
+      f.value = cap(people[0].first); l.value = cap(people[0].last);
+      window._qaWriting = false;
+      if (typeof _qaTagFilled === 'function') { _qaTagFilled(f); _qaTagFilled(l); }
+      f.title = l.title = 'Filled from the owner of record — edit if the homeowner is someone else';
+      if (typeof nlUpdateCal === 'function') nlUpdateCal();
+    } catch(e) { window._qaWriting = false; }
   }
   async function nlManualTitleLookup() {
     var addr = (document.getElementById('nlAddr').value||'').trim();
