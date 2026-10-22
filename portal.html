@@ -11816,16 +11816,23 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var days = {}, hasExp = false;
     rows.forEach(function(r){
       var d = new Date(r.t), key = d.getFullYear() + '-' + (d.getMonth()+1) + '-' + d.getDate(), h = d.getHours() + d.getMinutes()/60;
-      var o = days[key] || (days[key] = { ms: r.t, exp: [], eve: 0, night: [], mid: 0 });
+      var o = days[key] || (days[key] = { ms: r.t, exp: [], eve: 0, night: [], mid: 0, tot: 0, nt: 0, pm: 0, mo: d.getFullYear() + '-' + (d.getMonth() < 9 ? '0' : '') + (d.getMonth()+1) });
       var kw = r.kwh * 60 / (r.mins || mins);
       if (r.dir === 'export') { hasExp = true; o.exp.push(kw); if (h >= 10 && h < 15) o.mid += r.kwh; }
-      else { if (h >= 16 && h < 21) o.eve += r.kwh; if (h < 5) o.night.push(kw); }
+      else { o.tot += r.kwh; if (h < 6) o.nt += r.kwh; if (h >= 13 && h < 20) o.pm += r.kwh; if (h >= 16 && h < 21) o.eve += r.kwh; if (h < 5) o.night.push(kw); }
     });
     var keys = Object.keys(days).sort(function(a,b){ return days[a].ms - days[b].ms; });
     out.days = keys.length; out.has_export = hasExp;
     var med = function(a){ a = a.slice().sort(function(x,y){ return x-y; }); return a.length ? a[Math.floor(a.length/2)] : 0; };
     out.evening_kwh_per_day = +med(keys.map(function(k){ return days[k].eve; })).toFixed(1);
     out.baseload_kw = +med(keys.map(function(k){ return med(days[k].night); })).toFixed(2);
+    // Phase 2 (2026-10-22): grid-import by time band, for the EV rate audit and the A/C spike check.
+    out.import_kwh_per_day = +med(keys.map(function(k){ return days[k].tot; })).toFixed(1);
+    out.night_kwh_per_day = +med(keys.map(function(k){ return days[k].nt; })).toFixed(1);   // 12–6am (SDG&E's super-off-peak overnight window)
+    var mo = {}; keys.forEach(function(k){ var d = days[k]; (mo[d.mo] = mo[d.mo] || []).push(d); });
+    out.month_pm = {}; Object.keys(mo).sort().forEach(function(m){ if (mo[m].length >= 10) out.month_pm[m] = +med(mo[m].map(function(d){ return d.pm; })).toFixed(1); });
+    var medTot = med(keys.map(function(k){ return days[k].tot; }));
+    out.spike_days = keys.filter(function(k){ return medTot > 2 && days[k].tot > medTot * 2.2; }).slice(-5).map(function(k){ return { d: new Date(days[k].ms).toISOString().slice(0,10), kwh: +days[k].tot.toFixed(1) }; });
     if (!hasExp) { out.msg = 'No export readings in this file — it looks like usage only, so it can\'t say anything about the solar system.'; out.ok = true; return out; }
     var pk = keys.map(function(k){ return Math.max.apply(null, days[k].exp.length ? days[k].exp : [0]); });
     var top = pk.slice().sort(function(a,b){ return a-b; })[Math.floor(pk.length*0.9)] || 0;
@@ -12402,6 +12409,45 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     });
     return svg + '</svg><div style="display:flex;gap:14px;font-size:0.7rem;color:#777;margin-top:4px;"><span><b style="color:#8DC63F;">&#9632;</b> ' + thisYr + '</span><span><b style="color:#cbd5b0;">&#9632;</b> earlier</span><span>kWh bought from the grid, by month</span></div>';
   }
+  // ── Phase 2 (2026-10-22): EV rate-plan audit + A/C spike check ──────────────────────────
+  // Built only on the Green Button import profile + the bill's own average rate. SDG&E EV
+  // rates below are from public search results and the sources DISAGREE on effective dates,
+  // so they are an editable constant, shown as an ESTIMATE, and the page tells the tech to
+  // confirm on SDG&E's current EV-TOU-5 tariff before quoting a number. Never a promise.
+  var EV_RATE_EST = { superOffPeak: 0.131, offPeak: 0.496, onPeak: 0.802, note: 'EV-TOU-5 published rates (summer, early Aug 2026 listing); confirm on the current SDG&E tariff' };
+  function _evEvAudit() {
+    var a = (_evLocal.answers || {}), g = a.gbd || null, ba = (_evLocal.billAnalysis && !_evLocal.billAnalysis._err) ? _evLocal.billAnalysis : null;
+    if (a.has_ev !== 'yes') return null;
+    var out = { need: [] };
+    if (!g || g.night_kwh_per_day == null) { out.need.push('Green Button meter data (to see when the car charges)'); }
+    if (!ba || !(ba.avg_rate_per_kwh > 0)) out.need.push('a utility bill (to know the rate they pay now)');
+    if (out.need.length) return out;
+    var base = (g.baseload_kw || 0) * 6;                       // what the house itself draws overnight
+    var evNight = Math.max(0, g.night_kwh_per_day - base);     // overnight energy above baseload ≈ car charging
+    var eveHeavy = g.evening_kwh_per_day || 0;
+    var rate = ba.avg_rate_per_kwh, perKwhSave = Math.max(0, rate - EV_RATE_EST.superOffPeak);
+    out.evNight = +evNight.toFixed(1); out.rate = rate; out.base = +base.toFixed(1);
+    out.monthlyOnPlan = Math.round(evNight * 30 * EV_RATE_EST.superOffPeak);
+    out.monthlyAtCurrent = Math.round(evNight * 30 * rate);
+    out.monthlySave = Math.max(0, out.monthlyAtCurrent - out.monthlyOnPlan);
+    out.likely = evNight >= 4;                                  // under ~4 kWh/day overnight isn't a car (a Tesla adds ~10–15 kWh per charge)
+    out.eveHeavy = eveHeavy;
+    return out;
+  }
+  function _evAcCheck() {
+    var a = (_evLocal.answers || {}), g = a.gbd || null;
+    if (!g || !g.month_pm) return null;
+    var ms = Object.keys(g.month_pm).sort();
+    if (ms.length < 3) return null;
+    var summer = ms.filter(function(m){ var n = +m.slice(5); return n >= 6 && n <= 9; }), mild = ms.filter(function(m){ var n = +m.slice(5); return n === 3 || n === 4 || n === 5 || n === 10 || n === 11; });
+    if (!summer.length || !mild.length) return null;
+    var mildAvg = mild.reduce(function(t, m){ return t + g.month_pm[m]; }, 0) / mild.length;
+    var worst = summer.slice().sort(function(x, y){ return g.month_pm[y] - g.month_pm[x]; })[0], wv = g.month_pm[worst];
+    var ratio = mildAvg > 1 ? wv / mildAvg : null;
+    var out = { month: worst, pm: wv, mild: +mildAvg.toFixed(1), ratio: ratio ? +ratio.toFixed(1) : null, has_ac: a.has_ac, spikes: g.spike_days || [] };
+    out.abnormal = !!(ratio && ratio >= 2.5) || (out.spikes.length >= 3 && a.has_ac !== 'yes');
+    return out;
+  }
   function _evQuoyaPageHtml(steps) {
     var f = _evQuoyaFacts(), rec = _evRec || {}, a = f.a, ser = f.series;
     var name = ((rec.first_name || '') + ' ' + (rec.last_name || '')).trim() || 'your home';
@@ -12442,6 +12488,24 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     } else h += '<div style="font-size:0.82rem;color:#777;">Usage trend appears here once a utility bill is read.</div>';
     h += '</div>';
     // What Quoya checked.
+    var ev = _evEvAudit(), ac = _evAcCheck();
+    if (ev) {
+      h += '<div style="' + card + '"><div style="' + lab + '">Electric vehicle &amp; your rate plan</div>';
+      if (ev.need.length) h += '<div style="font-size:0.84rem;line-height:1.55;color:#555;">To check whether a different rate plan would cut your charging cost we still need ' + ev.need.join(' and ') + '.</div>';
+      else if (!ev.likely) h += '<div style="font-size:0.84rem;line-height:1.55;color:#555;">Your overnight usage doesn&rsquo;t show much car charging, so a rate-plan change isn&rsquo;t clearly worth it. If the car charges at home, ask us to look closer.</div>';
+      else {
+        h += '<div style="display:flex;gap:12px;margin-bottom:8px;"><div style="flex:1;"><div style="font-size:1.4rem;font-weight:800;">~' + ev.evNight + ' kWh</div><div style="font-size:0.7rem;color:#7a746c;">per night looks like car charging (12&ndash;6am)</div></div>' + (ev.monthlySave > 0 ? '<div style="flex:1;"><div style="font-size:1.4rem;font-weight:800;color:#5a8f1d;">~$' + ev.monthlySave + '/mo</div><div style="font-size:0.7rem;color:#7a746c;">possible savings on an EV rate plan</div></div>' : '') + '</div>';
+        h += '<div style="font-size:0.8rem;line-height:1.55;color:#444;">Charging in SDG&amp;E&rsquo;s overnight window on an EV plan could cost about $' + ev.monthlyOnPlan + '/mo, versus about $' + ev.monthlyAtCurrent + '/mo at the ~$' + Number(ev.rate).toFixed(2) + '/kWh you pay now.</div>';
+      }
+      h += '<div style="font-size:0.66rem;color:#8a8372;line-height:1.5;margin-top:6px;">Estimate only. Uses published EV-TOU-5 rates (about ' + Math.round(EV_RATE_EST.superOffPeak * 100) + '&cent;/kWh overnight) and ignores monthly fees and your solar credits; the exact plan and price must be confirmed with SDG&amp;E.</div></div>';
+    }
+    if (ac && (ac.abnormal || ac.has_ac === 'yes')) {
+      var bad = ac.abnormal;
+      h += '<div style="' + (bad ? 'background:#fff4e0;border:2px solid #e9a23b;' : card) + 'border-radius:16px;padding:16px;margin-bottom:12px;"><div style="' + lab + '">Air conditioning</div>';
+      h += '<div style="font-size:0.88rem;line-height:1.55;">' + (bad ? '<b>Cooling use looks unusually high.</b> ' : 'Cooling use looks normal. ') + 'Afternoon grid use in ' + esc(ac.month) + ' was about ' + ac.pm + ' kWh/day' + (ac.ratio ? ' &mdash; ' + ac.ratio + '&times; a typical spring/fall day (' + ac.mild + ' kWh)' : '') + '.' + (ac.spikes.length ? ' Biggest days: ' + ac.spikes.map(function(x){ return esc(x.d) + ' (' + x.kwh + ' kWh)'; }).join(', ') + '.' : '') + '</div>';
+      if (bad) h += '<div style="font-size:0.8rem;color:#6b5d3e;line-height:1.5;margin-top:6px;">A tired or undersized A/C is often the biggest single reason for a high summer bill. We recommend an HVAC evaluation.</div>';
+      h += '</div>';
+    }
     h += '<div style="' + card + '"><div style="' + lab + '">What Quoya checked</div>';
     f.checked.forEach(function(c) {
       h += '<div style="display:flex;gap:10px;align-items:baseline;padding:6px 0;border-top:1px solid #f4efe3;"><span style="flex:0 0 18px;color:' + col[c.tone] + ';font-weight:800;">' + ico[c.tone] + '</span><div style="font-size:0.84rem;line-height:1.45;"><b>' + c.t + '</b> <span style="color:#6b6b6b;">&mdash; ' + c.d + '</span></div></div>';
