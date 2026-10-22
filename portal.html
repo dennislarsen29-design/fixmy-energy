@@ -2045,10 +2045,31 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var why = prompt('Dismiss "' + title + '" — why? (short note so Quoya stops ranking things like this)', '');
     if (why === null) return;
     try { var m = _sunSnoozeMap(); m[key] = Date.now() + 90 * 86400000; localStorage.setItem('sunSnooze', JSON.stringify(m)); } catch (e) {}
+    _sunSnoozeSave();
     try { var ac = supabase.createClient(SUPA_URL, SUPA_KEY); await ac.from('agent_replies').insert({ agent: 'S.U.N. queue', kind: 'stop', body: (why || 'Dismissed — not needed.').slice(0, 500), report_title: String(title || '').slice(0, 200) }); } catch (e) {}
     window._sunRerender();
   };
-  window._sunSnooze = function(k, days) { try { var m = _sunSnoozeMap(); m[k] = Date.now() + days * 86400000; localStorage.setItem('sunSnooze', JSON.stringify(m)); } catch (e) {} window._sunRerender(); };
+  window._sunSnooze = function(k, days) { try { var m = _sunSnoozeMap(); m[k] = Date.now() + days * 86400000; localStorage.setItem('sunSnooze', JSON.stringify(m)); } catch (e) {} _sunSnoozeSave(); window._sunRerender(); };
+  // Admin snoozes/dismissals also live on the server (pipeline_state 'sun_snooze') so they follow Dennis across Safari, the Home Screen app and other devices.
+  async function _sunSnoozeLoad() {
+    if (window._sunRole !== 'admin') return;
+    try {
+      var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var r = await c.from('pipeline_state').select('value').eq('key', 'sun_snooze').maybeSingle();
+      var sv = (r && r.data && r.data.value) || {}, m = _sunSnoozeMap(), now = Date.now();
+      Object.keys(sv).forEach(function(k){ if (sv[k] > now && (!m[k] || m[k] < sv[k])) m[k] = sv[k]; });
+      localStorage.setItem('sunSnooze', JSON.stringify(m));
+    } catch (e) {}
+  }
+  async function _sunSnoozeSave() {
+    if (window._sunRole !== 'admin') return;
+    try {
+      var m = _sunSnoozeMap(), now = Date.now(), out = {};
+      Object.keys(m).forEach(function(k){ if (m[k] > now) out[k] = m[k]; });
+      var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+      await c.from('pipeline_state').upsert({ key: 'sun_snooze', value: out, updated_at: new Date().toISOString() }, { onConflict: 'key' });
+    } catch (e) {}
+  }
   window._sunRerender = function() { if (window._sunRole === 'admin') renderAdminHomeView(); else if (typeof window.salesRefresh === 'function') window.salesRefresh(); };
   // Voice (opt-in, device speech synthesis). Text is always on screen.
   window._sunMuted = function() { try { return localStorage.getItem('sunMuted') === '1'; } catch (e) { return false; } };
@@ -2176,6 +2197,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return (d && d.earned && d.earnedAt) ? new Date(d.earnedAt) : null;
   }
   async function _sunAdminData(ctx, markFn) {
+    await _sunSnoozeLoad();
     var c = supabase.createClient(SUPA_URL, SUPA_KEY);
     var now = new Date(), monthStart = new Date(now.getFullYear(), now.getMonth(), 1), prevStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
     var prevCut = new Date(prevStart.getTime() + (now.getTime() - monthStart.getTime()));
