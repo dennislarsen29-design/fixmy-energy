@@ -2537,6 +2537,35 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // Costs are typed in by Dennis (never guessed). Suggestions are plain rules over this list.
   window._sunStackRows = null;
   window._sunStackHtml = function() { return '<section class="sun-panel" id="sunStack" aria-label="Tech stack and costs"><div class="sun-ph"><h2>' + _sunIco('pulse') + 'Tech stack &amp; costs</h2><span class="sun-note">loading…</span></div></section>'; };
+  var SUN_STACK_PATTERNS = { 'Netlify': /netlify/i, 'Supabase': /supabase/i, 'GoHighLevel': /highlevel|gohighlevel|leadconnector/i, 'Anthropic API (Quoya AI)': /anthropic|claude\.ai/i,
+    'Resend': /resend/i, 'Plaid': /plaid/i, 'Regrid': /regrid/i, 'Tracerfy': /tracerfy/i, 'PermitStack': /permitstack/i, 'Google Maps / Solar API': /google.*(maps|cloud)|gcp/i,
+    'Gusto': /gusto/i, 'Aurora Solar': /aurora/i, 'SolarGraf': /solargraf/i, 'Smith.AI': /smith\.ai/i, 'Lead Locker Room': /lead ?locker/i, 'HeyGen': /heygen/i, 'Google Workspace': /workspace/i };
+  // Reads Finance's own expense data: per tool, the average monthly charge over the 90 days before its newest charge.
+  function _sunStackDetect(rows, txns) {
+    var out = {}, used = {};
+    rows.forEach(function(x){
+      var re = SUN_STACK_PATTERNS[x.name]; if (!re) return;
+      var seen = {}, list = (txns || []).filter(function(t){ if (!re.test((t.merchant || '') + ' ' + (t.description || ''))) return false; if (x.name !== 'Gusto') return true; var k = t.txn_date + '|' + (+t.amount); if (seen[k]) return false; seen[k] = 1; return true; });
+      list.forEach(function(t){ used[t.id] = 1; });
+      if (!list.length) return;
+      list.sort(function(a, b){ return a.txn_date < b.txn_date ? 1 : -1; });
+      var last = list[0].txn_date, cutoff = new Date(new Date(last).getTime() - 90 * 86400000).toISOString().slice(0, 10);
+      var win = list.filter(function(t){ return t.txn_date >= cutoff; });
+      var sum = win.reduce(function(s, t){ return s + (+t.amount || 0); }, 0);
+      out[x.name] = { monthly: Math.round(sum / 3 * 100) / 100, last: last, n: win.length };
+    });
+    // recurring merchants nobody listed yet
+    var groups = {};
+    (txns || []).forEach(function(t){
+      if (used[t.id] || !/Dues|Subscription|Computer|Software|Internet|Telephone|Advertising/i.test(t.account_name || '')) return;
+      if (/google \*ads|facebook|meta ads|fb ads|gusto|transfer|withdrawal/i.test((t.merchant || '') + ' ' + (t.description || ''))) return;
+      var k = String(t.merchant || t.description || '').toUpperCase().replace(/[^A-Z0-9 .]/g, ' ').split(/\s+/).slice(0, 2).join(' ').trim(); if (!k) return;
+      var g = groups[k] = groups[k] || { k: k, months: {}, total: 0, last: '' };
+      g.months[String(t.txn_date).slice(0, 7)] = 1; g.total += +t.amount || 0; if (t.txn_date > g.last) g.last = t.txn_date;
+    });
+    var extra = Object.keys(groups).map(function(k){ return groups[k]; }).filter(function(g){ return Object.keys(g.months).length >= 2; }).sort(function(a, b){ return b.total - a.total; }).slice(0, 8);
+    return { byTool: out, extra: extra };
+  }
   window._sunStackLoad = async function() {
     var box = document.getElementById('sunStack'); if (!box) return;
     try {
@@ -2544,6 +2573,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var r = await c.from('tech_stack').select('*').order('sort', { ascending: true }).order('name', { ascending: true });
       if (r.error) throw r.error;
       window._sunStackRows = r.data || [];
+      try {
+        var since = new Date(Date.now() - 400 * 86400000).toISOString().slice(0, 10);
+        var tx = await c.from('expense_transactions').select('id,txn_date,merchant,description,amount,account_name').gte('txn_date', since).gt('amount', 0).limit(5000);
+        window._sunStackTx = tx.error ? null : (tx.data || []);
+      } catch (e2) { window._sunStackTx = null; }
     } catch (e) {
       box.innerHTML = '<div class="sun-ph"><h2>Tech stack &amp; costs</h2></div><div class="sun-empty">Unknown: the tech stack list could not be loaded (' + _sunEsc(e.message || e) + ').</div>';
       return;
@@ -2552,38 +2586,45 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   };
   window._sunStackSuggestions = function(rows) {
     var out = [], act = rows.filter(function(x){ return x.status !== 'planned'; });
-    var noCost = act.filter(function(x){ return x.cost_monthly == null; });
+    var noCost = act.filter(function(x){ return x._eff == null; });
     if (noCost.length) out.push({ sev: 'amb', t: noCost.length + ' of ' + act.length + ' tools have no cost entered', b: 'The total below is incomplete until these are filled in: ' + noCost.map(function(x){ return _sunEsc(x.name); }).join(', ') + '. Open each vendor\'s billing page, or check the card statement.' });
     var unused = act.filter(function(x){ return x.status === 'unused'; });
-    unused.forEach(function(x){ out.push({ sev: 'red', t: 'Cancel ' + _sunEsc(x.name), b: 'Marked unused' + (x.cost_monthly ? ' — saves ' + _sunMoney(+x.cost_monthly) + '/mo' : '') + '.' }); });
+    unused.forEach(function(x){ out.push({ sev: 'red', t: 'Cancel ' + _sunEsc(x.name), b: 'Marked unused' + (x._eff ? ' — saves ' + _sunMoney(+x._eff) + '/mo' : '') + '.' }); });
     var by = {}; act.forEach(function(x){ if (x.status !== 'unused') (by[x.category] = by[x.category] || []).push(x); });
     Object.keys(by).forEach(function(k){ if (by[k].length > 1 && /Design|Property data|Answering/.test(k)) out.push({ sev: 'amb', t: 'Overlap in ' + _sunEsc(k), b: by[k].map(function(x){ return _sunEsc(x.name); }).join(' and ') + ' do similar jobs. Keep the one the team actually uses.' }); });
     var has = function(n){ return rows.filter(function(x){ return x.name === n && x.status !== 'unused'; })[0]; };
     if (has('Smith.AI')) out.push({ sev: 'amb', t: 'Smith.AI can likely be cancelled', b: 'It was planned to be replaced by Quoya inbound handling. Cancel once Quoya answers inbound calls and missed-call texts.' });
     var rg = has('Regrid'); if (rg) out.push({ sev: 'amb', t: 'Regrid: decide before the trial ends (Nov 1)', b: 'San Diego owners already come from the county table. Keep Regrid only if you are opening markets outside San Diego, where it is the only owner source.' });
     var hg = has('HeyGen'); if (hg) out.push({ sev: 'amb', t: 'HeyGen: confirm what the plan includes', b: 'Check whether it includes API / LiveAvatar access. If it only makes hand-made videos, it may not justify a monthly charge until the live avatar is built.' });
-    var big = act.filter(function(x){ return +x.cost_monthly > 0; }).sort(function(a, b){ return b.cost_monthly - a.cost_monthly; }).slice(0, 3);
-    if (big.length) out.push({ sev: 'ok', t: 'Biggest costs to review first', b: big.map(function(x){ return _sunEsc(x.name) + ' ' + _sunMoney(+x.cost_monthly); }).join(' · ') + '. Ask each for annual billing or a lower tier if usage is light.' });
+    var big = act.filter(function(x){ return +x._eff > 0; }).sort(function(a, b){ return b._eff - a._eff; }).slice(0, 3);
+    if (big.length) out.push({ sev: 'ok', t: 'Biggest costs to review first', b: big.map(function(x){ return _sunEsc(x.name) + ' ' + _sunMoney(+x._eff); }).join(' · ') + '. Ask each for annual billing or a lower tier if usage is light.' });
     return out;
   };
   window._sunStackRender = function() {
     var box = document.getElementById('sunStack'); if (!box) return;
     var rows = window._sunStackRows || [];
+    var det = window._sunStackTx ? _sunStackDetect(rows, window._sunStackTx) : { byTool: {}, extra: [] };
+    rows.forEach(function(x){ var d = det.byTool[x.name]; x._det = d || null; x._eff = x.cost_monthly != null ? +x.cost_monthly : (d ? d.monthly : null); x._auto = x.cost_monthly == null && !!d; });
+    var newest = (window._sunStackTx || []).reduce(function(m, t){ return t.txn_date > m ? t.txn_date : m; }, '');
     var live = rows.filter(function(x){ return x.status !== 'planned'; });
-    var total = live.reduce(function(s, x){ return s + (+x.cost_monthly || 0); }, 0);
-    var missing = live.filter(function(x){ return x.cost_monthly == null; }).length;
+    var total = live.reduce(function(s, x){ return s + (x._eff || 0); }, 0);
+    var missing = live.filter(function(x){ return x._eff == null; }).length;
     var inp = 'padding:6px 8px;border-radius:6px;border:1px solid rgba(255,255,255,0.18);background:rgba(255,255,255,0.05);color:inherit;font-size:0.8rem;';
     var h = '<div class="sun-ph"><h2>' + _sunIco('pulse') + 'Tech stack &amp; costs</h2><span class="sun-note">' + rows.length + ' tools · you enter the costs</span></div>';
     h += '<div class="sun-metrics" style="margin-bottom:10px"><div class="sun-m"><div class="l">Monthly total</div><div class="v">' + _sunMoney(total) + '</div><div class="s">' + (missing ? 'incomplete — ' + missing + ' without a cost' : 'all costs entered') + '</div></div><div class="sun-m"><div class="l">Yearly</div><div class="v">' + _sunMoney(total * 12) + '</div><div class="s">monthly × 12 (usage-based tools vary)</div></div></div>';
-    h += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.8rem;"><tr style="text-align:left;opacity:.7"><th style="padding:6px">Tool</th><th>Purpose</th><th>$ / month</th><th>Billing</th><th>Status</th></tr>';
+    h += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.8rem;"><tr style="text-align:left;opacity:.7"><th style="padding:6px">Tool</th><th>Purpose</th><th>$ / month</th><th>Found on card</th><th>Billing</th><th>Status</th></tr>';
     h += rows.map(function(x){
       return '<tr style="border-top:1px solid rgba(255,255,255,0.08)"><td style="padding:7px 6px"><b>' + _sunEsc(x.name) + '</b><div style="opacity:.6;font-size:0.7rem">' + _sunEsc(x.category || '') + '</div></td>'
         + '<td style="max-width:230px;opacity:.85">' + _sunEsc(x.purpose || '') + (x.notes ? '<div style="opacity:.6;font-size:0.7rem">' + _sunEsc(x.notes) + '</div>' : '') + '</td>'
-        + '<td><input type="number" step="0.01" min="0" value="' + (x.cost_monthly == null ? '' : x.cost_monthly) + '" placeholder="enter" onchange="window._sunStackSave(\'' + x.id + '\',\'cost_monthly\',this.value)" style="' + inp + 'width:84px"/></td>'
+        + '<td><input type="number" step="0.01" min="0" value="' + (x.cost_monthly == null ? (x._auto ? x._eff : '') : x.cost_monthly) + '" placeholder="enter" onchange="window._sunStackSave(\'' + x.id + '\',\'cost_monthly\',this.value)" style="' + inp + 'width:84px"/>' + (x._auto ? '<div style="font-size:0.66rem;color:var(--mint)">auto</div>' : '') + '</td>'
+        + '<td style="font-size:0.74rem;opacity:.85">' + (x._det ? _sunMoney(x._det.monthly) + '/mo avg<div style="opacity:.6">last ' + _sunEsc(x._det.last) + (new Date(x._det.last) < new Date(Date.now() - 45 * 86400000) ? ' · <span style="color:#f59e0b">may have stopped</span>' : '') + '</div>' : (SUN_STACK_PATTERNS[x.name] ? '<span style="opacity:.55">not seen</span>' : '')) + '</td>'
         + '<td><select onchange="window._sunStackSave(\'' + x.id + '\',\'billing\',this.value)" style="' + inp + '">' + ['monthly','annual','usage'].map(function(o){ return '<option value="' + o + '"' + (x.billing === o ? ' selected' : '') + '>' + o + '</option>'; }).join('') + '</select></td>'
         + '<td><select onchange="window._sunStackSave(\'' + x.id + '\',\'status\',this.value)" style="' + inp + '">' + ['active','trial','unused','planned'].map(function(o){ return '<option value="' + o + '"' + (x.status === o ? ' selected' : '') + '>' + o + '</option>'; }).join('') + '</select></td></tr>';
     }).join('') + '</table></div>';
     h += '<div class="sun-acts" style="margin-top:10px"><button class="sun-btn sm" onclick="window._sunStackAdd()">+ Add tool</button></div>';
+    if (window._sunStackTx == null) h += '<div class="sun-row"><span class="sun-dot sun-d-unk"></span><div class="b"><strong>Card charges could not be loaded</strong><span>Costs shown are only what you typed.</span></div></div>';
+    else if (newest && new Date(newest) < new Date(Date.now() - 20 * 86400000)) h += '<div class="sun-row"><span class="sun-dot sun-d-amb"></span><div class="b"><strong>Card data stops at ' + _sunEsc(newest) + '</strong><span>Your Amex Business card is not connected to the live bank sync, so charges after that date are not being found. Connect it in Finance &rarr; Sync (Connect &rarr; American Express) and this fills in on its own.</span></div></div>';
+    if (det.extra.length) h += '<div class="sun-ph" style="margin-top:12px"><h2>Possible subscriptions not on your list</h2><span class="sun-note">repeat charges found in your expenses</span></div>' + det.extra.map(function(g){ return '<div class="sun-row"><span class="sun-dot sun-d-amb"></span><div class="b"><strong>' + _sunEsc(g.k) + '</strong><span>' + Object.keys(g.months).length + ' months · ' + _sunMoney(g.total) + ' total · last ' + _sunEsc(g.last) + '</span><div class="sun-acts" style="margin-top:6px"><button class="sun-btn sm" onclick="window._sunStackAdd(\'' + _sunEsc(g.k).replace(/'/g, '') + '\')">Add to list</button></div></div></div>'; }).join('');
     h += '<div class="sun-ph" style="margin-top:14px"><h2>Suggestions to cut cost</h2><span class="sun-note">rules over this list — not financial advice</span></div>';
     h += window._sunStackSuggestions(rows).map(function(s){ return '<div class="sun-row"><span class="sun-dot sun-d-' + s.sev + '"></span><div class="b"><strong>' + s.t + '</strong><span>' + s.b + '</span></div></div>'; }).join('') || '<div class="sun-empty">Nothing to suggest yet.</div>';
     box.innerHTML = h;
@@ -2600,9 +2641,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       window._sunStackRender();
     } catch (e) { alert('Could not save: ' + (e.message || e)); window._sunStackLoad(); }
   };
-  window._sunStackAdd = async function() {
-    var name = prompt('Tool name?'); if (!name || !name.trim()) return;
-    var purpose = prompt('What is it used for? (optional)') || '';
+  window._sunStackAdd = async function(pre) {
+    var name = pre || prompt('Tool name?'); if (!name || !name.trim()) return;
+    var purpose = (pre ? prompt('What is it used for? (optional)') : prompt('What is it used for? (optional)')) || '';
     try {
       var c = supabase.createClient(SUPA_URL, SUPA_KEY);
       var r = await c.from('tech_stack').insert({ name: name.trim(), purpose: purpose.trim(), category: 'Other', sort: 200 }).select('id');
