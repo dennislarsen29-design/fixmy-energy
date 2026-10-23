@@ -44,7 +44,7 @@ function isStripePayout(desc) {
 // The business accounts below are all Solar Review's own, so money moving between them is neither
 // an expense, a distribution, nor revenue.
 const PERSONAL_LAST4 = ['1065'];
-const OWN_BUSINESS_LAST4 = ['0215', '1198', '4017'];   // Solar Review (Chase), TEAMERICO (Chase), Solar Review (GWCU)
+const OWN_BUSINESS_LAST4 = ['0215', '4017'];   // Solar Review (Chase), Solar Review (GWCU). 1198 (TEAMERICO) is a separate company — its transfers surface for review, never auto-skipped.
 function mentionsLast4(desc, list) { return list.some(l => new RegExp('(^|\\D)' + l + '(\\D|$)').test(desc)); }
 function isInternalTransfer(desc) { return mentionsLast4(desc, OWN_BUSINESS_LAST4) && !mentionsLast4(desc, PERSONAL_LAST4); }
 function isOwnerDistribution(desc, pfc) {
