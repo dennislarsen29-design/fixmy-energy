@@ -92,5 +92,27 @@ exports.handler = async function (event) {
     error: null
   });
 
+  // Write Quoya's system size / utility / NEM version onto the customer — fill blanks only.
+  // Done here (not only in the browser poll) so it lands even if the rep closed the wizard.
+  try {
+    const fu = out.confident && out.field_updates;
+    if (fu && SUPA_KEY) {
+      const h = { apikey: SUPA_KEY, Authorization: `Bearer ${SUPA_KEY}` };
+      const er = await (await fetch(`${SUPA_URL}/rest/v1/lead_evaluations?id=eq.${evalId}&select=customer_id`, { headers: h })).json();
+      const cid = er && er[0] && er[0].customer_id;
+      if (cid) {
+        const cr = await (await fetch(`${SUPA_URL}/rest/v1/customers?id=eq.${cid}&select=system_size,utility,nem_status`, { headers: h })).json();
+        const c = (cr && cr[0]) || {};
+        const upd = {};
+        if (fu.system_size_kw && !c.system_size) upd.system_size = String(fu.system_size_kw);
+        if (fu.utility && !c.utility) upd.utility = fu.utility;
+        if (fu.nem_version && !c.nem_status) upd.nem_status = fu.nem_version;
+        if (Object.keys(upd).length) {
+          await fetch(`${SUPA_URL}/rest/v1/customers?id=eq.${cid}`, { method: 'PATCH', headers: Object.assign({ 'Content-Type': 'application/json', Prefer: 'return=minimal' }, h), body: JSON.stringify(upd) });
+        }
+      }
+    }
+  } catch (e) { console.warn('[eval-analysis-background] field_updates write failed:', e.message); }
+
   return { statusCode: 200, headers: CORS, body: JSON.stringify({ ok: true }) };
 };
