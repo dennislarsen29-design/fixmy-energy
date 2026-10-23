@@ -28,7 +28,7 @@ exports.handler = async function(event) {
   }
 
   const { first_name, last_name, email, phone, city, zip, sales_experience, why_solar, source } = body;
-  const position = body.position === 'setter' ? 'setter' : 'consultant';
+  const position = body.position === 'setter' ? 'setter' : (body.position === 'electrician' ? 'electrician' : 'consultant');
 
   if (!first_name || !email || !phone) {
     return { statusCode: 400, headers: CORS, body: JSON.stringify({ error: 'first_name, email, and phone are required' }) };
@@ -78,7 +78,7 @@ exports.handler = async function(event) {
           city:       city        || undefined,
           postalCode: zip         || undefined,
           source:     'careers-page',
-          tags:       position === 'setter' ? ['candidate-applied', 'candidate-applied-setter'] : ['candidate-applied']
+          tags:       position === 'setter' ? ['candidate-applied', 'candidate-applied-setter'] : (position === 'electrician' ? ['candidate-applied', 'candidate-applied-electrician'] : ['candidate-applied'])
         })
       });
 
@@ -103,7 +103,7 @@ exports.handler = async function(event) {
   try {
     const notify = require('./lib/notify');
     const name = (first_name + ' ' + (last_name || '')).trim();
-    const roleLbl = position === 'setter' ? 'Setter' : 'Consultant';
+    const roleLbl = position === 'setter' ? 'Setter' : (position === 'electrician' ? 'Electrician' : 'Consultant');
     const where = [city, zip].filter(Boolean).join(' ');
     let dennisPhone = null;
     try {
