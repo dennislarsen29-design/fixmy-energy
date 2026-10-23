@@ -174,6 +174,7 @@ details.spec .body{font-size:0.82rem;color:#4a463f;line-height:1.75;padding-top:
 .opt-tab .ot-t{font-size:0.72rem;margin-top:2px;line-height:1.35;opacity:0.75;}
 .opt-tab.active{color:#fff;border-color:transparent;}
 .opt-tab.active .ot-t{opacity:0.9;}
+.opt-tab .ot-note{font-size:0.7rem;line-height:1.4;margin-top:6px;padding-top:6px;border-top:1px solid rgba(128,128,128,0.35);font-weight:600;}
 body.opt-0{--accent:#1A1A1A;--accent-soft:#EDE5D8;--accent-ink:#F3EDE3;}
 body.opt-1{--accent:#8DC63F;--accent-soft:#EEF4E0;--accent-ink:#1A1A1A;}
 .opt-tab.t0.active{background:#1A1A1A;color:#F3EDE3;}
@@ -1152,7 +1153,7 @@ button.component-chip.open{border-color:var(--dark);}
       var t = o.title || componentNames(o).filter(Boolean).join(' + ');
       return '<button class="opt-tab t'+Math.min(i,1)+(i===selIdx?' active':'')+'" onclick="selectOption('+i+')">'+
         '<div class="ot-n">View Option '+(i+1)+'</div>'+
-        '<div class="ot-t">'+esc(t)+'</div></button>';
+        '<div class="ot-t">'+esc(t)+'</div>'+(o.pill_note ? '<div class="ot-note">&#10003; '+esc(o.pill_note)+'</div>' : '')+'</button>';
     }).join('');
     var w = document.getElementById('cmpBtnWrap');
     if (w) w.innerHTML = compareAvailable() ? '<button class="cmp-btn" onclick="openCompare()">&#9638; Compare Today vs. both options</button>' : '';
@@ -1433,7 +1434,14 @@ button.component-chip.open{border-color:var(--dark);}
     status.className = 'status-msg'; status.textContent = '';
     try {
       var newProp = Object.assign({}, PROP, { status: 'sent' });
-      var { error } = await client.from('customers').update({ proposal: newProp }).eq('id', custId);
+      var error = null;
+      for (var _try = 0; _try < 3; _try++) {   // a weak signal (LTE) drops requests — retry before giving up
+        try { var _r = await client.from('customers').update({ proposal: newProp }).eq('id', custId); error = _r.error; }
+        catch (netErr) { error = netErr; }
+        if (!error) break;
+        if (!/load failed|failed to fetch|network/i.test(String(error.message || error))) break;
+        btn.textContent = 'Retrying…'; await new Promise(function(r){ setTimeout(r, 1200 * (_try + 1)); });
+      }
       if (error) throw error;
       var res = await fetch('/.netlify/functions/notify-customer', {
         method: 'POST', headers: {'Content-Type':'application/json'},
@@ -1453,7 +1461,7 @@ button.component-chip.open{border-color:var(--dark);}
     } catch(e) {
       btn.disabled = false; btn.textContent = 'Send to Customer — Start Paperwork';
       status.className = 'status-msg err';
-      status.textContent = 'Could not send: ' + e.message;
+      status.textContent = /load failed|failed to fetch|network/i.test(String(e.message)) ? 'Could not send — the connection dropped (weak signal). Nothing was sent; tap again once you have better service.' : 'Could not send: ' + e.message;
     }
   }
   window.send = send;

@@ -27342,6 +27342,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       build.auroraImg  = opt.aurora_image_url  || '';
       build.auroraPortal= opt.aurora_portal_url || '';
       if (opt.milestones) build.deposit = opt.milestones.deposit || 0;
+      build.diagCredit = parseFloat(opt.diag_credit) || 0;
+      if (!build.diagCredit && opt.line_items) { var _dcl = opt.line_items.find(function(li){ return li.id === 'diagnostic_credit' && (li.price||0) < 0; }); if (_dcl) build.diagCredit = Math.abs(_dcl.price); }
+      build.pillNote = opt.pill_note || '';
       // Rehydrate the reroof + R&R blocks (their line items are display-only echoes,
       // filtered out below so they can't double-count against the recomputed price)
       if (opt.reroof && opt.reroof.squares > 0) {
@@ -27363,7 +27366,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       build.priceManual = true;
       build.basePrice = (opt.price || 0) - _propAddonCharge(build);
       if (opt.line_items && opt.line_items.length) {
-        build.lineItems = opt.line_items.filter(function(li){ return li.id !== 'reroof' && li.id !== 'remove_reinstall'; }).map(function(li){
+        build.lineItems = opt.line_items.filter(function(li){ return li.id !== 'reroof' && li.id !== 'remove_reinstall' && li.id !== 'diagnostic_credit'; }).map(function(li){
           // Prefer the line's own saved id (battery/panel/inverter detection and
           // the quantity steppers depend on it); older proposals saved without
           // per-line ids fall back to the option's primary id.
@@ -27806,10 +27809,18 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         // discount and does not touch dealer cost or the rep's split. Using partPrice
         // here (fixed 2026-08-27, per Dennis) made a Participate-on proposal save
         // rep_commission/gross_commission as $0 and wrongly flag for admin approval.
-        opt.rep_commission   = Math.round(Math.max(0, price - redline) * 0.40 * 100) / 100;
-        opt.gross_commission = Math.round(Math.max(0, price - redline) * 100) / 100;
+        // The Diagnostic Fee credit lowers the customer's price but the fee was already collected
+        // (it is real revenue on the job), so the commission estimate runs on price + credit.
+        opt.rep_commission   = Math.round(Math.max(0, price + (build.diagCredit||0) - redline) * 0.40 * 100) / 100;
+        opt.gross_commission = Math.round(Math.max(0, price + (build.diagCredit||0) - redline) * 100) / 100;
         opt.redline = redline;
       }
+      // Diagnostic Fee credit — customer-visible negative line + the amount, so the page can show the math.
+      if ((parseFloat(build.diagCredit) || 0) > 0) {
+        opt.diag_credit = parseFloat(build.diagCredit);
+        opt.line_items.push({ id: 'diagnostic_credit', name: 'Diagnostic Fee credit', price: -opt.diag_credit, isCustom: false });
+      }
+      if (build.pillNote && String(build.pillNote).trim()) opt.pill_note = String(build.pillNote).trim().slice(0, 400);
       // Reroof: persist the reroof block + surface it as a customer-visible line item.
       var _rrSqSend = _reroofSquares(build);
       if (_rrSqSend > 0) {
@@ -28050,7 +28061,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // ── PROPOSAL MENU BUILDER HELPERS ─────────────────────────────────────────
 
   function _propInitBuild() {
-    return { lineItems: [], price: 0, basePrice: 0, priceManual: false, deposit: 0, participate: true, partPrice: null, teslaRebate: 0, sdcpRebate: 0, sdcpQualified: false, redline: 0, baseDealerCost: 0, dealerCostManual: false, auroraImg: '', auroraPortal: '', nonExport: false, restoreArray: false, arrayOutputPct: 25, reroof: null, rr: null };
+    return { lineItems: [], price: 0, basePrice: 0, priceManual: false, deposit: 0, participate: true, partPrice: null, teslaRebate: 0, sdcpRebate: 0, sdcpQualified: false, redline: 0, baseDealerCost: 0, dealerCostManual: false, auroraImg: '', auroraPortal: '', nonExport: false, restoreArray: false, arrayOutputPct: 25, reroof: null, rr: null, diagCredit: 0, pillNote: '' };
   }
   // Reroof squares from surface area (100 sq ft = 1 square). Cost is a fixed $700/sq
   // (the sub-sheet rate); the charge-per-square is the editable retail the rep sets.
@@ -28094,7 +28105,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var sq = _reroofSquares(build);
     var rr = _rrPanels(build);
     return sq * ((build.reroof && parseFloat(build.reroof.chargePerSq)) || 0)
-         + rr * ((build.rr && parseFloat(build.rr.chargePerPanel)) || 0);
+         + rr * ((build.rr && parseFloat(build.rr.chargePerPanel)) || 0)
+         - (parseFloat(build.diagCredit) || 0);   // Diagnostic Fee credit lowers what the customer pays
   }
   function _propAddonCost(build){
     return _reroofSquares(build) * REROOF_COST_PER_SQ + _rrPanels(build) * RR_COST_PER_PANEL;
@@ -28455,6 +28467,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         }
         h += '</div>';
         if (!_rrrOn) { h = h.slice(0,_mk2); _chips.push(['Remove &amp; Reinstall','_propToggleRR('+optIdx+')']); }
+        // Diagnostic Fee credit + option-tab note (2026-10-23, per Dennis — Jon's proposal).
+        var _dfPaid = !!(_propBuildCust && _propBuildCust.invoice_status === 'paid' && parseFloat(_propBuildCust.invoice_amount) > 0);
+        var _dcOn = (parseFloat(build.diagCredit) || 0) > 0;
+        if (_dfPaid || _dcOn) {
+          var _dfAmt = parseFloat(_propBuildCust && _propBuildCust.invoice_amount) || 0;
+          h += '<div style="grid-column:1/-1;border:1px solid '+(_dcOn?'rgba(141,198,63,0.5)':'rgba(255,255,255,0.1)')+';background:'+(_dcOn?'rgba(141,198,63,0.07)':'rgba(255,255,255,0.03)')+';border-radius:8px;padding:10px;">';
+          h += '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">';
+          h += '<div onclick="_propToggleDiagCredit('+optIdx+')" style="flex:1;min-width:0;cursor:pointer;user-select:none;"><div style="font-size:0.74rem;font-weight:700;color:'+(_dcOn?'#8DC63F':'#ddd')+';">&#129534; Credit the Diagnostic Fee</div><div style="font-size:0.62rem;color:#666;margin-top:2px;">Fee on file: $'+_dfAmt.toLocaleString('en-US',{minimumFractionDigits:2})+' &middot; lowers the price; commission still counts it</div></div>';
+          h += '<button onclick="_propToggleDiagCredit('+optIdx+')" style="width:auto;flex-shrink:0;padding:6px 14px;border-radius:100px;font-size:0.7rem;font-weight:800;cursor:pointer;'+(_dcOn?'background:#8DC63F;color:#000;border:none;':'background:rgba(141,198,63,0.12);color:#8DC63F;border:1px solid rgba(141,198,63,0.4);')+'">'+(_dcOn?'ON &#10003;':'Add')+'</button></div>';
+          if (_dcOn) h += '<div style="margin-top:8px;"><label style="font-size:0.58rem;color:#888;display:block;margin-bottom:2px;">Credit amount ($)</label><input type="number" step="0.01" min="0" value="'+build.diagCredit+'" onchange="_propSetDiagCredit('+optIdx+',this.value)" style="width:120px;"/></div>';
+          h += '</div>';
+        }
+        h += '<div style="grid-column:1/-1;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.03);border-radius:8px;padding:10px;"><div style="font-size:0.74rem;font-weight:700;color:#ddd;margin-bottom:4px;">&#128204; Note on the option tab (shown to the customer)</div><textarea rows="3" maxlength="400" placeholder="e.g. Includes up to $2,500 of removing and recycling the old system and repairing the roof for the new install. Work must be performed by the installer." onchange="_propSetPillNote('+optIdx+',this.value)" style="width:100%;box-sizing:border-box;font-size:0.8rem;">'+String(build.pillNote||'').replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</textarea></div>';
         // Restore Existing Array card (full-width) — measured-output inverter recovery.
         // A PW3's integrated 6-MPPT inverter can absorb existing strings, so recovery
         // applies even when no standalone inverter line item is in the build.
@@ -28603,8 +28628,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       h += '<div data-pstep="2">';
       // Price / Redline / Commission — three clear boxes (2026-10-02, per Dennis). The rep edits
       // any one: Commission drives the System Price (price = redline + commission / 40%).
-      var _marginAmt = Math.max(0, Math.round(build.price - build.redline));
-      var _commNow = build.redline > 0 ? Math.round(Math.max(0, build.price - build.redline) * 0.40) : 0;
+      var _marginAmt = Math.max(0, Math.round(build.price + (build.diagCredit||0) - build.redline));
+      var _commNow = build.redline > 0 ? Math.round(Math.max(0, build.price + (build.diagCredit||0) - build.redline) * 0.40) : 0;
       var _bx = 'width:100%;background:#0e0e0e;border-radius:6px;font-weight:800;padding:8px 9px;font-size:0.92rem;box-sizing:border-box;';
       h += '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:6px;">';
       h += '<div><label style="font-size:0.62rem;color:#8DC63F;display:block;margin-bottom:3px;font-weight:700;">System Price ($)</label>';
@@ -28720,7 +28745,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // to the customer, it does not touch dealer cost or the rep's split (fixed
       // 2026-08-27, per Dennis: this was reading _custPays and showed $1,600 → $0 the
       // instant Participate was turned on, wrongly triggering the admin-approval gate).
-      var _oComm = build.redline > 0 ? Math.round((build.price - build.redline) * 0.40) : 0;
+      var _oComm = build.redline > 0 ? Math.round((build.price + (build.diagCredit||0) - build.redline) * 0.40) : 0;
       var _commMin = 1000;
       h += '<div style="background:rgba(0,0,0,0.25);border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:10px 12px;">';
       h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">';
@@ -28792,7 +28817,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // Footer: Next on steps 1-2, Send (or Request Approval) on step 3
     var _anyBelowMin = _propBuilds.some(function(b) {
       if (!b.lineItems.length) return false;
-      return Math.round((b.price - b.redline) * 0.40) < 1000;
+      return Math.round((b.price + (b.diagCredit||0) - b.redline) * 0.40) < 1000;
     });
     var _st = window._propStep || 1;
     var _pm = document.getElementById('proposalModal');
@@ -28838,7 +28863,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   }
   function _propReviewHtml() {
     var any = _propBuilds.some(function(b){ return b.lineItems.length; });
-    var below = _propBuilds.some(function(b){ return b.lineItems.length && Math.round(Math.max(0, b.price - b.redline) * 0.40) < 1000; });
+    var below = _propBuilds.some(function(b){ return b.lineItems.length && Math.round(Math.max(0, b.price + (b.diagCredit||0) - b.redline) * 0.40) < 1000; });
     if (!any) return '<div data-pstep="3" style="font-size:0.8rem;color:#ef4444;margin-bottom:12px;">Nothing to send yet &mdash; go back to step 1 and pick at least one item.</div>';
     return '<div data-pstep="3" style="background:rgba(141,198,63,0.05);border:1px solid rgba(141,198,63,0.25);border-radius:12px;padding:12px 14px;margin-bottom:12px;">' +
       '<div style="font-size:0.7rem;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;color:#8DC63F;margin-bottom:2px;">Exactly what the customer will see</div>' +
@@ -29117,6 +29142,18 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     _propUpdateTotal(optIdx);
     _propRenderBuilds();
   };
+  window._propToggleDiagCredit = function(optIdx) {
+    var build = _propBuilds[optIdx]; if (!build) return;
+    if ((parseFloat(build.diagCredit) || 0) > 0) build.diagCredit = 0;
+    else { var _pc = (typeof adminCustomers !== 'undefined' && adminCustomers) ? (adminCustomers.find(function(x){ return x.id === _propPropId; }) || {}) : {}; build.diagCredit = parseFloat(_pc.invoice_amount) || 0; }
+    _propUpdateTotal(optIdx); _propRenderBuilds();
+  };
+  window._propSetDiagCredit = function(optIdx, val) {
+    var build = _propBuilds[optIdx]; if (!build) return;
+    build.diagCredit = Math.max(0, parseFloat(val) || 0);
+    _propUpdateTotal(optIdx); _propRenderBuilds();
+  };
+  window._propSetPillNote = function(optIdx, val) { var b = _propBuilds[optIdx]; if (b) b.pillNote = String(val || ''); };
   window._propToggleRR = function(optIdx) {
     var build = _propBuilds[optIdx];
     if (!build) return;
