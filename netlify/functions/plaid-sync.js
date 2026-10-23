@@ -40,8 +40,19 @@ function isStripePayout(desc) {
 // TRANSFER_OUT; "CHASE" is a strong secondary signal since that's the named personal bank.
 // Auto-booked straight to the equity account "Shareholder Distributions" (never touches
 // Net Income — distributions are a draw against after-tax profit, not a business expense).
+// Account endings (per Dennis, 2026-10-23): personal Chase 1065 is the ONLY owner-distribution target.
+// The business accounts below are all Solar Review's own, so money moving between them is neither
+// an expense, a distribution, nor revenue.
+const PERSONAL_LAST4 = ['1065'];
+const OWN_BUSINESS_LAST4 = ['0215', '1198', '4017'];   // Solar Review (Chase), TEAMERICO (Chase), Solar Review (GWCU)
+function mentionsLast4(desc, list) { return list.some(l => new RegExp('(^|\\D)' + l + '(\\D|$)').test(desc)); }
+function isInternalTransfer(desc) { return mentionsLast4(desc, OWN_BUSINESS_LAST4) && !mentionsLast4(desc, PERSONAL_LAST4); }
 function isOwnerDistribution(desc, pfc) {
-  return pfc === 'TRANSFER_OUT' || /\bCHASE\b/i.test(desc);
+  if (mentionsLast4(desc, PERSONAL_LAST4)) return true;
+  if (isInternalTransfer(desc)) return false;
+  // Older GWCU rows carry no account ending — keep the old Plaid self-transfer signal for those,
+  // but a bare "Chase" in a description (the new bank itself) no longer counts.
+  return pfc === 'TRANSFER_OUT' && /TRANSFER/i.test(desc);
 }
 function depositFloorFor(item) {
   if (item.deposit_since) return item.deposit_since;
@@ -173,12 +184,13 @@ async function syncItem(item, rules) {
       // commission ACH deposit is frequently Plaid-categorized TRANSFER_IN.
       if (item.kind !== 'bank') continue;
       if (t.date < depositFloor) continue;
+      if (isInternalTransfer(desc)) continue;   // moving between our own business accounts — not revenue
       if (isStripePayout(desc)) continue;   // already recorded via the payments table — never queue for review
       deposits.push({ date: t.date, description: cleanDesc, amount: Math.abs(amount), plaid_id: t.transaction_id });
       continue;
     }
     // Expense (money out). Internal transfers / card autopay are neither expense nor revenue.
-    if (SKIP_PFC.has(pfc) || isIssuerPayment(desc)) continue;
+    if (SKIP_PFC.has(pfc) || isIssuerPayment(desc) || isInternalTransfer(desc)) continue;
     if (item.start_date && t.date < item.start_date) continue; // CSV history owns everything before the cutoff
     txns.push({ date: t.date, description: cleanDesc, amount: amount, plaid_id: t.transaction_id, isDistribution: isOwnerDistribution(desc, pfc) });
   }
