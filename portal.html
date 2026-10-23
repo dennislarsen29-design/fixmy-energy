@@ -2488,6 +2488,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += _sunOnboardSopHtml();
     h += _sunSeoHtml(D);
     h += _sunMetaHtml(D);
+    h += window._sunStackHtml();
     // agent issues + health
     h += '<div class="sun-two"><section class="sun-panel" id="sunIssues" aria-label="Agent issues"><div class="sun-ph"><h2>' + _sunIco('bot') + 'Agent issues</h2><span class="sun-note">' + (D.agents.ok ? (D.agents.data.length + ' unread reports grouped into ' + O.issues.length + ' issues') : 'reports could not be loaded') + '</span></div>';
     if (!D.agents.ok) h += '<div class="sun-empty">Unknown: agent reports could not be loaded.</div>';
@@ -2532,6 +2533,83 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     else a = 'I can answer: what to work on next, what is blocking revenue, which leads need follow-up, your commissions, and what changed since your last visit.';
     t.textContent = a; out.hidden = false;
   };
+  // ── Tech stack & costs (Admin S.U.N., 2026-10-23, per Dennis) ──
+  // Costs are typed in by Dennis (never guessed). Suggestions are plain rules over this list.
+  window._sunStackRows = null;
+  window._sunStackHtml = function() { return '<section class="sun-panel" id="sunStack" aria-label="Tech stack and costs"><div class="sun-ph"><h2>' + _sunIco('pulse') + 'Tech stack &amp; costs</h2><span class="sun-note">loading…</span></div></section>'; };
+  window._sunStackLoad = async function() {
+    var box = document.getElementById('sunStack'); if (!box) return;
+    try {
+      var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var r = await c.from('tech_stack').select('*').order('sort', { ascending: true }).order('name', { ascending: true });
+      if (r.error) throw r.error;
+      window._sunStackRows = r.data || [];
+    } catch (e) {
+      box.innerHTML = '<div class="sun-ph"><h2>Tech stack &amp; costs</h2></div><div class="sun-empty">Unknown: the tech stack list could not be loaded (' + _sunEsc(e.message || e) + ').</div>';
+      return;
+    }
+    window._sunStackRender();
+  };
+  window._sunStackSuggestions = function(rows) {
+    var out = [], act = rows.filter(function(x){ return x.status !== 'planned'; });
+    var noCost = act.filter(function(x){ return x.cost_monthly == null; });
+    if (noCost.length) out.push({ sev: 'amb', t: noCost.length + ' of ' + act.length + ' tools have no cost entered', b: 'The total below is incomplete until these are filled in: ' + noCost.map(function(x){ return _sunEsc(x.name); }).join(', ') + '. Open each vendor\'s billing page, or check the card statement.' });
+    var unused = act.filter(function(x){ return x.status === 'unused'; });
+    unused.forEach(function(x){ out.push({ sev: 'red', t: 'Cancel ' + _sunEsc(x.name), b: 'Marked unused' + (x.cost_monthly ? ' — saves ' + _sunMoney(+x.cost_monthly) + '/mo' : '') + '.' }); });
+    var by = {}; act.forEach(function(x){ if (x.status !== 'unused') (by[x.category] = by[x.category] || []).push(x); });
+    Object.keys(by).forEach(function(k){ if (by[k].length > 1 && /Design|Property data|Answering/.test(k)) out.push({ sev: 'amb', t: 'Overlap in ' + _sunEsc(k), b: by[k].map(function(x){ return _sunEsc(x.name); }).join(' and ') + ' do similar jobs. Keep the one the team actually uses.' }); });
+    var has = function(n){ return rows.filter(function(x){ return x.name === n && x.status !== 'unused'; })[0]; };
+    if (has('Smith.AI')) out.push({ sev: 'amb', t: 'Smith.AI can likely be cancelled', b: 'It was planned to be replaced by Quoya inbound handling. Cancel once Quoya answers inbound calls and missed-call texts.' });
+    var rg = has('Regrid'); if (rg) out.push({ sev: 'amb', t: 'Regrid: decide before the trial ends (Nov 1)', b: 'San Diego owners already come from the county table. Keep Regrid only if you are opening markets outside San Diego, where it is the only owner source.' });
+    var hg = has('HeyGen'); if (hg) out.push({ sev: 'amb', t: 'HeyGen: confirm what the plan includes', b: 'Check whether it includes API / LiveAvatar access. If it only makes hand-made videos, it may not justify a monthly charge until the live avatar is built.' });
+    var big = act.filter(function(x){ return +x.cost_monthly > 0; }).sort(function(a, b){ return b.cost_monthly - a.cost_monthly; }).slice(0, 3);
+    if (big.length) out.push({ sev: 'ok', t: 'Biggest costs to review first', b: big.map(function(x){ return _sunEsc(x.name) + ' ' + _sunMoney(+x.cost_monthly); }).join(' · ') + '. Ask each for annual billing or a lower tier if usage is light.' });
+    return out;
+  };
+  window._sunStackRender = function() {
+    var box = document.getElementById('sunStack'); if (!box) return;
+    var rows = window._sunStackRows || [];
+    var live = rows.filter(function(x){ return x.status !== 'planned'; });
+    var total = live.reduce(function(s, x){ return s + (+x.cost_monthly || 0); }, 0);
+    var missing = live.filter(function(x){ return x.cost_monthly == null; }).length;
+    var inp = 'padding:6px 8px;border-radius:6px;border:1px solid rgba(255,255,255,0.18);background:rgba(255,255,255,0.05);color:inherit;font-size:0.8rem;';
+    var h = '<div class="sun-ph"><h2>' + _sunIco('pulse') + 'Tech stack &amp; costs</h2><span class="sun-note">' + rows.length + ' tools · you enter the costs</span></div>';
+    h += '<div class="sun-metrics" style="margin-bottom:10px"><div class="sun-m"><div class="l">Monthly total</div><div class="v">' + _sunMoney(total) + '</div><div class="s">' + (missing ? 'incomplete — ' + missing + ' without a cost' : 'all costs entered') + '</div></div><div class="sun-m"><div class="l">Yearly</div><div class="v">' + _sunMoney(total * 12) + '</div><div class="s">monthly × 12 (usage-based tools vary)</div></div></div>';
+    h += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.8rem;"><tr style="text-align:left;opacity:.7"><th style="padding:6px">Tool</th><th>Purpose</th><th>$ / month</th><th>Billing</th><th>Status</th></tr>';
+    h += rows.map(function(x){
+      return '<tr style="border-top:1px solid rgba(255,255,255,0.08)"><td style="padding:7px 6px"><b>' + _sunEsc(x.name) + '</b><div style="opacity:.6;font-size:0.7rem">' + _sunEsc(x.category || '') + '</div></td>'
+        + '<td style="max-width:230px;opacity:.85">' + _sunEsc(x.purpose || '') + (x.notes ? '<div style="opacity:.6;font-size:0.7rem">' + _sunEsc(x.notes) + '</div>' : '') + '</td>'
+        + '<td><input type="number" step="0.01" min="0" value="' + (x.cost_monthly == null ? '' : x.cost_monthly) + '" placeholder="enter" onchange="window._sunStackSave(\'' + x.id + '\',\'cost_monthly\',this.value)" style="' + inp + 'width:84px"/></td>'
+        + '<td><select onchange="window._sunStackSave(\'' + x.id + '\',\'billing\',this.value)" style="' + inp + '">' + ['monthly','annual','usage'].map(function(o){ return '<option value="' + o + '"' + (x.billing === o ? ' selected' : '') + '>' + o + '</option>'; }).join('') + '</select></td>'
+        + '<td><select onchange="window._sunStackSave(\'' + x.id + '\',\'status\',this.value)" style="' + inp + '">' + ['active','trial','unused','planned'].map(function(o){ return '<option value="' + o + '"' + (x.status === o ? ' selected' : '') + '>' + o + '</option>'; }).join('') + '</select></td></tr>';
+    }).join('') + '</table></div>';
+    h += '<div class="sun-acts" style="margin-top:10px"><button class="sun-btn sm" onclick="window._sunStackAdd()">+ Add tool</button></div>';
+    h += '<div class="sun-ph" style="margin-top:14px"><h2>Suggestions to cut cost</h2><span class="sun-note">rules over this list — not financial advice</span></div>';
+    h += window._sunStackSuggestions(rows).map(function(s){ return '<div class="sun-row"><span class="sun-dot sun-d-' + s.sev + '"></span><div class="b"><strong>' + s.t + '</strong><span>' + s.b + '</span></div></div>'; }).join('') || '<div class="sun-empty">Nothing to suggest yet.</div>';
+    box.innerHTML = h;
+  };
+  window._sunStackSave = async function(id, field, val) {
+    var patch = { updated_at: new Date().toISOString() };
+    patch[field] = field === 'cost_monthly' ? (val === '' ? null : parseFloat(val)) : val;
+    if (field === 'cost_monthly' && patch[field] != null && isNaN(patch[field])) return;
+    try {
+      var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var r = await c.from('tech_stack').update(patch).eq('id', id).select('id');
+      if (r.error || !r.data || !r.data.length) throw new Error(r.error ? r.error.message : 'no row updated');
+      (window._sunStackRows || []).forEach(function(x){ if (x.id === id) x[field] = patch[field]; });
+      window._sunStackRender();
+    } catch (e) { alert('Could not save: ' + (e.message || e)); window._sunStackLoad(); }
+  };
+  window._sunStackAdd = async function() {
+    var name = prompt('Tool name?'); if (!name || !name.trim()) return;
+    var purpose = prompt('What is it used for? (optional)') || '';
+    try {
+      var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var r = await c.from('tech_stack').insert({ name: name.trim(), purpose: purpose.trim(), category: 'Other', sort: 200 }).select('id');
+      if (r.error) throw r.error;
+      window._sunStackLoad();
+    } catch (e) { alert('Could not add: ' + (e.message || e)); }
+  };
   async function _sunAdminBoot(portalNav, ctx) {
     _sunCss(); window._sunRole = 'admin';
     var body = document.getElementById('dashBody'), labels = ['payments', 'commissions', 'team', 'agents', 'systems', 'earned dates'];
@@ -2543,6 +2621,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var O = _sunAdminCompute(D, ctx); window._sunO = O; window._sunCommOk = O.commOk;
     if (adminView !== 'home') return;   // admin navigated away while loading
     body.innerHTML = portalNav + _sunAdminHtml(D, O, ctx, portalNav);
+    try { window._sunStackLoad(); } catch (e) {}
   }
 
   // ── Admin Command Center — "pulse on all systems from first log in" (2026-09-24,
