@@ -26,11 +26,11 @@ exports.handler = async (event, ctx, deps) => {
   if (event.httpMethod !== 'POST') return out(405, { error: 'POST only' });
   let b = {}; try { b = JSON.parse(event.body || '{}'); } catch (e) { return out(400, { error: 'bad json' }); }
   const id = String(b.customerId || ''), action = String(b.action || '');
-  if (!/^[0-9a-f-]{36}$/i.test(id) || ['assist', 'diagnostic', 'submitted', 'nosolar'].indexOf(action) < 0) return out(400, { error: 'bad request' });
+  if (!/^[0-9a-f-]{36}$/i.test(id) || ['assist', 'diagnostic', 'submitted', 'nosolar', 'book_virtual'].indexOf(action) < 0) return out(400, { error: 'bad request' });
   if (!process.env.SUPA_SERVICE_KEY) return out(500, { error: 'not configured' });
   const H = heads();
   const get = async (path) => (await (await doFetch(SUPA_URL + '/rest/v1' + path, { headers: H })).json().catch(() => null));
-  const c = ((await get('/customers?id=eq.' + id + '&select=id,first_name,last_name,email,phone,access_code,rep_id,eval_mode,notes,invoice_status,invoice_amount,sign_token,sign_token_expires_at,agreement_status,sold_type&limit=1')) || [])[0];
+  const c = ((await get('/customers?id=eq.' + id + '&select=id,first_name,last_name,email,phone,address,access_code,rep_id,eval_mode,notes,invoice_status,invoice_amount,sign_token,sign_token_expires_at,agreement_status,sold_type&limit=1')) || [])[0];
   if (!c || !codeMatches(b.code, c)) return out(403, { error: 'We could not verify this link.' });
 
   const name = ((c.first_name || '') + ' ' + (c.last_name || '')).trim() || 'A customer';
@@ -61,6 +61,25 @@ exports.handler = async (event, ctx, deps) => {
     await addNote(nosolar ? 'Customer says they have no solar yet (answered in their own evaluation) — new-solar consult.' : 'Customer finished their own guided evaluation (photos / bill / answers are on the lead).');
     const s = await alertStaff(name + (nosolar ? ' says they have no solar yet — please reach out about a new-solar consult.' : ' finished their guided evaluation. Photos and answers are on the lead — review and call ' + (c.phone || 'them') + '.'), action);
     return out(200, { ok: true, staff: s });
+  }
+
+  if (action === 'book_virtual') {
+    // Customer picked a time from the real Evaluation calendar (ghl-slots). Books it through the same
+    // ghl-book path, titled "Virtual Solar Evaluation", records the event for the portal, alerts the team.
+    const sISO = new Date(b.startISO), eISO = new Date(b.endISO || (sISO.getTime() + 7200000));
+    if (isNaN(sISO) || isNaN(eISO) || sISO < new Date(Date.now() - 3600000) || sISO > new Date(Date.now() + 30 * 86400000)) return out(400, { error: 'That time is not available. Please pick another.' });
+    if (!c.phone && !c.email) return out(400, { error: 'We need a phone or email on file to book.' });
+    let res;
+    try {
+      res = await require('./ghl-book').handler({ httpMethod: 'POST', headers: {}, body: JSON.stringify({ firstName: c.first_name, lastName: c.last_name, phone: c.phone, email: c.email, address: c.address, startISO: sISO.toISOString(), endISO: eISO.toISOString(), customerId: id, virtual: true }) });
+    } catch (e) { return out(502, { error: 'Could not reach the calendar. Please call us.' }); }
+    let r = {}; try { r = JSON.parse(res.body || '{}'); } catch (e) {}
+    if (!r.ok || !r.appointmentId) return out(502, { error: 'That time could not be booked. Please pick another or call us.' });
+    await doFetch(SUPA_URL + '/rest/v1/appointments', { method: 'POST', headers: Object.assign({}, H, { Prefer: 'return=minimal' }), body: JSON.stringify({ customer_id: id, event_type: 'Virtual Solar Evaluation', starts_at: sISO.toISOString(), ends_at: eISO.toISOString(), status: 'scheduled', created_by: 'customer' }) }).catch(() => {});
+    const when = sISO.toLocaleString('en-US', { timeZone: 'America/Los_Angeles', weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    await addNote('Customer booked a Virtual Solar Evaluation for ' + when + ' (on the Evaluation calendar).');
+    await alertStaff(name + ' booked a Virtual Solar Evaluation for ' + when + '. It is on the calendar.', 'vbook_' + sISO.getTime());
+    return out(200, { ok: true, when });
   }
 
   if (action === 'assist') {

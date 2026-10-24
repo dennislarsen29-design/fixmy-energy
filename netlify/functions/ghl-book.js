@@ -52,7 +52,7 @@ exports.handler = async function(event) {
     return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Invalid JSON' }) };
   }
 
-  const { firstName, lastName, phone, email, address, startISO, endISO, customerId, fbp, fbc, notify } = payload;
+  const { firstName, lastName, phone, email, address, startISO, endISO, customerId, fbp, fbc, notify, virtual } = payload;
   if (!startISO || (!phone && !email))
     return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'startISO + phone or email required' }) };
 
@@ -144,7 +144,8 @@ exports.handler = async function(event) {
         assignedUserId:      assignedUserId || undefined,
         startTime:           startISO,
         endTime:             endISO,
-        title:               `Solar Evaluation — ${(firstName || '')} ${(lastName || '')}`.trim(),
+        // Virtual (self-service / remote-assist) evaluations always start with "Virtual" so the team and customer can tell them apart on the calendar.
+        title:               `${virtual === true ? 'Virtual Solar Evaluation' : 'Solar Evaluation'} — ${(firstName || '')} ${(lastName || '')}`.trim(),
         meetingLocationType: 'default',
         address:             address || undefined,
         // Manual/override times (Black Box Dialer, editor) aren't validated free
