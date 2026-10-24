@@ -345,6 +345,7 @@ exports.handler = async function(event) {
   // Home match: add what Black Box already knows about this address (fill blanks only, nothing overwritten).
   if (!isPartial && address && resultId) {
     try { await require('./lib/home-match').enrich(resultId); } catch (e) { /* never block the booking */ }
+    try { await require('./lib/virtual-check').check(resultId); } catch (e) {}
   }
 
   console.log(existingId ? 'Updated' : 'Created', 'customer:', email || digits || address);

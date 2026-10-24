@@ -284,6 +284,7 @@ exports.handler = async function(event) {
 
   // Home match: add what Black Box already knows about this address (fill blanks only).
   try { if (typeof existingId !== 'undefined' && existingId) await require('./lib/home-match').enrich(existingId); } catch (e) {}
+  try { if (typeof existingId !== 'undefined' && existingId) await require('./lib/virtual-check').check(existingId); } catch (e) {}
 
   return {
     statusCode: 200,

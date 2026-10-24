@@ -5669,6 +5669,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
               ) +
               '</div>'
             ) : '') +
+            // Tech home base (2026-10-23): used to flag Virtual evaluations (50+ mi from every Tech). Electricians don't count.
+            (u.role === 'tech' ? (
+              '<div style="margin-top:10px;padding:8px 10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">' +
+                '<span style="font-size:0.62rem;color:#666;text-transform:uppercase;letter-spacing:0.05em;">Home ZIP (Virtual check)</span>' +
+                '<input id="homeZip_'+u.id+'" value="'+(u.home_zip||'')+'" maxlength="5" inputmode="numeric" style="width:70px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:3px 6px;color:#F3EDE3;font-size:0.72rem;outline:none;"/>' +
+                '<button onclick="adminSaveHomeZip(\''+u.id+'\')" style="font-size:0.62rem;padding:3px 10px;background:rgba(74,158,255,0.12);border:1px solid rgba(74,158,255,0.3);color:#4a9eff;border-radius:100px;cursor:pointer;width:auto;">Save</button>' +
+                (u.home_lat ? '<span style="font-size:0.62rem;color:#8DC63F;">&#10003; located</span>' : '<span style="font-size:0.62rem;color:#ffaa00;">not set &mdash; ignored for Virtual</span>') +
+              '</div>'
+            ) : '') +
             // Setter Comp Plan (2026-09-18, per Dennis) — Setters ONLY, same scope as the
             // election gate in loadSalesDashboard. Per Dennis: "I don't want this populating
             // on Tech's... their pay plan is retaining the full 40%" — a Tech's card never
@@ -6178,6 +6187,21 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       } catch(e) { alert('HIS update failed: ' + e.message); }
     };
 
+    window.adminSaveHomeZip = async function(memberId) {
+      var el = document.getElementById('homeZip_'+memberId); var z = el ? el.value.trim() : '';
+      try {
+        var g = null;
+        if (z) { if (!/^\d{5}$/.test(z)) throw new Error('Enter a 5-digit ZIP.'); g = await _geocodeFull(z + ', USA'); if (!g || g.status !== 'OK') throw new Error('Could not locate that ZIP (' + ((g && g.status) || 'no result') + ').'); }
+        var upd = { home_zip: z || null, home_lat: g ? g.lat : null, home_lng: g ? g.lng : null };
+        var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+        var r2 = await c2.from('team_members').update(upd).eq('id', memberId).select('id');
+        if (r2.error) throw new Error(r2.error.message);
+        if (!r2.data || !r2.data.length) throw new Error('No record was updated.');
+        var ix = adminTeamMembers.findIndex(function(m){return m.id===memberId;});
+        if (ix>-1) Object.assign(adminTeamMembers[ix], upd);
+        renderTeamView();
+      } catch(e) { alert('Could not save home ZIP: ' + e.message); }
+    };
     window.adminSaveHISDates = async function(memberId, issueDate, expDate) {
       try {
         var hdC = supabase.createClient(SUPA_URL, SUPA_KEY);
@@ -10002,7 +10026,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   }
   // Big banner for the top of a lead editor so the prompt is on the lead itself.
   function _checkinBannerHtml(c) {
-    if (!c || !c.diagnostic_date || c.sold_type === 'new_solar') return '';
+    if (!c || !c.diagnostic_date || c.sold_type === 'new_solar' || c.eval_mode === 'virtual') return '';
     if (_checkinNoteFor(c)) return '';
     var w = _checkinWindow(c);
     if (!w.open) return '';
@@ -10013,7 +10037,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       + _checkinBtnHtml(c) + '</div>';
   }
   function _checkinBtnHtml(c) {
-    if (!c || !c.diagnostic_date || c.sold_type === 'new_solar') return '';
+    if (!c || !c.diagnostic_date || c.sold_type === 'new_solar' || c.eval_mode === 'virtual') return '';
     var done = _checkinNoteFor(c);
     if (done) return '<span style="font-size:0.66rem;padding:4px 10px;background:rgba(141,198,63,0.12);color:#8DC63F;border-radius:8px;border:1px solid rgba(141,198,63,0.3);font-weight:700;">&#9989; Checked in</span>';
     if (!_checkinWindow(c).open) return '';
@@ -25088,6 +25112,28 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // (2026-09-24, per Dennis: "rework the Axia/QCells Site Evaluation process... mimic
   // the FixMy.energy Evaluation but specify the details only related to onboarding
   // with Axia/QCells" — no site photos, just the utility bill + Quoya's read of it).
+  // Local vs Virtual evaluation (2026-10-23). Auto-set at booking (50+ mi from every Tech home base);
+  // admin can override either way — a manual choice is never auto-changed.
+  function _evalModeControlHtml(c){
+    if (!c || !c.id || c.lead_category === 'new_solar') return '';
+    var m = c.eval_mode === 'virtual' ? 'virtual' : 'local';
+    var info = c.eval_distance_mi != null ? Math.round(c.eval_distance_mi) + ' mi from nearest Tech' : 'distance unknown';
+    return '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:-6px 0 14px;font-size:0.72rem;color:#888;">'
+      + '<span>Evaluation:</span>'
+      + '<select onchange="setEvalMode(\''+c.id+'\',this.value)" style="width:auto;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#F3EDE3;padding:5px 8px;font-size:0.74rem;">'
+      + '<option value="local"'+(m==='local'?' selected':'')+'>Local (Tech visit)</option><option value="virtual"'+(m==='virtual'?' selected':'')+'>Virtual (self-service + Quoya)</option></select>'
+      + '<span>'+info+(c.eval_mode_manual?' &middot; set by hand':' &middot; automatic')+(m==='virtual'?' &middot; diagnostic fee defaults to $599.99':'')+'</span></div>';
+  }
+  window.setEvalMode = async function(id, mode){
+    try {
+      var cl = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var r = await cl.from('customers').update({ eval_mode: mode, eval_mode_manual: true }).eq('id', id).select('id');
+      if (r.error) throw new Error(r.error.message);
+      if (!r.data || !r.data.length) throw new Error('No record was updated.');
+      var rec = (adminCustomers||[]).find(function(x){return x.id===id;});
+      if (rec) { rec.eval_mode = mode; rec.eval_mode_manual = true; }
+    } catch(e) { alert('Could not change the evaluation type: ' + e.message); }
+  };
   function _startEvalButtonHtml(c, isNS){
     var id = (c && c.id) || '';
     // ONE button for both pipelines (2026-10-06, per Dennis — "make them all the same on both
@@ -26894,6 +26940,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // A completed booking that merely lacks a diagnostic_date (e.g. GHL AppointmentCreate
     // webhook not wired) must never false-flag as incomplete.
     // Check-in bubble — appears when it's time for the appointment (30 min before through the arrival window).
+    var virtualBadge = (c.eval_mode === 'virtual') ? '<span title="'+(c.eval_distance_mi?Math.round(c.eval_distance_mi)+' mi from the nearest Tech':'')+' — self-service evaluation with Quoya + remote assist" style="font-size:0.62rem;font-weight:800;padding:3px 9px;border-radius:999px;background:rgba(74,158,255,0.15);color:#4a9eff;border:1px solid rgba(74,158,255,0.4);">&#127760; VIRTUAL</span>' : '';
     var checkinBubble = '';
     try {
       if (window._checkinBtnHtml && c.diagnostic_date && !_lfIsCanceled(c) && !(window._checkinNoteFor && window._checkinNoteFor(c))) {
@@ -26980,7 +27027,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         _llUrgentBanner(c)+
         assignLine+
         techAssignHtml+
-        '<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px;align-items:center;">'+checkinBubble+invBadge+agBadge+docBadge+opsBadge+incompleteBadge+'</div></div>'+
+        '<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px;align-items:center;">'+virtualBadge+checkinBubble+invBadge+agBadge+docBadge+opsBadge+incompleteBadge+'</div></div>'+
       '<div class="lead-card-actions">'+
         '<button class="lead-btn lime" data-id="'+c.id+'" onclick="'+_editFn+'(this.dataset.id)">&#9998; Edit</button>'+
         (c.email ? '<button class="lead-btn ghost" onclick="sendMagicLink(\''+magic+'\',\''+esc(c.email)+'\')" style="color:#4a9eff;border-color:rgba(74,158,255,0.25);">&#128279; Link</button>' : '')+
@@ -29565,7 +29612,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     _diagPendingUpdates = { id: id, updates: pendingUpdates };
 
     var presets = [449,499,549,599,649,699];
-    var existing = c.invoice_amount ? parseFloat(c.invoice_amount) : 499;
+    var existing = c.invoice_amount ? parseFloat(c.invoice_amount) : (c.eval_mode === 'virtual' ? 599.99 : 499);
     var repName = c.setter_name || 'Sales Rep';
 
     var presetsHtml = presets.map(function(fee) {
@@ -30010,7 +30057,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // (now also holding Lead Category, Assignment, Ops Advice) → Proposal Tools →
       // Diagnostic Assessment → Photos.
       _checkinBannerHtml(c)+
-      _startEvalButtonHtml(c, isNSEdit)+
+      _startEvalButtonHtml(c, isNSEdit)+_evalModeControlHtml(c)+
       '<div id="edSolarPanel_'+c.id+'" style="margin:4px 0 16px;"></div>'+
       '<div class="editor-section-title">Customer Info</div>'+
       '<div class="ed-grid">'+
@@ -32515,6 +32562,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           if (_hm && _hm.matched) { var _fresh = await client.from('customers').select('*').eq('id', data.id).single(); if (_fresh.data) data = _fresh.data; }
         }
       } catch(_hme) {}
+      // Virtual check: 50+ miles from every Tech home base => self-service evaluation (2026-10-23)
+      try {
+        if (data && data.id) {
+          var _vc = await (await fetch('/.netlify/functions/virtual-check', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({customerId:data.id})})).json();
+          if (_vc && _vc.mode) { data.eval_mode = _vc.mode; data.eval_distance_mi = _vc.miles; }
+        }
+      } catch(_vce) {}
       adminCustomers.unshift(Object.assign({setter_name:setterLabel},data||Object.assign({id:'tmp-'+Date.now(),created_at:new Date().toISOString()},newLead)));
       var geo=await geocodeAddress(addr);
       var sheetRow=Object.assign({},newLead,{id:(data&&data.id)?data.id:'tmp-'+Date.now(),setter_name:setterLabel||type,lat:geo?geo.lat:'',lng:geo?geo.lng:'',maps_status:'needs-followup',postcard:postcard,utility_bill:utilityBill,two_hr_window:window2hr,years_owned:owned,roof_age:roof,created_at:new Date().toISOString()});
@@ -36102,7 +36156,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     };
     function openSalesDiagModal(id, rec) {
       var presets = [449,499,549,599,649,699];
-      var existing = rec.invoice_amount ? parseFloat(rec.invoice_amount) : 499;
+      var existing = rec.invoice_amount ? parseFloat(rec.invoice_amount) : (rec.eval_mode === 'virtual' ? 599.99 : 499);
       var presetsHtml = presets.map(function(fee) {
         var active = fee === existing;
         return '<button onclick="salesDiagFeeSelect('+fee+')" id="sDiagBtn_'+fee+'" style="flex:1;min-width:70px;padding:11px 4px;background:'+(active?'rgba(141,198,63,0.15)':'rgba(255,255,255,0.04)')+';border:1px solid '+(active?'rgba(141,198,63,0.4)':'rgba(255,255,255,0.1)')+';border-radius:10px;color:'+(active?'#8DC63F':'#aaa')+';cursor:pointer;text-align:center;font-weight:700;font-size:0.9rem;">$'+fee+'</button>';
