@@ -26,7 +26,7 @@ exports.handler = async (event, ctx, deps) => {
   if (event.httpMethod !== 'POST') return out(405, { error: 'POST only' });
   let b = {}; try { b = JSON.parse(event.body || '{}'); } catch (e) { return out(400, { error: 'bad json' }); }
   const id = String(b.customerId || ''), action = String(b.action || '');
-  if (!/^[0-9a-f-]{36}$/i.test(id) || ['assist', 'diagnostic'].indexOf(action) < 0) return out(400, { error: 'bad request' });
+  if (!/^[0-9a-f-]{36}$/i.test(id) || ['assist', 'diagnostic', 'submitted', 'nosolar'].indexOf(action) < 0) return out(400, { error: 'bad request' });
   if (!process.env.SUPA_SERVICE_KEY) return out(500, { error: 'not configured' });
   const H = heads();
   const get = async (path) => (await (await doFetch(SUPA_URL + '/rest/v1' + path, { headers: H })).json().catch(() => null));
@@ -55,6 +55,13 @@ exports.handler = async (event, ctx, deps) => {
     if (results.some(r => r.ok)) await doFetch(SUPA_URL + '/rest/v1/pipeline_state', { method: 'POST', headers: Object.assign({}, H, { Prefer: 'resolution=merge-duplicates,return=minimal' }), body: JSON.stringify({ key, value: JSON.stringify({ ts: Date.now() }), updated_at: new Date().toISOString() }) }).catch(() => {});
     return { results };
   };
+
+  if (action === 'submitted' || action === 'nosolar') {
+    const nosolar = action === 'nosolar';
+    await addNote(nosolar ? 'Customer says they have no solar yet (answered in their own evaluation) — new-solar consult.' : 'Customer finished their own guided evaluation (photos / bill / answers are on the lead).');
+    const s = await alertStaff(name + (nosolar ? ' says they have no solar yet — please reach out about a new-solar consult.' : ' finished their guided evaluation. Photos and answers are on the lead — review and call ' + (c.phone || 'them') + '.'), action);
+    return out(200, { ok: true, staff: s });
+  }
 
   if (action === 'assist') {
     await addNote('Customer asked for a Virtual Evaluation (live help with Quoya) — please call them.');

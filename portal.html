@@ -10706,6 +10706,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     EVAL_STEPS.forEach(function(s){ byKey[s.key] = s; });
     var ans = (_evLocal && _evLocal.answers) || {};
     var steps = [byKey.triage];
+    if (_evCust) {
+      // Homeowner path (2026-10-24): triage -> hardware (only the inverter photo required, no brand
+      // needed) -> utility bill -> send. No power-cycle (never ask a homeowner to switch breakers),
+      // no analysis/pricing steps (those are the Tech's).
+      if (ans.has_solar !== 'yes') return steps;
+      var hwC = Object.assign({}, byKey.hardware, {
+        blurb: 'Quick photos of your solar equipment. Just the inverter is required - add the rest if you can reach them safely.',
+        slots: byKey.hardware.slots.map(function(sl){ return Object.assign({}, sl, { required: sl.key === 'inverter' }); })
+      });
+      var conC = Object.assign({}, byKey.consumption, { blurb: 'Your most recent utility bill (the first page is enough). Quoya reads it for you.' });
+      steps.push(hwC, conC, { key: 'cdone', title: 'Send to our team', icon: '&#9989;', blurb: '', slots: [] });
+      return steps;
+    }
     if (ans.has_solar !== 'yes') return steps; // 'no' → Axia CTA inside triage; unanswered → gated there
     if (ans.system_issue === 'no') {
       var hwLight = Object.assign({}, byKey.hardware, {
@@ -10724,6 +10737,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   }
 
   var _evId = null, _evRec = null, _evStepIdx = 0, _evRow = null;
+  var _evCust = false; // true when the HOMEOWNER runs the wizard from their own portal (Virtual setup)
   var _evBusy = false, _evAnalyzing = false, _evPollTimer = null, _evBillAnalyzing = false, _evBillRerun = false;
   var _evBillAutoTried = {};   // evaluation id → auto bill read already attempted this session
   var _evTsRunning = false, _evTsTimer = null; // Quoya Troubleshoot (power-cycle step)
@@ -10754,6 +10768,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return _evHas(slot.label).length > 0 || !!_evLocal.skipped[slot.key];
   }
   function _evStepDone(step) {
+    if (step.key === 'cdone') return true;
+    if (_evCust && step.key === 'hardware') return step.slots.filter(function(s){ return s.required; }).every(_evSlotDone);
     if (step.key === 'triage') {
       var a = _evLocal.answers || {};
       return a.has_solar === 'yes' && !!a.ownership_status && (a.system_issue === 'yes' || a.system_issue === 'no');
@@ -10768,7 +10784,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // a gate. The Utility Bill PHOTO itself is still required via the slot check below.
     return step.slots.filter(function(s){ return s.required; }).every(_evSlotDone);
   }
-  function _evRepName() { return (typeof bbRepName === 'function') ? bbRepName() : 'Rep'; }
+  function _evRepName() { if (_evCust) return 'Customer'; return (typeof bbRepName === 'function') ? bbRepName() : 'Rep'; }
 
   // ── Proposal gate (2026-09-28, per Dennis: "block Internal Proposal progression
   // till the Evaluation is completed to prevent any issues coming up or forgetting
@@ -10850,7 +10866,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   async function _evSave(patch) {
     if (!_evId) return;
     var body = Object.assign({
-      customer_id: _evId, rep_id: (typeof bbRepId === 'function' ? bbRepId() : null),
+      customer_id: _evId, rep_id: (!_evCust && typeof bbRepId === 'function' ? bbRepId() : null),
       rep_name: _evRepName(), updated_at: new Date().toISOString()
     }, patch);
     try {
@@ -10865,8 +10881,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     } catch(e) { /* table not applied — nothing to resume, everything else still works */ }
   }
 
-  window.openEvalWizard = async function(id) {
-    var rec = (adminCustomers || []).find(function(x){ return String(x.id) === String(id); });
+  window.openEvalWizard = async function(id, opts) {
+    _evCust = !!(opts && opts.customer);
+    var rec = _evCust ? (typeof currentUser !== 'undefined' && currentUser && String(currentUser.id) === String(id) ? currentUser : null)
+                      : (adminCustomers || []).find(function(x){ return String(x.id) === String(id); });
     if (!rec) return;
     _evId = id; _evRec = rec; _evStepIdx = 0;
     _evLocal = { brand: '', model: '', serial: '', platform: '', utility: '', skipped: {}, answers: {}, billAnalysis: null };
@@ -10923,7 +10941,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (s) s.innerHTML = '';
     if (_evPollTimer) { clearTimeout(_evPollTimer); _evPollTimer = null; }
     if (_evTsTimer) { clearTimeout(_evTsTimer); _evTsTimer = null; }
-    _evId = null; _evRec = null; _evRow = null; _evAnalyzing = false; _evTsRunning = false;
+    _evId = null; _evRec = null; _evRow = null; _evAnalyzing = false; _evTsRunning = false; _evCust = false;
   };
 
   window.evGoStep = function(i) {
@@ -11379,7 +11397,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     _evRender();
     // No existing solar → the lead moves to Axia/QCells automatically and the Axia
     // evaluation opens right away (2026-10-02, per Dennis — no button, no re-opening).
-    if (qid === 'has_solar' && val === 'no') window.evMoveToAxia(true);
+    if (qid === 'has_solar' && val === 'no') {
+      if (_evCust) { fetch('/.netlify/functions/customer-start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({customerId:_evId,code:(_evRec.access_code||String(_evRec.phone||'').replace(/\D/g,'').slice(-10)),action:'nosolar'})}).catch(function(){}); return; }
+      window.evMoveToAxia(true);
+    }
   };
 
   // Brief on-screen update that fades on its own (not a modal, nothing to click).
@@ -11585,7 +11606,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
     // Header
     h += '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:4px;">';
-    h += '<div style="font-size:0.7rem;font-weight:800;text-transform:uppercase;letter-spacing:0.09em;color:#8DC63F;">&#9889; Solar Evaluation</div>';
+    h += '<div style="font-size:0.7rem;font-weight:800;text-transform:uppercase;letter-spacing:0.09em;color:#8DC63F;">&#9889; ' + (_evCust ? 'Your Solar Evaluation' : 'Solar Evaluation') + '</div>';
     h += '<button onclick="closeEvalWizard()" class="pv-close pv-pin" title="Close" aria-label="Close">&#10005;</button>';
     h += '</div>';
     h += '<div style="font-size:0.95rem;font-weight:700;margin-bottom:2px;">' + esc(name) + '</div>';
@@ -11603,9 +11624,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '<div style="display:flex;justify-content:space-between;font-size:0.62rem;color:#666;margin-bottom:16px;">'
       + '<span>Step ' + (_evStepIdx + 1) + ' of ' + steps.length + '</span>'
       + '<span>' + step.icon + ' ' + step.title + '</span></div>';
+    if (_evCust) h += '<div id="evCustAv"></div>';
     if (step.key !== 'analysis') h += _evQuoyaStripHtml();
 
-    if (step.key === 'analysis') {
+    if (step.key === 'cdone') {
+      h += _evCustDoneHtml();
+    } else if (step.key === 'analysis') {
       h += _evChecksHtml() + _evAnalysisHtml() + _evOpenQuoyaBtn(steps);
     } else if (step.key === 'upgrade') {
       h += _evChecksHtml() + _evUpgradeHtml() + _evOpenQuoyaBtn(steps);
@@ -11615,9 +11639,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       h += '<div style="font-size:1.05rem;font-weight:800;margin-bottom:4px;">' + step.icon + ' ' + step.title + '</div>';
       h += '<div style="font-size:0.76rem;color:#999;line-height:1.5;margin-bottom:16px;">' + step.blurb + '</div>';
 
-      if (step.key === 'triage')      h += _evTriageHtml();
+      if (step.key === 'triage')      h += (_evCust ? _evCustTriageHtml() : _evTriageHtml());
       if (step.key === 'hardware')    h += _evHardwareFieldsHtml();
-      if (step.key === 'hardware' && _evLocal.answers.system_issue !== 'yes') h += _evNotesHtml();
+      if (step.key === 'hardware' && !_evCust && _evLocal.answers.system_issue !== 'yes') h += _evNotesHtml();
       if (step.key === 'powercycle')  h += _evPowerCycleHtml();
       if (step.key === 'production')  h += _evProductionHelpHtml();
       // Utility picker sits UNDER Quoya's bill analysis once a bill is uploaded (it is auto-filled
@@ -11674,7 +11698,55 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
     h += '</div>';
     wrap.innerHTML = h;
+    if (_evCust) {
+      var _avl = { triage: "A few quick questions about your solar system.", hardware: "Snap what you can - the inverter photo is the important one.", consumption: "Upload your latest bill and I'll read it for you.", cdone: "That's everything I need. Send it to our team." };
+      var _ael = document.getElementById('evCustAv');
+      var _go = function(){ var e = document.getElementById('evCustAv'); if (e && window.QuoyaAvatar) window.QuoyaAvatar.mount(e, { key: 'eval-' + step.key, line: _avl[step.key] || '' }); };
+      if (_ael) { if (window.QuoyaAvatar) _go(); else { var _sc = document.createElement('script'); _sc.src = '/assets/quoya-avatar.js'; _sc.onload = _go; document.head.appendChild(_sc); } }
+    }
   }
+
+  function _evCustTriageHtml() {
+    var a = _evLocal.answers || {};
+    var box = 'background:rgba(255,255,255,0.035);border:1px solid rgba(255,255,255,0.1);border-radius:14px;padding:14px;margin-bottom:10px;';
+    var h = '<div style="' + box + '"><div style="font-size:0.88rem;font-weight:700;margin-bottom:9px;">1. Do you already have solar panels?</div>' + _evYesNoPills('has_solar', '&#10003; Yes', 'No') + '</div>';
+    if (a.has_solar === 'no') {
+      return h + '<div style="background:rgba(255,170,0,0.07);border:1px solid rgba(255,170,0,0.35);border-radius:14px;padding:15px;"><div style="font-weight:800;color:#ffaa00;margin-bottom:5px;">No problem - we do new solar too</div><div style="font-size:0.8rem;color:#ccc;line-height:1.55;">We let our team know. Dennis or Cristina will reach out about a new-solar consult. You can close this window.</div></div>';
+    }
+    if (a.has_solar === 'yes') {
+      h += '<div style="' + box + '"><div style="font-size:0.88rem;font-weight:700;margin-bottom:9px;">2. Is your system leased, financed, or paid off?</div><div style="display:flex;gap:6px;flex-wrap:wrap;">';
+      [['leased','Leased'],['financed','Financed'],['owned','Paid off']].forEach(function(o){
+        var on = a.ownership_status === o[0];
+        h += '<button onclick="evAnswer(\'ownership_status\',\'' + o[0] + '\')" style="width:auto;margin:0;flex:1 1 auto;padding:11px 12px;border-radius:100px;font-size:0.78rem;font-weight:700;cursor:pointer;' + (on ? 'background:rgba(141,198,63,0.18);border:1px solid rgba(141,198,63,0.55);color:#8DC63F;' : 'background:transparent;border:1px solid rgba(255,255,255,0.16);color:#999;') + '">' + o[1] + '</button>';
+      });
+      h += '</div></div>';
+      if (a.ownership_status) h += '<div style="' + box + '"><div style="font-size:0.88rem;font-weight:700;margin-bottom:3px;">3. Is anything wrong with it right now?</div><div style="font-size:0.7rem;color:#888;margin-bottom:9px;">Not producing, error lights, or it shut off.</div>' + _evYesNoPills('system_issue', 'Yes, something is off', 'No, it seems fine') + '</div>';
+    }
+    return h;
+  }
+
+  function _evCustDoneHtml() {
+    var inv = _evHas('Inverter Photo').length, bill = _evHas('Utility Bill').length, sub = !!(_evLocal.answers || {}).cust_submitted;
+    var row = function(ok, t){ return '<div style="padding:5px 0;font-size:0.85rem;color:' + (ok ? '#8DC63F' : '#999') + ';">' + (ok ? '&#10003; ' : '&#9675; ') + t + '</div>'; };
+    var h = '<div style="background:rgba(255,255,255,0.035);border:1px solid rgba(255,255,255,0.1);border-radius:14px;padding:16px;">'
+      + row(true, 'Your answers') + row(inv > 0, 'Inverter photo' + (inv ? ' (' + inv + ')' : ' - not added')) + row(bill > 0, 'Utility bill' + (bill ? '' : ' - not added')) + '</div>';
+    if (sub) return h + '<div style="margin-top:14px;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.4);border-radius:14px;padding:16px;"><div style="font-weight:800;color:#8DC63F;margin-bottom:6px;">Sent - thank you!</div><div style="font-size:0.82rem;color:#ccc;line-height:1.55;">Our team will review and contact you. If something looks wrong with your system, you can go straight to a Diagnostic.</div><button onclick="closeEvalWizard();_csDiag()" style="margin-top:12px;padding:12px;border:none;border-radius:100px;background:#8DC63F;color:#1A1A1A;font-weight:800;">Go to Diagnostic</button><button onclick="closeEvalWizard()" style="margin-top:8px;padding:10px;border:0;background:transparent;color:#999;">Done</button></div>';
+    return h + '<button onclick="evCustSubmit(this)" style="margin-top:14px;padding:14px;border:none;border-radius:100px;background:#8DC63F;color:#1A1A1A;font-weight:800;font-size:0.9rem;">Send to our team</button>'
+      + '<button onclick="evCustHelp(this)" style="margin-top:8px;padding:12px;border-radius:100px;border:1px solid #22d3ee;background:transparent;color:#22d3ee;font-weight:700;">Need help? Have us do it with you</button>'
+      + '<div id="evCustMsg" style="font-size:0.78rem;color:#ffaa00;margin-top:8px;text-align:center;"></div>';
+  }
+  window.evCustSubmit = async function(btn) {
+    btn.disabled = true; btn.textContent = 'Sending...';
+    try {
+      var r = await fetch('/.netlify/functions/customer-start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({customerId:_evId,code:(_evRec.access_code||String(_evRec.phone||'').replace(/\D/g,'').slice(-10)),action:'submitted'})}).then(function(x){return x.json();});
+      if (!r || !r.ok) throw new Error('failed');
+      _evLocal.answers.cust_submitted = true; _evSave({ answers: _evLocal.answers }); _evRender();
+    } catch (e) { btn.disabled = false; btn.textContent = 'Send to our team'; var m = document.getElementById('evCustMsg'); if (m) m.textContent = 'Could not send - check your connection and try again.'; }
+  };
+  window.evCustHelp = async function(btn) {
+    btn.disabled = true;
+    try { var r = await fetch('/.netlify/functions/customer-start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({customerId:_evId,code:(_evRec.access_code||String(_evRec.phone||'').replace(/\D/g,'').slice(-10)),action:'assist'})}).then(function(x){return x.json();}); var m = document.getElementById('evCustMsg'); if (m) m.textContent = (r && r.ok) ? 'Done - Dennis or Cristina will call you.' : 'Could not send. Please call us.'; } catch (e) { var m2 = document.getElementById('evCustMsg'); if (m2) m2.textContent = 'Could not send. Please call us.'; }
+  };
 
   function _evSlotHtml(slot) {
     var have = _evHas(slot.label);
@@ -26396,6 +26468,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     _csSay('Hi'+(fn?' '+fn:'')+', I\'m Quoya. Choose how you\'d like to start - I\'ll guide you either way.','welcome');
   };
   window._csGuide=function(){
+    _csClose();
+    if (typeof openEvalWizard === 'function' && currentUser && currentUser.id) { openEvalWizard(currentUser.id, { customer: true }); return; }
+    _csGuideLegacy();
+  };
+  window._csGuideLegacy=function(){
     var slots=[['inverter','Photo of your inverter','The box on the wall near your panels'],['serial','Photo of the serial-number label','The sticker on the side of the inverter'],['panel','Photo of your main electrical panel','Stand back so the whole panel is in view'],['bill','Your latest utility bill','Photo or PDF of the full first page']];
     var h='<div style="display:grid;gap:10px;margin-top:6px;">'+slots.map(function(x){
       return '<div style="background:#10263a;border-radius:12px;padding:12px;display:flex;align-items:center;gap:10px;"><div style="flex:1;min-width:0;"><div style="font-weight:700;">'+x[1]+'</div><div style="font-size:.78rem;color:#9fc3cf;">'+x[2]+'</div><div id="csu-'+x[0]+'" style="font-size:.8rem;margin-top:4px;color:'+(_csDone[x[0]]?'#8DC63F':'#f5a623')+';">'+(_csDone[x[0]]?'&#10003; Received':'Not uploaded yet')+'</div></div>'
