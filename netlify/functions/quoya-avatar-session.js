@@ -1,11 +1,13 @@
-// Live Quoya avatar session broker (LiveAvatar LITE mode). The vendor API key lives ONLY here
+// Live Quoya avatar session broker (LiveAvatar FULL mode: HeyGen runs speech-in, the brain and the voice). The vendor API key lives ONLY here
 // (Netlify env HEYGEN_API_KEY) and is never sent to the browser.
 //
 // Contract used (from LiveAvatar's public docs/search results; NOT yet exercised against the live API
 // from the dev sandbox -- the first real call is the test):
-//   POST {BASE}/v1/sessions/token   header X-API-KEY, body {mode:'LITE', avatar_id}  -> session token
+//   POST {BASE}/v1/sessions/token   header X-API-KEY, body {mode:'FULL', avatar_id, avatar_persona:{voice_id, context_id, language}}  -> session token
 //   POST {BASE}/v1/sessions/start   header Authorization: Bearer <session token>      -> livekit + ws details
-// Env: HEYGEN_API_KEY (required), LIVEAVATAR_AVATAR_ID (required for a session), LIVEAVATAR_API_BASE
+// Env: HEYGEN_API_KEY (required), LIVEAVATAR_AVATAR_ID, LIVEAVATAR_VOICE_ID, LIVEAVATAR_CONTEXT_ID (voice/context
+// optional but without a context the avatar runs in restricted mode), LIVEAVATAR_LANGUAGE (default 'en'),
+// LIVEAVATAR_SANDBOX=1 for free test sessions, LIVEAVATAR_API_BASE
 // (optional, default https://api.liveavatar.com).
 //
 // Actions:
@@ -34,8 +36,13 @@ exports.handler = async (event) => {
   if (!avatarId) return out(200, { ok: false, reason: 'no_avatar_id' });
   let b = {}; try { b = JSON.parse(event.body || '{}'); } catch (e) {}
   const action = b.action === 'start' ? 'start' : 'check';
+  const persona = { language: process.env.LIVEAVATAR_LANGUAGE || 'en' };
+  if (process.env.LIVEAVATAR_VOICE_ID) persona.voice_id = process.env.LIVEAVATAR_VOICE_ID;
+  if (process.env.LIVEAVATAR_CONTEXT_ID) persona.context_id = process.env.LIVEAVATAR_CONTEXT_ID;
+  const tokenBody = { mode: 'FULL', avatar_id: avatarId, avatar_persona: persona, max_session_duration: MAX_SECONDS };
+  if (process.env.LIVEAVATAR_SANDBOX === '1') tokenBody.is_sandbox = true;
   try {
-    const t = await call('/v1/sessions/token', { method: 'POST', headers: { 'X-API-KEY': key, 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify({ mode: 'LITE', avatar_id: avatarId }) });
+    const t = await call('/v1/sessions/token', { method: 'POST', headers: { 'X-API-KEY': key, 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify(tokenBody) });
     if (!t.ok) { console.error('[quoya-avatar] token failed', t.status, JSON.stringify(t.body)); return out(200, { ok: false, reason: 'token_failed', status: t.status, detail: t.body && (t.body.message || t.body.error || t.body.detail) || null }); }
     const d = (t.body && (t.body.data || t.body)) || {};
     const sessionToken = d.session_token || d.token;
