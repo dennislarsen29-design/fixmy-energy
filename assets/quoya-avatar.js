@@ -78,12 +78,22 @@
     // el: container; opts: { key, line }
     mount: function (el, opts) {
       ensureCss(); opts = opts || {};
+      var off = false; try { off = localStorage.getItem('quoyaOff') === '1'; } catch (e) {}
+      if (off) {
+        el.innerHTML = '<div style="text-align:right;margin-bottom:10px"><button type="button" class="qa-on" style="width:auto;padding:5px 12px;border-radius:8px;border:1px solid rgba(34,211,238,.5);background:transparent;color:#22d3ee;cursor:pointer;font-size:.8rem">Turn Quoya Assistant on</button></div>';
+        el.querySelector('.qa-on').onclick = function () { try { localStorage.removeItem('quoyaOff'); } catch (e) {} QA.mount(el, opts); };
+        return { say: function () {} };
+      }
       el.innerHTML = '<div class="qa-wrap"><div class="qa-stage"><div class="qa-orb"><i></i><i></i><i></i></div></div>'
         + '<div style="min-width:0"><div class="qa-tag">QUOYA</div><div class="qa-line"></div></div></div>';
       var stage = el.querySelector('.qa-stage'), lineEl = el.querySelector('.qa-line');
       var h = { say: function (t) { lineEl.textContent = t || ''; } };
       h.say(opts.line || '');
       if (opts.talk) addTalk(el, lineEl, stage);
+      var offBtn = document.createElement('button'); offBtn.type = 'button'; offBtn.textContent = 'Turn off Quoya Assistant';
+      offBtn.style.cssText = 'display:block;margin-top:8px;width:auto;padding:0;border:0;background:none;color:#7fa7b5;font-size:.72rem;text-decoration:underline;cursor:pointer';
+      offBtn.onclick = function () { try { localStorage.setItem('quoyaOff', '1'); } catch (e) {} QA.mount(el, opts); };
+      lineEl.parentNode.appendChild(offBtn);
       if (opts.key) probeVideo(opts.key).then(function (ok) {
         if (!ok || !stage.isConnected) return;
         var v = document.createElement('video'); v.src = '/assets/video/quoya-' + encodeURIComponent(opts.key) + '.mp4';
