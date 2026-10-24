@@ -10951,6 +10951,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     _evId = null; _evRec = null; _evRow = null; _evAnalyzing = false; _evTsRunning = false; _evCust = false;
   };
 
+  window._csProgress=function(stage,force){
+    try{ if((!_evCust&&!force)||!currentUser||!currentUser.id) return;
+      fetch('/.netlify/functions/customer-start',{method:'POST',headers:{'Content-Type':'application/json'},keepalive:true,
+        body:JSON.stringify({customerId:currentUser.id,code:(currentUser.access_code||String(currentUser.phone||'').replace(/\D/g,'').slice(-10)),action:'progress',stage:stage})}).catch(function(){});
+    }catch(e){}
+  };
   window.evGoStep = function(i) {
     if (i < 0 || i >= _evSteps().length) return;
     // Quoya's Analysis ends in "Approve Diagnostic Visit", which needs the price — so the
@@ -10959,6 +10965,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (_gs && _gs.key === 'quoya' && !_evFee()) { window.evAskDiagFee(i); return; }
     _evStepIdx = i;
     _evRender();
+    if (_evCust && _gs && /^(triage|hardware|powercycle|consumption|cdone)$/.test(_gs.key)) window._csProgress('step:' + _gs.key);
     var w = document.getElementById('evalWrap'); if (w) w.scrollTop = 0;
   };
 
@@ -11079,6 +11086,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     try { await loadJobPhotos(_evId); } catch(e) {}
     inputEl.value = '';
     _evRender();
+    if (_evCust && label && label !== 'Utility Bill') window._csProgress('photo:' + String(label).replace(/[^A-Za-z0-9 \-]/g,'').slice(0,40));
     // The Consumption step's whole point is the bill — Quoya reads it the moment it
     // lands so the rep sees the numbers fill in without hunting for a button, same
     // "no button to discover" pattern as evRunAnalysis on the Quoya's Read step.
@@ -26477,12 +26485,38 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return o;
   }
   function _csSay(line,key){ var el=document.getElementById('csAv'); if(el&&window.QuoyaAvatar) window.QuoyaAvatar.mount(el,{key:key,line:line}); }
+  // The customer's booked Virtual Solar Evaluation, if any (future, eval_mode virtual) -> {date, window}
+  function _csVirtualAppt(){
+    try{
+      var c=currentUser; if(!c||c.eval_mode!=='virtual'||!c.diagnostic_date) return null;
+      var st=new Date(c.diagnostic_date); if(isNaN(st)||st.getTime()<Date.now()-45*60000) return null;
+      var tz={timeZone:'America/Los_Angeles'};
+      var day=st.toLocaleDateString('en-US',Object.assign({weekday:'long',month:'long',day:'numeric'},tz));
+      var t=function(d){return d.toLocaleTimeString('en-US',Object.assign({hour:'numeric',minute:'2-digit'},tz));};
+      var en=c.arrival_end?new Date(c.arrival_end):new Date(st.getTime()+45*60000);
+      return {day:day,start:t(st),end:t(isNaN(en)?new Date(st.getTime()+45*60000):en)};
+    }catch(e){ return null; }
+  }
   window._csHome=function(){
     var fn=((currentUser&&currentUser.first_name)||'').trim();
+    var va=_csVirtualAppt();
+    if(va){
+      _csShell('<div style="display:grid;gap:12px;margin-top:6px;">'
+       +'<div style="background:#10263a;border:1px solid #22d3ee;border-radius:14px;padding:16px;"><div style="font-weight:800;font-size:1.05rem;">&#128197; Option 1 &mdash; Keep your Virtual Solar Evaluation</div><div style="font-size:.95rem;margin-top:6px;">'+va.day+', <b>'+va.start+' &ndash; '+va.end+'</b></div><div style="font-size:.85rem;color:#b9d6e0;margin-top:4px;">A short video call on Google Meet. No travel, nothing to prepare but your latest utility bill. We text and email the link.</div><button onclick="_csClose()" style="width:100%;margin-top:10px;padding:11px;border-radius:10px;border:0;background:#22d3ee;color:#00232b;font-weight:800;">Keep this appointment</button></div>'
+       +'<button onclick="_csStartQE()" style="text-align:left;background:#10263a;border:1px solid #8DC63F;border-radius:14px;padding:16px;color:#fff;cursor:pointer;"><div style="font-weight:800;font-size:1.05rem;">&#9728; Option 2 &mdash; Start your Quoya Solar Evaluation now</div><div style="font-size:.85rem;color:#b9d6e0;margin-top:4px;">Skip the wait: I walk you through a few photos and your bill, and our team picks it up from there. Takes about 10 minutes. Stuck? We help by phone, or send an electrician right away.</div></button>'
+       +'<button onclick="_csDiag()" style="background:transparent;border:0;color:#9fc3cf;font-size:.85rem;text-decoration:underline;padding:6px;">Something is clearly wrong? Go straight to a Diagnostic</button></div>');
+      _csSay('Hi'+(fn?' '+fn:'')+', I\'m Quoya. You are booked for '+va.day+' between '+va.start+' and '+va.end+'. You can keep that call, or start your evaluation with me now. Your choice.','portal-welcome');
+      return;
+    }
     _csShell('<div style="display:grid;gap:12px;margin-top:6px;">'
-     +'<button onclick="_csGuide()" style="text-align:left;background:#10263a;border:1px solid #22d3ee;border-radius:14px;padding:16px;color:#fff;cursor:pointer;"><div style="font-weight:800;font-size:1.05rem;">&#9728; Option 1 &mdash; Start Virtual Evaluation</div><div style="font-size:.85rem;color:#b9d6e0;margin-top:4px;">Quoya walks you through a few photos and your utility bill. Stuck? We can do it with you by phone.</div></button>'
+     +'<button onclick="_csStartQE()" style="text-align:left;background:#10263a;border:1px solid #22d3ee;border-radius:14px;padding:16px;color:#fff;cursor:pointer;"><div style="font-weight:800;font-size:1.05rem;">&#9728; Option 1 &mdash; Start Virtual Evaluation</div><div style="font-size:.85rem;color:#b9d6e0;margin-top:4px;">Quoya walks you through a few photos and your utility bill. Stuck? We can do it with you by phone.</div></button>'
      +'<button onclick="_csDiag()" style="text-align:left;background:#10263a;border:1px solid #8DC63F;border-radius:14px;padding:16px;color:#fff;cursor:pointer;"><div style="font-weight:800;font-size:1.05rem;">&#128295; Option 2 &mdash; Go straight to a Diagnostic</div><div style="font-size:.85rem;color:#b9d6e0;margin-top:4px;">An electrician tests your system in person. Pick this if something is clearly wrong.</div></button></div>');
     _csSay('Hi'+(fn?' '+fn:'')+', I\'m Quoya. Choose how you\'d like to start - I\'ll guide you either way.','welcome');
+  };
+  window._csStartQE=function(){
+    // Tell the team right away; the wizard then posts each stage to the lead notes.
+    window._csProgress('started',true);
+    window._csGuide();
   };
   window._csGuide=function(){
     _csClose();
@@ -26508,7 +26542,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if(!host) return;
     host.style.color='#ccc'; host.innerHTML='Loading open times...';
     try{
-      var d=await fetch('/.netlify/functions/ghl-slots').then(function(r){return r.json();});
+      var d=await fetch('/.netlify/functions/ghl-slots?virtual=1').then(function(r){return r.json();});
       if(!d.slots||!d.slots.length){ host.innerHTML='No times are open right now. Please call us at <a href="tel:6197776527" style="color:#22d3ee;">(619) 777-6527</a>.'; if(done)done(); return; }
       host.innerHTML='<div style="font-weight:700;color:#fff;margin-bottom:6px;">Pick a time for your Virtual Evaluation</div>'+d.slots.slice(0,8).map(function(s){
         return '<button type="button" data-s="'+s.startISO+'" data-e="'+s.endISO+'" style="display:block;width:100%;margin:6px 0;padding:12px;border-radius:12px;border:1px solid #22d3ee;background:transparent;color:#22d3ee;font-weight:700;">'+s.label+'</button>';

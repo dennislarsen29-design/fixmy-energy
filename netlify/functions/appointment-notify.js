@@ -12,6 +12,7 @@ const out = (code, obj) => ({ statusCode: code, headers: cors, body: JSON.string
 // What the customer is told each visit is. Internal-only types are never messaged.
 const COPY = {
   'Solar Evaluation': { noun: 'solar evaluation', note: 'A technician will review your system and answer your questions. Please be home during the window.' },
+  'Virtual Solar Evaluation': { noun: 'virtual solar evaluation', note: '' }, // note is built per-appointment (Google Meet link)
   'Welcome Call': { noun: 'FAQs and Enrollment call', note: 'We will call you from (619) 777-6527 — please keep your phone nearby.' },
   'Diagnostic Visit': { noun: 'diagnostic visit', note: 'Our technician will inspect and test your system. Please be home during the window.' },
   'Repair Service Visit': { noun: 'repair service visit', note: 'Our technician will arrive during the window. Please be home.' },
@@ -51,6 +52,14 @@ exports.handler = async function (event, context, deps) {
   if (!c) return out(404, { error: 'Customer not found' });
   if (!notify.toE164(c.phone) && !notify.validEmail(c.email)) return out(200, { ok: false, reason: 'no_contact' });
 
+  // Virtual = a video call: no "be home during the window", the Google Meet link instead.
+  let meet = '';
+  if (a.event_type === 'Virtual Solar Evaluation') {
+    meet = require('./lib/virtual-meet').meetFor(a);
+    copy.note = meet
+      ? 'Join on Google Meet: ' + meet + ' — no travel needed. Have your latest utility bill handy.'
+      : 'This is a video call. We will send your Google Meet link by text and email before it starts. Have your latest utility bill handy.';
+  }
   const first = (c.first_name || 'there').trim();
   const link = notify.magicLink(c);
   const dateOnly = a.notes === 'date_only'; // set by job-card date pickers: no time was chosen, so don't invent one
@@ -63,12 +72,13 @@ exports.handler = async function (event, context, deps) {
   } else {
     const changed = !!prev;
     const lead = changed ? 'has been rescheduled to' : 'is scheduled for';
-    const gUrl = ics.googleUrl(a, copy.noun, copy.note, c.address || '', link), iUrl = ics.icsUrl(id);
+    const gUrl = ics.googleUrl(a, copy.noun, copy.note, meet || (a.event_type === 'Virtual Solar Evaluation' ? 'Google Meet' : (c.address || '')), link), iUrl = ics.icsUrl(id);
     sms = 'Hi ' + first + '! Your Solar Review ' + copy.noun + ' ' + lead + ' ' + when + '. ' + copy.note + ' Details: ' + link + ' Add to your calendar: ' + iUrl;
     mail = { subject: 'Your ' + copy.noun + (changed ? ' was rescheduled' : ' is scheduled') + ' — ' + fmtDate(a.starts_at), heading: changed ? 'Your ' + copy.noun + ' was rescheduled' : 'Your ' + copy.noun + ' is scheduled',
       lines: ['Hi ' + first + ', your ' + copy.noun + ' ' + lead + ':', '<b>' + when + '</b>', copy.note, '<b>Put it on your calendar:</b> <a href="' + gUrl + '">Google Calendar</a> &nbsp;|&nbsp; <a href="' + iUrl + '">Apple / Outlook (.ics)</a>'], cta: { url: link, label: 'View in my portal' } };
   }
 
+  if (meet && mail && mail.lines) mail.lines.splice(2, 0, '<b>Join:</b> <a href="' + meet + '">' + meet + '</a>');
   const result = await notify.sendBoth(c, sms, mail, doFetch);
   if (result.ok) {
     try {

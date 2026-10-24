@@ -374,7 +374,9 @@ window.initAddrAC = function() {
   var ac  = new google.maps.places.Autocomplete(inp, { types: ['address'], componentRestrictions: { country: 'us' } });
   ac.addListener('place_changed', function() {
     var p = ac.getPlace();
-    if (p && p.formatted_address) { inp.value = p.formatted_address; _addrChosen = true; inp.classList.remove('err'); document.getElementById('addrError').style.display='none'; maybeSend(); }
+    if (p && p.formatted_address) { inp.value = p.formatted_address; _addrChosen = true; inp.classList.remove('err'); document.getElementById('addrError').style.display='none'; maybeSend();
+      var _ll = null; try { if (p.geometry && p.geometry.location) _ll = { lat: p.geometry.location.lat(), lng: p.geometry.location.lng() }; } catch(e) {}
+      checkVirtual(p.formatted_address, _ll); }
   });
   inp.addEventListener('input', function() { _addrChosen = false; });
 };
@@ -451,10 +453,68 @@ function showMoreSlots() {
 
 document.addEventListener('DOMContentLoaded', function() { loadSlots(); });
 
+/* ── Virtual Evaluation (2026-10-24): an address 50+ miles from every Tech flips the page to a 45-minute
+   Google Meet call. The server decides (virtual-check); an unlocatable address stays in-person. ── */
+var _virtual = false, _vcLast = '', _vcOrig = null;
+function _vcSnapshot() {
+  if (_vcOrig) return;
+  _vcOrig = {
+    h1: document.getElementById('bookHeroH1').innerHTML, sub: document.getElementById('bookHeroSub').innerHTML,
+    h2: document.querySelector('#captureCard h2').innerHTML, note: document.querySelector('.slots-note').innerHTML,
+    label: document.querySelector('.slots-label').innerHTML,
+    ben: document.getElementById('benefitsSection').innerHTML, pn: document.querySelector('#priceSection .price-note').innerHTML,
+    pl: document.querySelector('#priceSection .price-lbl').innerHTML
+  };
+}
+function applyVirtualMode(v) {
+  if (v === _virtual) return;
+  _vcSnapshot(); _virtual = v;
+  var q = function(sel){ return document.querySelector(sel); };
+  if (v) {
+    document.getElementById('bookHeroH1').innerHTML = 'Book a Free Virtual<br>Solar Evaluation';
+    document.getElementById('bookHeroSub').textContent = 'You are outside our in-person area, so we do it by video: a short Google Meet call, no travel, no charge. We review your system and tell you exactly what’s going on.';
+    q('#captureCard h2').textContent = 'Request Your Virtual Evaluation';
+    q('.slots-label').textContent = 'Available Video Calls';
+    q('.slots-note').textContent = '45-minute Google Meet call at an exact start time. We text and email you the link. Have your latest utility bill handy.';
+    document.getElementById('benefitsSection').innerHTML = '<div class="benefits-label">What’s included</div>'
+      + '<div class="benefit"><div class="benefit-icon">📹</div><div class="benefit-text"><strong>Live video review</strong> — we look at your system, monitoring and bill together.</div></div>'
+      + '<div class="benefit"><div class="benefit-icon">⚡</div><div class="benefit-text"><strong>Performance check</strong> — actual output vs. what your system should produce.</div></div>'
+      + '<div class="benefit"><div class="benefit-icon">📋</div><div class="benefit-text"><strong>Clear next steps</strong> — what’s working, what isn’t, and your options. No jargon.</div></div>'
+      + '<div class="benefit"><div class="benefit-icon">🏠</div><div class="benefit-text"><strong>Installer-independent</strong> — we don’t sell installs. Our job is an honest read on your system.</div></div>';
+    q('#priceSection .price-lbl').textContent = 'Virtual Evaluation';
+    q('#priceSection .price-note').textContent = 'The video call is free. If an on-site electrician diagnostic makes sense, we’ll explain it upfront — no surprises.';
+  } else if (_vcOrig) {
+    document.getElementById('bookHeroH1').innerHTML = _vcOrig.h1; document.getElementById('bookHeroSub').innerHTML = _vcOrig.sub;
+    q('#captureCard h2').innerHTML = _vcOrig.h2; q('.slots-label').innerHTML = _vcOrig.label; q('.slots-note').innerHTML = _vcOrig.note;
+    document.getElementById('benefitsSection').innerHTML = _vcOrig.ben;
+    q('#priceSection .price-lbl').innerHTML = _vcOrig.pl; q('#priceSection .price-note').innerHTML = _vcOrig.pn;
+  }
+  document.getElementById('slotList').innerHTML = '<div class="slots-loading">Loading available times…</div>';
+  loadSlots();
+}
+async function checkVirtual(address, ll) {
+  var key = (address || '').trim();
+  if (key.length < 8 || key === _vcLast) return;
+  _vcLast = key;
+  try {
+    var body = ll ? { lat: ll.lat, lng: ll.lng } : { address: key };
+    var r = await fetch('/.netlify/functions/virtual-check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    var d = await r.json();
+    if (key !== _vcLast) return; // address changed while we waited
+    if (d && d.virtual === true) applyVirtualMode(true);
+    else if (d && d.virtual === false) applyVirtualMode(false);
+    // null = could not locate: leave the page as it is (never guess virtual)
+  } catch (e) {}
+}
+document.getElementById('fAddress').addEventListener('blur', function() {
+  var v = this.value.trim();
+  if (v.length > 8 && /\d{5}/.test(v)) checkVirtual(v, null);
+});
+
 async function loadSlots() {
   var el = document.getElementById('slotList');
   try {
-    var r = await fetch('/.netlify/functions/ghl-slots');
+    var r = await fetch('/.netlify/functions/ghl-slots' + (_virtual ? '?virtual=1' : ''));
     var d = await r.json();
     if (!d.slots || !d.slots.length) {
       el.innerHTML = '<div class="slots-error">No times available right now. Call us at <a href="tel:6197776527">(619) 777-6527</a> to book.</div>';
@@ -511,6 +571,7 @@ async function bookSlot(btn) {
       body: JSON.stringify({
         firstName: fn, lastName: ln, phone: ph, email: em||null, address: addr||null, startISO: start, endISO: end,
         customerId: (typeof _ghlInboundId !== 'undefined' && _ghlInboundId) || undefined,
+        virtual: _virtual || undefined,
         fbp: _fbCookie('_fbp'), fbc: _fbCookie('_fbc')
       })
     });
@@ -551,6 +612,8 @@ async function bookSlot(btn) {
         id: result.appointmentId || ('req_' + Date.now()),
         label: label,
         appointmentBooked: _appointmentBooked,
+        virtual: !!(_virtual && result.virtual !== false),
+        first: fn,
         email: em || null,
         phone10: ph.replace(/\D/g, '').slice(-10)
       }));
@@ -618,6 +681,31 @@ async function bookSlot(btn) {
     document.getElementById('slotList').insertAdjacentHTML('beforebegin','<div class="slots-error" style="margin-bottom:12px;">Something went wrong. Try again or call <a href="tel:6197776527">(619) 777-6527</a>.</div>');
   }
 }
+</script>
+
+<script src="/assets/quoya-avatar.js"></script>
+<script>
+/* Quoya welcome (2026-10-24): one short, dismissible note if the visitor has not typed anything for 60s.
+   Once per session, never while they are typing, never after they book. */
+(function () {
+  var shown = false, t = null;
+  try { if (sessionStorage.getItem('qaBookWelcome')) return; } catch (e) {}
+  function line() {
+    return _virtual
+      ? 'Hi, I’m Quoya. Your address is outside our in-person area, so your free evaluation is a 45-minute video call. Just add your name and phone, then pick a time. That’s all it takes.'
+      : 'Hi, I’m Quoya. This takes about a minute: add your name, address and phone, then pick a time for your free evaluation. Questions? Call (619) 777-6527.';
+  }
+  function arm() { clearTimeout(t); if (shown) return; t = setTimeout(show, 60000); }
+  function show() {
+    if (shown || !window.QuoyaAvatar) return;
+    var a = document.activeElement;
+    if (a && /^(INPUT|TEXTAREA)$/.test(a.tagName) && a.value) { arm(); return; } // mid-typing: wait again
+    shown = true; try { sessionStorage.setItem('qaBookWelcome', '1'); } catch (e) {}
+    window.QuoyaAvatar.float({ key: 'book-welcome', line: line(), speak: true });
+  }
+  ['input', 'keydown', 'change'].forEach(function (ev) { document.addEventListener(ev, function () { if (!shown) arm(); }, true); });
+  arm();
+})();
 </script>
 </body>
 </html>

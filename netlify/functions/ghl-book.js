@@ -66,7 +66,13 @@ exports.handler = async function(event) {
   // hasn't actually confirmed anything themselves yet. Callers opt out per-booking
   // with { notify: false }; every other caller (public /book, dialer, Doors,
   // admin re-book) is unaffected and keeps the existing toNotify:true behavior.
-  const shouldNotify = notify !== false;
+  // Virtual Solar Evaluation (2026-10-24): 50+ miles out -> a 45-minute Google Meet call, exact start time.
+  // GHL's own calendar confirmation/workflow talks about a technician ARRIVING, which is wrong for a
+  // video call, so GHL's automation is suppressed (toNotify:false + the same 'no-automation' tag the
+  // workflow already filters on) and our own SMS/email with the Meet link is sent below instead.
+  const isVirtual = virtual === true;
+  const shouldNotify = notify !== false && !isVirtual;
+  const apptEndISO = isVirtual ? new Date(new Date(startISO).getTime() + 45 * 60000).toISOString() : endISO;
 
   const ghlHeaders = {
     'Content-Type': 'application/json',
@@ -143,7 +149,7 @@ exports.handler = async function(event) {
         contactId,
         assignedUserId:      assignedUserId || undefined,
         startTime:           startISO,
-        endTime:             endISO,
+        endTime:             apptEndISO,
         // Virtual (self-service / remote-assist) evaluations always start with "Virtual" so the team and customer can tell them apart on the calendar.
         title:               `${virtual === true ? 'Virtual Solar Evaluation' : 'Solar Evaluation'} — ${(firstName || '')} ${(lastName || '')}`.trim(),
         meetingLocationType: 'default',
@@ -198,7 +204,7 @@ exports.handler = async function(event) {
 
   // Format 2-hour customer arrival window
   const startDt      = new Date(startISO);
-  const windowEndDt  = new Date(startDt.getTime() + 2 * 60 * 60 * 1000);
+  const windowEndDt  = new Date(startDt.getTime() + (isVirtual ? 45 : 120) * 60 * 1000); // virtual = exact 45 min, no arrival window
   const fmtTime      = (d) => d.toLocaleTimeString('en-US', { timeZone: 'America/Los_Angeles', hour: 'numeric', minute: '2-digit' });
   const arrivalWindow = `${fmtTime(startDt)} – ${fmtTime(windowEndDt)}`;
 
@@ -243,6 +249,7 @@ exports.handler = async function(event) {
       const patch = customerId
         ? { diagnostic_date: startISO, arrival_window: arrivalWindow }
         : { diagnostic_date: startISO, arrival_window: arrivalWindow, lead_source: 'inbound_web', step: 1, black_box: false };
+      if (isVirtual) patch.eval_mode = 'virtual';
       if (firstName) patch.first_name = firstName;
       if (lastName)  patch.last_name  = lastName;
       // A re-booking always carries a real phone/email from the form — write
@@ -257,7 +264,7 @@ exports.handler = async function(event) {
         body:    JSON.stringify(patch),
       });
     } else {
-      await fetch(`${SUPA_URL}/rest/v1/customers`, {
+      const createdResp = await fetch(`${SUPA_URL}/rest/v1/customers`, {
         method:  'POST',
         headers: { ...supaHeaders, Prefer: 'return=representation' },
         body:    JSON.stringify({
@@ -275,9 +282,11 @@ exports.handler = async function(event) {
           lead_source:     'inbound_web',
           lead_temp:       'warm',
           black_box:       false,
-          notes:           JSON.stringify([{ ts: new Date().toISOString(), by: 'book.html', text: 'Booked via /book page.' }]),
+          notes:           JSON.stringify([{ ts: new Date().toISOString(), by: 'book.html', text: isVirtual ? 'Booked a Virtual Solar Evaluation (Google Meet) via /book page.' : 'Booked via /book page.' }]),
+          eval_mode:       isVirtual ? 'virtual' : undefined,
         }),
       });
+      try { const cj = await createdResp.json(); if (Array.isArray(cj) && cj[0] && cj[0].id) existingId = cj[0].id; } catch (e) {}
     }
   } catch(e) {
     console.warn('Supabase upsert failed:', e.message);
@@ -285,8 +294,25 @@ exports.handler = async function(event) {
 
   // Home match: add what Black Box already knows about this address (fill blanks only).
   try { if (typeof existingId !== 'undefined' && existingId) await require('./lib/home-match').enrich(existingId); } catch (e) {}
-  try { if (typeof existingId !== 'undefined' && existingId) await require('./lib/virtual-check').check(existingId); } catch (e) {}
+  if (!isVirtual) { try { if (typeof existingId !== 'undefined' && existingId) await require('./lib/virtual-check').check(existingId); } catch (e) {} }
 
+  // Virtual: record the call as an appointment and send OUR confirmation (SMS + email with the Google Meet
+  // link) -- not GHL's "technician arrives" template. Never blocks or fails the booking.
+  let virtualNotice = null;
+  if (isVirtual && appointmentId && existingId) {
+    try {
+      const meet = require('./lib/virtual-meet').meetFor({});
+      const ar = await fetch(`${SUPA_URL}/rest/v1/appointments`, {
+        method: 'POST', headers: { ...supaHeaders, Prefer: 'return=representation' },
+        body: JSON.stringify({ customer_id: existingId, event_type: 'Virtual Solar Evaluation', starts_at: startDt.toISOString(), ends_at: apptEndISO, status: 'scheduled', created_by: customerId ? 'customer' : 'book_page', notes: meet ? 'meet=' + meet : null })
+      });
+      const arow = ((await ar.json().catch(() => [])) || [])[0];
+      if (arow && arow.id) {
+        const nr = await require('./appointment-notify').handler({ httpMethod: 'POST', body: JSON.stringify({ appointmentId: arow.id }) });
+        try { virtualNotice = JSON.parse(nr.body); } catch (e) {}
+      }
+    } catch (e) { console.warn('virtual appointment/notify failed:', e.message); }
+  }
   return {
     statusCode: 200,
     headers: cors,

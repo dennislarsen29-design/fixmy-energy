@@ -30,4 +30,25 @@ async function check(customerId, doFetch) {
     return { ok: true, mode, miles: Math.round(best * 10) / 10 };
   } catch (e) { console.warn('virtual-check', e.message); return { ok: false, reason: 'error' }; }
 }
-module.exports = { check, miles, VIRTUAL_MI };
+// Pre-booking check for the public /book page: no customer row yet, just an address (or the lat/lng Google
+// Places already gave the browser). Same rule as check(): 50+ miles from EVERY active Tech base. An address
+// that can't be located is NOT guessed virtual -- it returns virtual:null and the page stays in-person.
+async function checkPoint(input, doFetch) {
+  doFetch = doFetch || fetch;
+  try {
+    let lat = parseFloat(input && input.lat), lng = parseFloat(input && input.lng);
+    if (!isFinite(lat) || !isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+      const addr = String((input && input.address) || '').slice(0, 200);
+      if (addr.length < 8) return { ok: true, virtual: null, reason: 'no_location' };
+      const g = await geocode(addr, doFetch); if (!g) return { ok: true, virtual: null, reason: 'no_location' };
+      lat = g.lat; lng = g.lng;
+    }
+    const tr = await doFetch(SUPA_URL + '/rest/v1/team_members?select=id,home_lat,home_lng&active=eq.true&role=eq.tech&home_lat=not.is.null', { headers: heads() });
+    const techs = (await tr.json()) || [];
+    if (!Array.isArray(techs) || !techs.length) return { ok: true, virtual: null, reason: 'no_tech_bases' };
+    let best = null; techs.forEach(t => { const d = miles(lat, lng, parseFloat(t.home_lat), parseFloat(t.home_lng)); if (isFinite(d) && (best == null || d < best)) best = d; });
+    if (best == null) return { ok: true, virtual: null, reason: 'no_tech_bases' };
+    return { ok: true, virtual: best >= VIRTUAL_MI, miles: Math.round(best) };
+  } catch (e) { console.warn('virtual-check point', e.message); return { ok: false, virtual: null, reason: 'error' }; }
+}
+module.exports = { check, checkPoint, miles, VIRTUAL_MI };

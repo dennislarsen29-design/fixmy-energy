@@ -26,7 +26,7 @@ exports.handler = async (event, ctx, deps) => {
   if (event.httpMethod !== 'POST') return out(405, { error: 'POST only' });
   let b = {}; try { b = JSON.parse(event.body || '{}'); } catch (e) { return out(400, { error: 'bad json' }); }
   const id = String(b.customerId || ''), action = String(b.action || '');
-  if (!/^[0-9a-f-]{36}$/i.test(id) || ['assist', 'diagnostic', 'submitted', 'nosolar', 'book_virtual'].indexOf(action) < 0) return out(400, { error: 'bad request' });
+  if (!/^[0-9a-f-]{36}$/i.test(id) || ['assist', 'diagnostic', 'submitted', 'nosolar', 'book_virtual', 'progress'].indexOf(action) < 0) return out(400, { error: 'bad request' });
   if (!process.env.SUPA_SERVICE_KEY) return out(500, { error: 'not configured' });
   const H = heads();
   const get = async (path) => (await (await doFetch(SUPA_URL + '/rest/v1' + path, { headers: H })).json().catch(() => null));
@@ -75,11 +75,31 @@ exports.handler = async (event, ctx, deps) => {
     } catch (e) { return out(502, { error: 'Could not reach the calendar. Please call us.' }); }
     let r = {}; try { r = JSON.parse(res.body || '{}'); } catch (e) {}
     if (!r.ok || !r.appointmentId) return out(502, { error: 'That time could not be booked. Please pick another or call us.' });
-    await doFetch(SUPA_URL + '/rest/v1/appointments', { method: 'POST', headers: Object.assign({}, H, { Prefer: 'return=minimal' }), body: JSON.stringify({ customer_id: id, event_type: 'Virtual Solar Evaluation', starts_at: sISO.toISOString(), ends_at: eISO.toISOString(), status: 'scheduled', created_by: 'customer' }) }).catch(() => {});
+    // ghl-book (virtual:true) records the appointment row and sends the customer's Google Meet confirmation itself.
     const when = sISO.toLocaleString('en-US', { timeZone: 'America/Los_Angeles', weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
     await addNote('Customer booked a Virtual Solar Evaluation for ' + when + ' (on the Evaluation calendar).');
     await alertStaff(name + ' booked a Virtual Solar Evaluation for ' + when + '. It is on the calendar.', 'vbook_' + sISO.getTime());
     return out(200, { ok: true, when });
+  }
+
+  if (action === 'progress') {
+    // Live tracking of the customer's own Quoya Solar Evaluation (2026-10-24, per Dennis): one lead note per
+    // distinct stage (never twice), and a staff text when they START. Server builds the wording; the client
+    // only names a stage from a fixed list.
+    const stage = String(b.stage || '');
+    const STEPS = { triage: 'Site Check questions', hardware: 'Inverter & meter photos', powercycle: 'Safety check / power cycle', consumption: 'Utility bill', cdone: 'Final review (ready to send)' };
+    let label = null;
+    if (stage === 'started') label = 'started their Quoya Solar Evaluation';
+    else if (stage === 'bill_read') label = 'uploaded their utility bill — Quoya read it';
+    else if (/^step:[a-z]+$/.test(stage) && STEPS[stage.slice(5)]) label = 'reached: ' + STEPS[stage.slice(5)];
+    else if (/^photo:[A-Za-z0-9 \-]{1,40}$/.test(stage)) label = 'uploaded: ' + stage.slice(6);
+    if (!label) return out(400, { error: 'bad stage' });
+    const tag = '[qe:' + stage + ']';
+    if (notes.some(n => String(n.text || '').indexOf(tag) >= 0)) return out(200, { ok: true, deduped: true });
+    await addNote('Customer ' + label + '. ' + tag);
+    let staff = null;
+    if (stage === 'started') staff = await alertStaff(name + ' just started their Quoya Solar Evaluation. Progress will post to their lead notes.', 'qe_started');
+    return out(200, { ok: true, staff });
   }
 
   if (action === 'assist') {

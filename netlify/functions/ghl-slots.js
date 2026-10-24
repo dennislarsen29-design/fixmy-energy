@@ -8,8 +8,9 @@ const CALENDAR_ID   = process.env.GHL_EVAL_CALENDAR_ID || 'UjlvHxE8AlyhG5frBkqr'
 const SLOT_DURATION = 120; // minutes — matches GHL calendar's 2hr appointment duration
 const GHL_BASE      = 'https://services.leadconnectorhq.com';
 
-let _cache    = null;
-let _cacheAt  = 0;
+const VIRTUAL_DURATION = 45; // minutes — Virtual Solar Evaluations are exact 45-min Google Meet calls
+let _cache    = {};   // keyed by mode ('in_person' | 'virtual')
+let _cacheAt  = {};
 const CACHE_TTL = 60 * 1000;
 
 const cors = {
@@ -22,10 +23,14 @@ exports.handler = async function(event) {
   if (event.httpMethod !== 'GET')
     return { statusCode: 405, headers: cors, body: JSON.stringify({ error: 'Method Not Allowed' }) };
 
-  const debug = (event.queryStringParameters || {}).debug === '1';
+  const qs      = event.queryStringParameters || {};
+  const debug   = qs.debug === '1';
+  const virtual = qs.virtual === '1';
+  const mode    = virtual ? 'virtual' : 'in_person';
+  const duration = virtual ? VIRTUAL_DURATION : SLOT_DURATION;
 
-  if (!debug && _cache && (Date.now() - _cacheAt) < CACHE_TTL)
-    return { statusCode: 200, headers: cors, body: JSON.stringify(_cache) };
+  if (!debug && _cache[mode] && (Date.now() - (_cacheAt[mode] || 0)) < CACHE_TTL)
+    return { statusCode: 200, headers: cors, body: JSON.stringify(_cache[mode]) };
 
   const apiKey = process.env.GHL_API_KEY;
   if (!apiKey)
@@ -72,21 +77,21 @@ exports.handler = async function(event) {
       const startDt = new Date(startISO);
       if (startDt <= now) continue;
 
-      const endDt = new Date(startDt.getTime() + SLOT_DURATION * 60 * 1000);
+      const endDt = new Date(startDt.getTime() + duration * 60 * 1000);
 
       slots.push({
         startISO: startDt.toISOString(),
         endISO:   endDt.toISOString(),
-        label:    formatLabel(startDt, endDt),
+        label:    virtual ? formatVirtualLabel(startDt, endDt) : formatLabel(startDt, endDt),
       });
     }
   }
 
   slots.sort((a, b) => new Date(a.startISO) - new Date(b.startISO));
-  _cache   = { slots: slots.slice(0, 20), fetchedAt: new Date().toISOString() };
-  _cacheAt = Date.now();
+  _cache[mode]   = { slots: slots.slice(0, 20), virtual, durationMin: duration, fetchedAt: new Date().toISOString() };
+  _cacheAt[mode] = Date.now();
 
-  return { statusCode: 200, headers: cors, body: JSON.stringify(_cache) };
+  return { statusCode: 200, headers: cors, body: JSON.stringify(_cache[mode]) };
 };
 
 function formatLabel(start, end) {
@@ -101,4 +106,12 @@ function formatLabel(start, end) {
   const startLabel = (sMatch && eMatch && sMatch[2] === eMatch[2]) ? sMatch[1] : startStr;
 
   return `${dayStr} · ${startLabel} – ${endStr}`;
+}
+
+// Virtual calls start at an exact time (we plan them), so the label shows the real start–end, not a window.
+function formatVirtualLabel(start, end) {
+  const opts = { timeZone: 'America/Los_Angeles' };
+  const dayStr = start.toLocaleDateString('en-US', { ...opts, weekday: 'short', month: 'short', day: 'numeric' });
+  const t = (d) => d.toLocaleTimeString('en-US', { ...opts, hour: 'numeric', minute: '2-digit' });
+  return `${dayStr} · ${t(start)} – ${t(end)}`;
 }

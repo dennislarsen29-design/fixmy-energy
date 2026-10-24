@@ -40,6 +40,24 @@
       });
       return h;
     },
+    // Small dismissible floating bubble (bottom corner). opts: { key, line, speak:true }.
+    // Never steals focus, never blocks the page, and speaks only when the visitor taps "Hear it".
+    float: function (opts) {
+      ensureCss(); opts = opts || {};
+      var old = document.getElementById('qaFloat'); if (old) old.remove();
+      var f = document.createElement('div'); f.id = 'qaFloat';
+      f.style.cssText = 'position:fixed;right:14px;bottom:14px;z-index:9000;max-width:min(340px,calc(100vw - 28px));box-shadow:0 10px 30px rgba(0,0,0,.45);border-radius:16px;';
+      f.innerHTML = '<div class="qa-wrap" style="margin:0;position:relative;padding:12px 34px 12px 12px"><div class="qa-stage" style="flex-basis:56px;width:56px;height:56px"><div class="qa-orb"><i></i><i></i><i></i></div></div>'
+        + '<div style="min-width:0"><div class="qa-tag">QUOYA</div><div class="qa-line" style="font-size:.85rem"></div>'
+        + (opts.speak && window.speechSynthesis ? '<button type="button" class="qa-hear" style="margin-top:6px;width:auto;padding:4px 10px;border-radius:8px;border:1px solid rgba(34,211,238,.5);background:transparent;color:#22d3ee;font-size:.75rem;cursor:pointer">&#128266; Hear it</button>' : '')
+        + '</div><button type="button" class="qa-x" aria-label="Dismiss" style="position:absolute;top:6px;right:6px;width:24px;height:24px;padding:0;border:0;border-radius:50%;background:rgba(255,255,255,.12);color:#fff;cursor:pointer;line-height:24px">&times;</button></div>';
+      f.querySelector('.qa-line').textContent = opts.line || '';
+      f.querySelector('.qa-x').onclick = function () { try { window.speechSynthesis && window.speechSynthesis.cancel(); } catch (e) {} f.remove(); if (opts.onClose) opts.onClose(); };
+      var hear = f.querySelector('.qa-hear');
+      if (hear) hear.onclick = function () { try { window.speechSynthesis.cancel(); var u = new SpeechSynthesisUtterance(opts.line || ''); u.rate = 1; window.speechSynthesis.speak(u); } catch (e) {} };
+      document.body.appendChild(f);
+      return { el: f, close: function () { f.remove(); } };
+    },
     // Live session (real-time avatar). Returns {ok:false} until the server says it is configured.
     live: function () {
       return fetch('/.netlify/functions/quoya-avatar-session', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
