@@ -50,7 +50,7 @@ exports.handler = async (event) => {
     if (!sessionToken) { console.error('[quoya-avatar] no token field; keys:', Object.keys(d)); return out(200, { ok: false, reason: 'unexpected_token_shape', keys: Object.keys(d) }); }
     if (action === 'check') return out(200, { ok: true, checked: true, session_id_present: !!sessionId });
     const s = await call('/v1/sessions/start', { method: 'POST', headers: { Authorization: 'Bearer ' + sessionToken, 'Content-Type': 'application/json', Accept: 'application/json' }, body: '{}' });
-    if (!s.ok) { console.error('[quoya-avatar] start failed', s.status, JSON.stringify(s.body)); return out(200, { ok: false, reason: 'start_failed', status: s.status }); }
+    if (!s.ok) { console.error('[quoya-avatar] start failed', s.status, JSON.stringify(s.body)); return out(200, { ok: false, reason: 'start_failed', status: s.status, detail: s.body && (s.body.message || s.body.error || s.body.detail || JSON.stringify(s.body).slice(0,300)) || null }); }
     const sd = (s.body && (s.body.data || s.body)) || {};
     // Only the connection details the browser needs. The session token stays server-side except where
     // the vendor requires it for the control socket (ws_url already embeds its own credential).
