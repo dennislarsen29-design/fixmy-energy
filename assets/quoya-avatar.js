@@ -57,7 +57,7 @@
         room.on(L.RoomEvent.TrackSubscribed, function (track) {
           var node = track.attach();
           node.className = 'qa-live';
-          if (track.kind === 'video') { node.style.cssText = 'width:100%;height:100%;object-fit:cover'; stage.querySelector('.qa-orb').style.display = 'none'; stage.style.flex = '0 0 150px'; stage.style.width = '150px'; stage.style.height = '150px'; stage.appendChild(node); }
+          if (track.kind === 'video') { node.style.cssText = 'width:100%;height:100%;object-fit:contain'; stage.querySelector('.qa-orb').style.display = 'none'; stage.style.flex = '0 0 130px'; stage.style.width = '130px'; stage.style.height = '230px'; stage.style.borderRadius = '16px'; stage.style.background = '#0b1623'; stage.appendChild(node); }
           else { node.style.display = 'none'; stage.appendChild(node); }
         });
         room.on(L.RoomEvent.Disconnected, function () { if (room) stop('Session ended. Tap Talk to Quoya any time.'); });
