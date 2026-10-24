@@ -16,7 +16,7 @@
 //   {action:'start'}  mints + starts a session and returns what the browser needs to connect.
 // Hard cap: MAX_SECONDS is passed through where the API supports it and also enforced client-side.
 const BASE = (process.env.LIVEAVATAR_API_BASE || 'https://api.liveavatar.com').replace(/\/$/, '');
-const MAX_SECONDS = 300;
+const MAX_SECONDS = Math.max(30, parseInt(process.env.LIVEAVATAR_MAX_SECONDS, 10) || 120); // free plan caps a session at 120s; raise via env on a paid plan
 const cors = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' };
 const out = (code, o) => ({ statusCode: code, headers: cors, body: JSON.stringify(o) });
 const originOk = (e) => { const o = (e.headers && (e.headers.origin || e.headers.referer)) || ''; return !o || /fixmy\.energy|localhost|netlify\.app/.test(o); };
