@@ -21,6 +21,59 @@
     return fetch('/assets/video/quoya-' + encodeURIComponent(key) + '.mp4', { method: 'HEAD', cache: 'no-store' })
       .then(function (r) { return r.ok && /video/.test(r.headers.get('content-type') || ''); }).catch(function () { return false; });
   }
+
+  // ---- Live talk (LiveAvatar FULL mode via LiveKit). Opt-in only; capped; falls back to the captioned orb. ----
+  var LK_SRC = 'https://cdn.jsdelivr.net/npm/livekit-client@2.5.7/dist/livekit-client.umd.min.js';
+  function loadLK() {
+    if (window.LivekitClient) return Promise.resolve();
+    return new Promise(function (res, rej) {
+      var s = document.createElement('script'); s.src = LK_SRC; s.onload = res; s.onerror = function () { rej(new Error('lk')); };
+      document.head.appendChild(s);
+    });
+  }
+  function addTalk(el, lineEl, stage) {
+    var box = lineEl.parentNode;
+    var btn = document.createElement('button'); btn.type = 'button';
+    btn.textContent = '🎙 Talk to Quoya';
+    btn.style.cssText = 'margin-top:8px;width:auto;padding:7px 14px;border-radius:10px;border:1px solid rgba(34,211,238,.6);background:rgba(34,211,238,.12);color:#22d3ee;font-weight:700;cursor:pointer';
+    box.appendChild(btn);
+    var room = null, timer = null, orig = lineEl.textContent;
+    function stop(msg) {
+      try { if (room) room.disconnect(); } catch (e) {}
+      room = null; if (timer) clearTimeout(timer);
+      var v = stage.querySelector('video.qa-live'); if (v) v.remove();
+      var a = stage.querySelector('audio.qa-live'); if (a) a.remove();
+      stage.style.cssText = ''; var o = stage.querySelector('.qa-orb'); if (o) o.style.display = '';
+      btn.disabled = false; btn.textContent = '🎙 Talk to Quoya'; if (msg) lineEl.textContent = msg;
+    }
+    btn.onclick = function () {
+      if (room) { stop(orig); return; }
+      btn.disabled = true; btn.textContent = 'Connecting…'; lineEl.textContent = 'One moment, connecting…';
+      Promise.all([QA.live('start'), loadLK()]).then(function (r) {
+        var d = r[0];
+        if (!d || !d.ok || !d.livekit_url || !d.livekit_client_token) throw new Error((d && d.reason) || 'unavailable');
+        var L = window.LivekitClient;
+        room = new L.Room({ adaptiveStream: true });
+        room.on(L.RoomEvent.TrackSubscribed, function (track) {
+          var node = track.attach();
+          node.className = 'qa-live';
+          if (track.kind === 'video') { node.style.cssText = 'width:100%;height:100%;object-fit:cover'; stage.querySelector('.qa-orb').style.display = 'none'; stage.style.flex = '0 0 150px'; stage.style.width = '150px'; stage.style.height = '150px'; stage.appendChild(node); }
+          else { node.style.display = 'none'; stage.appendChild(node); }
+        });
+        room.on(L.RoomEvent.Disconnected, function () { if (room) stop('Session ended. Tap Talk to Quoya any time.'); });
+        return room.connect(d.livekit_url, d.livekit_client_token).then(function () {
+          return room.localParticipant.setMicrophoneEnabled(true).catch(function () { lineEl.textContent = 'I can hear you only if you allow the microphone.'; });
+        }).then(function () {
+          btn.disabled = false; btn.textContent = 'End conversation'; lineEl.textContent = 'Go ahead, I’m listening.';
+          timer = setTimeout(function () { stop('That’s our time for now. Tap Talk to Quoya to continue.'); }, ((d.max_seconds || 300) * 1000));
+        });
+      }).catch(function (e) {
+        try { if (room) room.disconnect(); } catch (x) {}
+        room = null; btn.disabled = false; btn.textContent = '🎙 Talk to Quoya';
+        lineEl.textContent = 'Live chat isn’t available right now, so I’ll keep guiding you here. You can also call (619) 777-6527.';
+      });
+    };
+  }
   var QA = {
     // el: container; opts: { key, line }
     mount: function (el, opts) {
@@ -30,6 +83,7 @@
       var stage = el.querySelector('.qa-stage'), lineEl = el.querySelector('.qa-line');
       var h = { say: function (t) { lineEl.textContent = t || ''; } };
       h.say(opts.line || '');
+      if (opts.talk) addTalk(el, lineEl, stage);
       if (opts.key) probeVideo(opts.key).then(function (ok) {
         if (!ok || !stage.isConnected) return;
         var v = document.createElement('video'); v.src = '/assets/video/quoya-' + encodeURIComponent(opts.key) + '.mp4';
@@ -59,8 +113,8 @@
       return { el: f, close: function () { f.remove(); } };
     },
     // Live session (real-time avatar). Returns {ok:false} until the server says it is configured.
-    live: function () {
-      return fetch('/.netlify/functions/quoya-avatar-session', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+    live: function (action) {
+      return fetch('/.netlify/functions/quoya-avatar-session', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: action || 'check' }) })
         .then(function (r) { return r.json(); }).catch(function () { return { ok: false, reason: 'network' }; });
     }
   };
