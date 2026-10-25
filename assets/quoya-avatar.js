@@ -31,50 +31,70 @@
       document.head.appendChild(s);
     });
   }
-  function addTalk(el, lineEl, stage) {
+  // One live session for the whole page visit: it floats bottom-left and survives step changes / re-renders.
+  var LIVE = null;           // {room, timer, dock}
+  var TALKERS = [];          // {btn, lineEl} for every mounted panel
+  function setTalkUi(active, msg) {
+    TALKERS = TALKERS.filter(function (t) { return t.btn.isConnected; });
+    TALKERS.forEach(function (t) {
+      t.btn.disabled = false;
+      t.btn.textContent = active ? 'End conversation' : '🎙 Talk to Quoya';
+      if (msg) t.lineEl.textContent = msg;
+    });
+  }
+  function stopLive(msg) {
+    if (LIVE) {
+      try { LIVE.room.disconnect(); } catch (e) {}
+      if (LIVE.timer) clearTimeout(LIVE.timer);
+      if (LIVE.dock) LIVE.dock.remove();
+      LIVE = null;
+    }
+    setTalkUi(false, msg);
+  }
+  function startLive() {
+    setTalkUi(false); TALKERS.forEach(function (t) { t.btn.disabled = true; t.btn.textContent = 'Connecting…'; t.lineEl.textContent = 'One moment, connecting…'; });
+    return Promise.all([QA.live('start'), loadLK()]).then(function (r) {
+      var d = r[0];
+      if (!d || !d.ok || !d.livekit_url || !d.livekit_client_token) throw new Error((d && d.reason) || 'unavailable');
+      var L = window.LivekitClient;
+      var room = new L.Room({ adaptiveStream: true });
+      var dock = document.createElement('div'); dock.id = 'qaDock';
+      dock.style.cssText = 'position:fixed;left:8px;bottom:0;z-index:99999;width:min(300px,42vw);height:min(520px,72vh);pointer-events:none;overflow:hidden;-webkit-mask-image:linear-gradient(to top,#000 88%,transparent 100%);mask-image:linear-gradient(to top,#000 88%,transparent 100%)';
+      document.body.appendChild(dock);
+      LIVE = { room: room, dock: dock, timer: null };
+      room.on(L.RoomEvent.TrackSubscribed, function (track) {
+        var node = track.attach(); node.className = 'qa-live';
+        if (track.kind === 'video') node.style.cssText = 'width:100%;height:100%;object-fit:contain';
+        else node.style.display = 'none';
+        dock.appendChild(node);
+      });
+      room.on(L.RoomEvent.Disconnected, function () { if (LIVE && LIVE.room === room) stopLive('Session ended. Tap Talk to Quoya any time.'); });
+      return room.connect(d.livekit_url, d.livekit_client_token).then(function () {
+        return room.localParticipant.setMicrophoneEnabled(true).catch(function () { TALKERS.forEach(function (t) { t.lineEl.textContent = 'I can hear you only if you allow the microphone.'; }); });
+      }).then(function () {
+        setTalkUi(true, 'Go ahead, I’m listening.');
+        LIVE.timer = setTimeout(function () { stopLive('That’s our time for now. Tap Talk to Quoya to continue.'); }, ((d.max_seconds || 120) * 1000));
+      });
+    }).catch(function () {
+      stopLive('Live chat isn’t available right now, so I’ll keep guiding you here. You can also call (619) 777-6527.');
+    });
+  }
+  function addTalk(el, lineEl, stage, opts) {
     var box = lineEl.parentNode;
     var btn = document.createElement('button'); btn.type = 'button';
-    btn.textContent = '🎙 Talk to Quoya';
     btn.style.cssText = 'margin-top:8px;width:auto;padding:7px 14px;border-radius:10px;border:1px solid rgba(34,211,238,.6);background:rgba(34,211,238,.12);color:#22d3ee;font-weight:700;cursor:pointer';
+    btn.textContent = LIVE ? 'End conversation' : '🎙 Talk to Quoya';
     box.appendChild(btn);
     var tip = document.createElement('div'); tip.textContent = 'Tip: find a quiet spot. Earbuds help me hear you.';
     tip.style.cssText = 'margin-top:5px;font-size:.72rem;color:#7fa7b5'; box.appendChild(tip);
-    var room = null, timer = null, orig = lineEl.textContent;
-    function stop(msg) {
-      try { if (room) room.disconnect(); } catch (e) {}
-      room = null; if (timer) clearTimeout(timer);
-      var v = stage.querySelector('video.qa-live'); if (v) v.remove();
-      var a = stage.querySelector('audio.qa-live'); if (a) a.remove();
-      stage.style.cssText = ''; var o = stage.querySelector('.qa-orb'); if (o) o.style.display = '';
-      btn.disabled = false; btn.textContent = '🎙 Talk to Quoya'; if (msg) lineEl.textContent = msg;
+    if (opts && opts.human) {
+      var hb = document.createElement('button'); hb.type = 'button'; hb.textContent = 'Prefer a person? Talk to our team instead';
+      hb.style.cssText = 'display:block;margin-top:6px;width:auto;padding:0;border:0;background:none;color:#22d3ee;font-size:.76rem;text-decoration:underline;cursor:pointer';
+      hb.onclick = function () { stopLive(); opts.human(); };
+      box.appendChild(hb);
     }
-    btn.onclick = function () {
-      if (room) { stop(orig); return; }
-      btn.disabled = true; btn.textContent = 'Connecting…'; lineEl.textContent = 'One moment, connecting…';
-      Promise.all([QA.live('start'), loadLK()]).then(function (r) {
-        var d = r[0];
-        if (!d || !d.ok || !d.livekit_url || !d.livekit_client_token) throw new Error((d && d.reason) || 'unavailable');
-        var L = window.LivekitClient;
-        room = new L.Room({ adaptiveStream: true });
-        room.on(L.RoomEvent.TrackSubscribed, function (track) {
-          var node = track.attach();
-          node.className = 'qa-live';
-          if (track.kind === 'video') { node.style.cssText = 'width:100%;height:100%;object-fit:contain'; stage.querySelector('.qa-orb').style.display = 'none'; stage.style.cssText = 'position:fixed;left:8px;bottom:0;z-index:99999;width:min(300px,42vw);height:min(520px,72vh);border-radius:0;background:none;overflow:hidden;pointer-events:none;-webkit-mask-image:linear-gradient(to top,#000 88%,transparent 100%);mask-image:linear-gradient(to top,#000 88%,transparent 100%)'; stage.appendChild(node); }
-          else { node.style.display = 'none'; stage.appendChild(node); }
-        });
-        room.on(L.RoomEvent.Disconnected, function () { if (room) stop('Session ended. Tap Talk to Quoya any time.'); });
-        return room.connect(d.livekit_url, d.livekit_client_token).then(function () {
-          return room.localParticipant.setMicrophoneEnabled(true).catch(function () { lineEl.textContent = 'I can hear you only if you allow the microphone.'; });
-        }).then(function () {
-          btn.disabled = false; btn.textContent = 'End conversation'; lineEl.textContent = 'Go ahead, I’m listening.';
-          timer = setTimeout(function () { stop('That’s our time for now. Tap Talk to Quoya to continue.'); }, ((d.max_seconds || 300) * 1000));
-        });
-      }).catch(function (e) {
-        try { if (room) room.disconnect(); } catch (x) {}
-        room = null; btn.disabled = false; btn.textContent = '🎙 Talk to Quoya';
-        lineEl.textContent = 'Live chat isn’t available right now, so I’ll keep guiding you here. You can also call (619) 777-6527.';
-      });
-    };
+    TALKERS.push({ btn: btn, lineEl: lineEl });
+    btn.onclick = function () { if (LIVE) stopLive('Conversation ended. Tap Talk to Quoya any time.'); else startLive(); };
   }
   var QA = {
     // el: container; opts: { key, line }
@@ -91,7 +111,7 @@
       var stage = el.querySelector('.qa-stage'), lineEl = el.querySelector('.qa-line');
       var h = { say: function (t) { lineEl.textContent = t || ''; } };
       h.say(opts.line || '');
-      if (opts.talk) addTalk(el, lineEl, stage);
+      if (opts.talk) addTalk(el, lineEl, stage, opts);
       var offBtn = document.createElement('button'); offBtn.type = 'button'; offBtn.textContent = 'Turn off Quoya Assistant';
       offBtn.style.cssText = 'display:block;margin-top:8px;width:auto;padding:0;border:0;background:none;color:#7fa7b5;font-size:.72rem;text-decoration:underline;cursor:pointer';
       offBtn.onclick = function () { try { localStorage.setItem('quoyaOff', '1'); } catch (e) {} QA.mount(el, opts); };
