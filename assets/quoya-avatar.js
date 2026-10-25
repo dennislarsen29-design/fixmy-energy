@@ -100,7 +100,7 @@
       var L = window.LivekitClient;
       var room = new L.Room({ adaptiveStream: true });
       var dock = document.createElement('div'); dock.id = 'qaDock';
-      dock.style.cssText = 'position:fixed;left:8px;bottom:0;z-index:99999;width:min(504px,58vw);height:min(896px,88vh);pointer-events:none;overflow:hidden;-webkit-mask-image:linear-gradient(to top,#000 88%,transparent 100%);mask-image:linear-gradient(to top,#000 88%,transparent 100%)';
+      dock.style.cssText = 'position:fixed;left:8px;bottom:0;z-index:99999;width:min(300px,42vw);height:min(520px,72vh);pointer-events:none;overflow:hidden;-webkit-mask-image:linear-gradient(to top,#000 88%,transparent 100%);mask-image:linear-gradient(to top,#000 88%,transparent 100%)';
       document.body.appendChild(dock);
       LIVE = { room: room, dock: dock, timer: null };
       room.on(L.RoomEvent.TrackSubscribed, function (track) {
@@ -152,6 +152,8 @@
   }
   var QA = {
     _keyVideo: keyVideo,
+    // Start the live session from a tap the customer already made (e.g. "Start now"). No-op if already live or unavailable.
+    autoStart: function () { try { if (!LIVE) startLive(); } catch (e) {} },
     launcher: function () { ensureCss(); ensureLauncher(); },
     // el: container; opts: { key, line }
     mount: function (el, opts) {
