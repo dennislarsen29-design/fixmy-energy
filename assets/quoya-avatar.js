@@ -88,6 +88,7 @@
       if (LIVE.timer) clearTimeout(LIVE.timer);
       if (LIVE.idle) clearTimeout(LIVE.idle);
       if (LIVE.dock) LIVE.dock.remove();
+      if (LIVE.cap) LIVE.cap.remove();
       LIVE = null;
     }
     setTalkUi(false, msg);
@@ -100,21 +101,37 @@
       var L = window.LivekitClient;
       var room = new L.Room({ adaptiveStream: true });
       var dock = document.createElement('div'); dock.id = 'qaDock';
-      dock.style.cssText = 'position:fixed;left:8px;bottom:0;z-index:99999;width:min(300px,42vw);height:min(520px,72vh);pointer-events:none;overflow:hidden;-webkit-mask-image:linear-gradient(to top,#000 88%,transparent 100%);mask-image:linear-gradient(to top,#000 88%,transparent 100%)';
+      var phone = window.innerWidth < 700;
+      dock.style.cssText = phone
+        ? 'position:fixed;right:8px;top:64px;z-index:99999;width:112px;height:200px;pointer-events:none;overflow:hidden;border-radius:14px;box-shadow:0 6px 18px rgba(0,0,0,.35)'
+        : 'position:fixed;left:8px;bottom:0;z-index:99999;width:min(300px,42vw);height:min(520px,72vh);pointer-events:none;overflow:hidden;-webkit-mask-image:linear-gradient(to top,#000 88%,transparent 100%);mask-image:linear-gradient(to top,#000 88%,transparent 100%)';
+      var cap = document.createElement('div'); cap.id = 'qaCaption';
+      cap.style.cssText = 'position:fixed;left:8px;right:8px;bottom:8px;z-index:99998;max-width:560px;margin:0 auto;background:rgba(15,23,32,.92);color:#fff;border-radius:12px;padding:10px 13px;font-size:.92rem;line-height:1.45;display:none;pointer-events:none';
+      document.body.appendChild(cap);
+      function say(t) { if (!t) return; cap.textContent = t; cap.style.display = 'block'; clearTimeout(say.t); say.t = setTimeout(function () { cap.style.display = 'none'; }, 9000); }
       document.body.appendChild(dock);
-      LIVE = { room: room, dock: dock, timer: null };
+      LIVE = { room: room, dock: dock, cap: cap, timer: null };
       room.on(L.RoomEvent.TrackSubscribed, function (track) {
         var node = track.attach(); node.className = 'qa-live';
         if (track.kind === 'video') { dock.appendChild(node); keyVideo(node, dock); }
-        else { node.style.display = 'none'; dock.appendChild(node); }
+        else { node.style.cssText = 'position:absolute;width:1px;height:1px;opacity:0;pointer-events:none'; try { node.setAttribute('playsinline', ''); node.volume = 1; } catch (e) {} dock.appendChild(node); }
       });
       var idleT = null, IDLE_MS = 45000;
       function bumpIdle() { if (idleT) clearTimeout(idleT); idleT = setTimeout(function () { if (LIVE && LIVE.room === room) stopLive('I paused so we don\u2019t waste your time. Tap Talk to Quoya when you\u2019re ready.'); }, IDLE_MS); }
       room.on(L.RoomEvent.ActiveSpeakersChanged, function (sp) { if (sp && sp.length) bumpIdle(); });
       bumpIdle();
+      try {
+        room.on(L.RoomEvent.TranscriptionReceived, function (segs, part) {
+          try { var isMe = part && room.localParticipant && part.identity === room.localParticipant.identity; if (isMe) return; (segs || []).forEach(function (sg) { if (sg && sg.text && sg.final !== false) say(sg.text); }); } catch (e) {}
+        });
+        room.on(L.RoomEvent.DataReceived, function (payload) {
+          try { var t = JSON.parse(new TextDecoder().decode(payload)); var tx = t && (t.text || t.message || t.transcript || (t.data && (t.data.text || t.data.transcript))); if (tx && !/user/i.test(String(t.role || t.speaker || t.type || ''))) say(String(tx)); } catch (e) {}
+        });
+      } catch (e) {}
       room.on(L.RoomEvent.Disconnected, function () { if (LIVE && LIVE.room === room) stopLive('Session ended. Tap Talk to Quoya any time.'); });
       return room.connect(d.livekit_url, d.livekit_client_token).then(function () {
-        return room.localParticipant.setMicrophoneEnabled(true).catch(function () { TALKERS.forEach(function (t) { t.lineEl.textContent = 'I can hear you only if you allow the microphone.'; }); });
+        try { room.startAudio(); } catch (e) {}
+        return room.localParticipant.setMicrophoneEnabled(true, { echoCancellation: true, noiseSuppression: true, autoGainControl: true }).catch(function () { TALKERS.forEach(function (t) { t.lineEl.textContent = 'I can hear you only if you allow the microphone.'; }); });
       }).then(function () {
         setTalkUi(true, 'Go ahead, I’m listening.');
         LIVE.timer = setTimeout(function () { stopLive('That’s our time for now. Tap Talk to Quoya to continue.'); }, ((d.max_seconds || 120) * 1000));
