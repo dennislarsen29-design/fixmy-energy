@@ -37,6 +37,8 @@
     btn.textContent = '🎙 Talk to Quoya';
     btn.style.cssText = 'margin-top:8px;width:auto;padding:7px 14px;border-radius:10px;border:1px solid rgba(34,211,238,.6);background:rgba(34,211,238,.12);color:#22d3ee;font-weight:700;cursor:pointer';
     box.appendChild(btn);
+    var tip = document.createElement('div'); tip.textContent = 'Tip: find a quiet spot. Earbuds help me hear you.';
+    tip.style.cssText = 'margin-top:5px;font-size:.72rem;color:#7fa7b5'; box.appendChild(tip);
     var room = null, timer = null, orig = lineEl.textContent;
     function stop(msg) {
       try { if (room) room.disconnect(); } catch (e) {}
