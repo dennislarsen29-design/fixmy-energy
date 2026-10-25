@@ -10723,7 +10723,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var conC = Object.assign({}, byKey.consumption, { blurb: 'Your most recent utility bill (the first page is enough). Quoya reads it for you.' });
       steps.push(hwC);
       if (ans.system_issue === 'yes') steps.push(pcC);
-      steps.push(conC, { key: 'cdone', title: 'Send to our team', icon: '&#9989;', blurb: '', slots: [] });
+      // Quoya audits the bill and the meter data whatever the homeowner says: the data is better than anyone's judgement
+      // of whether the system is healthy, and it can surface problems (HVAC, pool pump) the owner is not aware of.
+      var gbdC = Object.assign({}, byKey.gbd, { blurb: 'Optional, and the single best thing you can add. Download your 15-minute usage file from your utility account and add it here. Quoya checks it for problems you may not know about. Skip it if you can\'t get the file.' });
+      steps.push(conC, gbdC, byKey.quoya);
+      var wantsDiag = false; try { wantsDiag = !!_evQuoyaFacts().diag; } catch (e) {}
+      steps.push({ key: 'cdone', title: wantsDiag ? 'Sign & Pay' : 'Send to our team', icon: wantsDiag ? '&#128295;' : '&#9989;', blurb: '', slots: [] });
       return steps;
     }
     if (ans.has_solar !== 'yes') return steps; // 'no' → Axia CTA inside triage; unanswered → gated there
@@ -11811,11 +11816,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var h = '<div style="background:rgba(255,255,255,0.035);border:1px solid rgba(255,255,255,0.1);border-radius:14px;padding:16px;">'
       + row(true, 'Your answers') + row(inv > 0, 'Inverter photo' + (inv ? ' (' + inv + ')' : ' - not added')) + row(bill > 0, 'Utility bill' + (bill ? '' : ' - not added')) + '</div>';
     if (bill > 0 && !_evLocal.utility && !_evBillAnalyzing) h += '<div style="margin-top:12px;padding:12px;border-radius:12px;border:1px solid rgba(34,211,238,.35);"><div style="font-size:0.8rem;margin-bottom:6px;">One last thing: Quoya couldn&rsquo;t tell your utility from the bill. Which is it?</div>' + _evUtilityPillsHtml() + '</div>';
+    var wantsDiag2 = false; try { wantsDiag2 = !!_evQuoyaFacts().diag; } catch (e) {}
+    if (wantsDiag2 && !sub) {
+      h += '<div style="margin-top:14px;background:#fff4e0;border:2px solid #e9a23b;border-radius:16px;padding:16px;"><div style="font-size:0.68rem;font-weight:800;letter-spacing:0.1em;color:#c27803;">QUOYA RECOMMENDS</div>'
+        + '<div style="font-weight:800;font-size:1.05rem;margin:4px 0;">Book your diagnostic</div>'
+        + '<div style="font-size:0.86rem;line-height:1.55;">A licensed electrician finds the cause and tells you your options. <b>The diagnostic fee is fully credited toward any work you approve</b>, and you keep the full report either way.</div>'
+        + '<button onclick="evCustDiag()" style="margin-top:12px;padding:14px;border:none;border-radius:100px;background:#8DC63F;color:#10260a;font-weight:800;font-size:0.92rem;width:100%;cursor:pointer;">Continue to Sign &amp; Pay &#8594;</button></div>';
+    }
     if (sub) return h + '<div style="margin-top:14px;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.4);border-radius:14px;padding:16px;"><div style="font-weight:800;color:#8DC63F;margin-bottom:6px;">Sent - thank you!</div><div style="font-size:0.82rem;color:#ccc;line-height:1.55;">Our team will review and contact you. If something looks wrong with your system, you can go straight to a Diagnostic.</div><button onclick="closeEvalWizard();_csDiag()" style="margin-top:12px;padding:12px;border:none;border-radius:100px;background:#8DC63F;color:#1A1A1A;font-weight:800;">Go to Diagnostic</button><button onclick="closeEvalWizard()" style="margin-top:8px;padding:10px;border:0;background:transparent;color:#999;">Done</button></div>';
     return h + '<button onclick="evCustSubmit(this)" style="margin-top:14px;padding:14px;border:none;border-radius:100px;background:#8DC63F;color:#1A1A1A;font-weight:800;font-size:0.9rem;">Send to our team</button>'
       + '<button onclick="evCustHelp(this)" style="margin-top:8px;padding:12px;border-radius:100px;border:1px solid #22d3ee;background:transparent;color:#22d3ee;font-weight:700;">Need help? Have us do it with you</button>'
       + '<div id="evCustMsg" style="font-size:0.78rem;color:#ffaa00;margin-top:8px;text-align:center;"></div>';
   }
+  window.evCustDiag = function() { try { window.closeEvalWizard(); } catch (e) {} window._csDiag(); };
   window.evCustSubmit = async function(btn) {
     btn.disabled = true; btn.textContent = 'Sending...';
     try {
@@ -12936,6 +12949,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '</div>';
     h += '<div style="font-size:0.66rem;color:#8a8372;text-align:center;line-height:1.5;">Estimates from the information provided. This is a starting point, not a quote or a guarantee.</div>';
     h += '</div>';
+    // Homeowners get a plain Back / Continue; the price + approve controls below are for Techs only.
+    if (_evCust) {
+      var ci = steps.map(function(x){ return x.key; }).indexOf('quoya');
+      try {
+        var snapC = { diag: f.diag, reasons: f.reasons.map(function(r){ return r.replace(/<[^>]+>/g, ''); }), annual_kwh: ser.annual, yoy_pct: ser.yoy, codes: f.codes.map(function(c){ return c.code; }) };
+        var sjC = JSON.stringify(snapC);
+        if (sjC !== _evQuoyaSnapLast) { _evQuoyaSnapLast = sjC; setTimeout(function(){ _evLocal.answers.quoya_report = Object.assign({ at: new Date().toISOString() }, snapC); _evSave({ answers: _evLocal.answers }); }, 0); }
+      } catch (e) {}
+      return h + '<div style="display:flex;gap:8px;"><button onclick="evGoStep(' + Math.max(0, ci - 1) + ')" style="width:auto;margin:0;flex:0 0 auto;padding:13px 20px;background:#fff;border:1px solid #d5cdbe;color:#555;border-radius:100px;font-size:0.82rem;font-weight:700;cursor:pointer;">&#8592; Back</button>'
+        + '<button onclick="evGoStep(' + (ci + 1) + ')" style="flex:1;margin:0;padding:13px;background:#8DC63F;border:none;color:#10260a;border-radius:100px;font-size:0.9rem;font-weight:800;cursor:pointer;">Continue &#8594;</button></div>';
+    }
     // Tech-only controls (dark, below the page).
     var s = _evUpgradeSizing(), i = steps.map(function(x){ return x.key; }).indexOf('quoya');
     h += '<div style="display:flex;gap:8px;"><button onclick="evGoStep(' + Math.max(0, i - 1) + ')" style="width:auto;margin:0;flex:0 0 auto;padding:13px 20px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.14);color:#aaa;border-radius:100px;font-size:0.82rem;font-weight:700;cursor:pointer;">&#8592; Back</button>';
