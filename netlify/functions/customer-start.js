@@ -58,8 +58,9 @@ exports.handler = async (event, ctx, deps) => {
 
   if (action === 'submitted' || action === 'nosolar') {
     const nosolar = action === 'nosolar';
-    await addNote(nosolar ? 'Customer says they have no solar yet (answered in their own evaluation) — new-solar consult.' : 'Customer finished their own guided evaluation (photos / bill / answers are on the lead).');
-    const s = await alertStaff(name + (nosolar ? ' says they have no solar yet — please reach out about a new-solar consult.' : ' finished their guided evaluation. Photos and answers are on the lead — review and call ' + (c.phone || 'them') + '.'), action);
+    const resolved = !nosolar && b.resolved === true;
+    await addNote(nosolar ? 'Customer says they have no solar yet (answered in their own evaluation) — new-solar consult.' : (resolved ? 'Customer restarted their system during the guided evaluation and says it is back online. Please audit the findings (photos, bill, answers are on the lead). They were pointed to leave a Google review.' : 'Customer finished their own guided evaluation (photos / bill / answers are on the lead).'));
+    const s = await alertStaff(name + (resolved ? ' restarted their system and it is back online. No visit needed, but please audit the findings on the lead.' : nosolar ? ' says they have no solar yet — please reach out about a new-solar consult.' : ' finished their guided evaluation. Photos and answers are on the lead — review and call ' + (c.phone || 'them') + '.'), action);
     return out(200, { ok: true, staff: s });
   }
 
