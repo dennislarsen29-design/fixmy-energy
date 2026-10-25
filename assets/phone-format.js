@@ -9,6 +9,13 @@
     if (d.length > 3) return d.slice(0, 3) + '-' + d.slice(3);
     return d;
   }
+  // Partial numbers are fine while typing; a non-empty field must be a full 10 digits before a form can submit.
+  function check(el, v) {
+    try {
+      var d = String(v || el.value).replace(/\D/g, ''); if (d.length === 11 && d.charAt(0) === '1') d = d.slice(1);
+      el.setCustomValidity(d.length > 0 && d.length < 10 ? 'Please enter the full 10-digit phone number, like 801-232-8301.' : '');
+    } catch (x) {}
+  }
   document.addEventListener('input', function (e) {
     var el = e.target;
     if (!el || el.tagName !== 'INPUT' || el.type !== 'tel') return;
@@ -17,6 +24,7 @@
     var raw = el.value, pos = el.selectionStart, atEnd = pos === raw.length;
     var digitsBefore = raw.slice(0, pos).replace(/\D/g, '').length;
     var out = fmt(raw.replace(/\D/g, ''));
+    check(el, out);
     if (out === raw) return;
     el.value = out;
     if (!atEnd) {
@@ -25,4 +33,5 @@
       try { el.setSelectionRange(i, i); } catch (x) {}
     }
   }, true);
+  document.addEventListener('blur', function (e) { var el = e.target; if (el && el.tagName === 'INPUT' && el.type === 'tel' && !el.hasAttribute('data-nofmt') && el.id !== 'bbDialSearchInput') check(el); }, true);
 })();
