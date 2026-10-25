@@ -72,7 +72,7 @@
     if (video.readyState >= 2) frame();
   }
   // One live session for the whole page visit: it floats bottom-left and survives step changes / re-renders.
-  var TALK_LABEL = '\uD83C\uDF99 Talk to Quoya \u2013 AI Virtual Solar Tech';
+  var TALK_LABEL = '\uD83C\uDF99 Talk to Quoya \u2013 Virtual Solar Technician';
   var LIVE = null;           // {room, timer, dock}
   var TALKERS = [];          // {btn, lineEl} for every mounted panel
   function setTalkUi(active, msg) {
@@ -161,7 +161,7 @@
   // Always-available launcher on customer pages: a small round Quoya bubble, bottom-left, free until tapped.
   function ensureLauncher() {
     if (document.getElementById('qaLauncher')) return;
-    var b = document.createElement('button'); b.id = 'qaLauncher'; b.type = 'button'; b.setAttribute('aria-label', 'Talk to Quoya, the AI Virtual Solar Tech'); b.title = 'Talk to Quoya \u2013 AI Virtual Solar Tech';
+    var b = document.createElement('button'); b.id = 'qaLauncher'; b.type = 'button'; b.setAttribute('aria-label', 'Talk to Quoya, the Virtual Solar Technician'); b.title = 'Talk to Quoya \u2013 Virtual Solar Technician';
     b.style.cssText = 'position:fixed;left:14px;bottom:14px;z-index:9400;width:64px;height:64px;padding:0;border-radius:50%;border:2px solid #22d3ee;background:#0b1623 url(/assets/quoya-poster.png) center top/cover no-repeat;box-shadow:0 6px 18px rgba(0,0,0,.3);cursor:pointer;display:flex;align-items:center;justify-content:center;color:#22d3ee;font-size:1.4rem';
     b.innerHTML = '<span style="text-shadow:0 0 8px #000">\uD83C\uDF99</span>';
     b.onclick = function () { if (!LIVE) { var t = TALKERS.filter(function (x) { return x.btn.isConnected; })[0]; if (t) t.btn.click(); else startLive(); } };
@@ -183,7 +183,7 @@
         return { say: function () {} };
       }
       el.innerHTML = '<div class="qa-wrap"><div class="qa-stage"><div class="qa-orb"><i></i><i></i><i></i></div></div>'
-        + '<div style="min-width:0"><div class="qa-tag">QUOYA &middot; AI VIRTUAL SOLAR TECH</div><div class="qa-line"></div></div></div>';
+        + '<div style="min-width:0"><div class="qa-tag">QUOYA &middot; VIRTUAL SOLAR TECHNICIAN</div><div class="qa-line"></div></div></div>';
       var stage = el.querySelector('.qa-stage'), lineEl = el.querySelector('.qa-line');
       try { var pi = new Image(); pi.onload = function () { if (!stage.isConnected || stage.querySelector('video')) return; stage.style.background = 'url(/assets/quoya-poster.png) center top/cover no-repeat'; var o = stage.querySelector('.qa-orb'); if (o) o.style.display = 'none'; }; pi.src = '/assets/quoya-poster.png'; } catch (e) {}
       var h = { say: function (t) { lineEl.textContent = t || ''; } };
@@ -211,7 +211,7 @@
       var f = document.createElement('div'); f.id = 'qaFloat';
       f.style.cssText = 'position:fixed;right:14px;bottom:14px;z-index:9000;max-width:min(340px,calc(100vw - 28px));box-shadow:0 10px 30px rgba(0,0,0,.45);border-radius:16px;';
       f.innerHTML = '<div class="qa-wrap" style="margin:0;position:relative;padding:12px 34px 12px 12px"><div class="qa-stage" style="flex-basis:56px;width:56px;height:56px"><div class="qa-orb"><i></i><i></i><i></i></div></div>'
-        + '<div style="min-width:0"><div class="qa-tag">QUOYA &middot; AI VIRTUAL SOLAR TECH</div><div class="qa-line" style="font-size:.85rem"></div>'
+        + '<div style="min-width:0"><div class="qa-tag">QUOYA &middot; VIRTUAL SOLAR TECHNICIAN</div><div class="qa-line" style="font-size:.85rem"></div>'
         + (opts.speak && window.speechSynthesis ? '<button type="button" class="qa-hear" style="margin-top:6px;width:auto;padding:4px 10px;border-radius:8px;border:1px solid rgba(34,211,238,.5);background:transparent;color:#22d3ee;font-size:.75rem;cursor:pointer">&#128266; Hear it</button>' : '')
         + '</div><button type="button" class="qa-x" aria-label="Dismiss" style="position:absolute;top:6px;right:6px;width:24px;height:24px;padding:0;border:0;border-radius:50%;background:rgba(255,255,255,.12);color:#fff;cursor:pointer;line-height:24px">&times;</button></div>';
       f.querySelector('.qa-line').textContent = opts.line || '';
