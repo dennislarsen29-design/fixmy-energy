@@ -35,8 +35,8 @@ const CHECKPOINTS = {
     direct: 'Encourage them to tap Start now. Do not offer scheduling.'
   },
   triage: {
-    screen: 'Step 1, Site Check: three tap questions. Do they already have solar panels; is the system owned, leased or financed; is there an issue with the system right now (and, if they have an electric car, a couple of short questions).',
-    opening: (f) => 'First, a few quick questions' + f.hi + '. Do you already have solar panels, is the system owned, leased or financed, and is anything wrong with it right now? Just tap your answers.',
+    screen: 'Step 1, Site Check: three tap questions. Do they already have solar panels; is the system owned, leased or financed; is there a problem with the SOLAR system right now (solar only, not the A/C or car). If they have an electric car, it also asks how long they have had it and about how many miles a year.',
+    opening: (f) => 'First, a few quick questions' + f.hi + '. Do you already have solar panels, is the system owned, leased or financed, and is anything wrong with your solar system right now? Just tap your answers.',
     direct: 'Read nothing else. When they have answered, tell them to tap Next. Next they will photograph the inverter and the utility meter.'
   },
   hardware: {

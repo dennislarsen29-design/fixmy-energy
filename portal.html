@@ -11772,8 +11772,27 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   window._evEvKwh = function(a) {
     a = a || {};
     var m = Number(a.ev_miles);
-    return (a.has_ev === 'yes' && a.ev_recent === 'yes' && m > 0) ? Math.round(m * EV_KWH_PER_MILE) : 0;
+    if (a.has_ev !== 'yes' || !(m > 0)) return 0;
+    // Bills already include charging for the months they have owned it, so only the missing part of the year is added.
+    var mo = (a.ev_months != null && a.ev_months !== '') ? Number(a.ev_months) : (a.ev_recent === 'yes' ? 0 : 12);
+    if (!(mo < 12)) return 0;
+    return Math.round(m * EV_KWH_PER_MILE * (12 - mo) / 12);
   };
+  // How long they have had the car (2026-10-25, per Dennis): 11 months of ownership is already in the bill history, so we
+  // must not add a full year of charging on top of it.
+  var EV_AGES = [['u3', 'Under 3 months', 1.5], ['3_6', '3 to 6 months', 4.5], ['6_9', '6 to 9 months', 7.5], ['9_12', '9 to 12 months', 10.5], ['over', 'Over a year', 13]];
+  window.evEvAge = function(key, months) {
+    _evLocal.answers.ev_age = key; _evLocal.answers.ev_months = months; _evLocal.answers.ev_recent = months < 12 ? 'yes' : 'no';
+    _evSave({ answers: _evLocal.answers }); _evRender();
+  };
+  function _evEvAgeHtml(a) {
+    var h = '<div style="font-size:0.82rem;font-weight:700;margin:12px 0 3px;">About how long have you had it?</div><div style="font-size:0.7rem;color:#888;margin-bottom:7px;">Your bills already include the months you have owned it. We only add what is missing.</div><div style="display:flex;gap:6px;flex-wrap:wrap;">';
+    EV_AGES.forEach(function(o) {
+      var on = a.ev_age === o[0];
+      h += '<button onclick="evEvAge(\'' + o[0] + '\',' + o[2] + ')" style="width:auto;margin:0;flex:1 1 auto;padding:10px 12px;border-radius:100px;font-size:0.76rem;font-weight:700;cursor:pointer;' + (on ? 'background:rgba(141,198,63,0.18);border:1px solid rgba(141,198,63,0.55);color:#8DC63F;' : 'background:transparent;border:1px solid rgba(255,255,255,0.16);color:#999;') + '">' + o[1] + '</button>';
+    });
+    return h + '</div>';
+  }
   function _evEvMilesHtml(a) {
     var cur = Number(a.ev_miles) > 0 ? Number(a.ev_miles) : '';
     var h = '<div style="font-size:0.82rem;font-weight:700;margin:12px 0 7px;">About how many miles does it drive in a year?</div><div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;">';
@@ -11784,7 +11803,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     });
     h += '</div><input type="number" inputmode="numeric" min="0" placeholder="Or type miles per year" value="' + cur + '" onchange="evAnswer(\'ev_miles\',this.value===\'\'?null:Number(this.value))" style="width:100%;box-sizing:border-box;padding:11px 12px;border-radius:10px;border:1px solid rgba(255,255,255,0.16);background:rgba(255,255,255,0.05);color:#fff;font-size:0.9rem;">';
     var kwh = window._evEvKwh(a);
-    if (kwh) h += '<div style="font-size:0.72rem;color:#8DC63F;line-height:1.55;margin-top:9px;">&#10003; About ' + kwh.toLocaleString() + ' kWh a year of charging that your bill history doesn&rsquo;t fully show yet. Quoya adds it to your usage.</div>';
+    if (kwh) h += '<div style="font-size:0.72rem;color:#8DC63F;line-height:1.55;margin-top:9px;">&#10003; About ' + kwh.toLocaleString() + ' kWh a year of charging missing from your bill history (the part of the year before you had the car). Quoya adds it to your usage.</div>';
     return h;
   }
   function _evCustTriageHtml() {
@@ -11803,10 +11822,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       h += '</div></div>';
       if (a.ownership_status) {
         h += '<div style="' + box + '"><div style="font-size:0.88rem;font-weight:700;margin-bottom:3px;">3. Do you have an electric vehicle (EV)?</div><div style="font-size:0.7rem;color:#888;margin-bottom:9px;">Charging adds usage your bill may not show yet.</div>' + _evYesNoPills('has_ev', '&#10003; Yes', 'No');
-        if (a.has_ev === 'yes') h += '<div style="font-size:0.82rem;font-weight:700;margin:12px 0 7px;">Did you get it less than 12 months ago?</div>' + _evYesNoPills('ev_recent', 'Yes, recently', 'No, over a year');
+        if (a.has_ev === 'yes') h += _evEvAgeHtml(a);
         if (a.has_ev === 'yes' && a.ev_recent === 'yes') h += _evEvMilesHtml(a);
         h += '</div><div style="' + box + '"><div style="font-size:0.88rem;font-weight:700;margin-bottom:3px;">4. Does your home have air conditioning?</div>' + _evYesNoPills('has_ac', '&#10003; Yes', 'No') + '</div>';
-        h += '<div style="' + box + '"><div style="font-size:0.88rem;font-weight:700;margin-bottom:3px;">5. Is anything wrong with it right now?</div><div style="font-size:0.7rem;color:#888;margin-bottom:9px;">Not producing, error lights, or it shut off.</div>' + _evYesNoPills('system_issue', 'Yes, something is off', 'No, it seems fine') + '</div>';
+        h += '<div style="' + box + '"><div style="font-size:0.88rem;font-weight:700;margin-bottom:3px;">5. Is anything wrong with your SOLAR system right now?</div><div style="font-size:0.7rem;color:#888;margin-bottom:9px;line-height:1.45;">Solar only, not your A/C, car or other appliances. Look at the inverter (the box near your panels) or your solar app: no power being made, red or error lights, or it shut off.</div>' + _evYesNoPills('system_issue', 'Yes, my solar has a problem', 'No, my solar seems fine') + '</div>';
       }
     }
     return h;
@@ -12002,8 +12021,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       h += '<div style="font-size:0.7rem;color:#888;line-height:1.45;margin-bottom:9px;">Charging adds demand the bill may not show yet.</div>';
       h += _evYesNoPills('has_ev', '&#10003; Yes', 'No');
       if (a.has_ev === 'yes') {
-        h += '<div style="font-size:0.82rem;font-weight:700;margin:12px 0 7px;">Did they buy it less than 12 months ago?</div>';
-        h += _evYesNoPills('ev_recent', 'Yes &mdash; recent', 'No &mdash; over a year');
+        h += _evEvAgeHtml(a);
         if (a.ev_recent === 'yes') h += _evEvMilesHtml(a) + (window._evEvKwh(a) ? '' : '<div style="font-size:0.72rem;color:#8DC63F;line-height:1.55;margin-top:9px;">&#10003; Noted &mdash; usage is likely higher than the bill shows. Add the yearly miles so Quoya can add the charging.</div>');
       }
       h += '</div>';
@@ -12012,8 +12030,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       h += _evYesNoPills('has_ac', '&#10003; Yes', 'No');
       h += '</div>';
       h += '<div style="background:rgba(255,255,255,0.035);border:1px solid rgba(255,255,255,0.1);border-radius:14px;padding:14px;margin-bottom:10px;">';
-      h += '<div style="font-size:0.88rem;font-weight:700;margin-bottom:3px;">5. Is there an issue with the system right now?</div>';
-      h += '<div style="font-size:0.7rem;color:#888;line-height:1.45;margin-bottom:9px;">Downed system, outage, or clear signs of production problems.</div>';
+      h += '<div style="font-size:0.88rem;font-weight:700;margin-bottom:3px;">5. Is there an issue with the SOLAR system right now?</div>';
+      h += '<div style="font-size:0.7rem;color:#888;line-height:1.45;margin-bottom:9px;">Downed solar system, outage, or clear signs of solar production problems (not A/C or the car).</div>';
       h += _evYesNoPills('system_issue', '&#9888; Yes &mdash; something\'s wrong', '&#10003; No &mdash; working fine');
       h += '</div>';
       if (a.system_issue === 'no') {
