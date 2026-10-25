@@ -46,6 +46,7 @@
     if (LIVE) {
       try { LIVE.room.disconnect(); } catch (e) {}
       if (LIVE.timer) clearTimeout(LIVE.timer);
+      if (LIVE.idle) clearTimeout(LIVE.idle);
       if (LIVE.dock) LIVE.dock.remove();
       LIVE = null;
     }
@@ -68,6 +69,10 @@
         else node.style.display = 'none';
         dock.appendChild(node);
       });
+      var idleT = null, IDLE_MS = 45000;
+      function bumpIdle() { if (idleT) clearTimeout(idleT); idleT = setTimeout(function () { if (LIVE && LIVE.room === room) stopLive('I paused so we don\u2019t waste your time. Tap Talk to Quoya when you\u2019re ready.'); }, IDLE_MS); }
+      room.on(L.RoomEvent.ActiveSpeakersChanged, function (sp) { if (sp && sp.length) bumpIdle(); });
+      bumpIdle();
       room.on(L.RoomEvent.Disconnected, function () { if (LIVE && LIVE.room === room) stopLive('Session ended. Tap Talk to Quoya any time.'); });
       return room.connect(d.livekit_url, d.livekit_client_token).then(function () {
         return room.localParticipant.setMicrophoneEnabled(true).catch(function () { TALKERS.forEach(function (t) { t.lineEl.textContent = 'I can hear you only if you allow the microphone.'; }); });
@@ -96,7 +101,18 @@
     TALKERS.push({ btn: btn, lineEl: lineEl });
     btn.onclick = function () { if (LIVE) stopLive('Conversation ended. Tap Talk to Quoya any time.'); else startLive(); };
   }
+  // Always-available launcher on customer pages: a small round Quoya bubble, bottom-left, free until tapped.
+  function ensureLauncher() {
+    if (document.getElementById('qaLauncher')) return;
+    var b = document.createElement('button'); b.id = 'qaLauncher'; b.type = 'button'; b.setAttribute('aria-label', 'Talk to Quoya');
+    b.style.cssText = 'position:fixed;left:14px;bottom:14px;z-index:9400;width:64px;height:64px;padding:0;border-radius:50%;border:2px solid #22d3ee;background:#0b1623 url(/assets/quoya-poster.png) center top/cover no-repeat;box-shadow:0 6px 18px rgba(0,0,0,.3);cursor:pointer;display:flex;align-items:center;justify-content:center;color:#22d3ee;font-size:1.4rem';
+    b.innerHTML = '<span style="text-shadow:0 0 8px #000">\uD83C\uDF99</span>';
+    b.onclick = function () { if (!LIVE) { var t = TALKERS.filter(function (x) { return x.btn.isConnected; })[0]; if (t) t.btn.click(); else startLive(); } };
+    document.body.appendChild(b);
+    setInterval(function () { b.style.display = LIVE ? 'none' : 'flex'; }, 500);
+  }
   var QA = {
+    launcher: function () { ensureCss(); ensureLauncher(); },
     // el: container; opts: { key, line }
     mount: function (el, opts) {
       ensureCss(); opts = opts || {};
