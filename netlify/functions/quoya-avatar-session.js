@@ -21,6 +21,14 @@ const cors = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin'
 const out = (code, o) => ({ statusCode: code, headers: cors, body: JSON.stringify(o) });
 const originOk = (e) => { const o = (e.headers && (e.headers.origin || e.headers.referer)) || ''; return !o || /fixmy\.energy|localhost|netlify\.app/.test(o); };
 
+// Best-effort cost guard: max 6 real session starts per IP per hour (per warm function instance).
+const STARTS = new Map();
+function tooMany(ip) {
+  const now = Date.now(), arr = (STARTS.get(ip) || []).filter(t => now - t < 3600000);
+  if (arr.length >= 6) { STARTS.set(ip, arr); return true; }
+  arr.push(now); STARTS.set(ip, arr); return false;
+}
+
 async function call(path, init) {
   const r = await fetch(BASE + path, init);
   let body = null; try { body = await r.json(); } catch (e) {}
@@ -48,6 +56,7 @@ exports.handler = async (event) => {
     const sessionToken = d.session_token || d.token;
     const sessionId = d.session_id || d.id || null;
     if (!sessionToken) { console.error('[quoya-avatar] no token field; keys:', Object.keys(d)); return out(200, { ok: false, reason: 'unexpected_token_shape', keys: Object.keys(d) }); }
+    if (action === 'start' && tooMany((event.headers && (event.headers['x-nf-client-connection-ip'] || event.headers['client-ip'])) || 'unknown')) return out(200, { ok: false, reason: 'rate_limited' });
     if (action === 'check') return out(200, { ok: true, checked: true, session_id_present: !!sessionId });
     const s = await call('/v1/sessions/start', { method: 'POST', headers: { Authorization: 'Bearer ' + sessionToken, 'Content-Type': 'application/json', Accept: 'application/json' }, body: '{}' });
     if (!s.ok) { console.error('[quoya-avatar] start failed', s.status, JSON.stringify(s.body)); return out(200, { ok: false, reason: 'start_failed', status: s.status, detail: s.body && (s.body.message || s.body.error || s.body.detail || JSON.stringify(s.body).slice(0,300)) || null }); }

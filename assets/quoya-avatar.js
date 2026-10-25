@@ -158,6 +158,7 @@
       var hear = f.querySelector('.qa-hear');
       if (hear) hear.onclick = function () { try { window.speechSynthesis.cancel(); var u = new SpeechSynthesisUtterance(opts.line || ''); u.rate = 1; window.speechSynthesis.speak(u); } catch (e) {} };
       document.body.appendChild(f);
+      if (opts.talk !== false) { var _ln = f.querySelector('.qa-line'), _st = f.querySelector('.qa-stage'); addTalk(f, _ln, _st, opts); }
       return { el: f, close: function () { f.remove(); } };
     },
     // Live session (real-time avatar). Returns {ok:false} until the server says it is configured.
