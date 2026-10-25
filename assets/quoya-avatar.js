@@ -8,6 +8,7 @@
   var css = '.qa-wrap{display:flex;gap:14px;align-items:center;background:linear-gradient(135deg,#0b1623,#10263a);border:1px solid rgba(34,211,238,.35);border-radius:16px;padding:14px;margin-bottom:14px}'
     + '.qa-stage{flex:0 0 84px;width:84px;height:84px;position:relative;border-radius:50%;overflow:hidden;background:radial-gradient(circle,#0e3b4f,#07121c)}'
     + '.qa-stage video{width:100%;height:100%;object-fit:cover}'
+    + '.qa-stage.qa-poster{background:#0b1623 url(/assets/quoya-poster.png) center top/cover no-repeat!important}'
     + '.qa-orb{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}'
     + '.qa-orb i{position:absolute;border-radius:50%;border:2px solid rgba(34,211,238,.55);animation:qaPulse 2.4s ease-in-out infinite}'
     + '.qa-orb i:nth-child(1){width:34px;height:34px;background:rgba(34,211,238,.9);box-shadow:0 0 18px #22d3ee;border:0}'
@@ -229,7 +230,7 @@
       el.innerHTML = '<div class="qa-wrap"><div class="qa-stage"><div class="qa-orb"><i></i><i></i><i></i></div></div>'
         + '<div style="min-width:0"><div class="qa-tag">QUOYA &middot; AI SOLAR TECHNICIAN</div><div class="qa-line"></div></div></div>';
       var stage = el.querySelector('.qa-stage'), lineEl = el.querySelector('.qa-line');
-      try { var pi = new Image(); pi.onload = function () { if (!stage.isConnected || stage.querySelector('video')) return; stage.style.background = 'url(/assets/quoya-poster.png) center top/cover no-repeat'; var o = stage.querySelector('.qa-orb'); if (o) o.style.display = 'none'; }; pi.src = '/assets/quoya-poster.png'; } catch (e) {}
+      try { var pi = new Image(); pi.onload = function () { if (!stage.isConnected || stage.querySelector('video')) return; stage.classList.add('qa-poster'); var o = stage.querySelector('.qa-orb'); if (o) o.style.display = 'none'; }; pi.src = '/assets/quoya-poster.png'; } catch (e) {}
       var h = { say: function (t) { lineEl.textContent = t || ''; } };
       h.say(opts.line || '');
       if (opts.talk) addTalk(el, lineEl, stage, opts);
@@ -263,7 +264,8 @@
       var hear = f.querySelector('.qa-hear');
       if (hear) hear.onclick = function () { try { window.speechSynthesis.cancel(); var u = new SpeechSynthesisUtterance(opts.line || ''); u.rate = 1; window.speechSynthesis.speak(u); } catch (e) {} };
       document.body.appendChild(f);
-      if (opts.talk !== false) { var _ln = f.querySelector('.qa-line'), _st = f.querySelector('.qa-stage'); addTalk(f, _ln, _st, opts); }
+      if (opts.talk !== false) { var _ln = f.querySelector('.qa-line'), _st = f.querySelector('.qa-stage');
+        try { var _pi = new Image(); _pi.onload = function () { if (!_st.isConnected) return; _st.classList.add('qa-poster'); var _o = _st.querySelector('.qa-orb'); if (_o) _o.style.display = 'none'; }; _pi.src = '/assets/quoya-poster.png'; } catch (e) {} addTalk(f, _ln, _st, opts); }
       return { el: f, close: function () { f.remove(); } };
     },
     // Live session (real-time avatar). Returns {ok:false} until the server says it is configured.
