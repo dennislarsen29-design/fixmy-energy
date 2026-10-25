@@ -73,7 +73,8 @@
   }
   // One live session for the whole page visit: it floats bottom-left and survives step changes / re-renders.
   var TALK_LABEL = '\uD83C\uDF99 Talk to Quoya \u2013 AI Solar Technician';
-  var LIVE = null;           // {room, timer, dock}
+  var LIVE = null;           // {room, timer, dock, step}
+  var CUR_STEP = 'welcome', CTX_FN = null, CP_T = null;
   var TALKERS = [];          // {btn, lineEl} for every mounted panel
   function setTalkUi(active, msg) {
     TALKERS = TALKERS.filter(function (t) { return t.btn.isConnected; });
@@ -96,7 +97,8 @@
   }
   function startLive() {
     setTalkUi(false); TALKERS.forEach(function (t) { t.btn.disabled = true; t.btn.textContent = 'Connecting…'; t.lineEl.textContent = 'One moment, connecting…'; });
-    return Promise.all([QA.live('start'), loadLK()]).then(function (r) {
+    var stepAtStart = CUR_STEP, ctxExtra = {}; try { ctxExtra = (CTX_FN && CTX_FN()) || {}; } catch (e) {}
+    return Promise.all([QA.live('start', Object.assign({}, ctxExtra, { step: stepAtStart })), loadLK()]).then(function (r) {
       var d = r[0];
       if (!d || !d.ok || !d.livekit_url || !d.livekit_client_token) throw new Error(((d && d.reason) || 'unavailable') + (d && d.status ? ' ' + d.status : '') + (d && d.detail ? ': ' + String(d.detail).slice(0, 120) : '') + (d && d.ok && !d.livekit_url ? ' (no livekit_url; keys: ' + (d.keys || []).join(',') + ')' : ''));
       var L = window.LivekitClient;
@@ -111,7 +113,7 @@
       document.body.appendChild(cap);
       function say(t) { if (!t) return; cap.textContent = t; cap.style.display = 'block'; clearTimeout(say.t); say.t = setTimeout(function () { cap.style.display = 'none'; }, 9000); }
       document.body.appendChild(dock);
-      LIVE = { room: room, dock: dock, cap: cap, timer: null };
+      LIVE = { room: room, dock: dock, cap: cap, timer: null, step: stepAtStart };
       room.on(L.RoomEvent.TrackSubscribed, function (track) {
         var node = track.attach(); node.className = 'qa-live';
         if (track.kind === 'video') { dock.appendChild(node); keyVideo(node, dock); }
@@ -171,7 +173,14 @@
   var QA = {
     _keyVideo: keyVideo,
     // Start the live session from a tap the customer already made (e.g. "Start now"). No-op if already live or unavailable.
-    autoStart: function () { try { if (!LIVE) startLive(); } catch (e) {} },
+    autoStart: function (step) { try { if (step) CUR_STEP = step; if (!LIVE) startLive(); } catch (e) {} },
+    // Tell Quoya which screen the customer is on. If she is live, she reconnects with that checkpoint's directions.
+    setContext: function (fn) { CTX_FN = fn; },
+    checkpoint: function (step) {
+      if (!step || step === CUR_STEP) return; CUR_STEP = step;
+      if (!LIVE || LIVE.step === step) return;
+      clearTimeout(CP_T); CP_T = setTimeout(function () { if (LIVE && LIVE.step !== CUR_STEP) { stopLive(); startLive(); } }, 1500);
+    },
     launcher: function () { ensureCss(); ensureLauncher(); },
     // el: container; opts: { key, line }
     mount: function (el, opts) {
@@ -223,8 +232,8 @@
       return { el: f, close: function () { f.remove(); } };
     },
     // Live session (real-time avatar). Returns {ok:false} until the server says it is configured.
-    live: function (action) {
-      return fetch('/.netlify/functions/quoya-avatar-session', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: action || 'check' }) })
+    live: function (action, extra) {
+      return fetch('/.netlify/functions/quoya-avatar-session', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({ action: action || 'check' }, extra || {})) })
         .then(function (r) { return r.json(); }).catch(function () { return { ok: false, reason: 'network' }; });
     }
   };
