@@ -73,6 +73,39 @@
   }
   // One live session for the whole page visit: it floats bottom-left and survives step changes / re-renders.
   var TALK_LABEL = '\uD83C\uDF99 Talk to Quoya \u2013 AI Solar Technician';
+  // ---- Conversation capture with consent (2026-10-25) ----
+  // Lines are buffered in memory only. Nothing leaves the browser unless the homeowner agrees: a tap on "Yes, share", or a
+  // spoken yes right after Quoya asks. "No" throws the buffer away.
+  var CAP = null;
+  var YES_RE = /\b(yes|yeah|yep|yup|sure|okay|ok|go ahead|that's fine|that is fine|please do|of course|absolutely)\b/i, NO_RE = /\b(no|nope|nah|don't|do not|rather not|not really|please don't)\b/i;
+  function capNew() { return { sid: 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), lines: [], seen: {}, state: 'none', method: null, at: null, sentN: 0, timer: null, bar: null }; }
+  function capAdd(who, text, id) {
+    if (!CAP || CAP.state === 'no' || !text) return;
+    text = String(text).trim(); if (!text) return;
+    if (id) { if (CAP.seen[id]) return; CAP.seen[id] = 1; }
+    CAP.lines.push({ who: who, text: text }); if (CAP.lines.length > 400) CAP.lines.shift();
+    if (who === 'quoya' && CAP.state === 'none' && /share this conversation with our team/i.test(text)) capAsk();
+    else if (who === 'customer' && CAP.state === 'asked') { if (YES_RE.test(text) && !NO_RE.test(text)) capGrant('voice'); else if (NO_RE.test(text) && !YES_RE.test(text)) capDeny(); }
+  }
+  function capAsk() {
+    CAP.state = 'asked';
+    var bar = document.createElement('div'); CAP.bar = bar;
+    bar.style.cssText = 'position:fixed;left:8px;right:8px;bottom:64px;z-index:100000;max-width:520px;margin:0 auto;background:#fff;color:#1a1a1a;border:2px solid #0E7490;border-radius:14px;padding:12px 14px;box-shadow:0 8px 24px rgba(0,0,0,.3);font:600 .9rem/1.4 -apple-system,Segoe UI,Roboto,sans-serif';
+    bar.innerHTML = '<div style="margin-bottom:9px;">Share this conversation with our team so they can help?</div><div style="display:flex;gap:8px;"><button type="button" data-y style="flex:1;margin:0;padding:11px;border:0;border-radius:100px;background:#8DC63F;color:#10260a;font-weight:800;cursor:pointer;">Yes, share</button><button type="button" data-n style="flex:1;margin:0;padding:11px;border:1px solid #bbb;border-radius:100px;background:#fff;color:#444;font-weight:700;cursor:pointer;">No thanks</button></div>';
+    bar.querySelector('[data-y]').onclick = function () { capGrant('tap'); };
+    bar.querySelector('[data-n]').onclick = function () { capDeny(); };
+    document.body.appendChild(bar);
+  }
+  function capHide() { if (CAP && CAP.bar) { CAP.bar.remove(); CAP.bar = null; } }
+  function capGrant(method) { if (!CAP || CAP.state === 'yes') return; CAP.state = 'yes'; CAP.method = method; CAP.at = new Date().toISOString(); capHide(); capFlush(); CAP.timer = setInterval(capFlush, 25000); }
+  function capDeny() { if (!CAP) return; CAP.state = 'no'; CAP.lines.length = 0; capHide(); }
+  function capFlush(final) {
+    if (!CAP || CAP.state !== 'yes' || CAP.lines.length === CAP.sentN) return;
+    var extra = {}; try { extra = (CTX_FN && CTX_FN()) || {}; } catch (e) {}
+    CAP.sentN = CAP.lines.length;
+    try { fetch('/.netlify/functions/quoya-transcript', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.assign({}, extra, { sessionId: CAP.sid, step: (LIVE && LIVE.step) || CUR_STEP, consent: { method: CAP.method, at: CAP.at }, lines: CAP.lines })) }); } catch (e) {}
+  }
+  function capEnd() { if (!CAP) return; capFlush(true); if (CAP.timer) clearInterval(CAP.timer); capHide(); CAP = null; }
   var LIVE = null;           // {room, timer, dock, step}
   var CUR_STEP = 'welcome', CTX_FN = null, CP_T = null;
   var TALKERS = [];          // {btn, lineEl} for every mounted panel
@@ -85,6 +118,7 @@
     });
   }
   function stopLive(msg) {
+    capEnd();
     if (LIVE) {
       try { LIVE.room.disconnect(); } catch (e) {}
       if (LIVE.timer) clearTimeout(LIVE.timer);
@@ -114,6 +148,7 @@
       function say(t) { if (!t) return; cap.textContent = t; cap.style.display = 'block'; clearTimeout(say.t); say.t = setTimeout(function () { cap.style.display = 'none'; }, 9000); }
       document.body.appendChild(dock);
       LIVE = { room: room, dock: dock, cap: cap, timer: null, step: stepAtStart };
+      CAP = capNew();
       room.on(L.RoomEvent.TrackSubscribed, function (track) {
         var node = track.attach(); node.className = 'qa-live';
         if (track.kind === 'video') { dock.appendChild(node); keyVideo(node, dock); }
@@ -125,10 +160,10 @@
       bumpIdle();
       try {
         room.on(L.RoomEvent.TranscriptionReceived, function (segs, part) {
-          try { var isMe = part && room.localParticipant && part.identity === room.localParticipant.identity; if (isMe) return; (segs || []).forEach(function (sg) { if (sg && sg.text && sg.final !== false) say(sg.text); }); } catch (e) {}
+          try { var isMe = part && room.localParticipant && part.identity === room.localParticipant.identity; (segs || []).forEach(function (sg) { if (sg && sg.text && sg.final !== false) { if (!isMe) say(sg.text); capAdd(isMe ? 'customer' : 'quoya', sg.text, sg.id); } }); } catch (e) {}
         });
         room.on(L.RoomEvent.DataReceived, function (payload) {
-          try { var t = JSON.parse(new TextDecoder().decode(payload)); var tx = t && (t.text || t.message || t.transcript || (t.data && (t.data.text || t.data.transcript))); if (tx && !/user/i.test(String(t.role || t.speaker || t.type || ''))) say(String(tx)); } catch (e) {}
+          try { var t = JSON.parse(new TextDecoder().decode(payload)); var tx = t && (t.text || t.message || t.transcript || (t.data && (t.data.text || t.data.transcript))); if (!tx) return; var mine = /user|customer|human/i.test(String(t.role || t.speaker || t.type || '')); if (!mine) say(String(tx)); capAdd(mine ? 'customer' : 'quoya', String(tx), t.id || null); } catch (e) {}
         });
       } catch (e) {}
       room.on(L.RoomEvent.Disconnected, function () { if (LIVE && LIVE.room === room) stopLive('Session ended. Tap Talk to Quoya any time.'); });
