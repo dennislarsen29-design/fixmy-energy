@@ -60,7 +60,7 @@
       var L = window.LivekitClient;
       var room = new L.Room({ adaptiveStream: true });
       var dock = document.createElement('div'); dock.id = 'qaDock';
-      dock.style.cssText = 'position:fixed;left:8px;bottom:0;z-index:99999;width:min(300px,42vw);height:min(520px,72vh);pointer-events:none;overflow:hidden;-webkit-mask-image:linear-gradient(to top,#000 88%,transparent 100%);mask-image:linear-gradient(to top,#000 88%,transparent 100%)';
+      dock.style.cssText = 'position:fixed;left:8px;bottom:0;z-index:99999;width:min(504px,58vw);height:min(896px,88vh);pointer-events:none;overflow:hidden;-webkit-mask-image:linear-gradient(to top,#000 88%,transparent 100%);mask-image:linear-gradient(to top,#000 88%,transparent 100%)';
       document.body.appendChild(dock);
       LIVE = { room: room, dock: dock, timer: null };
       room.on(L.RoomEvent.TrackSubscribed, function (track) {
@@ -125,6 +125,7 @@
       el.innerHTML = '<div class="qa-wrap"><div class="qa-stage"><div class="qa-orb"><i></i><i></i><i></i></div></div>'
         + '<div style="min-width:0"><div class="qa-tag">QUOYA</div><div class="qa-line"></div></div></div>';
       var stage = el.querySelector('.qa-stage'), lineEl = el.querySelector('.qa-line');
+      try { var pi = new Image(); pi.onload = function () { if (!stage.isConnected || stage.querySelector('video')) return; stage.style.background = 'url(/assets/quoya-poster.png) center top/cover no-repeat'; var o = stage.querySelector('.qa-orb'); if (o) o.style.display = 'none'; }; pi.src = '/assets/quoya-poster.png'; } catch (e) {}
       var h = { say: function (t) { lineEl.textContent = t || ''; } };
       h.say(opts.line || '');
       if (opts.talk) addTalk(el, lineEl, stage, opts);
