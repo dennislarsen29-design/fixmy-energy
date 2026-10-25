@@ -31,6 +31,46 @@
       document.head.appendChild(s);
     });
   }
+  // Background removal (2026-10-25): LiveAvatar's own guide says avatars rendered on a solid green background can be made
+  // transparent in the browser (chroma key). We sample the video corners: if they are green we key them out frame by
+  // frame on a canvas; if not (e.g. a hallway background) the video is shown untouched.
+  function keyVideo(video, dock) {
+    var showRaw = function () { video.style.cssText = 'width:100%;height:100%;object-fit:contain;display:block'; };
+    video.style.cssText = 'position:absolute;left:0;top:0;width:2px;height:2px;opacity:0;pointer-events:none';
+    var canvas = document.createElement('canvas'); canvas.style.cssText = 'width:100%;height:100%;object-fit:contain;display:none';
+    dock.appendChild(canvas);
+    var ctx = canvas.getContext('2d', { willReadFrequently: true });
+    var mode = 'probe', probes = 0, stopped = false;
+    function isGreen(r, g, b) { return g > 90 && g > r + 40 && g > b + 40; }
+    function frame() {
+      if (stopped || !video.isConnected) { stopped = true; return; }
+      var w = video.videoWidth, h = video.videoHeight;
+      if (w && h && video.readyState >= 2) {
+        var sc = Math.min(1, 640 / h); var cw = Math.round(w * sc), ch = Math.round(h * sc);
+        if (canvas.width !== cw) { canvas.width = cw; canvas.height = ch; }
+        ctx.drawImage(video, 0, 0, cw, ch);
+        if (mode === 'probe') {
+          var pts = [[4, 4], [cw - 8, 4], [4, Math.round(ch * 0.4)], [cw - 8, Math.round(ch * 0.4)]], green = 0;
+          pts.forEach(function (q) { var d = ctx.getImageData(q[0], q[1], 4, 4).data; if (isGreen(d[0], d[1], d[2])) green++; });
+          if (green >= 3) mode = 'key'; else if (++probes > 15) { mode = 'raw'; showRaw(); canvas.style.display = 'none'; return; }
+          if (mode === 'key') canvas.style.display = 'block';
+        }
+        if (mode === 'key') {
+          var img = ctx.getImageData(0, 0, cw, ch), d = img.data;
+          for (var i = 0; i < d.length; i += 4) {
+            var r = d[i], g = d[i + 1], b = d[i + 2], m = r > b ? r : b, gd = g - m;
+            if (gd > 55) d[i + 3] = 0;
+            else if (gd > 18) { d[i + 3] = Math.round(255 * (1 - (gd - 18) / 37)); d[i + 1] = m; }
+            else if (gd > 0) d[i + 1] = m;   // despill: pull stray green off hair and clothing edges
+          }
+          ctx.putImageData(img, 0, 0);
+        }
+      }
+      if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(frame); else requestAnimationFrame(frame);
+    }
+    video.addEventListener('playing', function () { if (!stopped && mode !== 'raw') frame(); }, { once: true });
+    if (video.readyState >= 2) frame();
+  }
   // One live session for the whole page visit: it floats bottom-left and survives step changes / re-renders.
   var LIVE = null;           // {room, timer, dock}
   var TALKERS = [];          // {btn, lineEl} for every mounted panel
@@ -65,9 +105,8 @@
       LIVE = { room: room, dock: dock, timer: null };
       room.on(L.RoomEvent.TrackSubscribed, function (track) {
         var node = track.attach(); node.className = 'qa-live';
-        if (track.kind === 'video') node.style.cssText = 'width:100%;height:100%;object-fit:contain';
-        else node.style.display = 'none';
-        dock.appendChild(node);
+        if (track.kind === 'video') { dock.appendChild(node); keyVideo(node, dock); }
+        else { node.style.display = 'none'; dock.appendChild(node); }
       });
       var idleT = null, IDLE_MS = 45000;
       function bumpIdle() { if (idleT) clearTimeout(idleT); idleT = setTimeout(function () { if (LIVE && LIVE.room === room) stopLive('I paused so we don\u2019t waste your time. Tap Talk to Quoya when you\u2019re ready.'); }, IDLE_MS); }
@@ -112,6 +151,7 @@
     setInterval(function () { b.style.display = LIVE ? 'none' : 'flex'; }, 500);
   }
   var QA = {
+    _keyVideo: keyVideo,
     launcher: function () { ensureCss(); ensureLauncher(); },
     // el: container; opts: { key, line }
     mount: function (el, opts) {
