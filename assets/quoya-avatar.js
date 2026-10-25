@@ -56,7 +56,7 @@
     setTalkUi(false); TALKERS.forEach(function (t) { t.btn.disabled = true; t.btn.textContent = 'Connecting…'; t.lineEl.textContent = 'One moment, connecting…'; });
     return Promise.all([QA.live('start'), loadLK()]).then(function (r) {
       var d = r[0];
-      if (!d || !d.ok || !d.livekit_url || !d.livekit_client_token) throw new Error((d && d.reason) || 'unavailable');
+      if (!d || !d.ok || !d.livekit_url || !d.livekit_client_token) throw new Error(((d && d.reason) || 'unavailable') + (d && d.status ? ' ' + d.status : '') + (d && d.detail ? ': ' + String(d.detail).slice(0, 120) : '') + (d && d.ok && !d.livekit_url ? ' (no livekit_url; keys: ' + (d.keys || []).join(',') + ')' : ''));
       var L = window.LivekitClient;
       var room = new L.Room({ adaptiveStream: true });
       var dock = document.createElement('div'); dock.id = 'qaDock';
@@ -80,8 +80,8 @@
         setTalkUi(true, 'Go ahead, I’m listening.');
         LIVE.timer = setTimeout(function () { stopLive('That’s our time for now. Tap Talk to Quoya to continue.'); }, ((d.max_seconds || 120) * 1000));
       });
-    }).catch(function () {
-      stopLive('Live chat isn’t available right now, so I’ll keep guiding you here. You can also call (619) 777-6527.');
+    }).catch(function (err) {
+      stopLive('Live chat isn\u2019t available right now, so I\u2019ll keep guiding you here. You can also call (619) 777-6527. [' + String((err && err.message) || err).slice(0, 160) + ']');
     });
   }
   function addTalk(el, lineEl, stage, opts) {
