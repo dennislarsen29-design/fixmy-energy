@@ -2980,90 +2980,177 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var ne = document.getElementById('jobsSearchInput');
     if (ne) { ne.focus(); try { ne.setSelectionRange(caret, caret); } catch(e){} }
   };
-  // ── Completed jobs (2026-10-26, per Dennis) ──────────────────────────────────────────────
+  // ── Completed jobs + "Next step" popup (2026-10-26, per Dennis) ─────────────────────────
   // A job leaves the main Jobs list only when the WORK is done AND every money item is settled AND the
-  // referral has been asked: closer/setter commissions locked in and paid, Sub Sheet costs paid, the
-  // diagnostic fee paid (diagnostic jobs), both Cosmic payments received (battery retrofit), Domestic
-  // Content recorded (Axia). Anything still open stays in the list with a "To close out" line.
+  // referral has been asked. Instead of a checklist, each open job shows ONE "Next step" button that opens
+  // a question-and-answer popup: it asks the next open question, carries out the answer, then asks the next
+  // one until the job is closed out. Same data as before; one place to act.
   var _jobSettle = null; // { at, byId: { id: { comms:[], costs:[] } } }
-  window._ensureJobSettle = async function(ids) {
+  window._ensureJobSettle = async function(ids, merge) {
     var cl = supabase.createClient(SUPA_URL, SUPA_KEY), byId = {};
     ids.forEach(function(i){ byId[i] = { comms: [], costs: [] }; });
     for (var i = 0; i < ids.length; i += 150) {
       var chunk = ids.slice(i, i + 150);
-      var a = await cl.from('commissions').select('customer_id,kind,payee,status,note').in('customer_id', chunk);
-      var b = await cl.from('job_costs').select('customer_id,status').in('customer_id', chunk);
+      var a = await cl.from('commissions').select('id,customer_id,kind,payee,status,note,amount').in('customer_id', chunk);
+      var b = await cl.from('job_costs').select('id,customer_id,status,amount').in('customer_id', chunk);
       if (a.error || b.error) return null; // never guess: unknown = job stays visible
       (a.data || []).forEach(function(r){ if (byId[r.customer_id]) byId[r.customer_id].comms.push(r); });
       (b.data || []).forEach(function(r){ if (byId[r.customer_id]) byId[r.customer_id].costs.push(r); });
     }
-    _jobSettle = { at: Date.now(), byId: byId };
+    if (merge && _jobSettle) { ids.forEach(function(i){ _jobSettle.byId[i] = byId[i]; }); _jobSettle.at = Date.now(); }
+    else _jobSettle = { at: Date.now(), byId: byId };
     return _jobSettle;
   };
   window._jobCompletion = function(c) {
     var isNS = c.lead_category === 'new_solar';
     var d = isNS ? _axiaCommCache[c.id] : _fixmyCommCache[c.id];
     var st = _jobSettle && _jobSettle.byId[c.id];
-    if (!d || !st) return { known: false, complete: false, workDone: false, missing: [] };
+    if (!d || !st) return { known: false, complete: false, workDone: false, missing: [], todos: [] };
     var step = parseInt(c.step, 10) || 1, workDone;
     if (isNS) workDone = c.solar_status === 'ns_pto';
     else if (step >= 9) workDone = true;
     else if (c.sold_type === 'diagnostic') workDone = !!c.diagnostic_date && new Date(c.diagnostic_date) < new Date();
     else workDone = false;
-    if (!workDone) return { known: true, complete: false, workDone: false, missing: [] };
-    var missing = [];
-    if (!isNS && c.sold_type === 'diagnostic' && c.invoice_status !== 'paid') missing.push('Diagnostic fee not paid');
-    if (d.closerAmt > 0 && !d.closerLocked) missing.push('Closer commission not locked in');
-    if (d.hasSetter && d.setterAmt > 0 && !d.setterLocked) missing.push('Setter commission not locked in');
-    var unpaid = st.comms.filter(function(k){ return (k.kind === 'rep_commission' || k.kind === 'setter_commission') && k.status !== 'paid'; }).length;
-    if (unpaid) missing.push('Commission not paid out (' + unpaid + ')');
+    var todos = [];
+    if (!workDone) {
+      // A booked FixMy install that has not been marked finished is the one open question we can ask.
+      if (!isNS && c.sold_type !== 'diagnostic' && step >= 7) todos.push({ key: 'install', label: 'Install not marked finished' });
+      return { known: true, complete: false, workDone: false, missing: todos.map(function(t){ return t.label; }), todos: todos };
+    }
+    if (!isNS && c.sold_type === 'diagnostic' && c.invoice_status !== 'paid') todos.push({ key: 'fee', label: 'Diagnostic fee not paid' });
+    if ((d.closerAmt > 0 && !d.closerLocked) || (d.hasSetter && d.setterAmt > 0 && !d.setterLocked)) todos.push({ key: 'lock', label: 'Commissions not locked in' });
+    var unpaidRows = st.comms.filter(function(k){ return (k.kind === 'rep_commission' || k.kind === 'setter_commission') && k.status !== 'paid'; });
+    if (unpaidRows.length) todos.push({ key: 'comm_paid', label: 'Commission not paid out (' + unpaidRows.length + ')', rows: unpaidRows });
     if (!isNS) {
-      var oc = st.costs.filter(function(k){ return k.status !== 'paid'; }).length;
-      if (oc) missing.push('Sub Sheet costs unpaid (' + oc + ')');
+      var oc = st.costs.filter(function(k){ return k.status !== 'paid'; });
+      if (oc.length) todos.push({ key: 'costs_paid', label: 'Sub Sheet costs unpaid (' + oc.length + ')', rows: oc });
     }
     if (c.sold_type === 'battery_retrofit') {
-      ['cosmic_sale', 'cosmic_done'].forEach(function(n){
-        if (!st.comms.some(function(k){ return k.note === n && k.status === 'paid'; })) missing.push(n === 'cosmic_sale' ? 'Cosmic 50% at sale not received' : 'Cosmic 50% at completion not received');
+      ['sale', 'done'].forEach(function(n){
+        if (!st.comms.some(function(k){ return k.note === 'cosmic_' + n && k.status === 'paid'; })) todos.push({ key: 'cosmic_' + n, label: n === 'sale' ? 'Cosmic 50% at sale not received' : 'Cosmic 50% at completion not received' });
       });
     }
     if (isNS) {
-      try { var calc = _nsCalcCommission(c); if (calc && calc.dcCloserAmt > 0 && !st.comms.some(function(k){ return k.note === 'dc_bonus' && k.kind === 'rep_commission'; })) missing.push('Domestic Content bonus not recorded'); } catch (e) {}
+      try { var calc = _nsCalcCommission(c); if (calc && calc.dcCloserAmt > 0 && !st.comms.some(function(k){ return k.note === 'dc_bonus' && k.kind === 'rep_commission'; })) todos.push({ key: 'dc', label: 'Domestic Content bonus not recorded' }); } catch (e) {}
     }
-    if (!c.referral_asked_at) missing.push('Referral not asked');
-    return { known: true, complete: missing.length === 0, workDone: true, missing: missing };
+    if (!c.referral_asked_at) todos.push({ key: 'referral', label: 'Referral not asked' });
+    return { known: true, complete: todos.length === 0, workDone: true, missing: todos.map(function(t){ return t.label; }), todos: todos };
   };
   window._jobReferralSms = function(c) {
     var ph = String(c.phone || '').replace(/\D/g, ''); if (!ph) return '';
     var msg = 'Hi ' + (c.first_name || 'there') + ', thank you again for trusting Solar Review with your system! If you know a neighbor, friend or family member who would like a free solar check-up, please send them to fixmy.energy/book. We really appreciate it.';
     return 'sms:' + ph + '?body=' + encodeURIComponent(msg);
   };
+  // Card strip: one line + one button.
   window._jobCloseHtml = function(c) {
     var k = _jobCompletion(c);
-    if (!k.known || !k.workDone || k.complete) return '';
-    var ask = '';
-    if (!c.referral_asked_at) {
-      var href = _jobReferralSms(c);
-      ask = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:7px;">' +
-        (href ? '<a href="' + href + '" onclick="event.stopPropagation()" style="font-size:0.7rem;padding:5px 12px;border-radius:100px;background:rgba(74,158,255,0.12);color:#4a9eff;border:1px solid rgba(74,158,255,0.35);text-decoration:none;font-weight:700;">&#128172; Text the referral ask</a>' : '') +
-        '<button onclick="event.stopPropagation();jobReferralAsked(\'' + c.id + '\')" style="width:auto;font-size:0.7rem;padding:5px 12px;border-radius:100px;background:rgba(141,198,63,0.1);color:#8DC63F;border:1px solid rgba(141,198,63,0.35);font-weight:700;cursor:pointer;">&#10003; Referral asked</button></div>';
-    }
-    return '<div style="margin-top:9px;padding:8px 11px;background:rgba(245,166,35,0.07);border:1px solid rgba(245,166,35,0.3);border-radius:9px;font-size:0.72rem;color:#e0b060;line-height:1.5;"><b style="color:#f5a623;">To close out:</b> ' + k.missing.join(' &middot; ') + ask + '</div>';
+    if (!k.known || k.complete || !k.todos.length) return '';
+    return '<div style="margin-top:9px;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;padding:8px 11px;background:rgba(245,166,35,0.07);border:1px solid rgba(245,166,35,0.3);border-radius:9px;font-size:0.72rem;color:#e0b060;"><span><b style="color:#f5a623;">' + k.todos.length + ' left to close out</b></span>' +
+      '<button onclick="event.stopPropagation();jobNext(\'' + c.id + '\')" style="width:auto;font-size:0.74rem;padding:6px 16px;border-radius:100px;background:#8DC63F;color:#1A1A1A;border:none;font-weight:800;cursor:pointer;">&#9654; Next step</button></div>';
   };
   window._jobsToggleCompleted = function() { var st = _lfState('admJobs', adminJobCat); st.showCompleted = !st.showCompleted; renderJobsView(); };
-  window.jobReferralAsked = async function(id) {
-    var c = adminCustomers.find(function(x){ return x.id === id; }); if (!c) return;
-    var ts = new Date().toISOString();
-    var cl = supabase.createClient(SUPA_URL, SUPA_KEY);
-    var r = await cl.from('customers').update({ referral_asked_at: ts }).eq('id', id).select('id');
-    if (r.error || !r.data || !r.data.length) { alert('Could not save: ' + ((r.error && r.error.message) || 'no row updated')); return; }
-    c.referral_asked_at = ts;
-    if (adminView === 'jobs') renderJobsView();
-  };
   window._jobsRecheck = function() {
     if (adminView !== 'jobs') return;
     var pool = (adminCustomers || []).filter(_isRealJob), sig = pool.map(function(c){ return _jobCompletion(c).complete ? c.id : ''; }).join('|');
     if (sig !== window._jobsRenderSig) renderJobsView();
   };
+
+  // ── The popup ──
+  function _jnMoney(n) { return '$' + (Math.round((parseFloat(n) || 0) * 100) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  async function _jnRefresh(id) {
+    delete _fixmyCommCache[id]; delete _axiaCommCache[id];
+    var c = adminCustomers.find(function(x){ return x.id === id; });
+    if (c) { try { if (c.lead_category === 'new_solar') await _loadAxiaJobCommissions([id]); else await _loadFixmyJobCommissions([id]); } catch (e) {} }
+    await _ensureJobSettle([id], true);
+  }
+  function _jnShell(inner) {
+    var ov = document.getElementById('jobNextOv');
+    if (!ov) { ov = document.createElement('div'); ov.id = 'jobNextOv'; ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.78);z-index:99990;display:flex;align-items:center;justify-content:center;padding:18px;'; document.body.appendChild(ov); }
+    ov.innerHTML = '<div style="background:#1a1c17;border:1px solid rgba(255,255,255,0.12);border-radius:18px;padding:24px;max-width:460px;width:100%;position:relative;">' +
+      '<button class="pv-close pv-abs" onclick="jobNextClose()" aria-label="Close" title="Close">&#10005;</button>' + inner + '</div>';
+  }
+  window.jobNextClose = function() { var ov = document.getElementById('jobNextOv'); if (ov) ov.remove(); if (adminView === 'jobs') renderJobsView(); };
+  var _jnBtn = 'width:100%;margin:0;padding:13px;border:none;border-radius:100px;font-size:0.9rem;font-weight:800;cursor:pointer;';
+  window.jobNext = async function(id) {
+    var c = adminCustomers.find(function(x){ return x.id === id; }); if (!c) return;
+    _jnShell('<div style="padding:30px 0;text-align:center;color:#aaa;">One moment&hellip;</div>');
+    await _jnRefresh(id);
+    c = adminCustomers.find(function(x){ return x.id === id; });
+    var k = _jobCompletion(c), name = ((c.first_name || '') + ' ' + (c.last_name || '')).trim();
+    var head = '<div style="font-size:0.62rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#8DC63F;margin-bottom:4px;">' + esc(name) + '</div>';
+    if (!k.known) { _jnShell(head + '<div style="font-size:1.05rem;font-weight:800;color:#fff;margin:6px 0 10px;">Could not load this job&rsquo;s numbers</div><div style="font-size:0.84rem;color:#aaa;line-height:1.5;margin-bottom:16px;">Check your connection and try again. Nothing was changed.</div><div style="display:flex;gap:10px;"><button onclick="jobNextClose()" style="' + _jnBtn + 'flex:1;background:rgba(255,255,255,0.07);color:#bbb;">Close</button><button onclick="jobNext(\'' + id + '\')" style="' + _jnBtn + 'flex:1.4;background:#8DC63F;color:#1A1A1A;">Try again</button></div>'); return; }
+    var t = k.todos[0];
+    if (!t) {
+      _jnShell(head + '<div style="font-size:1.15rem;font-weight:800;color:#fff;margin:6px 0 10px;">&#10003; All closed out</div><div style="font-size:0.84rem;color:#aaa;line-height:1.5;margin-bottom:16px;">Everything is paid, recorded and the referral is asked. This job now sits under &ldquo;Show completed&rdquo;.</div><button onclick="jobNextClose()" style="' + _jnBtn + 'background:#8DC63F;color:#1A1A1A;">Done</button>');
+      return;
+    }
+    var left = k.todos.length, q = '', detail = '', yes = '', extra = '';
+    var d = (c.lead_category === 'new_solar' ? _axiaCommCache : _fixmyCommCache)[id] || {};
+    var who = function(p) { return (typeof repName === 'function' && repName(p)) || p; };
+    if (t.key === 'install') { q = 'Is the install finished?'; detail = 'Saying yes marks the job Installed today. That starts the pay clock for the team.'; yes = 'Yes, it is installed'; }
+    else if (t.key === 'fee') { q = 'Has the diagnostic fee been paid?'; detail = 'Zelle, check or any other way. This turns the lead into a paid job.'; yes = 'Yes, mark it paid'; }
+    else if (t.key === 'lock') {
+      q = 'Ready to lock in the commissions?';
+      detail = (d.closerAmt > 0 ? esc(d.closerNm || 'Closer') + ': about ' + _jnMoney(d.closerAmt) : '') + (d.hasSetter && d.setterAmt > 0 ? '<br>' + esc(d.setterName || 'Setter') + ': about ' + _jnMoney(d.setterAmt) : '') + '<br><span style="color:#777;">The exact amounts are calculated and shown for approval when you lock in.</span>';
+      yes = 'Yes, lock in';
+    }
+    else if (t.key === 'comm_paid') {
+      q = 'Have you paid these out?';
+      detail = t.rows.map(function(r){ return esc(who(r.payee)) + ': ' + _jnMoney(r.amount); }).join('<br>');
+      yes = 'Yes, mark them paid';
+    }
+    else if (t.key === 'costs_paid') {
+      var tot = t.rows.reduce(function(a, r){ return a + (parseFloat(r.amount) || 0); }, 0);
+      q = 'Have the Sub Sheet costs been paid?'; detail = t.rows.length + ' cost' + (t.rows.length > 1 ? 's' : '') + ' totaling ' + _jnMoney(tot) + '.';
+      yes = 'Yes, mark them paid';
+      if (c.assigned_ops === 'ops3') extra = '<a href="https://www.cosmicsolar.com/account" target="_blank" rel="noopener" style="display:block;text-align:center;margin-top:10px;font-size:0.8rem;color:#4a9eff;">&#128179; Pay Cosmic first</a>';
+    }
+    else if (t.key === 'cosmic_sale' || t.key === 'cosmic_done') {
+      var half = Math.round(((parseFloat(c.br_revenue) || 0) - (parseFloat(c.br_redline) || 0)) * 50) / 100;
+      q = t.key === 'cosmic_sale' ? 'Did Cosmic pay Solar Review its 50% at sale?' : 'Did Cosmic pay Solar Review its 50% at completion?';
+      detail = 'Expected about ' + _jnMoney(half) + '. You will confirm the amount and date next.'; yes = 'Yes, record it';
+    }
+    else if (t.key === 'dc') { q = 'Record the Domestic Content bonus?'; detail = 'PTO is reached, so the second Axia payment is due.'; yes = 'Yes, record it'; }
+    else if (t.key === 'referral') {
+      q = 'Have you asked for a referral?'; detail = 'A short text to the customer asking who else could use a free solar check-up.'; yes = 'Yes, I asked';
+      var href = _jobReferralSms(c);
+      extra = href ? '<a href="' + href + '" style="display:block;text-align:center;margin-top:10px;padding:11px;border-radius:100px;border:1px solid rgba(74,158,255,0.45);color:#4a9eff;font-weight:700;font-size:0.85rem;text-decoration:none;">&#128172; Text the ask now</a>' : '';
+    }
+    _jnShell(head + '<div style="font-size:0.7rem;color:#777;margin-bottom:12px;">' + left + ' step' + (left > 1 ? 's' : '') + ' left to close out</div>' +
+      '<div style="font-size:1.15rem;font-weight:800;color:#fff;margin:0 0 8px;line-height:1.3;">' + q + '</div>' +
+      '<div style="font-size:0.84rem;color:#aaa;line-height:1.55;margin-bottom:18px;">' + detail + '</div>' +
+      '<div style="display:flex;gap:10px;"><button onclick="jobNextClose()" style="' + _jnBtn + 'flex:1;background:rgba(255,255,255,0.07);color:#bbb;border:1px solid rgba(255,255,255,0.12);">Not yet</button>' +
+      '<button id="jnYes" onclick="jobNextAnswer(\'' + id + '\',\'' + t.key + '\')" style="' + _jnBtn + 'flex:1.4;background:#8DC63F;color:#1A1A1A;">' + yes + '</button></div>' + extra);
+  };
+  window.jobNextAnswer = async function(id, key) {
+    var c = adminCustomers.find(function(x){ return x.id === id; }); if (!c) return;
+    var yb = document.getElementById('jnYes'); if (yb) { yb.disabled = true; yb.textContent = 'Saving…'; }
+    var cl = supabase.createClient(SUPA_URL, SUPA_KEY), ts = new Date().toISOString();
+    try {
+      if (key === 'install') await _doMarkInstalled(id);
+      else if (key === 'fee') await _doMarkCheckPaid(id);
+      else if (key === 'lock') { if (c.lead_category === 'new_solar') await edRecordAxiaSplit(id); else await edRecordFixmySplit(id); }
+      else if (key === 'dc') await edRecordAxiaSplit(id);
+      else if (key === 'comm_paid' || key === 'costs_paid') {
+        var st = _jobSettle.byId[id] || { comms: [], costs: [] };
+        var rows = key === 'comm_paid' ? st.comms.filter(function(k){ return (k.kind === 'rep_commission' || k.kind === 'setter_commission') && k.status !== 'paid'; }) : st.costs.filter(function(k){ return k.status !== 'paid'; });
+        var ids = rows.map(function(r){ return r.id; });
+        var r = await cl.from(key === 'comm_paid' ? 'commissions' : 'job_costs').update({ status: 'paid', paid_at: ts }).in('id', ids).select('id');
+        if (r.error || !r.data || r.data.length !== ids.length) throw new Error((r.error && r.error.message) || 'Not every row saved');
+      }
+      else if (key === 'cosmic_sale' || key === 'cosmic_done') {
+        var half = Math.round(((parseFloat(c.br_revenue) || 0) - (parseFloat(c.br_redline) || 0)) * 50) / 100;
+        await cosmicRecordPayment(id, key === 'cosmic_sale' ? 'sale' : 'done', half);
+      }
+      else if (key === 'referral') {
+        var rr = await cl.from('customers').update({ referral_asked_at: ts }).eq('id', id).select('id');
+        if (rr.error || !rr.data || !rr.data.length) throw new Error((rr.error && rr.error.message) || 'no row updated');
+        c.referral_asked_at = ts;
+      }
+    } catch (e) { alert('Could not save: ' + (e.message || e)); }
+    window.jobNext(id); // ask the next question (or show the all-done screen)
+  };
+
 
   function renderJobsView() {
     if (_adminOnlyGuard()) return;
@@ -32375,14 +32462,18 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var c = adminCustomers.find(function(x){ return x.id === id; });
     var amt = c && c.invoice_amount ? ' ($' + parseFloat(c.invoice_amount).toFixed(2) + ')' : '';
     if (!confirm('Mark invoice' + amt + ' as paid (Zelle or check) for ' + (c ? (c.first_name||'') + ' ' + (c.last_name||'') : id) + '?')) return;
+    try { await _doMarkCheckPaid(id); } catch (e) { alert('Error: ' + (e.message || e)); return; }
+    if (adminView === 'jobs') renderJobsView();
+    else renderAdminView(adminView);
+  }
+  async function _doMarkCheckPaid(id) {
+    var c = adminCustomers.find(function(x){ return x.id === id; });
     var cl = supabase.createClient(SUPA_URL, SUPA_KEY);
     var { error } = await cl.from('customers').update({ invoice_status: 'paid' }).eq('id', id);
-    if (error) { alert('Error: ' + error.message); return; }
+    if (error) throw new Error(error.message);
     var _pu = await _promoteCheckPaid(cl, id, c);
     var idx = adminCustomers.findIndex(function(x){ return x.id === id; });
     if (idx > -1) { adminCustomers[idx].invoice_status = 'paid'; Object.assign(adminCustomers[idx], _pu); }
-    if (adminView === 'jobs') renderJobsView();
-    else renderAdminView(adminView);
   }
 
   async function markOpsMilestonePaid(id, milestone) {
@@ -32431,17 +32522,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (!c) return;
     var name = ((c.first_name||'')+' '+(c.last_name||'')).trim();
     if (!confirm('Mark the install complete for ' + name + '? This moves the job to step 9 (Installed).')) return;
+    try { await _doMarkInstalled(id); } catch (e) { alert('Error: ' + (e.message || e)); return; }
+    if (adminView === 'jobs') renderJobsView();
+    else renderAdminView(adminView);
+  }
+  async function _doMarkInstalled(id) {
+    var c = adminCustomers.find(function(x){ return x.id === id; });
+    if (!c) return;
     // installed_at is the REAL completion stamp the pay-date math runs on (2026-09-14)
     // — never overwritten once set, since this action only ever fires once per job.
     var installedAtVal = c.installed_at || new Date().toISOString();
     var cl = supabase.createClient(SUPA_URL, SUPA_KEY);
     var { error } = await cl.from('customers').update({ step: 9, installed_at: installedAtVal }).eq('id', id);
-    if (error) { alert('Error: ' + error.message); return; }
+    if (error) { throw new Error(error.message); }
     var idx = adminCustomers.findIndex(function(x){ return x.id === id; });
     if (idx > -1) { adminCustomers[idx].step = 9; adminCustomers[idx].installed_at = installedAtVal; }
     delete _fixmyCommCache[id]; // stale — earned flag flips, force a recompute
-    if (adminView === 'jobs') renderJobsView();
-    else renderAdminView(adminView);
   }
 
   function edResendInvoice(id) {
