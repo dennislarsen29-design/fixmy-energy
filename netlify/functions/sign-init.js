@@ -39,8 +39,8 @@ exports.handler = async function(event) {
   if (!token) return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'token required' }) };
   // Payment method drives the processing-fee surcharge and the Stripe method type.
   // card = 4.9% (card processing), ach = 1% (bank debit), check = 0% (offline).
-  method = (method === 'ach' || method === 'check') ? method : 'card';
-  const SURCHARGE_PCT = { card: 0.039, ach: 0.01, check: 0 };
+  method = (method === 'ach' || method === 'check' || method === 'zelle') ? method : 'card';
+  const SURCHARGE_PCT = { card: 0.039, ach: 0.01, check: 0, zelle: 0 };
   const STRIPE_PM_TYPE = { card: 'card', ach: 'us_bank_account' };
 
   // Look up customer by token
@@ -77,11 +77,11 @@ exports.handler = async function(event) {
 
   // Check = offline (no Stripe charge). Return amounts only; the client records
   // the signature and marks the invoice pending — admin marks paid when it clears.
-  if (method === 'check') {
+  if (method === 'check' || method === 'zelle') {
     return {
       statusCode: 200, headers: cors,
       body: JSON.stringify({
-        method: 'check', offline: true,
+        method: method, offline: true,
         publishableKey: process.env.STRIPE_PUBLISHABLE_KEY || '',
         customerName: ((c.first_name||'') + ' ' + (c.last_name||'')).trim(),
         amountCents, surchargeAmountCents: 0, totalAmountCents: amountCents,
