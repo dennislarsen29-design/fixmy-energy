@@ -107,7 +107,7 @@ exports.handler = async function(event) {
       amount: totalAmountCents,
       currency: 'usd',
       'payment_method_types[]': STRIPE_PM_TYPE[method],
-      description: 'FixMy.Energy Diagnostic Fee — ' + ((c.first_name||'') + ' ' + (c.last_name||'')).trim(),
+      description: 'Solar Review Diagnostic Fee — ' + ((c.first_name||'') + ' ' + (c.last_name||'')).trim(),
       'metadata[customer_id]': c.id,
       'metadata[token]': token,
       'metadata[method]': method,
