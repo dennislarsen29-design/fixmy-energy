@@ -5,7 +5,8 @@
 //   2. VIDEO - assets/video/quoya-<key>.mp4 if that file exists (pre-recorded segment for this step).
 //   3. HUD   - the Quoya HUD orb with a captioned line (always works; no device voice).
 (function () {
-  var css = '.qa-wrap{display:flex;gap:14px;align-items:center;background:linear-gradient(135deg,#0b1623,#10263a);border:1px solid rgba(34,211,238,.35);border-radius:16px;padding:14px;margin-bottom:14px}'
+  var css = '@keyframes qaSpin{to{transform:rotate(360deg)}}'
+    + '.qa-wrap{display:flex;gap:14px;align-items:center;background:linear-gradient(135deg,#0b1623,#10263a);border:1px solid rgba(34,211,238,.35);border-radius:16px;padding:14px;margin-bottom:14px}'
     + '.qa-stage{flex:0 0 84px;width:84px;height:84px;position:relative;border-radius:50%;overflow:hidden;background:radial-gradient(circle,#0e3b4f,#07121c)}'
     + '.qa-stage video{width:100%;height:100%;object-fit:cover}'
     + '.qa-stage.qa-poster{background:#0b1623 url(/assets/quoya-poster.png) center top/cover no-repeat!important}'
@@ -118,7 +119,25 @@
       if (msg) t.lineEl.textContent = msg;
     });
   }
+  // One status pill next to the launcher bubble, driven by the real connection steps (wherever the tap came from).
+  var ST_T = null, ST_SLOW = null, CONNECTING = false;
+  function qaStatus(text, kind, hideMs) {
+    var e = document.getElementById('qaStatus');
+    if (!text) { if (e) e.style.display = 'none'; return; }
+    if (!e) {
+      e = document.createElement('div'); e.id = 'qaStatus'; e.setAttribute('role', 'status'); e.setAttribute('aria-live', 'polite');
+      e.style.cssText = 'position:fixed;left:14px;bottom:86px;z-index:100000;max-width:min(300px,calc(100vw - 28px));padding:9px 14px;border-radius:12px;font:600 .85rem/1.35 system-ui,-apple-system,sans-serif;box-shadow:0 6px 18px rgba(0,0,0,.35);pointer-events:none';
+      document.body.appendChild(e);
+    }
+    var colors = { busy: ['#0e3b4f', '#bff3fc'], live: ['#0f5132', '#d1fae5'], warn: ['#7a4a00', '#ffe9b8'], err: ['#7a1f1f', '#ffd9d9'] }[kind || 'busy'];
+    e.style.background = colors[0]; e.style.color = colors[1];
+    e.innerHTML = (kind === 'busy' || !kind ? '<span style="display:inline-block;width:10px;height:10px;margin-right:8px;border:2px solid #bff3fc;border-top-color:transparent;border-radius:50%;vertical-align:-1px;animation:qaSpin .8s linear infinite"></span>' : '') + text;
+    e.style.display = 'block';
+    clearTimeout(ST_T); if (hideMs) ST_T = setTimeout(function () { e.style.display = 'none'; }, hideMs);
+  }
   function stopLive(msg) {
+    var _wasConnecting = CONNECTING; CONNECTING = false; clearTimeout(ST_SLOW);
+    if (_wasConnecting && /isn.t available/.test(String(msg || ''))) qaStatus('Couldn’t connect. Tap the bubble to try again, or call (619) 777-6527.', 'err', 9000); else qaStatus('');
     capEnd();
     if (LIVE) {
       try { LIVE.room.disconnect(); } catch (e) {}
@@ -131,11 +150,15 @@
     setTalkUi(false, msg);
   }
   function startLive() {
+    if (CONNECTING || LIVE) return Promise.resolve();
+    CONNECTING = true; ensureCss(); qaStatus('Connecting to Quoya…', 'busy');
+    clearTimeout(ST_SLOW); ST_SLOW = setTimeout(function () { if (CONNECTING) qaStatus('Still connecting — slow signal. Hang on…', 'warn'); }, 10000);
     setTalkUi(false); TALKERS.forEach(function (t) { t.btn.disabled = true; t.btn.textContent = 'Connecting…'; t.lineEl.textContent = 'One moment, connecting…'; });
     var stepAtStart = CUR_STEP, ctxExtra = {}; try { ctxExtra = (CTX_FN && CTX_FN()) || {}; } catch (e) {}
     return Promise.all([QA.live('start', Object.assign({}, ctxExtra, { step: stepAtStart })), loadLK()]).then(function (r) {
       var d = r[0];
       if (!d || !d.ok || !d.livekit_url || !d.livekit_client_token) throw new Error(((d && d.reason) || 'unavailable') + (d && d.status ? ' ' + d.status : '') + (d && d.detail ? ': ' + String(d.detail).slice(0, 120) : '') + (d && d.ok && !d.livekit_url ? ' (no livekit_url; keys: ' + (d.keys || []).join(',') + ')' : ''));
+      qaStatus('Connected — Quoya is joining…', 'busy');
       var L = window.LivekitClient;
       var room = new L.Room({ adaptiveStream: true });
       var dock = document.createElement('div'); dock.id = 'qaDock';
@@ -152,7 +175,7 @@
       CAP = capNew();
       room.on(L.RoomEvent.TrackSubscribed, function (track) {
         var node = track.attach(); node.className = 'qa-live';
-        if (track.kind === 'video') { dock.appendChild(node); keyVideo(node, dock); }
+        if (track.kind === 'video') { dock.appendChild(node); keyVideo(node, dock); qaStatus('Quoya is here', 'live', 2500); }
         else { node.style.cssText = 'position:absolute;width:1px;height:1px;opacity:0;pointer-events:none'; try { node.setAttribute('playsinline', ''); node.volume = 1; } catch (e) {} dock.appendChild(node); }
       });
       var idleT = null, IDLE_MS = 45000;
@@ -170,8 +193,9 @@
       room.on(L.RoomEvent.Disconnected, function () { if (LIVE && LIVE.room === room) stopLive('Session ended. Tap Talk to Quoya any time.'); });
       return room.connect(d.livekit_url, d.livekit_client_token).then(function () {
         try { room.startAudio(); } catch (e) {}
-        return room.localParticipant.setMicrophoneEnabled(true, { echoCancellation: true, noiseSuppression: true, autoGainControl: true }).catch(function () { TALKERS.forEach(function (t) { t.lineEl.textContent = 'I can hear you only if you allow the microphone.'; }); });
+        return room.localParticipant.setMicrophoneEnabled(true, { echoCancellation: true, noiseSuppression: true, autoGainControl: true }).catch(function () { qaStatus('Microphone is blocked — allow it in Safari settings so Quoya can hear you', 'warn', 8000); TALKERS.forEach(function (t) { t.lineEl.textContent = 'I can hear you only if you allow the microphone.'; }); });
       }).then(function () {
+        CONNECTING = false; clearTimeout(ST_SLOW); qaStatus('Live — go ahead, Quoya is listening', 'live', 4000);
         setTalkUi(true, 'Go ahead, I’m listening.');
         LIVE.timer = setTimeout(function () { stopLive('That’s our time for now. Tap Talk to Quoya to continue.'); }, ((d.max_seconds || 120) * 1000));
       });
