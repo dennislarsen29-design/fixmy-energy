@@ -2980,12 +2980,98 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var ne = document.getElementById('jobsSearchInput');
     if (ne) { ne.focus(); try { ne.setSelectionRange(caret, caret); } catch(e){} }
   };
+  // ── Completed jobs (2026-10-26, per Dennis) ──────────────────────────────────────────────
+  // A job leaves the main Jobs list only when the WORK is done AND every money item is settled AND the
+  // referral has been asked: closer/setter commissions locked in and paid, Sub Sheet costs paid, the
+  // diagnostic fee paid (diagnostic jobs), both Cosmic payments received (battery retrofit), Domestic
+  // Content recorded (Axia). Anything still open stays in the list with a "To close out" line.
+  var _jobSettle = null; // { at, byId: { id: { comms:[], costs:[] } } }
+  window._ensureJobSettle = async function(ids) {
+    var cl = supabase.createClient(SUPA_URL, SUPA_KEY), byId = {};
+    ids.forEach(function(i){ byId[i] = { comms: [], costs: [] }; });
+    for (var i = 0; i < ids.length; i += 150) {
+      var chunk = ids.slice(i, i + 150);
+      var a = await cl.from('commissions').select('customer_id,kind,payee,status,note').in('customer_id', chunk);
+      var b = await cl.from('job_costs').select('customer_id,status').in('customer_id', chunk);
+      if (a.error || b.error) return null; // never guess: unknown = job stays visible
+      (a.data || []).forEach(function(r){ if (byId[r.customer_id]) byId[r.customer_id].comms.push(r); });
+      (b.data || []).forEach(function(r){ if (byId[r.customer_id]) byId[r.customer_id].costs.push(r); });
+    }
+    _jobSettle = { at: Date.now(), byId: byId };
+    return _jobSettle;
+  };
+  window._jobCompletion = function(c) {
+    var isNS = c.lead_category === 'new_solar';
+    var d = isNS ? _axiaCommCache[c.id] : _fixmyCommCache[c.id];
+    var st = _jobSettle && _jobSettle.byId[c.id];
+    if (!d || !st) return { known: false, complete: false, workDone: false, missing: [] };
+    var step = parseInt(c.step, 10) || 1, workDone;
+    if (isNS) workDone = c.solar_status === 'ns_pto';
+    else if (step >= 9) workDone = true;
+    else if (c.sold_type === 'diagnostic') workDone = !!c.diagnostic_date && new Date(c.diagnostic_date) < new Date();
+    else workDone = false;
+    if (!workDone) return { known: true, complete: false, workDone: false, missing: [] };
+    var missing = [];
+    if (!isNS && c.sold_type === 'diagnostic' && c.invoice_status !== 'paid') missing.push('Diagnostic fee not paid');
+    if (d.closerAmt > 0 && !d.closerLocked) missing.push('Closer commission not locked in');
+    if (d.hasSetter && d.setterAmt > 0 && !d.setterLocked) missing.push('Setter commission not locked in');
+    var unpaid = st.comms.filter(function(k){ return (k.kind === 'rep_commission' || k.kind === 'setter_commission') && k.status !== 'paid'; }).length;
+    if (unpaid) missing.push('Commission not paid out (' + unpaid + ')');
+    if (!isNS) {
+      var oc = st.costs.filter(function(k){ return k.status !== 'paid'; }).length;
+      if (oc) missing.push('Sub Sheet costs unpaid (' + oc + ')');
+    }
+    if (c.sold_type === 'battery_retrofit') {
+      ['cosmic_sale', 'cosmic_done'].forEach(function(n){
+        if (!st.comms.some(function(k){ return k.note === n && k.status === 'paid'; })) missing.push(n === 'cosmic_sale' ? 'Cosmic 50% at sale not received' : 'Cosmic 50% at completion not received');
+      });
+    }
+    if (isNS) {
+      try { var calc = _nsCalcCommission(c); if (calc && calc.dcCloserAmt > 0 && !st.comms.some(function(k){ return k.note === 'dc_bonus' && k.kind === 'rep_commission'; })) missing.push('Domestic Content bonus not recorded'); } catch (e) {}
+    }
+    if (!c.referral_asked_at) missing.push('Referral not asked');
+    return { known: true, complete: missing.length === 0, workDone: true, missing: missing };
+  };
+  window._jobReferralSms = function(c) {
+    var ph = String(c.phone || '').replace(/\D/g, ''); if (!ph) return '';
+    var msg = 'Hi ' + (c.first_name || 'there') + ', thank you again for trusting Solar Review with your system! If you know a neighbor, friend or family member who would like a free solar check-up, please send them to fixmy.energy/book. We really appreciate it.';
+    return 'sms:' + ph + '?body=' + encodeURIComponent(msg);
+  };
+  window._jobCloseHtml = function(c) {
+    var k = _jobCompletion(c);
+    if (!k.known || !k.workDone || k.complete) return '';
+    var ask = '';
+    if (!c.referral_asked_at) {
+      var href = _jobReferralSms(c);
+      ask = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:7px;">' +
+        (href ? '<a href="' + href + '" onclick="event.stopPropagation()" style="font-size:0.7rem;padding:5px 12px;border-radius:100px;background:rgba(74,158,255,0.12);color:#4a9eff;border:1px solid rgba(74,158,255,0.35);text-decoration:none;font-weight:700;">&#128172; Text the referral ask</a>' : '') +
+        '<button onclick="event.stopPropagation();jobReferralAsked(\'' + c.id + '\')" style="width:auto;font-size:0.7rem;padding:5px 12px;border-radius:100px;background:rgba(141,198,63,0.1);color:#8DC63F;border:1px solid rgba(141,198,63,0.35);font-weight:700;cursor:pointer;">&#10003; Referral asked</button></div>';
+    }
+    return '<div style="margin-top:9px;padding:8px 11px;background:rgba(245,166,35,0.07);border:1px solid rgba(245,166,35,0.3);border-radius:9px;font-size:0.72rem;color:#e0b060;line-height:1.5;"><b style="color:#f5a623;">To close out:</b> ' + k.missing.join(' &middot; ') + ask + '</div>';
+  };
+  window._jobsToggleCompleted = function() { var st = _lfState('admJobs', adminJobCat); st.showCompleted = !st.showCompleted; renderJobsView(); };
+  window.jobReferralAsked = async function(id) {
+    var c = adminCustomers.find(function(x){ return x.id === id; }); if (!c) return;
+    var ts = new Date().toISOString();
+    var cl = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var r = await cl.from('customers').update({ referral_asked_at: ts }).eq('id', id).select('id');
+    if (r.error || !r.data || !r.data.length) { alert('Could not save: ' + ((r.error && r.error.message) || 'no row updated')); return; }
+    c.referral_asked_at = ts;
+    if (adminView === 'jobs') renderJobsView();
+  };
+  window._jobsRecheck = function() {
+    if (adminView !== 'jobs') return;
+    var pool = (adminCustomers || []).filter(_isRealJob), sig = pool.map(function(c){ return _jobCompletion(c).complete ? c.id : ''; }).join('|');
+    if (sig !== window._jobsRenderSig) renderJobsView();
+  };
+
   function renderJobsView() {
     if (_adminOnlyGuard()) return;
     adminView = 'jobs';
     var portalNav = '<div class="portal-tab-nav"><button class="portal-tab" onclick="renderAdminHomeView()">&#9728; S.U.N.</button><button class="portal-tab" onclick="renderAdminView(\'dashboard\')">&#128221; Leads</button><button class="portal-tab active" onclick="renderJobsView()">&#128295; Jobs</button><button class="portal-tab" onclick="renderAdminCanvassView()">&#128230; Black Box</button><button class="portal-tab" onclick="renderTeamView()">&#128101; Administration</button><button class="portal-tab" onclick="renderScheduleView()">&#128197; Schedule</button><button class="portal-tab" onclick="renderAgentsView()">&#129302; Agents</button><a class="portal-tab" href="/business-model.html?t=fixmybp26" target="_blank" style="text-decoration:none;">&#128203; Business Model</a></div>';
     if (!_jobsRevenueIds) { _ensureJobsRevenueIds().then(function(){ if (adminView==='jobs') renderJobsView(); }); }
     var allJobs = adminCustomers.filter(_isRealJob);
+    if (!_jobSettle || Date.now() - _jobSettle.at > 15000) { _ensureJobSettle(allJobs.map(function(c){ return c.id; })).then(function(){ _jobsRecheck(); }); }
     var fixmyJobs = allJobs.filter(function(c){ return c.lead_category !== 'new_solar'; });
     var nsJobs    = allJobs.filter(function(c){ return c.lead_category === 'new_solar'; });
     var jobs = adminJobCat === 'new_solar' ? nsJobs : fixmyJobs;
@@ -3014,6 +3100,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
     var _lfPoolJobs = adminJobCat === 'new_solar' ? nsJobs : fixmyJobs;
     jobs = _lfApply(jobs, _lfState('admJobs', adminJobCat), _lfPoolJobs);
+    var _stJ = _lfState('admJobs', adminJobCat), _nCompleted = 0, _doneIds = {};
+    jobs.forEach(function(c){ if (_jobCompletion(c).complete) { _doneIds[c.id] = 1; _nCompleted++; } });
+    var _poolAll = adminCustomers.filter(_isRealJob); window._jobsRenderSig = _poolAll.map(function(c){ return _jobCompletion(c).complete ? c.id : ''; }).join('|');
+    if (!_stJ.showCompleted && !_jq) jobs = jobs.filter(function(c){ return !_doneIds[c.id]; });
     var catTabStyle = 'padding:7px 18px;border:none;border-radius:100px;font-size:0.78rem;font-weight:700;cursor:pointer;transition:all 0.15s;';
     var catTabs = '<div style="display:flex;gap:8px;margin-bottom:14px;">'+
       '<button onclick="adminJobCat=\'fixmy\';renderJobsView()" style="'+catTabStyle+'background:'+(adminJobCat==='fixmy'?'#8DC63F':'rgba(255,255,255,0.07)')+';color:'+(adminJobCat==='fixmy'?'#1A1A1A':'#888')+';">&#9889; FixMy.Energy Jobs ('+fixmyJobs.length+')</button>'+
@@ -3024,6 +3114,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var saleTypeLabel = {fixmy:'FixMy Job',new_solar:'Axia/QCells'};
     var saleTypeColor = {fixmy:'#8DC63F',new_solar:'#4a9eff'};
     var listHtml = _lfBarHtml('admJobs', adminJobCat, _lfPoolJobs);
+    if (_nCompleted || _stJ.showCompleted) listHtml += '<div style="margin:-4px 0 12px;"><button onclick="_jobsToggleCompleted()" style="width:auto;padding:6px 13px;border-radius:100px;font-size:0.7rem;font-weight:800;cursor:pointer;border:1px solid ' + (_stJ.showCompleted ? 'rgba(141,198,63,0.7)' : 'rgba(255,255,255,0.15)') + ';background:' + (_stJ.showCompleted ? 'rgba(141,198,63,0.15)' : 'transparent') + ';color:' + (_stJ.showCompleted ? '#8DC63F' : '#9a9a9a') + ';">&#10003; ' + (_stJ.showCompleted ? 'Showing' : 'Show') + ' completed (' + _nCompleted + ')</button></div>';
     if (!jobs.length) {
       listHtml += _jq ? '<div class="jobs-empty">No jobs match "'+String(window._jobsSearch).replace(/</g,'&lt;')+'".</div>' : '<div class="jobs-empty">'+(adminJobCat==='new_solar'?'No Axia/QCells jobs yet. A lead moves here when Welcome Call is marked Closed.':'No FixMy.Energy jobs yet. A lead moves here once marked as Sold.')+'</div>';
     } else {
@@ -3044,6 +3135,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             (c.monthly_bill?'<div class="job-meta">$'+c.monthly_bill+'/mo'+(c.utility?' &middot; '+c.utility:'')+'</div>':'')+
             _installDateBlockHtml(c)+
             '<div id="jobComm_'+c.id+'">'+_axiaCommLineHtml(c.id)+'</div>'+
+            '<div id="jobClose_'+c.id+'">'+_jobCloseHtml(c)+'</div>'+
           '</div>';
         } else {
           // ⚠️ job_status (Pending Assessment/In Progress/Ready/Approved) was known-broken
@@ -3075,6 +3167,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             '</div>'+
             _installDateBlockHtml(c)+
             '<div id="jobComm_'+c.id+'">'+_jobCommLineHtml(c.id)+'</div>'+
+            '<div id="jobClose_'+c.id+'">'+_jobCloseHtml(c)+'</div>'+
           '</div>';
         }
       });
@@ -3084,11 +3177,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     document.getElementById('dashBody').innerHTML = portalNav+
       '<div class="admin-header-row"><h2 style="font-size:1.1rem;font-weight:700;">Jobs</h2><span style="font-size:0.72rem;color:#555;">'+allJobs.length+' total</span></div>'+
       catTabs+commDashSlot+leaderboardSlot+'<div id="editorSlot"></div><div id="jobList">'+listHtml+'</div><div id="jobDetail" style="display:none;"></div>';
-    var catIds = jobs.map(function(c){ return c.id; });
+    var catIds = _lfPoolJobs.map(function(c){ return c.id; });
     var loadFn = adminJobCat === 'new_solar' ? _loadAxiaJobCommissions : _loadFixmyJobCommissions;
     var lineFn = adminJobCat === 'new_solar' ? _axiaCommLineHtml : _jobCommLineHtml;
     loadFn(catIds).then(function(){
       jobs.forEach(function(c){ var el=document.getElementById('jobComm_'+c.id); if (el) el.innerHTML=lineFn(c.id); });
+      jobs.forEach(function(c){ var el=document.getElementById('jobClose_'+c.id); if (el) el.innerHTML=_jobCloseHtml(c); });
+      _jobsRecheck();
       if (_jobsCommOpen[adminJobCat]) { var s=document.getElementById('jobsCommDash'); if (s) s.innerHTML=_jobsCommDashHtml(adminJobCat); }
     });
   }
