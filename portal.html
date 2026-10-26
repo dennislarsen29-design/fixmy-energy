@@ -3006,35 +3006,81 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var d = isNS ? _axiaCommCache[c.id] : _fixmyCommCache[c.id];
     var st = _jobSettle && _jobSettle.byId[c.id];
     if (!d || !st) return { known: false, complete: false, workDone: false, missing: [], todos: [] };
-    var step = parseInt(c.step, 10) || 1, workDone;
-    if (isNS) workDone = c.solar_status === 'ns_pto';
-    else if (step >= 9) workDone = true;
+    var step = parseInt(c.step, 10) || 1, workDone, todos = [];
+    var paidRows = function(f){ return st.comms.filter(function(k){ return f(k) && k.status === 'paid'; }).length; };
+    if (isNS) {
+      workDone = !!c.install_completed_at;
+      var ptoDone = c.solar_status === 'ns_pto';
+      if (!workDone) {
+        if (c.sold_type && (c.solar_status === 'ns_install_scheduled' || (c.install_date && new Date(c.install_date) < new Date()))) todos.push({ key: 'axinstall', label: 'Install not marked completed' });
+        return { known: true, complete: false, workDone: false, missing: todos.map(function(t){ return t.label; }), todos: todos };
+      }
+      var isKin = c.lead_source === 'kin';
+      if (!c.ns_audit_at && !isKin) todos.push({ key: 'audit', label: 'Install audit not signed off' });
+      if ((d.closerAmt > 0 && !d.closerLocked) || (d.hasSetter && d.setterAmt > 0 && !d.setterLocked)) todos.push({ key: 'lock', label: 'Payment 1 not locked in' });
+      var unpaidA = st.comms.filter(function(k){ return (k.kind === 'rep_commission' || k.kind === 'setter_commission') && k.status !== 'paid'; });
+      if (unpaidA.length) todos.push({ key: 'comm_paid', label: 'Commission not paid out (' + unpaidA.length + ')', rows: unpaidA });
+      if (!ptoDone) todos.push({ key: 'pto', label: 'PTO not granted yet' });
+      else {
+        try { var calc = _nsCalcCommission(c); if (calc && calc.dcCloserAmt > 0 && !st.comms.some(function(k){ return k.note === 'dc_bonus' && k.kind === 'rep_commission'; })) todos.push({ key: 'dc', label: 'Domestic Content bonus not recorded' }); } catch (e) {}
+        if (!c.referral_asked_at) todos.push({ key: 'referral', label: 'Referral not asked' });
+      }
+      return { known: true, complete: todos.length === 0, workDone: true, missing: todos.map(function(t){ return t.label; }), todos: todos };
+    }
+    if (step >= 9) workDone = true;
     else if (c.sold_type === 'diagnostic') workDone = !!c.diagnostic_date && new Date(c.diagnostic_date) < new Date();
     else workDone = false;
-    var todos = [];
+    // Pre-work questions only a person can answer.
+    if (c.sold_type && (!c.assigned_ops || c.assigned_ops === 'none') && step < 9) todos.push({ key: 'ops', label: 'No install partner assigned' });
     if (!workDone) {
-      // A booked FixMy install that has not been marked finished is the one open question we can ask.
-      if (!isNS && c.sold_type !== 'diagnostic' && step >= 7) todos.push({ key: 'install', label: 'Install not marked finished' });
+      if (c.sold_type !== 'diagnostic' && step >= 7 && step < 9) todos.push({ key: 'install', label: 'Install not marked finished' });
       return { known: true, complete: false, workDone: false, missing: todos.map(function(t){ return t.label; }), todos: todos };
     }
-    if (!isNS && c.sold_type === 'diagnostic' && c.invoice_status !== 'paid') todos.push({ key: 'fee', label: 'Diagnostic fee not paid' });
+    if (c.sold_type === 'diagnostic' && c.invoice_status !== 'paid') todos.push({ key: 'fee', label: 'Diagnostic fee not paid' });
     if ((d.closerAmt > 0 && !d.closerLocked) || (d.hasSetter && d.setterAmt > 0 && !d.setterLocked)) todos.push({ key: 'lock', label: 'Commissions not locked in' });
     var unpaidRows = st.comms.filter(function(k){ return (k.kind === 'rep_commission' || k.kind === 'setter_commission') && k.status !== 'paid'; });
     if (unpaidRows.length) todos.push({ key: 'comm_paid', label: 'Commission not paid out (' + unpaidRows.length + ')', rows: unpaidRows });
-    if (!isNS) {
-      var oc = st.costs.filter(function(k){ return k.status !== 'paid'; });
-      if (oc.length) todos.push({ key: 'costs_paid', label: 'Sub Sheet costs unpaid (' + oc.length + ')', rows: oc });
-    }
+    var oc = st.costs.filter(function(k){ return k.status !== 'paid'; });
+    if (oc.length) todos.push({ key: 'costs_paid', label: 'Sub Sheet costs unpaid (' + oc.length + ')', rows: oc });
     if (c.sold_type === 'battery_retrofit') {
       ['sale', 'done'].forEach(function(n){
         if (!st.comms.some(function(k){ return k.note === 'cosmic_' + n && k.status === 'paid'; })) todos.push({ key: 'cosmic_' + n, label: n === 'sale' ? 'Cosmic 50% at sale not received' : 'Cosmic 50% at completion not received' });
       });
     }
-    if (isNS) {
-      try { var calc = _nsCalcCommission(c); if (calc && calc.dcCloserAmt > 0 && !st.comms.some(function(k){ return k.note === 'dc_bonus' && k.kind === 'rep_commission'; })) todos.push({ key: 'dc', label: 'Domestic Content bonus not recorded' }); } catch (e) {}
-    }
     if (!c.referral_asked_at) todos.push({ key: 'referral', label: 'Referral not asked' });
     return { known: true, complete: todos.length === 0, workDone: true, missing: todos.map(function(t){ return t.label; }), todos: todos };
+  };
+  // ── Unified pipeline vocabulary (2026-10-26) — display only; nothing in the data model changes. ──
+  var SHARED_STAGES = ['Booked', 'Evaluating', 'Proposal', 'Sold', 'Scheduled', 'Work done', 'Waiting (PTO)', 'Completed'];
+  window._jobType = function(c) {
+    if (c.lead_category === 'new_solar') return { k: 'axia', n: 'Axia / QCells', color: '#6d28d9' };
+    var t = c.job_type || (c.sold_type === 'battery_retrofit' ? 'battery' : c.sold_type === 'diagnostic' ? 'diagnostic' : c.sold_type === 'monitoring' ? 'monitoring' : '');
+    var M = { diagnostic: ['Diagnostic', '#0f766e'], rma: ['RMA', '#b45309'], service: ['Service fee', '#0369a1'], advocate: ['Advocate fee', '#be185d'], battery: ['Battery', '#2563eb'], monitoring: ['Monitoring', '#555'] };
+    return M[t] ? { k: t, n: M[t][0], color: M[t][1] } : null;
+  };
+  window._sharedStage = function(c) {
+    var k = _jobCompletion(c), isNS = c.lead_category === 'new_solar';
+    if (k.known && k.complete) return { i: 7, n: SHARED_STAGES[7] };
+    var i;
+    if (isNS) {
+      var s = c.solar_status || 'ns_eval_booked';
+      if (c.solar_status === 'ns_pto') i = 5;
+      else if (c.install_completed_at) { var d = _axiaCommCache[c.id]; i = (d && c.ns_audit_at && d.closerLocked) ? 6 : 5; }
+      else if (s === 'ns_install_scheduled' || s === 'ns_permit_submitted' || s === 'ns_button_up') i = 4;
+      else if (s === 'ns_welcome_closed') i = 3;
+      else if (s === 'ns_welcome_scheduled' || s === 'ns_welcome_rescheduled') i = 1;
+      else i = 0;
+    } else {
+      var st = parseInt(c.step, 10) || 1;
+      i = st <= 1 ? 0 : st <= 4 ? 1 : st === 5 ? 2 : st === 6 ? 3 : st === 8 ? 4 : st >= 9 ? 5 : 1;
+    }
+    return { i: i, n: SHARED_STAGES[i] };
+  };
+  window._jobTagHtml = function(c) {
+    var t = _jobType(c), sg = _sharedStage(c);
+    return '<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;font-size:0.66rem;font-weight:800;letter-spacing:0.05em;text-transform:uppercase;">' +
+      (t ? '<span style="background:' + t.color + ';color:#fff;padding:2px 9px;border-radius:100px;">' + esc(t.n) + '</span>' : '') +
+      '<span style="border:1px solid rgba(255,255,255,0.18);color:#bbb;padding:2px 9px;border-radius:100px;">' + (sg.i + 1) + ' ' + esc(sg.n) + '</span></div>';
   };
   window._jobReferralSms = function(c) {
     var ph = String(c.phone || '').replace(/\D/g, ''); if (!ph) return '';
@@ -3043,9 +3089,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   };
   // Card strip: one line + one button.
   window._jobCloseHtml = function(c) {
-    var k = _jobCompletion(c);
-    if (!k.known || k.complete || !k.todos.length) return '';
-    return '<div style="margin-top:9px;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;padding:8px 11px;background:rgba(245,166,35,0.07);border:1px solid rgba(245,166,35,0.3);border-radius:9px;font-size:0.72rem;color:#e0b060;"><span><b style="color:#f5a623;">' + k.todos.length + ' left to close out</b></span>' +
+    var k = _jobCompletion(c), tag = _jobTagHtml(c);
+    if (!k.known || k.complete || !k.todos.length) return tag;
+    return tag + '<div style="margin-top:9px;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;padding:8px 11px;background:rgba(245,166,35,0.07);border:1px solid rgba(245,166,35,0.3);border-radius:9px;font-size:0.72rem;color:#e0b060;"><span><b style="color:#f5a623;">' + k.todos.length + ' left to close out</b></span>' +
       '<button onclick="event.stopPropagation();jobNext(\'' + c.id + '\')" style="width:auto;font-size:0.74rem;padding:6px 16px;border-radius:100px;background:#8DC63F;color:#1A1A1A;border:none;font-weight:800;cursor:pointer;">&#9654; Next step</button></div>';
   };
   window._jobsToggleCompleted = function() { var st = _lfState('admJobs', adminJobCat); st.showCompleted = !st.showCompleted; renderJobsView(); };
@@ -3071,8 +3117,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   }
   window.jobNextClose = function() { var ov = document.getElementById('jobNextOv'); if (ov) ov.remove(); if (adminView === 'jobs') renderJobsView(); };
   var _jnBtn = 'width:100%;margin:0;padding:13px;border:none;border-radius:100px;font-size:0.9rem;font-weight:800;cursor:pointer;';
-  window.jobNext = async function(id) {
+  window.jobNext = async function(id, onlyIfTodos) {
     var c = adminCustomers.find(function(x){ return x.id === id; }); if (!c) return;
+    if (onlyIfTodos) { await _jnRefresh(id); var _k0 = _jobCompletion(c); if (!_k0.known || !_k0.todos.length) return; }
     _jnShell('<div style="padding:30px 0;text-align:center;color:#aaa;">One moment&hellip;</div>');
     await _jnRefresh(id);
     c = adminCustomers.find(function(x){ return x.id === id; });
@@ -3087,7 +3134,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var left = k.todos.length, q = '', detail = '', yes = '', extra = '';
     var d = (c.lead_category === 'new_solar' ? _axiaCommCache : _fixmyCommCache)[id] || {};
     var who = function(p) { return (typeof repName === 'function' && repName(p)) || p; };
-    if (t.key === 'install') { q = 'Is the install finished?'; detail = 'Saying yes marks the job Installed today. That starts the pay clock for the team.'; yes = 'Yes, it is installed'; }
+    if (t.key === 'axinstall') { q = 'Was the install completed?'; detail = 'Saying yes records today as the completion date. Payment 1 follows once the audit is signed off.'; yes = 'Yes, it is completed'; }
+    else if (t.key === 'audit') { q = 'Is the install audit signed off?'; detail = 'Compare the sold design with the installed one. Payment 1 waits on this.'; yes = 'Yes, signed off'; }
+    else if (t.key === 'pto') { q = 'Has the utility granted permission to operate (PTO)?'; detail = 'This starts the second Axia payment, the Domestic Content bonus.'; yes = 'Yes, PTO granted'; }
+    else if (t.key === 'ops') { q = 'Which partner installs this job?'; detail = 'Assigns the Ops partner so they see it in their portal.'; yes = 'Choose a partner'; }
+    else if (t.key === 'install') { q = 'Is the install finished?'; detail = 'Saying yes marks the job Installed today. That starts the pay clock for the team.'; yes = 'Yes, it is installed'; }
     else if (t.key === 'fee') { q = 'Has the diagnostic fee been paid?'; detail = 'Zelle, check or any other way. This turns the lead into a paid job.'; yes = 'Yes, mark it paid'; }
     else if (t.key === 'lock') {
       q = 'Ready to lock in the commissions?';
@@ -3119,15 +3170,28 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     _jnShell(head + '<div style="font-size:0.7rem;color:#777;margin-bottom:12px;">' + left + ' step' + (left > 1 ? 's' : '') + ' left to close out</div>' +
       '<div style="font-size:1.15rem;font-weight:800;color:#fff;margin:0 0 8px;line-height:1.3;">' + q + '</div>' +
       '<div style="font-size:0.84rem;color:#aaa;line-height:1.55;margin-bottom:18px;">' + detail + '</div>' +
-      '<div style="display:flex;gap:10px;"><button onclick="jobNextClose()" style="' + _jnBtn + 'flex:1;background:rgba(255,255,255,0.07);color:#bbb;border:1px solid rgba(255,255,255,0.12);">Not yet</button>' +
-      '<button id="jnYes" onclick="jobNextAnswer(\'' + id + '\',\'' + t.key + '\')" style="' + _jnBtn + 'flex:1.4;background:#8DC63F;color:#1A1A1A;">' + yes + '</button></div>' + extra);
+      (t.key === 'ops'
+        ? '<div style="display:grid;gap:8px;margin-bottom:12px;">' + OPS_PARTNERS.map(function(o){ return '<button onclick="jobNextAnswer(\'' + id + '\',\'ops\',\'' + o.id + '\')" style="' + _jnBtn + 'background:rgba(255,255,255,0.06);color:#fff;border:1px solid rgba(255,255,255,0.14);text-align:left;padding:13px 18px;">' + esc(o.name) + '</button>'; }).join('') + '</div><button onclick="jobNextClose()" style="' + _jnBtn + 'background:rgba(255,255,255,0.07);color:#bbb;border:1px solid rgba(255,255,255,0.12);">Not yet</button>'
+        : '<div style="display:flex;gap:10px;"><button onclick="jobNextClose()" style="' + _jnBtn + 'flex:1;background:rgba(255,255,255,0.07);color:#bbb;border:1px solid rgba(255,255,255,0.12);">Not yet</button>' +
+      '<button id="jnYes" onclick="jobNextAnswer(\'' + id + '\',\'' + t.key + '\')" style="' + _jnBtn + 'flex:1.4;background:#8DC63F;color:#1A1A1A;">' + yes + '</button></div>') + extra);
   };
-  window.jobNextAnswer = async function(id, key) {
+  window.jobNextAnswer = async function(id, key, arg) {
     var c = adminCustomers.find(function(x){ return x.id === id; }); if (!c) return;
     var yb = document.getElementById('jnYes'); if (yb) { yb.disabled = true; yb.textContent = 'Saving…'; }
     var cl = supabase.createClient(SUPA_URL, SUPA_KEY), ts = new Date().toISOString();
     try {
       if (key === 'install') await _doMarkInstalled(id);
+      else if (key === 'axinstall' || key === 'audit' || key === 'pto' || key === 'ops') {
+        var upd = key === 'axinstall' ? { install_completed_at: c.install_completed_at || ts }
+          : key === 'audit' ? { ns_audit_at: ts, ns_audit_note: 'Signed off from the Next step popup' }
+          : key === 'pto' ? { solar_status: 'ns_pto', ns_pto_at: c.ns_pto_at || ts }
+          : { assigned_ops: arg };
+        if (key === 'ops' && !arg) throw new Error('Pick a partner');
+        var ur = await cl.from('customers').update(upd).eq('id', id).select('id');
+        if (ur.error || !ur.data || !ur.data.length) throw new Error((ur.error && ur.error.message) || 'no row updated');
+        Object.assign(c, upd);
+        delete _axiaCommCache[id]; delete _fixmyCommCache[id];
+      }
       else if (key === 'fee') await _doMarkCheckPaid(id);
       else if (key === 'lock') { if (c.lead_category === 'new_solar') await edRecordAxiaSplit(id); else await edRecordFixmySplit(id); }
       else if (key === 'dc') await edRecordAxiaSplit(id);
@@ -31639,7 +31703,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }
       // Stage-change popup (2026-10-26, per Dennis): moving a FixMy job to Installed asks what is left to close it out.
       if (isFixMySave && stepVal >= 9 && (parseInt(_oldStepLog, 10) || 1) < 9 && (cRec.sold_type || updates.sold_type) && typeof jobNext === 'function') {
-        setTimeout(function(){ try { jobNext(id); } catch (e) {} }, 400);
+        setTimeout(function(){ try { jobNext(id, true); } catch (e) {} }, 400);
+      }
+      // Axia/QCells: a status change on a sold job asks what is left, same as FixMy's step change.
+      if (!isFixMySave && updates.solar_status && _oldSolarLog !== updates.solar_status && (updates.sold_type || cRec.sold_type) && typeof jobNext === 'function') {
+        setTimeout(function(){ try { jobNext(id, true); } catch (e) {} }, 400);
       }
       var savedEl=document.getElementById('edSaved');
       if (isAutoSave) {
