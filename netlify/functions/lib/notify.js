@@ -40,6 +40,7 @@ async function logSmsFail(detail) {
 async function sendSms(c, message, doFetch, attachments) {
   doFetch = doFetch || fetch;
   const key = process.env.GHL_API_KEY;
+  if (c.disposition_exit === 'dead') return { ok: false, reason: 'do_not_contact' };
   const phone = toE164(c.phone);
   if (!phone) return { ok: false, reason: 'no_phone' };
   if (!key) return { ok: false, reason: 'ghl_not_configured' };
@@ -78,6 +79,7 @@ function emailHtml(heading, lines, cta) {
 async function sendEmail(c, subject, heading, lines, cta, doFetch) {
   doFetch = doFetch || fetch;
   const key = process.env.RESEND_API_KEY;
+  if (c.disposition_exit === 'dead') return { ok: false, reason: 'do_not_contact' };
   if (!validEmail(c.email)) return { ok: false, reason: 'no_email' };
   if (!key) return { ok: false, reason: 'resend_not_configured' };
   try {
