@@ -99,8 +99,8 @@ exports.handler = async function (event, context, deps) {
   const c = ((await get('/customers?id=eq.' + id + '&select=first_name,last_name,rep_id&limit=1')) || [])[0];
   const d = ((await get('/deal_documents?customer_id=eq.' + id + '&doc_type=eq.' + docType + '&select=status,data&limit=1')) || [])[0];
   if (!c || !d) return out(404, { ok: false });
-  if (ev === 'document_opened' && d.status !== 'reviewed') return out(409, { ok: false, reason: 'state' });
-  if (ev === 'document_signed' && d.status !== 'signed') return out(409, { ok: false, reason: 'state' });
+  if (ev === 'document_opened' && d.status !== 'reviewed' && d.status !== 'pending') return out(409, { ok: false, reason: 'state' });
+  if (ev === 'document_signed' && d.status !== 'signed' && d.status !== 'customer_signed') return out(409, { ok: false, reason: 'state' });
 
   // One alert per event per document (opened is fired from the client; guard replays).
   const rlKey = 'staffalert_' + ev + '_' + id + '_' + docType;
@@ -112,7 +112,9 @@ exports.handler = async function (event, context, deps) {
   const name = ((c.first_name || '') + ' ' + (c.last_name || '')).trim() || 'A customer';
   const msg = ev === 'document_opened'
     ? name + ' just opened the ' + docLabel + ' to sign.'
-    : name + ' signed the ' + docLabel + '. ✅';
+    : (d.status === 'customer_signed'
+      ? name + ' signed the ' + docLabel + ' first \u2014 your Tech signature is still needed. Open the lead and tap Proceed.'
+      : name + ' signed the ' + docLabel + '. \u2705');
 
   const ids = [c.rep_id || DEFAULT_REP];
   if (ids.indexOf(DEFAULT_REP) === -1) ids.push(DEFAULT_REP);

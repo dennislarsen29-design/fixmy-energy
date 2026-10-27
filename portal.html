@@ -1956,7 +1956,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (_deployedDocIds) return _deployedDocIds;
     try {
       var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
-      var r = await pc.from('deal_documents').select('customer_id').in('status', ['reviewed','signed']);
+      var r = await pc.from('deal_documents').select('customer_id').in('status', ['reviewed','customer_signed','signed']);
       _deployedDocIds = new Set((r.data||[]).map(function(x){ return x.customer_id; }));
     } catch(e) { _deployedDocIds = new Set(); }
     return _deployedDocIds;
@@ -26311,7 +26311,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var row = cache[d.id];
       var status = row ? row.status : 'pending';
       var meta = status==='signed' ? {color:'#8DC63F',label:'&#9989; Signed'}
-        : status==='reviewed' ? {color:'#4a9eff',label:'&#128065; Reviewed'}
+        : status==='customer_signed' ? {color:'#ffaa00',label:'&#9997;&#65039; Customer signed \u2014 Tech signature needed'}
+        : status==='reviewed' ? {color:'#4a9eff',label:'&#128065; Tech signed \u2014 awaiting customer'}
         : {color:'#ffaa00',label:'&#9203; Not Started'};
       var dl = '';
       if (d.virtual) { // status lives on the customer row; signed => PDF download
@@ -26759,6 +26760,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // by an earlier session) — upsert replaces the whole jsonb column, so writing
       // {rep_signature:...} alone would silently wipe out anything already there.
       var existingData = (_dealDocsCache[customerId] && _dealDocsCache[customerId][docType] && _dealDocsCache[customerId][docType].data) || {};
+      var _custSignedFirst = false;
       // Read the live row (the cache can be stale: the server writes contact_snapshot / code state
       // into data) and never let a re-Proceed reopen a document the customer already signed.
       try {
@@ -26766,9 +26768,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         if (_fresh && _fresh.data) {
           if (_fresh.data.status === 'signed') { alert('This document is already signed by the customer \u2014 nothing to re-send.'); return; }
           existingData = _fresh.data.data || existingData;
+          _custSignedFirst = _fresh.data.status === 'customer_signed';
         }
       } catch (e) { /* fall back to cache */ }
-      var payload = { customer_id: customerId, doc_type: docType, status:'reviewed', reviewed_by_rep_id:repId, reviewed_by_rep_name:repName, reviewed_at:new Date().toISOString(), updated_at:new Date().toISOString(), data: Object.assign({}, existingData, { rep_signature: repSig }) };
+      var payload = { customer_id: customerId, doc_type: docType, status:(_custSignedFirst ? 'signed' : 'reviewed'), reviewed_by_rep_id:repId, reviewed_by_rep_name:repName, reviewed_at:new Date().toISOString(), updated_at:new Date().toISOString(), data: Object.assign({}, existingData, { rep_signature: repSig }) };
       var resp = await client.from('deal_documents').upsert(payload, { onConflict:'customer_id,doc_type' });
       if (resp.error) { alert('Could not save: '+_dealDocFriendlyError(resp.error.message)); return; }
       await _dealDocsLoad(customerId);
@@ -26807,6 +26810,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // identically to a real negative" rule used throughout this codebase.
       var _notifyState = 'skipped', _notifySkipReason = '', _notifyDetail = '';
       if (!custRow) { _notifySkipReason = 'could not re-fetch the customer record'; }
+      else if (_custSignedFirst) { _notifySkipReason = 'the customer already signed'; }
       else if (!def || !def.hasPdfTemplate) { _notifySkipReason = 'this document has no customer-facing signing screen yet'; }
       else if (_otherAlreadyReady) { _notifySkipReason = 'another document is already waiting on the customer — they were already notified'; }
       else if (!custRow.email && !custRow.phone) { _notifySkipReason = 'this lead has no email or phone on file to notify'; }
@@ -26833,6 +26837,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         _notifyMsg = _notifySkipReason || 'Could not reach the notification service — the customer was NOT notified.';
       } else {
         _notifyMsg = 'No customer notification was sent (' + _notifySkipReason + ').';
+      }
+      if (_custSignedFirst) {
+        var _mapNow = _dealDocsCache[customerId] || {};
+        var _stillOpen = Object.keys(_mapNow).some(function(k){ return _mapNow[k] && _mapNow[k].status !== 'signed'; });
+        if (!_stillOpen) { try { _notifyCustomer('all_documents_signed', customerId); } catch(eAll){} }
+        alert('Countersigned as Representative (' + repName + '). The customer had already signed, so this document is now complete.' + (_stillOpen ? '' : ' The customer is being told everything is signed.'));
+        return;
       }
       alert('Signed as Representative (' + repName + '). ' + _notifyMsg + ' The customer signs their own section separately, from their own device.');
     } catch(e) { alert('Error: '+_dealDocFriendlyError(e.message)); }
@@ -26908,9 +26919,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var row = docsCache[d.id];
       var status = row ? row.status : 'pending';
       var meta = status === 'signed' ? { color:'#8DC63F', label:'&#9989; Signed '+(row.signed_at ? 'on '+new Date(row.signed_at).toLocaleDateString('en-US') : '') }
-        : status === 'reviewed' ? (d.hasPdfTemplate ? { color:'#4a9eff', label:'&#9997;&#65039; Ready for your signature' } : { color:'#4a9eff', label:'Reviewed — signing coming soon' })
-        : { color:'#ffaa00', label:'&#9203; Not ready yet — check back soon' };
-      var canSign = d.hasPdfTemplate && status === 'reviewed';
+        : status === 'customer_signed' ? { color:'#8DC63F', label:'&#9989; You signed \u2014 your Tech will countersign shortly' }
+        : status === 'reviewed' ? (d.hasPdfTemplate ? { color:'#4a9eff', label:'&#9997;&#65039; Ready for your signature (your Tech has signed)' } : { color:'#4a9eff', label:'Reviewed — signing coming soon' })
+        : (d.hasPdfTemplate && row ? { color:'#4a9eff', label:'&#9997;&#65039; Ready for your signature \u2014 you can sign now; your Tech will sign too' } : { color:'#ffaa00', label:'&#9203; Not ready yet — check back soon' });
+      var canSign = d.hasPdfTemplate && (status === 'reviewed' || (status === 'pending' && !!row));
       var dlBtn = '';
       if (d.virtual) { // Diagnostic Service Agreement: status from the customer row; signed => download
         meta = d.statusFor(c);
@@ -27073,7 +27085,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   })();
 
   function _custPendingDocPrompt(c, applicable, docsCache) {
-    var pend = applicable.filter(function(d){ var r = docsCache[d.id]; return d.hasPdfTemplate && r && r.status === 'reviewed'; });
+    var pend = applicable.filter(function(d){ var r = docsCache[d.id]; return d.hasPdfTemplate && r && (r.status === 'reviewed' || r.status === 'pending'); });
     var oldB = document.getElementById('custDocBanner'); if (oldB) oldB.remove();
     if (!pend.length) return;
     var first = pend[0].id;
@@ -27492,7 +27504,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var _docsMap = _dealDocsCache[customerId] || {};
       var _nextDoc = _signedCust ? DEAL_DOC_TYPES.find(function(d){
         return d.id !== docType && d.hasPdfTemplate && d.appliesWhen(_signedCust) &&
-          _docsMap[d.id] && _docsMap[d.id].status === 'reviewed';
+          _docsMap[d.id] && (_docsMap[d.id].status === 'reviewed' || _docsMap[d.id].status === 'pending');
       }) : null;
       if (_nextDoc) {
         _custDocCloseSign();
@@ -27502,7 +27514,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // Nothing else ready right now — check whether every applicable real-PDF
       // document for this customer is now signed. If so, this is the actual
       // "you're done" moment, worth its own notification (not just "Signed!").
-      var _applicable = _signedCust ? DEAL_DOC_TYPES.filter(function(d){ return d.hasPdfTemplate && d.appliesWhen(_signedCust) && _docsMap[d.id] && (_docsMap[d.id].status === 'reviewed' || _docsMap[d.id].status === 'signed'); }) : [];
+      var _applicable = _signedCust ? DEAL_DOC_TYPES.filter(function(d){ return d.hasPdfTemplate && d.appliesWhen(_signedCust) && _docsMap[d.id] && (_docsMap[d.id].status === 'reviewed' || _docsMap[d.id].status === 'pending' || _docsMap[d.id].status === 'customer_signed' || _docsMap[d.id].status === 'signed'); }) : [];
       var _allSigned = _applicable.length > 0 && _applicable.every(function(d){ return _docsMap[d.id] && _docsMap[d.id].status === 'signed'; });
       _custDocCloseSign();
       if (_allSigned && _signedCust) {
@@ -27511,6 +27523,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           : null;
         _notifyCustomer('all_documents_signed', customerId);
         alert('All documents signed! Thank you — you can revisit this page anytime to see them.');
+      } else if (_docsMap[docType] && _docsMap[docType].status === 'customer_signed') {
+        alert('Signed! Thank you. Your Tech will add their signature next \u2014 we\'ll text you when everything is complete.');
       } else {
         alert('Signed! Thank you.');
       }
@@ -35400,7 +35414,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           var ans = (rs[1].data && rs[1].data[0] && rs[1].data[0].answers) || {};
           var skipped = function(k){ return ans['skip_' + k] || (ans.skipped && ans.skipped[k]); };
           var has = function(k){ return labs[k] || skipped(k); };
-          var docs = (rs[2].data || []).some(function(d){ return d.status === 'reviewed' || d.status === 'signed'; });
+          var docs = (rs[2].data || []).some(function(d){ return d.status === 'reviewed' || d.status === 'customer_signed' || d.status === 'signed'; });
           var pr = c.proposal && (c.proposal.status === 'sent' || c.proposal.status === 'accepted');
           var items = [
             ['Inverter, serial and meter photos', has('Inverter Photo') && has('Serial Number') && has('Meter Photo')],

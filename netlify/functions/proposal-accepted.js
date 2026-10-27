@@ -43,9 +43,19 @@ exports.handler = async function (event, context, deps) {
   const opt = chain.acceptedOption(prop);
   const label = (opt && (opt.title || opt.name)) || 'their proposal';
   const link = 'https://fixmy.energy/portal?signdoc=' + id;
-  const msg = '✅ ' + name + ' approved ' + label + '. Sign the CPUC guide so it goes to them: ' + link;
+  const msg = '✅ ' + name + ' approved ' + label + '. The customer can sign first or after you \u2014 sign the CPUC guide here: ' + link;
   const ctx = { doFetch, H, SUPA_URL };
   let texted = 0;
   try { for (const t of await chain.ownerPhones(ctx, c)) { const s = await notify.sendSms({ phone: t.phone, first_name: t.name }, msg, doFetch); if (s.ok) texted++; } } catch (e) {}
-  return out(200, { ok: true, created: true, texted });
+  // Tell the customer too: they can sign now or wait for the Tech — either order works.
+  let customerNotified = false;
+  try {
+    const link = notify.magicLink(c);
+    const first = (c.first_name || 'there').trim();
+    const r2 = await notify.sendBoth(c,
+      'Hi ' + first + '! Thanks for approving your proposal. Your documents are ready \u2014 you can sign now, or wait and your Tech will sign first and text you. Either order works: ' + link + '\nQuestions? Call (619) 777-6527.',
+      { subject: 'Your Solar Review documents are ready', heading: 'Thanks for approving, ' + first, lines: ['Your paperwork is ready in your portal. <b>Either order works</b> \u2014 sign now, or wait for your Tech to sign first and we will text you.'], cta: { url: link, label: 'Open my documents' } }, doFetch);
+    customerNotified = !!(r2 && r2.ok);
+  } catch (e) {}
+  return out(200, { ok: true, created: true, texted, customerNotified });
 };

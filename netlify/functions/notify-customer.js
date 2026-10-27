@@ -39,9 +39,10 @@ exports.handler = async function (event, context, deps) {
   const docs = (await dr.json().catch(function () { return []; })) || [];
   const reviewed = docs.filter(function (d) { return d.status === 'reviewed'; }).length;
   const signed = docs.filter(function (d) { return d.status === 'signed'; }).length;
+  const waitingRep = docs.filter(function (d) { return d.status === 'customer_signed'; }).length;
   if (type === 'proposal_sent' && !(c.proposal && c.proposal.status === 'sent')) return out(409, { ok: false, reason: 'no_sent_proposal' });
   if (type === 'document_ready' && !reviewed) return out(409, { ok: false, reason: 'nothing_to_sign' });
-  if (type === 'all_documents_signed' && (reviewed || !signed)) return out(409, { ok: false, reason: 'not_all_signed' });
+  if (type === 'all_documents_signed' && (reviewed || waitingRep || !signed)) return out(409, { ok: false, reason: 'not_all_signed' });
   if (!notify.toE164(c.phone) && !notify.validEmail(c.email)) return out(200, { ok: false, reason: 'no_contact', sms: { ok: false, reason: 'no_phone' }, email: { ok: false, reason: 'no_email' } });
 
   // Rate limit (one send per type per customer per 2 min)

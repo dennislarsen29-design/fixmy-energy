@@ -121,8 +121,10 @@ exports.handler = async function (event, context, deps) {
   const dRows = await dResp.json().catch(function () { return null; });
   const row = Array.isArray(dRows) && dRows[0];
   if (!row) return out(409, { error: 'This document is not ready for your signature yet.' });
-  if (row.status === 'signed') return out(409, { error: 'Already signed.' });
-  if (row.status !== 'reviewed') return out(409, { error: 'This document is not ready for your signature yet.' });
+  if (row.status === 'signed' || row.status === 'customer_signed') return out(409, { error: 'Already signed.' });
+  // Either party may go first: the customer can sign a 'pending' (rep hasn't signed yet) or 'reviewed' (rep signed) document.
+  if (row.status !== 'reviewed' && row.status !== 'pending') return out(409, { error: 'This document is not ready for your signature yet.' });
+  const repSignedFirst = row.status === 'reviewed';
 
   const now = Date.now();
   const rowData = row.data || {};
@@ -193,10 +195,10 @@ exports.handler = async function (event, context, deps) {
   const data = Object.assign({}, rowData, { customer_signature: signatureData, customer_initials: initialsData, audit: audit });
   delete data.otp_fails; delete data.otp_fail_win;
 
-  // 3. Conditional write — only flips a row that is STILL 'reviewed' (no double-sign race).
-  const wResp = await doFetch(SUPA_URL + '/rest/v1/deal_documents?id=eq.' + row.id + '&status=eq.reviewed', {
+  // 3. Conditional write — only flips a row that is STILL in the status we read (no double-sign race).
+  const wResp = await doFetch(SUPA_URL + '/rest/v1/deal_documents?id=eq.' + row.id + '&status=eq.' + row.status, {
     method: 'PATCH', headers: { ...H, Prefer: 'return=representation' },
-    body: JSON.stringify({ status: 'signed', initials: initials, signature: display, signed_by_name: name, signed_at: signedAt, updated_at: signedAt, data: data })
+    body: JSON.stringify({ status: repSignedFirst ? 'signed' : 'customer_signed', initials: initials, signature: display, signed_by_name: name, signed_at: signedAt, updated_at: signedAt, data: data })
   });
   if (!wResp.ok) {
     const detail = await wResp.text().catch(function () { return ''; });
