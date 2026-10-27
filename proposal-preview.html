@@ -1548,6 +1548,23 @@ button.component-chip.open{border-color:var(--dark);}
   }
 
 
+  // Sum the latest 12 distinct months of kWh from a bill read (null when fewer than 12 are present).
+  // NOTE 2026-10-27: this was called but never defined, so a ReferenceError was swallowed by the catch
+  // below and the whole "bill today" self-check was silently skipped (Chris Bushard showed $30/mo
+  // against 3,994 kWh x $0.50 = $166/mo).
+  function _billUsageFromMonths(rows){
+    var seen = {}, list = [];
+    (rows || []).forEach(function(r){
+      if (!r) return;
+      var k = r.month || r.period || r.date || r.label, v = parseFloat(r.kwh != null ? r.kwh : r.usage_kwh);
+      if (!k || !(v >= 0) || seen[k]) return; seen[k] = 1; list.push({ k: String(k), v: v });
+    });
+    if (list.length < 12) return null;
+    list.sort(function(a,b){ return a.k < b.k ? 1 : -1; });
+    var sum = 0; list.slice(0,12).forEach(function(x){ sum += x.v; });
+    return sum > 0 ? { kwh: sum } : null;
+  }
+
   async function boot(){
     var app = document.getElementById('app');
     if (!custId) { app.innerHTML = '<div class="state">No customer specified. Open this page from a lead’s Proposal Tools.</div>'; return; }
@@ -1562,7 +1579,7 @@ button.component-chip.open{border-color:var(--dark);}
       try {
         var ev = await client.from('lead_evaluations').select('bill_analysis').eq('customer_id', custId).limit(1);
         var ba = ev && ev.data && ev.data[0] && ev.data[0].bill_analysis;
-        var prof = ba && _billUsageFromMonths((ba.monthly_history || []).concat(ba.monthly_breakdown || []));
+        var prof = null; try { prof = ba && _billUsageFromMonths((ba.monthly_history || []).concat(ba.monthly_breakdown || [])); } catch (e2) { prof = null; }
         var kwh = (ba && (ba.annual_auto || (ba.edited && ba.edited.annual_kwh)) && parseFloat(ba.annual_kwh) > 0) ? parseFloat(ba.annual_kwh)
                 : (prof ? prof.kwh : (ba && parseFloat(ba.annual_kwh) > 0 ? parseFloat(ba.annual_kwh) : 0));
         // A usage figure the rep typed on this page wins; otherwise the bill read supplies it.
