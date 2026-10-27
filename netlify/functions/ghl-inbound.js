@@ -348,6 +348,38 @@ exports.handler = async function(event) {
     try { await require('./lib/virtual-check').check(resultId); } catch (e) {}
   }
 
+  // Hot partial: they gave a phone/email but never booked. Text the assigned rep + Dennis once
+  // (deduped by a '[hot-alert]' marker in the lead's own notes) so it can't sit unnoticed until a login.
+  if (isPartial && resultId && (rawPhone || digits) && !diagnosticDate) {
+    try {
+      const SK = process.env.SUPA_SERVICE_KEY;
+      if (SK) {
+        const H = { apikey: SK, Authorization: 'Bearer ' + SK, 'Content-Type': 'application/json' };
+        const cr = await fetch(SUPA_URL + '/rest/v1/customers?id=eq.' + resultId + '&select=first_name,last_name,phone,address,rep_id,notes,partial_capture,diagnostic_date&limit=1', { headers: H });
+        const c = ((await cr.json().catch(() => [])) || [])[0];
+        const already = c && String(typeof c.notes === 'string' ? c.notes : JSON.stringify(c.notes || '')).indexOf('[hot-alert]') > -1;
+        if (c && c.partial_capture && !c.diagnostic_date && !already) {
+          const notify = require('./lib/notify');
+          const ids = [c.rep_id || 'tech4']; if (ids.indexOf('tech4') === -1) ids.push('tech4');
+          const nm = ((c.first_name || '') + ' ' + (c.last_name || '')).trim() || 'A visitor';
+          const msg = '\uD83D\uDD25 Hot lead: ' + nm + ' started booking on the website but did not pick a time. Call them: ' + (c.phone || rawPhone || '') + (c.address ? ' \u00B7 ' + c.address : '');
+          let sent = 0;
+          for (const tid of ids) {
+            const tr = await fetch(SUPA_URL + '/rest/v1/team_members?id=eq.' + encodeURIComponent(tid) + '&select=name,phone&limit=1', { headers: H });
+            const tm = ((await tr.json().catch(() => [])) || [])[0];
+            if (tm && tm.phone) { const r = await notify.sendSms({ phone: tm.phone, first_name: tm.name }, msg, fetch); if (r.ok) sent++; }
+          }
+          if (sent) {
+            let arr = []; try { arr = typeof c.notes === 'string' ? JSON.parse(c.notes || '[]') : (c.notes || []); } catch (e) { arr = []; }
+            if (!Array.isArray(arr)) arr = [];
+            arr.push({ ts: new Date().toISOString(), by: 'Web Capture', text: '[hot-alert] Team texted: partial with phone, no appointment yet.' });
+            await fetch(SUPA_URL + '/rest/v1/customers?id=eq.' + resultId, { method: 'PATCH', headers: Object.assign({}, H, { Prefer: 'return=minimal' }), body: JSON.stringify({ notes: JSON.stringify(arr) }) });
+          }
+        }
+      }
+    } catch (e) { console.warn('hot-lead alert failed (non-fatal):', e.message); }
+  }
+
   console.log(existingId ? 'Updated' : 'Created', 'customer:', email || digits || address);
   return {
     statusCode: 200,
