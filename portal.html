@@ -3120,10 +3120,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     ov.innerHTML = '<div style="background:#1a1c17;border:1px solid rgba(255,255,255,0.12);border-radius:18px;padding:24px;max-width:460px;width:100%;position:relative;">' +
       '<button class="pv-close pv-abs" onclick="jobNextClose()" aria-label="Close" title="Close">&#10005;</button>' + inner + '</div>';
   }
-  window.jobNextClose = function() { var ov = document.getElementById('jobNextOv'); if (ov) ov.remove(); if (adminView === 'jobs') renderJobsView(); };
+  window.jobNextClose = function() { var ov = document.getElementById('jobNextOv'); if (ov) ov.remove(); if (adminView === 'jobs') renderJobsView(); else if (adminView === 'pipeline') renderPipelineView(); };
   var _jnBtn = 'width:100%;margin:0;padding:13px;border:none;border-radius:100px;font-size:0.9rem;font-weight:800;cursor:pointer;';
   window.jobNext = async function(id, onlyIfTodos) {
     var c = adminCustomers.find(function(x){ return x.id === id; }); if (!c) return;
+    if (!_isRealJob(c)) { if (onlyIfTodos) return; return window._leadNext(id); }
     if (onlyIfTodos) { await _jnRefresh(id); var _k0 = _jobCompletion(c); if (!_k0.known || !_k0.todos.length) return; }
     _jnShell('<div style="padding:30px 0;text-align:center;color:#aaa;">One moment&hellip;</div>');
     await _jnRefresh(id);
@@ -3221,6 +3222,88 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   };
 
 
+  // ── Lead-side Next step (2026-10-27, per Dennis: "why not do it on both leads and jobs?") ──
+  // Same popup shell as the job close-out. One question at a time; each answer is a verified write that does
+  // what the old Progress Step / Pipeline Status dropdown did for that move (step/solar_status, sold_type +
+  // sold_at on a sale, a status-change log, a note). Buttons that need a form (fee, proposal, schedule,
+  // commission details, set aside) open the existing screen instead of re-implementing it.
+  window._leadOpts = function(c) {
+    var now = Date.now(), isNS = c.lead_category === 'new_solar';
+    var appt = c.diagnostic_date ? new Date(c.diagnostic_date).getTime() : 0, when = appt ? _plWhen(c.diagnostic_date) : '';
+    var aside = { k: 'aside', l: 'Set aside (paused, not interested, dead)', ghost: 1 }, edit = { k: 'editor', l: 'Open the lead to schedule', ghost: 1 };
+    var evalQ = function(onHeld) {
+      if (appt && appt > now) return { q: 'The evaluation is booked for ' + when + '.', d: 'Nothing to do until then. Check-in opens 30 minutes before.', o: [{ k: 'close', l: 'Got it' }, { k: 'editor', l: 'Change the time', ghost: 1 }] };
+      if (appt) return { q: 'What happened with the evaluation?', d: 'It was set for ' + when + '.', o: onHeld.concat([{ k: 'editor', l: 'It needs a new time', ghost: 1 }, aside]) };
+      return { q: 'Is the evaluation booked?', d: 'No appointment is on this lead yet.', o: [{ k: 'editor', l: 'Book it now' }, aside] };
+    };
+    if (isNS) {
+      var s = c.solar_status || 'ns_eval_booked';
+      if (s === 'ns_eval_booked' || s === 'ns_eval_rescheduled') return evalQ([{ k: 'axclosed', l: 'Held it and closed the deal' }, { k: 'axwelcome', l: 'Held it, booked a welcome call', ghost: 1 }]);
+      if (s === 'ns_eval_canceled') return { q: 'The evaluation was canceled.', d: 'Reschedule it or set the lead aside.', o: [{ k: 'axresched', l: 'Reschedule it' }, aside] };
+      if (s === 'ns_welcome_scheduled' || s === 'ns_welcome_rescheduled') return { q: 'Did the welcome call close?', d: 'Closing opens the system size, PPW and TPO details so the commission is calculated.', o: [{ k: 'axclosed', l: 'Yes, closed' }, { k: 'axwelres', l: 'It needs a new time', ghost: 1 }, aside] };
+      return { q: 'Open the lead to update it.', d: 'This status has no quick question yet.', o: [{ k: 'editor', l: 'Open lead' }] };
+    }
+    var st = parseInt(c.step, 10) || 1;
+    if (st <= 1) return evalQ([{ k: 'step2', l: 'It happened, move to Evaluating' }]);
+    if (st === 2) return { q: 'Ready to book the diagnostic?', d: 'This opens the fee popup and sends the Sign & Pay link.', o: [{ k: 'fee', l: 'Yes, set the fee' }, { k: 'close', l: 'Not yet', ghost: 1 }, aside] };
+    if (st === 3) return { q: 'Has the diagnostic fee been paid?', d: 'Paid turns this lead into a diagnostic job.', o: [{ k: 'paid', l: 'Yes, mark it paid' }, { k: 'fee', l: 'Send the Sign & Pay link', ghost: 1 }, aside] };
+    if (st === 4) return { q: 'Has the proposal been sent?', d: 'Analysis is done. Build and send it, or say it already went out.', o: [{ k: 'proposal', l: 'Open the proposal builder' }, { k: 'step5', l: 'It was already sent', ghost: 1 }, aside] };
+    if (st === 5) return { q: 'What did the customer decide?', d: 'Yes records the sale today and starts the job close-out steps.', o: [{ k: 'sold', l: 'They said yes' }, { k: 'close', l: 'Still deciding', ghost: 1 }, aside] };
+    if (st === 7) return { q: 'This lead is closed out.', d: 'Reopen it to work it again.', o: [{ k: 'reopen', l: 'Reopen' }] };
+    return { q: 'Open the lead to update it.', d: '', o: [{ k: 'editor', l: 'Open lead' }] };
+  };
+  window._leadNext = function(id) {
+    var c = adminCustomers.find(function(x) { return x.id === id; }); if (!c) return;
+    var name = ((c.first_name || '') + ' ' + (c.last_name || '')).trim(), L = _leadOpts(c);
+    var btns = L.o.map(function(o) { return '<button onclick="_leadGo(\'' + id + '\',\'' + o.k + '\')" style="' + _jnBtn + (o.ghost ? 'background:rgba(255,255,255,0.07);color:#ccc;border:1px solid rgba(255,255,255,0.14);' : 'background:#8DC63F;color:#1A1A1A;') + 'margin-bottom:8px;">' + esc(o.l) + '</button>'; }).join('');
+    _jnShell('<div style="font-size:0.62rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#8DC63F;margin-bottom:4px;">' + esc(name) + '</div>' +
+      '<div style="font-size:1.15rem;font-weight:800;color:#fff;margin:6px 0 8px;line-height:1.3;">' + esc(L.q) + '</div>' +
+      '<div style="font-size:0.84rem;color:#aaa;line-height:1.55;margin-bottom:16px;">' + esc(L.d) + '</div>' + btns);
+  };
+  window._leadWrite = async function(id, upd, note) {
+    var c = adminCustomers.find(function(x) { return x.id === id; }); if (!c) return false;
+    try {
+      var cl = supabase.createClient(SUPA_URL, SUPA_KEY), oldStep = c.step, oldSolar = c.solar_status;
+      var r = await cl.from('customers').update(upd).eq('id', id).select('id');
+      if (r.error) throw r.error;
+      if (!r.data || !r.data.length) throw new Error('No row was updated');
+      Object.assign(c, upd); c.updated_at = new Date().toISOString();
+      delete _axiaCommCache[id]; delete _fixmyCommCache[id];
+      try { window._logStatusChange(id, c, oldStep, oldSolar, upd.step != null ? upd.step : oldStep, upd.solar_status != null ? upd.solar_status : oldSolar); } catch (e) {}
+      try { if (note) bbLogActivity(id, 'note', null, note); } catch (e) {}
+      return true;
+    } catch (e) { alert('Could not save: ' + (e.message || e)); return false; }
+  };
+  window._leadGo = async function(id, key) {
+    var c = adminCustomers.find(function(x) { return x.id === id; }); if (!c) return;
+    var done = function() { jobNextClose(); };
+    if (key === 'close') return done();
+    if (key === 'aside') { jobNextClose(); return openExitModal(id); }
+    if (key === 'editor') { jobNextClose(); return openLeadEditor(id); }
+    if (key === 'fee') { jobNextClose(); return openDiagFeeModal(id, { step: 3 }); }
+    if (key === 'proposal') { jobNextClose(); return openProposalBuilder(id); }
+    if (key === 'reopen') { jobNextClose(); return reopenLead(id); }
+    if (key === 'paid') { try { await _doMarkCheckPaid(id); } catch (e) { alert('Could not save: ' + e.message); return; } done(); return; }
+    if (key === 'axclosed') {
+      var up = { solar_status: 'ns_welcome_closed', sold_type: 'new_solar' }; if (!c.sold_at) up.sold_at = new Date().toISOString();
+      jobNextClose();
+      return openAxiaCommModal(id, up, c, function() { try { bbLogActivity(id, 'note', null, 'Closed (Welcome Call Closed); commission details entered'); } catch (e) {} if (adminView === 'pipeline') renderPipelineView(); setTimeout(function() { try { jobNext(id, true); } catch (e) {} }, 400); });
+    }
+    var M = {
+      step2: [{ step: 2 }, 'Evaluation held. Moved to Evaluating.'],
+      step5: [{ step: 5 }, 'Proposal sent. Moved to Proposal.'],
+      axwelcome: [{ solar_status: 'ns_welcome_scheduled' }, 'Evaluation held. Welcome call booked.'],
+      axresched: [{ solar_status: 'ns_eval_rescheduled' }, 'Evaluation rescheduled.'],
+      axwelres: [{ solar_status: 'ns_welcome_rescheduled' }, 'Welcome call rescheduled.'],
+      sold: [{ step: 6, sold_type: c.sold_type || 'diagnostic', sold_at: c.sold_at || new Date().toISOString() }, 'Customer said yes. Marked sold.']
+    }[key];
+    if (!M) return done();
+    var ok = await _leadWrite(id, M[0], M[1]);
+    if (!ok) return;
+    if (key === 'sold') { renderPipelineView(); return jobNext(id); }
+    done();
+  };
+
   // ── ONE PIPELINE (2026-10-26, per Dennis) — Leads + Jobs on a single screen. ──
   // Display layer only: reads the same records, same editors, same commission math. Type chips
   // (Axia, Battery, Diagnostic, RMA, Service, Advocate, plain FixMy lead) + the 8 shared stages.
@@ -3303,6 +3386,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       _jobTagHtml(c) +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center;">' +
       (pd ? '<a class="lead-btn lime" href="tel:' + pd + '" style="text-decoration:none;' + (nx.tone === 'hot' ? 'background:#ef4444;border-color:#ef4444;color:#fff;' : '') + '">&#128222; Call</a>' : '') +
+      '<button class="lead-btn ghost" onclick="jobNext(\'' + c.id + '\')" style="color:#8DC63F;border-color:rgba(141,198,63,0.4);">&#9654; Next step</button>' +
       '<button class="lead-btn ghost" data-id="' + c.id + '" onclick="openLeadEditor(this.dataset.id)">Open lead</button>' +
       '<button class="lead-btn ghost" onclick="_plMenu(\'' + c.id + '\')" aria-label="More actions" style="min-width:42px;">&#8943;</button></div>' + menu + '</div>';
   };
