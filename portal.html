@@ -34888,6 +34888,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#8DC63F;margin-bottom:10px;">Your Signature</div>' +
       '<label class="ed-label" style="margin-bottom:5px;display:block;">Full Legal Name <span style="color:#ef4444;">*</span></label>' +
       '<input type="text" id="agName" class="ed-input" placeholder="Type your full legal name to sign" style="margin-bottom:10px;"/>' +
+      (window._agNeedsZip ? '<label class="ed-label" style="margin-bottom:5px;display:block;">Your home ZIP code <span style="color:#ef4444;">*</span></label>' +
+        '<input type="text" id="agZip" class="ed-input" inputmode="numeric" maxlength="5" placeholder="5-digit ZIP where you live" style="margin-bottom:4px;"/>' +
+        '<div style="font-size:0.65rem;color:#888;margin-bottom:10px;">Used only to decide which customers are in your area. Not shown to customers.</div>' : '') +
       '<label class="nl-check-label" style="margin-bottom:10px;font-size:0.75rem;">' +
         '<input type="checkbox" id="agCheck" class="nl-check"/> ' +
         'I have read, understood, and agree to all terms of this Sales Representative Agreement on behalf of Solar Review Corp (DBA: FIXMy.Energy).' +
@@ -35035,11 +35038,24 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     });
 
     if (!agreementSigned) {
+      window._agNeedsZip = !config.setterMode && !person.home_zip;
       window.signRepAgreement = async function() {
         var repName = (document.getElementById('agName') ? document.getElementById('agName').value : '').trim();
         var checked = !!(document.getElementById('agCheck') && document.getElementById('agCheck').checked);
         if (!repName) { alert('Please type your full legal name to sign.'); return; }
         if (!checked) { alert('Please check the box confirming you have read and agree to the terms.'); return; }
+        // Techs give their home ZIP at signing (per Dennis, 2026-10-27) — feeds the 50-mile Virtual Evaluation check.
+        if (window._agNeedsZip) {
+          var agZ = ((document.getElementById('agZip')||{}).value||'').trim();
+          if (!/^\d{5}$/.test(agZ)) { alert('Please enter your 5-digit home ZIP code.'); return; }
+          try {
+            var agG = await _geocodeFull(agZ + ', USA');
+            if (!agG || agG.status !== 'OK') { alert('We could not locate that ZIP. Please check it and try again.'); return; }
+            var agZr = await supabase.createClient(SUPA_URL, SUPA_KEY).from('team_members').update({ home_zip: agZ, home_lat: agG.lat, home_lng: agG.lng }).eq('id', person.id).select('id');
+            if (agZr.error || !agZr.data || !agZr.data.length) { alert('Could not save your ZIP. Check your connection and try again.'); return; }
+            person.home_zip = agZ; window._agNeedsZip = false;
+          } catch(e) { alert('Could not save your ZIP: ' + e.message); return; }
+        }
         var ts = new Date().toISOString();
         try { localStorage.setItem('repAgreement_' + person.id, ts + '|' + repName + '|' + REP_AGREEMENT_VERSION); } catch(e) {}
         try { sessionStorage.setItem('repAgreementJustSigned_' + person.id, '1'); } catch(e) {} // bypass re-check this session
