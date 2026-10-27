@@ -2798,3 +2798,6 @@ SEO/ads step 1 built: a hub `/southern-california-solar-repair` and four county 
 
 ### Ops portal showed a Battery job as "Diagnostic" (fixed 2026-10-27, per Dennis — Chris Bushard)
 Data was right (`sold_type='battery_retrofit'`). The Ops job card's Job Type tile fell back to a hardcoded "Diagnostic" when `install_type` was empty, and the top bar always offered "Start Diagnostic". Tile now derives from `sold_type` (Battery Retrofit / Axia/QCells Install); the Start Diagnostic button is hidden on battery jobs.
+
+### Internal Proposal button on the Axia/QCells appointment screen (2026-10-27, per Dennis — "we may sell more new systems through Cosmic")
+`axOpenProposal()` (next to `axOpenAurora`) opens `openProposalBuilder(rec.id, undefined, true)` from a new "📄 Internal Proposal (Cosmic install)" button under Open Aurora. The builder overlay (z 9999) sits above the wizard (z 9500), so the wizard stays open underneath. The builder's pricing/commission math is the FixMy (catalog + redline) model — a Cosmic-sold Axia lead is priced with it; Axia's own PPW commission is unchanged. `_proposalToolsRow` still hides the Internal Tool on Axia leads' editor (only the wizard button exposes it). Parse-checked only.
