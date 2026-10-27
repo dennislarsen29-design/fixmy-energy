@@ -3232,6 +3232,149 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   function _plIsAside(c) { return !!(c.disposition_exit || (window._lfIsCanceled && window._lfIsCanceled(c))); }
   window._plSet = function(k, v) { _pl[k] = v; if (k === 'type' || k === 'aside') _pl.stage = -1; renderPipelineView(); };
   window._plSearch = function(v) { _pl.q = v; clearTimeout(window._plT); window._plT = setTimeout(function() { renderPipelineView(); var el = document.getElementById('plSearch'); if (el) { el.focus(); el.setSelectionRange(v.length, v.length); } }, 250); };
+  // ── Pipeline cards, redesigned 2026-10-27 (per Dennis: "L2 and J2") ──────────────────────
+  // L2 lead card: the NEXT STEP is the headline, a stripe says how urgent it is, and the
+  // rarely-used controls (Text, Link, Nav, Tech, Set aside) sit behind a ⋯ menu.
+  // J2 job card: stage dots + one status line, the whole-account value as the biggest figure
+  // (Payment 1 + Payment 2 together), a Payment 1 / Payment 2 bar, and the commission math
+  // inside "Details". Admin Pipeline screen only — rep screens (renderSales) are unchanged.
+  var _plOpen = {};
+  function _plMoney(n) { return '$' + Math.round(n || 0).toLocaleString('en-US'); }
+  function _plWhen(iso) { try { var d = new Date(iso); return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) + ', ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }); } catch (e) { return ''; } }
+  // What should happen next for a LEAD (unsold record). Derived from existing fields only — never asks the person,
+  // never guesses: an unknown state says "Open the lead", not a made-up step.
+  window._plNextStep = function(c) {
+    var now = Date.now(), isNS = c.lead_category === 'new_solar';
+    var appt = c.diagnostic_date ? new Date(c.diagnostic_date).getTime() : 0;
+    var purchased = c.lead_source === 'lead_locker';
+    var ageD = Math.max(0, Math.floor((now - new Date(c.created_at || now).getTime()) / 86400000));
+    var evalStep = function() {
+      if (appt && appt > now) return { t: 'Evaluation ' + _plWhen(c.diagnostic_date), tone: 'ok' };
+      if (appt && appt <= now) return { t: 'Did the evaluation happen? Open the lead and record the outcome.', tone: 'warn' };
+      return { t: purchased ? 'Call now and book the evaluation. Purchased lead, waiting ' + (ageD ? ageD + ' day' + (ageD > 1 ? 's' : '') : 'today') + '.' : 'Book the evaluation.', tone: purchased && ageD >= 1 ? 'hot' : 'warn' };
+    };
+    if (isNS) {
+      var s = c.solar_status || 'ns_eval_booked';
+      if (s === 'ns_eval_booked' || s === 'ns_eval_rescheduled') return evalStep();
+      if (s === 'ns_eval_canceled') return { t: 'Evaluation canceled. Reschedule it or set the lead aside.', tone: 'warn' };
+      if (s === 'ns_welcome_scheduled' || s === 'ns_welcome_rescheduled') return { t: 'Welcome call scheduled. Hold it, then mark the result.', tone: 'ok' };
+      if (s === 'ns_welcome_dead' || s === 'ns_call_dead') return { t: 'Marked dead. Set the lead aside.', tone: 'warn' };
+      return { t: 'Open the lead to update the status.', tone: 'warn' };
+    }
+    var st = parseInt(c.step, 10) || 1;
+    if (st <= 1) return evalStep();
+    if (st === 2) return { t: 'Photos are in. Review them and book the diagnostic.', tone: 'warn' };
+    if (st === 3) return { t: 'Diagnostic booked. Set the fee and send the Sign & Pay link.', tone: 'warn' };
+    if (st === 4) return { t: 'Analysis done. Build the proposal.', tone: 'warn' };
+    if (st === 5) return { t: 'Proposal sent. Follow up with the customer.', tone: 'warn' };
+    if (st === 7) return { t: 'Not sold. Set the lead aside or follow up later.', tone: 'warn' };
+    return { t: 'Open the lead to update it.', tone: 'warn' };
+  };
+  window._plMenu = function(id) { var m = document.getElementById('plm_' + id); if (m) m.hidden = !m.hidden; };
+  window._plAssignTech = async function(id, v) { try { await assignLeadTech(id, v); } catch (e) {} if (adminView === 'pipeline') renderPipelineView(); };
+  window._plLeadCardHtml = function(c) {
+    var nx = _plNextStep(c), sg = _sharedStage(c), col = nx.tone === 'hot' ? '#ef4444' : nx.tone === 'ok' ? '#8DC63F' : '#f5a623';
+    var name = ((c.first_name || '') + (c.last_name ? ' ' + c.last_name : '')).trim() || c.email || c.phone || 'Unknown';
+    var pd = (c.phone || '').replace(/\D/g, ''), aside = _plIsAside(c);
+    var magic = 'https://fixmy.energy/portal?email=' + encodeURIComponent(c.email || '') + '&code=' + encodeURIComponent(c.access_code || pd);
+    var chips = [];
+    if (c.lead_source === 'lead_locker' && window.purchasedBadgeHtml) chips.push(window.purchasedBadgeHtml(c));
+    var zip = extractZip(c.address || '');
+    if (window.sdcpBadgeHtml) { var sb = window.sdcpBadgeHtml(zip); if (sb) chips.push(sb); }
+    if (c.eval_mode === 'virtual') chips.push('<span class="mini-badge" style="background:rgba(167,137,217,0.15);color:#a789d9;">VIRTUAL</span>');
+    var inv = diagFeeStatus(c), invT = !!c.invoice_status && c.invoice_status !== 'none';
+    if (inv !== 'na' && (inv !== 'pending' || invT)) chips.push(adminStatusBadgeHtml(inv, 'Fee'));
+    var ag = agreementDisplayStatus(c), agT = !!c.agreement_status && c.agreement_status !== 'none';
+    if (ag !== 'na' && (ag !== 'pending' || agT)) chips.push(adminStatusBadgeHtml(ag, 'Agmt'));
+    if (typeof _deployedDocIds !== 'undefined' && _deployedDocIds && _deployedDocIds.has(c.id)) chips.push('<span class="mini-badge" style="background:rgba(155,109,232,0.14);color:#9b6de8;font-weight:700;">&#128196; Docs</span>');
+    var techOpts = (typeof TECHS !== 'undefined' ? TECHS : []).map(function(t) { return '<option value="' + t.id + '"' + (c.rep_id === t.id ? ' selected' : '') + '>' + esc(t.name) + '</option>'; }).join('');
+    var menu = '<div id="plm_' + c.id + '" hidden style="margin-top:10px;padding-top:10px;border-top:1px dashed rgba(255,255,255,0.12);display:flex;flex-wrap:wrap;gap:8px;align-items:center;">' +
+      (pd ? '<a class="lead-btn ghost" href="sms:' + pd + '" style="text-decoration:none;">&#128172; Text</a>' : '') +
+      (c.email ? '<button class="lead-btn ghost" onclick="sendMagicLink(\'' + magic + '\',\'' + esc(c.email) + '\')">&#128279; Link</button>' : '') +
+      (c.address ? '<a class="lead-btn ghost" href="https://maps.apple.com/?q=' + encodeURIComponent(c.address) + '" target="_blank" rel="noopener" style="text-decoration:none;">&#128506; Navigate</a>' : '') +
+      '<label style="font-size:0.66rem;color:#888;text-transform:uppercase;letter-spacing:0.06em;">Tech <select onchange="_plAssignTech(\'' + c.id + '\',this.value)" style="width:auto;display:inline-block;margin-left:4px;"><option value="">Unassigned</option>' + techOpts + '</select></label>' +
+      (aside ? '<button class="lead-btn ghost" onclick="reopenLead(\'' + c.id + '\')" style="color:#8DC63F;">&#8617; Reopen</button>'
+             : '<button class="lead-btn ghost" onclick="openExitModal(\'' + c.id + '\')" style="color:#f87171;">&#9208; Set aside</button>') + '</div>';
+    return '<div class="lead-card" id="lead-' + c.id + '" style="border-left:5px solid ' + col + ';">' +
+      '<div style="font-size:1rem;font-weight:800;color:' + (nx.tone === 'hot' ? '#fca5a5' : nx.tone === 'ok' ? '#b7e07a' : '#f3c06a') + ';line-height:1.35;margin-bottom:8px;">' + esc(nx.t) + '</div>' +
+      '<div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start;"><div class="lead-name" style="font-size:0.95rem;">' + esc(name) + '</div><span style="font-size:0.7rem;font-weight:700;padding:3px 10px;border-radius:100px;border:1px solid rgba(255,255,255,0.18);color:#bbb;white-space:nowrap;">' + (sg.i + 1) + ' ' + esc(sg.n) + '</span></div>' +
+      '<div class="lead-addr" style="margin:2px 0 0;">' + esc(c.address || 'No address') + '</div>' +
+      (chips.filter(Boolean).length ? '<div style="margin-top:7px;display:flex;flex-wrap:wrap;gap:4px;align-items:center;">' + chips.join('') + '</div>' : '') +
+      _jobTagHtml(c) +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center;">' +
+      (pd ? '<a class="lead-btn lime" href="tel:' + pd + '" style="text-decoration:none;' + (nx.tone === 'hot' ? 'background:#ef4444;border-color:#ef4444;color:#fff;' : '') + '">&#128222; Call</a>' : '') +
+      '<button class="lead-btn ghost" data-id="' + c.id + '" onclick="openLeadEditor(this.dataset.id)">Open lead</button>' +
+      '<button class="lead-btn ghost" onclick="_plMenu(\'' + c.id + '\')" aria-label="More actions" style="min-width:42px;">&#8943;</button></div>' + menu + '</div>';
+  };
+  // J2 pieces ------------------------------------------------------------------------------
+  function _plJobTotals(c, d) {
+    if (!d) return null;
+    if (c.lead_category === 'new_solar') {
+      var g1 = d.grossAmt1 || 0, g2 = d.dcExtraGross || 0;
+      return { gross: g1 + g2, margin: (d.companyAmt1 || 0) + (d.dcCompanyAmt || 0), p1: g1, p2: g2, p1paid: !!d.closerLocked && !!d.closerPaid, p2due: !!d.ptoDone, two: g2 > 0 };
+    }
+    var g = _grossCommissionOf(d);
+    return { gross: g, margin: d.companyAmt || 0, p1: g, p2: 0, p1paid: !!d.closerPaid, p2due: false, two: false };
+  }
+  window._plJobValueHtml = function(c) {
+    var d = c.lead_category === 'new_solar' ? _axiaCommCache[c.id] : _fixmyCommCache[c.id], t = _plJobTotals(c, d);
+    if (!t) return '<div style="font-size:0.74rem;color:#777;margin-top:8px;">Loading the numbers&hellip;</div>';
+    if (c.lead_category === 'new_solar' && !d.hasInputs) return '<div style="font-size:0.78rem;color:#f5a623;margin-top:8px;">Add the system size and PPW to see the account value.</div>';
+    var bar = '';
+    if (t.two) {
+      bar = '<div style="display:flex;height:10px;border-radius:5px;overflow:hidden;gap:2px;background:rgba(255,255,255,0.08);margin-top:4px;"><i style="display:block;flex:' + Math.max(t.p1, 1) + ';background:' + (t.p1paid ? '#4ade80' : '#f5a623') + ';"></i><i style="display:block;flex:' + Math.max(t.p2, 1) + ';background:' + (t.p2due ? '#f5a623' : '#6b6b6b') + ';"></i></div>' +
+        '<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:0.7rem;margin-top:5px;color:#aaa;"><span style="color:' + (t.p1paid ? '#4ade80' : '#f5a623') + ';">Payment 1 <b style="font-family:' + COMM_MONO + ';">' + _plMoney(t.p1) + '</b> ' + (t.p1paid ? 'paid' : 'pending') + '</span><span>Payment 2 <b style="font-family:' + COMM_MONO + ';">' + _plMoney(t.p2) + '</b> ' + (t.p2due ? 'due' : 'at PTO') + '</span></div>';
+    } else {
+      bar = '<div style="font-size:0.72rem;margin-top:5px;color:' + (t.p1paid ? '#4ade80' : '#f5a623') + ';">' + (t.p1paid ? 'Paid' : 'Not paid yet') + '</div>';
+    }
+    return '<div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.1fr);gap:14px;align-items:end;margin-top:8px;"><div><div style="font-size:0.62rem;text-transform:uppercase;letter-spacing:0.07em;color:#888;">Account value</div>' +
+      '<div style="font-family:' + COMM_MONO + ';font-size:1.7rem;font-weight:700;line-height:1.05;color:#fff;">' + _plMoney(t.gross) + '</div>' +
+      '<div style="font-size:0.74rem;color:#888;margin-top:3px;">Solar Review margin <b style="font-family:' + COMM_MONO + ';color:' + COMM_COLOR_MARGIN + ';">' + _plMoney(t.margin) + '</b></div></div><div>' + bar + '</div></div>';
+  };
+  window._plJobDetailsHtml = function(c) {
+    var isNS = c.lead_category === 'new_solar', d = isNS ? _axiaCommCache[c.id] : _fixmyCommCache[c.id], h = '';
+    if (isNS && d && d.hasInputs) {
+      var m = function(n) { return '<td style="text-align:right;font-family:' + COMM_MONO + ';padding:4px 6px;">' + _plMoney(n) + '</td>'; };
+      var row = function(lbl, a, b, extra) { return '<tr' + (extra || '') + '><td style="padding:4px 6px;">' + lbl + '</td>' + m(a) + m(b) + m(a + b) + '</tr>'; };
+      h += '<div style="overflow-x:auto;"><table style="width:100%;min-width:380px;border-collapse:collapse;font-size:0.74rem;color:#ccc;"><thead><tr style="color:#888;"><th style="text-align:left;padding:4px 6px;font-weight:600;"></th><th style="text-align:right;padding:4px 6px;font-weight:600;">Payment 1<br><span style="font-weight:400;">after install</span></th><th style="text-align:right;padding:4px 6px;font-weight:600;">Payment 2<br><span style="font-weight:400;">DC bonus, at PTO</span></th><th style="text-align:right;padding:4px 6px;font-weight:600;">Total</th></tr></thead><tbody>' +
+        row('Gross commission', d.grossAmt1 || 0, d.dcExtraGross || 0) +
+        (d.repId ? row(esc(d.closerNm || 'Tech'), d.closerAmt1 || 0, d.dcCloserAmt || 0) : '') +
+        (d.hasSetter ? row(esc(d.setterName || 'Setter'), d.setterAmt1 || 0, d.dcSetterAmt || 0) : '') +
+        row('Solar Review margin', d.companyAmt1 || 0, d.dcCompanyAmt || 0, ' style="color:' + COMM_COLOR_MARGIN + ';font-weight:700;"') + '</tbody></table></div>' +
+        '<div style="margin-top:8px;">' + _revCostLineHtml(d) + '</div><div style="font-size:0.68rem;color:#888;margin-top:6px;">' + _axiaBadge(d) + '</div>';
+    } else if (d) {
+      h += _jobCommLineHtml(c.id);
+    }
+    return h + _installDateBlockHtml(c);
+  };
+  window._plJobStatusHtml = function(c) {
+    var k = _jobCompletion(c), line = '', btn = '';
+    if (k.known && k.complete) line = '<span style="color:#4ade80;">&#10003; Completed. Everything is paid and recorded.</span>';
+    else if (k.known && k.todos.length) {
+      line = '<span style="color:#f3c06a;">Next: ' + esc(k.todos[0].label) + (k.todos.length > 1 ? ' <span style="color:#888;">(+' + (k.todos.length - 1) + ' more)</span>' : '') + '</span>';
+      btn = '<button onclick="event.stopPropagation();jobNext(\'' + c.id + '\')" style="width:auto;font-size:0.74rem;padding:6px 16px;border-radius:100px;background:#8DC63F;color:#1A1A1A;border:none;font-weight:800;cursor:pointer;">&#9654; Next step</button>';
+    } else if (k.known) line = '<span style="color:#aaa;">Waiting on the next stage.</span>';
+    return '<div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px;font-size:0.8rem;"><div style="min-width:0;">' + line + '</div>' + btn + '</div>' + _jobTagHtml(c);
+  };
+  window._plDet = function(id) {
+    var box = document.getElementById('jobDet_' + id), btn = document.getElementById('jobDetBtn_' + id); if (!box) return;
+    var show = box.hidden; if (show) box.innerHTML = _plJobDetailsHtml(adminCustomers.find(function(x) { return x.id === id; }) || {});
+    box.hidden = !show; _plOpen[id] = show; if (btn) btn.innerHTML = show ? 'Details &#9652;' : 'Details &#9662;';
+  };
+  window._plJobCardHtml = function(c) {
+    var isNS = c.lead_category === 'new_solar', nsRec = isNS ? (NS_STATUSES[c.solar_status] || { label: 'Axia/QCells', color: '#4a9eff' }) : null, sg = _sharedStage(c), dots = '';
+    for (var i = 0; i < 8; i++) dots += '<i style="flex:1;max-width:34px;height:6px;border-radius:3px;background:' + (i <= sg.i ? '#8DC63F' : 'rgba(255,255,255,0.12)') + ';"></i>';
+    var open = !!_plOpen[c.id];
+    return '<div class="job-card" data-id="' + c.id + '" onclick="openJob(this.dataset.id)"><div class="job-card-top"><div class="job-name">' + esc((c.first_name || '') + ' ' + (c.last_name || '')) + '</div>' +
+      '<div class="job-status-pill" style="background:' + (nsRec ? nsRec.color : '#8DC63F') + '22;color:' + (nsRec ? nsRec.color : '#8DC63F') + ';border:1px solid ' + (nsRec ? nsRec.color : '#8DC63F') + '44;">' + esc(nsRec ? nsRec.label : (sg.i + 1) + ' ' + sg.n) + '</div></div>' +
+      '<div class="job-addr">' + esc(c.address || 'No address') + '</div>' +
+      '<div style="display:flex;gap:5px;margin:8px 0 0;" aria-label="Stage ' + (sg.i + 1) + ' of 8">' + dots + '</div>' +
+      '<div id="jobClose_' + c.id + '">' + _plJobStatusHtml(c) + '</div>' +
+      '<div id="jobComm_' + c.id + '">' + _plJobValueHtml(c) + '</div>' +
+      '<button id="jobDetBtn_' + c.id + '" onclick="event.stopPropagation();_plDet(\'' + c.id + '\')" style="width:auto;margin-top:8px;padding:4px 0;background:none;border:none;color:#8DC63F;font-weight:700;font-size:0.8rem;cursor:pointer;">' + (open ? 'Details &#9652;' : 'Details &#9662;') + '</button>' +
+      '<div id="jobDet_' + c.id + '" onclick="event.stopPropagation()" ' + (open ? '' : 'hidden ') + 'style="border-top:1px dashed rgba(255,255,255,0.12);padding-top:10px;margin-top:2px;">' + (open ? _plJobDetailsHtml(c) : '') + '</div></div>';
+  };
+
   function renderPipelineView() {
     if (_adminOnlyGuard()) return;
     adminView = 'pipeline';
@@ -3272,12 +3415,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (!list.length) h = '<div style="padding:32px;text-align:center;color:#777;">Nothing here' + (q ? ' for "' + esc(_pl.q) + '"' : '') + '.</div>';
     list.forEach(function(r) {
       var c = r.c;
-      if (!r.job) { h += buildLeadCard(c).replace(/<\/div>\s*$/, _jobTagHtml(c) + '</div>'); return; }
-      var isNS = c.lead_category === 'new_solar', nsRec = isNS ? (NS_STATUSES[c.solar_status] || { label: 'Axia/QCells', color: '#4a9eff' }) : null;
-      h += '<div class="job-card" data-id="' + c.id + '" onclick="openJob(this.dataset.id)"><div class="job-card-top"><div class="job-name">' + esc((c.first_name || '') + ' ' + (c.last_name || '')) + '</div>' +
-        (nsRec ? '<div class="job-status-pill" style="background:' + nsRec.color + '22;color:' + nsRec.color + ';border:1px solid ' + nsRec.color + '44;">' + esc(nsRec.label) + '</div>' : '') + '</div>' +
-        '<div class="job-addr">' + esc(c.address || 'No address') + '</div>' + _installDateBlockHtml(c) +
-        '<div id="jobComm_' + c.id + '">' + (isNS ? _axiaCommLineHtml(c.id) : _jobCommLineHtml(c.id)) + '</div><div id="jobClose_' + c.id + '">' + _jobCloseHtml(c) + '</div></div>';
+      if (!r.job) { h += _plLeadCardHtml(c); return; }
+      h += _plJobCardHtml(c);
     });
     var nDone = live.filter(function(r) { return r.stage === 7 && inType(r); }).length;
     var tools = '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px;">' +
@@ -3293,7 +3432,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var fx = jobsShown.filter(function(r) { return r.c.lead_category !== 'new_solar'; }).map(function(r) { return r.c.id; }), ax = jobsShown.filter(function(r) { return r.c.lead_category === 'new_solar'; }).map(function(r) { return r.c.id; });
       Promise.all([fx.length ? _loadFixmyJobCommissions(fx) : 0, ax.length ? _loadAxiaJobCommissions(ax) : 0]).then(function() {
         if (adminView !== 'pipeline') return;
-        jobsShown.forEach(function(r) { var c = r.c, a = document.getElementById('jobComm_' + c.id), b = document.getElementById('jobClose_' + c.id); if (a) a.innerHTML = c.lead_category === 'new_solar' ? _axiaCommLineHtml(c.id) : _jobCommLineHtml(c.id); if (b) b.innerHTML = _jobCloseHtml(c); });
+        jobsShown.forEach(function(r) { var c = r.c, a = document.getElementById('jobComm_' + c.id), b = document.getElementById('jobClose_' + c.id), dd = document.getElementById('jobDet_' + c.id); if (a) a.innerHTML = _plJobValueHtml(c); if (b) b.innerHTML = _plJobStatusHtml(c); if (dd && !dd.hidden) dd.innerHTML = _plJobDetailsHtml(c); });
       });
     }
   }
@@ -3978,7 +4117,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       return '<div style="font-size:0.7rem;color:#888;line-height:1.8;">'+
         '<div>Base PPW <b style="color:#ccc;font-family:'+COMM_MONO+';">'+ppw(d.basePpw)+'</b></div>'+
         '<div>Redline <b style="color:'+COMM_COLOR_REDLINE+';font-family:'+COMM_MONO+';">'+ppw(d.redline)+'</b></div>'+
-        '<div>DC Bonus <b style="color:'+COMM_COLOR_EARNED+';font-family:'+COMM_MONO+';">'+ppw(d.dcBonus)+'</b>'+(d.dcPending?' <span style="color:#f59e0b;">(paid at PTO &mdash; not in figures below yet)</span>':'')+'</div>'+
+        '<div>DC Bonus <b style="color:'+COMM_COLOR_EARNED+';font-family:'+COMM_MONO+';">'+ppw(d.dcBonus)+'</b>'+(d.dcPending?' <span style="color:#f59e0b;">(Payment 2, paid at PTO &mdash; included in the account total, see Details)</span>':'')+'</div>'+
         '<div style="margin-top:4px;padding-top:4px;border-top:1px dashed rgba(255,255,255,0.08);">Net PPW ('+ppw(d.basePpw)+' &minus; '+ppw(d.redline)+' + '+ppw(d.dcApplied!=null?d.dcApplied:d.dcBonus)+') = <b style="color:#ddd;font-family:'+COMM_MONO+';">'+ppw(d.netPpw)+'</b></div>'+
       '</div>'+
       '<div style="font-size:0.7rem;color:#888;margin-top:6px;">Net PPW <b style="color:#ddd;font-family:'+COMM_MONO+';">'+ppw(d.netPpw)+'</b> &times; System Size <b style="color:#ccc;font-family:'+COMM_MONO+';">'+watts.toLocaleString()+'W</b> = Gross Commission <b style="color:#ddd;font-family:'+COMM_MONO+';">'+m(_grossCommissionOf(d))+'</b></div>';
