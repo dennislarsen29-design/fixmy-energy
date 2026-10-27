@@ -77,6 +77,21 @@ COUNTIES = [
         ('My installer filed bankruptcy. Is my warranty gone?','Not necessarily. Panel and inverter manufacturers often keep their own warranties. What is usually missing is someone to file the claim and do the repair, which we can handle.'),
         ('Why is my production lower in summer than I expected?','Heat reduces panel and inverter efficiency, and dust adds losses. Some drop is normal, but a large or sudden drop points to a fault we can find.'),
         ('Can I add storage to an older system?','Often yes. A Powerwall retrofit can be added to many existing systems. We confirm fit and rules for your utility first.')]),
+ dict(slug='solar-repair-imperial-county', name='Imperial County', short='Imperial County',
+  title='Solar Panel Repair & Inverter Diagnostics in Imperial County, CA | Solar Review',
+  desc='Imperial County solar underperforming or installer gone? Free evaluation, extreme-heat inverter diagnostics and battery retrofits in Calexico, El Centro, Imperial and Brawley.',
+  eyebrow='Imperial County',
+  h1='Solar Panel Repair and Inverter Diagnostics in Imperial County',
+  lede='Imperial County is one of the hottest places solar equipment runs. If your system in Calexico, El Centro or the Imperial Valley has stopped producing, throws an inverter error, or the company that installed it is gone, we diagnose it and tell you plainly what is wrong.',
+  cities='Calexico, El Centro, Imperial, Brawley, Holtville, Calipatria, Westmorland, and the surrounding communities',
+  utilities=('Most of Imperial County is served by the <strong>Imperial Irrigation District (IID)</strong>, not Southern California Edison or SDG&E. IID has its own rates and its own rules for exported solar power, so what a system earns here can differ from the rest of Southern California.',
+             'We read your IID bill and your system paperwork first, since whether an expansion or a battery makes sense depends on those rules. We do not assume the answer from other utilities applies.'),
+  local=('Summer here regularly brings extreme heat, along with dust and strong sun. Sustained heat is hard on inverters, optimizers and wiring, and failures often cluster in the hottest months. A system can lose output slowly without any alarm, so we compare what it should produce with what it actually produces before we guess at a cause.',),
+  installers='Many Imperial Valley systems were sold by installers from outside the region, and some of those companies have since closed or stopped answering. If yours is one of them, your equipment warranty may still stand. We help you use it, and we do the work the installer would have.',
+  faqs=[('Do you serve Calexico and the Imperial Valley?','Yes. Give us your address when you book and we will confirm how to start. We begin with your photos and utility bill, then arrange a technician visit or a guided video evaluation as fits your situation.'),
+        ('My utility is IID. Does that change anything?','Yes. IID has its own rates and export rules, so we check your bill and system approval before recommending a change. The repair and diagnostic work itself is the same.'),
+        ('My installer closed. Is my warranty gone?','Not necessarily. Panel and inverter manufacturers often keep their own warranties. What is usually missing is someone to file the claim and do the repair, which we can handle.'),
+        ('Why does my system produce less in summer?','Heat reduces panel and inverter efficiency, and dust adds losses. Some drop is normal, but a large or sudden drop points to a fault we can find.')]),
 ]
 
 def esc(t): return html.escape(t, quote=False)
@@ -125,20 +140,20 @@ def county_html(c):
 
 def hub_html():
     cards = ''.join('<li><a href="/%s"><strong>%s</strong></a> &mdash; %s</li>' % (c['slug'], c['name'], esc(c['cities'].split(', and')[0].split(', ')[0] + ', ' + c['cities'].split(', ')[1] + ' and more')) for c in COUNTIES)
-    faqs = [('Do you serve all of Southern California?','Yes. We serve homeowners in Los Angeles, Orange, Riverside, San Bernardino and San Diego counties.'),
+    faqs = [('Do you serve all of Southern California?','Yes. We serve homeowners in Los Angeles, Orange, Riverside, San Bernardino, Imperial and San Diego counties.'),
             ('Do you have an office near me?','Our team is based in San Diego County. For homeowners elsewhere in Southern California we start with your photos and utility bill, and schedule a technician visit or a guided video evaluation as fits your situation.'),
             ('Does it matter who installed my system?','No. We work on systems from any installer, including companies that have closed.')]
     hub = {"@context":"https://schema.org","@type":"Service","name":"Solar repair and diagnostics across Southern California","provider":{"@type":"Organization","name":"Solar Review","url":SITE,"telephone":"+1-619-777-6527"},
-           "areaServed":[{"@type":"AdministrativeArea","name":n+", California"} for n in ["San Diego County","Los Angeles County","Orange County","Riverside County","San Bernardino County"]],"url":SITE+"/southern-california-solar-repair"}
+           "areaServed":[{"@type":"AdministrativeArea","name":n+", California"} for n in ["San Diego County","Los Angeles County","Orange County","Riverside County","San Bernardino County","Imperial County"]],"url":SITE+"/southern-california-solar-repair"}
     faqld = json.dumps({"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":q,"acceptedAnswer":{"@type":"Answer","text":a}} for q,a in faqs]})
     bc = json.dumps({"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Home","item":SITE+"/"},{"@type":"ListItem","position":2,"name":"Southern California","item":SITE+"/southern-california-solar-repair"}]})
     body = ('<article class="wrap">\n<div class="eyebrow">Southern California</div>\n<h1>Solar Repair and Diagnostics Across Southern California</h1>\n'
-      '<p class="lede">Solar Review diagnoses and repairs existing solar systems and retrofits Tesla Powerwall batteries for homeowners in Los Angeles, Orange, Riverside, San Bernardino and San Diego counties, whoever installed the system.</p>\n'
+      '<p class="lede">Solar Review diagnoses and repairs existing solar systems and retrofits Tesla Powerwall batteries for homeowners in Los Angeles, Orange, Riverside, San Bernardino, Imperial and San Diego counties, whoever installed the system.</p>\n'
       '<p class="meta">Solar Review &middot; Updated October 2026</p>\n<h2>Choose your area</h2>\n<ul>%s<li><a href="/"><strong>San Diego County</strong></a> &mdash; our home base</li></ul>\n'
       '<h2>Why homeowners call us</h2>\n<p>Millions of Southern California homes have solar from companies that have since closed, restructured or stopped answering. Production can fall for years without an alarm. We compare what your system should make with what it makes, find the fault, and tell you plainly what it will take to fix, including what the manufacturer warranty still covers.</p>\n%s\n'
       '<h2>Common questions</h2>\n%s\n</article>') % (cards, CTA, ''.join('<div class="faq-q">%s</div><p>%s</p>' % (esc(q), esc(a)) for q, a in faqs))
     return page('Solar Repair & Inverter Diagnostics Across Southern California | Solar Review',
-      'Free solar evaluation, inverter and panel diagnostics, and Powerwall battery retrofits in Los Angeles, Orange, Riverside, San Bernardino and San Diego counties.',
+      'Free solar evaluation, inverter and panel diagnostics, and Powerwall battery retrofits in Los Angeles, Orange, Riverside, San Bernardino, Imperial and San Diego counties.',
       SITE+'/southern-california-solar-repair', [json.dumps(hub), faqld, bc], body)
 
 for c in COUNTIES: open(c['slug']+'.html', 'w', encoding='utf-8').write(county_html(c))

@@ -8663,7 +8663,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       try {
         var chanSince = new Date(Date.now() - 90*86400000).toISOString();
         var { data: leads } = await sc.from('customers')
-          .select('id,created_at,sold_type,diagnostic_date,utm_source,utm_medium,fbclid,gclid,lead_source')
+          .select('id,created_at,sold_type,diagnostic_date,utm_source,utm_medium,fbclid,gclid,lead_source,address')
           .gte('created_at', chanSince)
           .or('archived.is.null,archived.eq.false');
         if (leads && leads.length) {
@@ -8714,6 +8714,39 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
                 '<span style="color:#8DC63F;font-weight:700;width:70px;text-align:right;">'+(r.revenue>0?'$'+r.revenue.toFixed(0):'—')+'</span>'+
               '</div>';
             }).join('')+
+          '</div>';
+          // Same leads, grouped by county (city read from the address; the expansion scoreboard).
+          var CTY = {
+            'Los Angeles County': 'los angeles|pasadena|glendale|burbank|long beach|torrance|santa clarita|lancaster|palmdale|pomona|west covina|whittier|downey|norwalk|van nuys|encino|santa monica|inglewood|el monte|pico rivera',
+            'Orange County': 'anaheim|santa ana|irvine|huntington beach|fullerton|orange|garden grove|costa mesa|mission viejo|lake forest|tustin|yorba linda|san clemente|laguna|newport beach|aliso viejo|brea|placentia',
+            'Riverside County': 'riverside|corona|moreno valley|murrieta|temecula|menifee|hemet|eastvale|norco|palm springs|palm desert|indio|cathedral city|lake elsinore|beaumont|banning',
+            'San Bernardino County': 'rancho cucamonga|ontario|fontana|rialto|san bernardino|redlands|chino|upland|highland|yucaipa|victorville|hesperia|apple valley|colton|loma linda',
+            'Imperial County': 'calexico|el centro|imperial|brawley|holtville|calipatria|westmorland'
+          };
+          function countyOf(addr) {
+            var parts = String(addr||'').split(',').map(function(x){ return x.trim().toLowerCase(); });
+            var city = parts.length >= 3 ? parts[parts.length-2] : '';
+            if (/^(ca|california)\b/.test(city) && parts.length >= 3) city = parts[parts.length-3];
+            for (var k in CTY) { if (new RegExp('^(' + CTY[k] + ')$').test(city)) return k; }
+            return /92\d{3}|91\d{3}/.test(addr||'') && parts.length >= 3 && city ? 'San Diego County / other' : 'Unknown';
+          }
+          var cb = {};
+          leads.forEach(function(c){
+            var k = countyOf(c.address);
+            if (!cb[k]) cb[k] = { leads:0, booked:0, sold:0, rev:0 };
+            cb[k].leads++; if (c.diagnostic_date || c.sold_type) cb[k].booked++; if (c.sold_type) cb[k].sold++; cb[k].rev += revByC[c.id]||0;
+          });
+          var cRows = Object.keys(cb).sort(function(a,b){ return cb[b].leads - cb[a].leads; });
+          chanHtml += '<div style="margin-top:14px;border-top:1px solid rgba(255,255,255,0.08);padding-top:12px;">'+
+            '<div style="font-size:0.65rem;font-weight:700;color:#777;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:2px;">Leads, bookings &amp; revenue by county · 90 days</div>'+
+            '<div style="font-size:0.62rem;color:#555;margin-bottom:6px;">County is read from the city in each lead&#39;s address. &ldquo;San Diego County / other&rdquo; = a California city not on the expansion lists; &ldquo;Unknown&rdquo; = no usable address.</div>'+
+            cRows.map(function(k){ var r = cb[k];
+              return '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.05);font-size:0.76rem;">'+
+                '<span style="flex:1;color:#ccc;">'+esc(k)+'</span>'+
+                '<span style="color:#666;width:44px;text-align:right;">'+r.leads+'</span>'+
+                '<span style="color:#999;width:52px;text-align:right;">'+r.booked+'</span>'+
+                '<span style="color:#e879f9;font-weight:700;width:40px;text-align:right;">'+r.sold+'</span>'+
+                '<span style="color:#8DC63F;font-weight:700;width:70px;text-align:right;">'+(r.rev>0?'$'+r.rev.toFixed(0):'—')+'</span></div>'; }).join('')+
           '</div>';
         }
       } catch(e) { /* customers/payments query failed — the panels above still render without this */ }
