@@ -2775,3 +2775,10 @@ Edward Paul gave phone + email on /book but never picked a time. He never appear
 
 ### Techs enter their home ZIP when signing the Rep Agreement (2026-10-27, per Dennis)
 The signing screen (`buildRepAgreementHTML` + `signRepAgreement`) shows a required "Your home ZIP code" field when the signer is a Tech (`!config.setterMode`) with no `home_zip` yet (`window._agNeedsZip`). It geocodes via `_geocodeFull` and writes `home_zip/home_lat/home_lng` to `team_members` (verified write; a failure blocks signing with a clear message). This feeds the 50-mile Virtual Evaluation check, so new Techs no longer need an admin to set a base by hand. Setters aren't asked. Existing Techs without a ZIP will see it at their next re-sign; admin can still edit it on the Team card.
+
+## Proposal → documents → notifications audit fixes (2026-10-27, per Dennis — "fully backed before deploying")
+Read the whole chain (proposal-preview send/accept, `proposal-accepted`, `notify-customer`, `notify-staff`, `doc-sign`, `doc-chain`, portal customer signing). Server functions were sound; three portal gaps fixed:
+- **Customer-first signing was still blocked client-side.** Commit 4cf105d made `pending` signable in the list/banner, but `openCustDocSign` still alerted "your rep needs to review it first" on `pending`. Now a `pending` row opens; no row = "hasn't been issued yet"; `customer_signed` = "already signed, Tech will countersign".
+- **"All documents signed" overclaimed.** `_custDocSubmit` ignored `doc-sign`'s `chain.skipped` (follow-on docs whose field placement isn't confirmed). If any were skipped, the customer now hears the rep will send the remaining documents and no `all_documents_signed` text goes out.
+- **Staff "signed" alert** now fires immediately after the server records the signature, before the cache reload, so a reload failure can't swallow it.
+- Only `cpuc_guide` has a confirmed template today; Tesla/Participate/SDCP/SDG&E join the auto-chain once confirmed in Document Signer. Parse-checked only; real GHL/Resend sends and a live-browser signing run were not verified from the dev sandbox.

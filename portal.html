@@ -27199,9 +27199,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (!tpl || !tpl.confirmed) { alert('This document isn\'t ready to sign yet — check back soon.'); return; }
     tpl = _docNormalizeTemplate(tpl);
     var cache = _dealDocsCache[customerId] || await _dealDocsLoad(customerId);
-    var row = cache[docType] || { status:'pending', initials:{}, signature:'', signed_by_name:'' };
-    if (row.status === 'pending') { alert('This document isn\'t ready for your signature yet — your rep needs to review it with you first.'); return; }
+    var row = cache[docType];
+    // Either party may sign first: a pending row is signable. No row at all = not issued yet.
+    if (!row) { alert('This document hasn\'t been issued to you yet — your rep will send it shortly.'); return; }
     if (row.status === 'signed') { alert('You\'ve already signed this document.'); return; }
+    if (row.status === 'customer_signed') { alert('You\'ve already signed this document — your Tech will countersign it.'); return; }
     var c = (typeof currentUser !== 'undefined' && currentUser && currentUser.id === customerId) ? currentUser : null;
     if (!c) { alert('Could not load your information. Please refresh and try again.'); return; }
 
@@ -27493,12 +27495,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         throw new Error(signJson.error || 'Could not record your signature. Please try again.');
       }
       window._custOtpVerified[customerId] = { code: _otpCode, ts: Date.now() };
-      await _dealDocsLoad(customerId);
       var _signedDef = DEAL_DOC_TYPES.find(function(d){ return d.id === docType; });
       var _signedCust = (typeof currentUser !== 'undefined' && currentUser && currentUser.id === customerId) ? currentUser : null;
+      // Tell staff right away — a failed reload below must never swallow the "signed" alert.
       if (_signedCust) {
         _notifyStaff('document_signed', customerId, docType);
       }
+      var _chainSkipped = !!(signJson.chain && signJson.chain.skipped && signJson.chain.skipped.length);
+      await _dealDocsLoad(customerId);
       // Auto-advance: one link into the portal should walk the customer through
       // every document, not stop after each one waiting for a fresh click. If
       // another document is already sitting at status:'reviewed' for this same
@@ -27519,7 +27523,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var _applicable = _signedCust ? DEAL_DOC_TYPES.filter(function(d){ return d.hasPdfTemplate && d.appliesWhen(_signedCust) && _docsMap[d.id] && (_docsMap[d.id].status === 'reviewed' || _docsMap[d.id].status === 'pending' || _docsMap[d.id].status === 'customer_signed' || _docsMap[d.id].status === 'signed'); }) : [];
       var _allSigned = _applicable.length > 0 && _applicable.every(function(d){ return _docsMap[d.id] && _docsMap[d.id].status === 'signed'; });
       _custDocCloseSign();
-      if (_allSigned && _signedCust) {
+      if (_allSigned && _signedCust && _chainSkipped) {
+        // Some follow-on documents aren't ready to issue yet — don't claim "everything" is signed.
+        alert('Signed! Thank you. Your rep will send the remaining documents shortly \u2014 we\'ll text you when they are ready.');
+      } else if (_allSigned && _signedCust) {
         var _doneLink = _signedCust.email
           ? 'https://fixmy.energy/portal?email=' + encodeURIComponent(_signedCust.email) + '&code=' + encodeURIComponent(_signedCust.access_code || (_signedCust.phone||'').replace(/\D/g,''))
           : null;
