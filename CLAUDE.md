@@ -2795,3 +2795,6 @@ SEO/ads step 1 built: a hub `/southern-california-solar-repair` and four county 
 
 ### Hot Lead popup wouldn't close / showed a set-aside lead (fixed 2026-10-27, per Dennis — Edward Paul)
 `showBlackBoxPopup` partials query ignored `disposition_exit` (Edward was Paused yet kept returning) and per-lead dismissal lived in `sessionStorage` (lost when iOS drops the tab). Now excludes any lead with a `disposition_exit`, and dismissed ids persist in `localStorage.bbPartialsDismissedIds` (last 200). Edward Paul set to Not interested (step 7).
+
+### Ops portal showed a Battery job as "Diagnostic" (fixed 2026-10-27, per Dennis — Chris Bushard)
+Data was right (`sold_type='battery_retrofit'`). The Ops job card's Job Type tile fell back to a hardcoded "Diagnostic" when `install_type` was empty, and the top bar always offered "Start Diagnostic". Tile now derives from `sold_type` (Battery Retrofit / Axia/QCells Install); the Start Diagnostic button is hidden on battery jobs.
