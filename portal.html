@@ -4434,6 +4434,39 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // Same single-field-save pattern as edSaveNsField, for a Battery Retrofit's br_revenue/
   // br_redline fields (2026-08-30, per Dennis — Cosmic collects these deals directly, so
   // there's no real payments/job_costs to derive commission from; see edLoadAccounting).
+  // Manual overrides for the automatic Battery Retrofit conversion (proposal-accepted.js), in case it
+  // picked the wrong option, took a stale number, or converted a lead that shouldn't be one.
+  window.edRepullBatteryFromProposal = async function(cid) {
+    var rec = (adminCustomers||[]).find(function(x){ return x.id===cid; }) || {};
+    var P = rec.proposal, opt = null;
+    if (P && Array.isArray(P.options) && P.options.length) {
+      opt = P.options.find(function(o){ return o.id === P.accepted_option; }) || (P.options.length === 1 ? P.options[0] : null);
+    }
+    if (!opt) { alert('No accepted proposal option to read from. Edit Revenue and Redline by hand.'); return; }
+    var rev = parseFloat(opt.price), red = parseFloat(opt.redline);
+    if (!(rev > 0) || !(red > 0)) { alert('That proposal option has no price or dealer cost on it. Edit Revenue and Redline by hand.'); return; }
+    if (!confirm('Replace Revenue and Redline with the proposal\'s numbers?\n\nRevenue $' + rev.toLocaleString() + '\nRedline $' + red.toLocaleString())) return;
+    var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var r = await pc.from('customers').update({ br_revenue: rev, br_redline: red }).eq('id', cid).select('id');
+    if (r.error || !(r.data && r.data.length)) { alert('Could not save: ' + (r.error ? r.error.message : 'no row updated')); return; }
+    rec.br_revenue = rev; rec.br_redline = red;
+    delete _fixmyCommCache[cid];
+    if (typeof edLoadAccounting === 'function') edLoadAccounting();
+  };
+  window.edUndoBatteryRetrofit = async function(cid) {
+    var rec = (adminCustomers||[]).find(function(x){ return x.id===cid; }) || {};
+    var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var cm = await pc.from('commissions').select('id').eq('customer_id', cid).limit(1);
+    if (cm.error) { alert('Could not check commissions: ' + cm.error.message); return; }
+    if (cm.data && cm.data.length) { alert('A commission is already recorded for this job, so it can\'t be undone from here. Ask Claude.'); return; }
+    if (!confirm('Put this job back to a plain Diagnostic?\n\nRevenue and Redline entered for the battery sale are cleared. Nothing else changes.')) return;
+    var patch = { sold_type: 'diagnostic', br_revenue: null, br_redline: null };
+    var r = await pc.from('customers').update(patch).eq('id', cid).select('id');
+    if (r.error || !(r.data && r.data.length)) { alert('Could not undo: ' + (r.error ? r.error.message : 'no row updated')); return; }
+    Object.assign(rec, patch);
+    delete _fixmyCommCache[cid];
+    if (typeof edLoadAccounting === 'function') edLoadAccounting();
+  };
   window.edSaveBrField = async function(cid, field, val) {
     var n = parseFloat(val);
     var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
@@ -31042,6 +31075,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           h += '<div><label style="font-size:0.6rem;color:#888;display:block;margin-bottom:2px;">Revenue — Sold Amount ($, before Participate)</label><input type="number" step="0.01" value="'+(custRec.br_revenue!=null?custRec.br_revenue:'')+'" onchange="edSaveBrField(\''+cid+'\',\'br_revenue\',this.value)" style="width:100%;background:#0e0e0e;border:1px solid rgba(255,255,255,0.12);border-radius:6px;color:#ccc;padding:5px 7px;font-size:0.78rem;box-sizing:border-box;"/></div>';
           h += '<div><label style="font-size:0.6rem;color:#888;display:block;margin-bottom:2px;">Redline ($)</label><input type="number" step="0.01" value="'+(custRec.br_redline!=null?custRec.br_redline:'')+'" onchange="edSaveBrField(\''+cid+'\',\'br_redline\',this.value)" style="width:100%;background:#0e0e0e;border:1px solid rgba(255,255,255,0.12);border-radius:6px;color:#ccc;padding:5px 7px;font-size:0.78rem;box-sizing:border-box;"/></div>';
           h += '<div><label style="font-size:0.6rem;color:#888;display:block;margin-bottom:2px;">Additional panels (count, 420W)</label><input type="number" step="1" min="0" value="'+(custRec.br_panels!=null?custRec.br_panels:'')+'" onchange="edSaveBrField(\''+cid+'\',\'br_panels\',this.value)" style="width:100%;background:#0e0e0e;border:1px solid rgba(255,255,255,0.12);border-radius:6px;color:#ccc;padding:5px 7px;font-size:0.78rem;box-sizing:border-box;"/></div>';
+          h += '</div>';
+          h += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">';
+          h += '<button onclick="edRepullBatteryFromProposal(\''+cid+'\')" style="padding:5px 12px;font-size:0.68rem;font-weight:700;background:rgba(74,158,255,0.12);border:1px solid rgba(74,158,255,0.4);border-radius:100px;color:#4a9eff;cursor:pointer;width:auto;">&#8635; Re-pull from proposal</button>';
+          h += '<button onclick="edUndoBatteryRetrofit(\''+cid+'\')" style="padding:5px 12px;font-size:0.68rem;font-weight:700;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.35);border-radius:100px;color:#f87171;cursor:pointer;width:auto;">&#8617; Undo &mdash; back to Diagnostic</button>';
           h += '</div>';
           var _pxm = _panelExtraMargin(custRec);
           h += '<div style="font-size:0.66rem;color:#888;margin-top:6px;">Extra-panel margin to Solar Review: <b style="color:#a789d9;">$'+_pxm.toLocaleString()+'</b> (Sub Sheet $'+SUBSHEET_PANEL_PER_W+'/W vs Cosmic $'+COSMIC_PANEL_COST_PER_W+'/W &times; panel watts). Company share only.</div>';
