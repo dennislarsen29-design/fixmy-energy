@@ -2769,3 +2769,6 @@ Edward Paul gave phone + email on /book but never picked a time. He never appear
 
 ### Partial leads now get the Virtual check too (2026-10-27, per Dennis — Edward Paul, Sebastopol)
 `ghl-inbound.js` only ran `virtual-check.check()` for completed submissions (`!isPartial`), so a far-away visitor who gave contact info but never picked a time stayed `eval_mode=null` ("Local · distance unknown"). The check now also runs for partials whose address is complete (contains a comma). Home-match stays non-partial only. Edward's row was backfilled to `virtual` (~470 mi from the nearest Tech base). Tech `tech_xvpmk7` (Andrae Bibbs) has no home base and is ignored by the check until one is set.
+
+### Pipeline job cards did nothing when clicked (fixed 2026-10-27, per Dennis — Chris Bushard)
+`openJob`/`closeJob` hard-coded `#jobList`, which only exists on the old Jobs screen. The unified Pipeline screen (`renderPipelineView`) names its list `#leadList`, so `getElementById('jobList').style` threw and every job card on Pipeline silently did nothing (Chris's data was fine: sold diagnostic, step 6). Both now use `#jobList || #leadList` and null-guard `#jobDetail`. Same "built in one place, not the other" drift as before — any new screen that hosts `openJob` must provide one of those two ids plus `#jobDetail`.
