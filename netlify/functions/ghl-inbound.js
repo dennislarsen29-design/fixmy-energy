@@ -348,6 +348,12 @@ exports.handler = async function(event) {
     try { await require('./lib/virtual-check').check(resultId); } catch (e) {}
   }
 
+  // Virtual check also for partials with a real (comma-bearing) address — a far-away visitor who
+  // never finishes booking must still be flagged Virtual so the Tech/Dennis see it on the lead.
+  if (isPartial && address && address.indexOf(',') > -1 && resultId) {
+    try { await require('./lib/virtual-check').check(resultId); } catch (e) {}
+  }
+
   // Hot partial: they gave a phone/email but never booked. Text the assigned rep + Dennis once
   // (deduped by a '[hot-alert]' marker in the lead's own notes) so it can't sit unnoticed until a login.
   if (isPartial && resultId && (rawPhone || digits) && !diagnosticDate) {
