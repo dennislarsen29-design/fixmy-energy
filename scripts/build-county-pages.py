@@ -117,7 +117,7 @@ def page(title, desc, canonical, schemas, body):
       '<meta property="og:type" content="website"/>\n<meta property="og:title" content="%s"/>\n<meta property="og:description" content="%s"/>\n<meta property="og:url" content="%s"/>\n'
       '%s\n%s\n%s\n%s\n</head>\n<body>\n%s\n%s\n%s\n</body>\n</html>\n') % (
       esc(title), html.escape(desc, quote=True), canonical, html.escape(title, quote=True), html.escape(desc, quote=True), canonical,
-      tracking, fonts, '\n'.join('<script type="application/ld+json">%s</script>' % s for s in schemas), style, nav, body, footer)
+      tracking + '\n<script src="/assets/attribution.js"></script>', fonts, '\n'.join('<script type="application/ld+json">%s</script>' % s for s in schemas), style, nav, body, footer)
 
 OTHERS_NOTE = 'Not sure which area you are in? <a href="/southern-california-solar-repair">See everywhere we serve in Southern California</a>.'
 CTA = ('<div class="cta-box"><h3>Get a free evaluation</h3><p>Tell us about your system and we will start with your photos and your bill. Where it makes sense, we will schedule a technician visit or a guided video evaluation. No obligation.</p>'
