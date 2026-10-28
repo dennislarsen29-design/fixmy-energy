@@ -37,7 +37,19 @@ async function logSmsFail(detail) {
   } catch (e) {}
 }
 
-async function sendSms(c, message, doFetch, attachments) {
+
+// Every send is recorded (2026-10-28, per Dennis: "audit the communication trail"). No full message or link is stored, only a short
+// preview, a masked recipient, GHL's message id and what GHL said, so a missing text can be traced without Netlify logs.
+async function logSend(kind, to, preview, result, msgId, ev) {
+  try {
+    const K = process.env.SUPA_SERVICE_KEY; if (!K) return;
+    await fetch('https://kbtobyoumvbcxfbugsid.supabase.co/rest/v1/notification_log', { method: 'POST',
+      headers: { apikey: K, Authorization: 'Bearer ' + K, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
+      body: JSON.stringify({ kind: kind, to_masked: kind === 'sms' ? maskPhone(to) : maskEmail(to), preview: String(preview || '').replace(/https?:\/\/\S+/g, '[link]').slice(0, 90), ok: !!(result && result.ok), reason: (result && result.reason) || null, message_id: msgId || null }) });
+  } catch (e) {}
+}
+
+async function _sendSms(c, message, doFetch, attachments) {
   doFetch = doFetch || fetch;
   const key = process.env.GHL_API_KEY;
   if (c.disposition_exit === 'dead') return { ok: false, reason: 'do_not_contact' };
@@ -62,7 +74,10 @@ async function sendSms(c, message, doFetch, attachments) {
     if (attachments && attachments.length) body.attachments = attachments;
     const r = await doFetch(GHL_BASE + '/conversations/messages', { method: 'POST', headers: Object.assign({}, H, { Version: '2021-04-15' }), body: JSON.stringify(body) });
     if (!r.ok) { const t = await r.text().catch(function () { return ''; }); console.error('notify sms http', r.status, t.slice(0, 200)); await logSmsFail({ step: 'send', status: r.status, body: t.slice(0, 300) }); return { ok: false, reason: 'ghl_sms_http_' + r.status }; }
-    return { ok: true };
+    let mj = {}; try { mj = await r.json(); } catch (e) {}
+    const mid = mj.messageId || mj.msgId || mj.id || null;
+    await logSend('sms', phone, message, { ok: true }, mid);
+    return { ok: true, messageId: mid };
   } catch (e) { return { ok: false, reason: 'ghl_sms_error' }; }
 }
 
@@ -76,7 +91,7 @@ function emailHtml(heading, lines, cta) {
     '<p style="margin:18px 0 0;font-size:12px;color:#888;">Questions? Call (619) 777-6527.</p></td></tr></table></td></tr></table></body></html>';
 }
 
-async function sendEmail(c, subject, heading, lines, cta, doFetch) {
+async function _sendEmail(c, subject, heading, lines, cta, doFetch) {
   doFetch = doFetch || fetch;
   const key = process.env.RESEND_API_KEY;
   if (c.disposition_exit === 'dead') return { ok: false, reason: 'do_not_contact' };
@@ -90,6 +105,17 @@ async function sendEmail(c, subject, heading, lines, cta, doFetch) {
     if (!r.ok) { const t = await r.text().catch(function () { return ''; }); console.error('notify email http', r.status, t.slice(0, 200)); return { ok: false, reason: 'resend_http_' + r.status }; }
     return { ok: true };
   } catch (e) { return { ok: false, reason: 'resend_error' }; }
+}
+
+async function sendSms(c, message, doFetch, attachments) {
+  const r = await _sendSms(c, message, doFetch, attachments);
+  if (!r.ok) await logSend('sms', c.phone, message, r, null);
+  return r;
+}
+async function sendEmail(c, subject, heading, lines, cta, doFetch) {
+  const r = await _sendEmail(c, subject, heading, lines, cta, doFetch);
+  await logSend('email', c.email, subject, r, null);
+  return r;
 }
 
 // Both channels, independently — one failing never blocks the other.
