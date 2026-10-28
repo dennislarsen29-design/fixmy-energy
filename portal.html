@@ -11569,12 +11569,38 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     d.innerHTML = '<div style="max-width:420px;width:100%;background:#161616;border:1px solid rgba(255,170,0,0.35);border-radius:16px;padding:22px;color:#F3EDE3;">'
       + '<div style="font-size:0.95rem;font-weight:800;color:#ffaa00;margin-bottom:8px;">&#9888; Finish the Site Evaluation first</div>'
       + '<div style="font-size:0.82rem;color:#ccc;line-height:1.55;margin-bottom:18px;">' + esc(_evGateReasonText(reason)) + ' Pricing off incomplete data risks missing something — like a photo — once the job is further along.</div>'
+      + '<div id="evGateSkip" style="margin:-6px 0 14px;font-size:0.76rem;line-height:1.5;color:#999;">Checking whether the proposal can start from what is already on file&hellip;</div>'
       + '<div style="display:flex;gap:8px;align-items:center;">'
       + '<button onclick="document.getElementById(\'evGateModal\').remove()" style="flex:0 0 auto;width:auto;margin:0;padding:12px 20px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.14);color:#aaa;border-radius:100px;font-size:0.8rem;font-weight:700;cursor:pointer;">Cancel</button>'
       + '<button onclick="document.getElementById(\'evGateModal\').remove();openEvalWizard(\'' + id + '\')" style="flex:1;width:auto;margin:0;padding:12px 14px;background:#8DC63F;border:none;color:#1A1A1A;border-radius:100px;font-size:0.84rem;font-weight:800;cursor:pointer;">&#9889; Continue Evaluation &rarr;</button>'
       + '</div></div>';
     document.body.appendChild(d);
+    _evFillSkipOption(id);
   }
+  // Staff can start the proposal without finishing the Site Evaluation when the data it needs is already on file
+  // (consumption at minimum). NEM version is flagged, not required. (2026-10-28, per Dennis.)
+  async function _evFillSkipOption(id) {
+    var host = document.getElementById('evGateSkip'); if (!host) return;
+    try {
+      var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var cr = await c.from('customers').select('monthly_bill,nem_status,system_size').eq('id', id).limit(1);
+      var er = await c.from('lead_evaluations').select('bill_analysis,answers').eq('customer_id', id).limit(1);
+      var cu = (cr.data && cr.data[0]) || {}, ev = (er.data && er.data[0]) || {}, ba = ev.bill_analysis || {}, an = ev.answers || {};
+      var hasUse = parseFloat(cu.monthly_bill) > 0 || parseFloat(ba.annual_kwh) > 0 || parseFloat(ba.monthly_amount_paid) > 0;
+      var nem = an.nem_version || ba.nem_version || cu.nem_status;
+      var nemOk = !!nem && nem !== 'unknown';
+      if (!document.getElementById('evGateSkip')) return;
+      if (!hasUse) { host.innerHTML = '<span style="color:#aaa;">To skip the evaluation, the lead needs consumption data first (a monthly bill amount or an uploaded utility bill).</span>'; return; }
+      host.innerHTML = '<div style="color:#8DC63F;margin-bottom:6px;">&#10003; Consumption is on file' + (nemOk ? ' and the NEM version is known.' : '.') + '</div>'
+        + (nemOk ? '' : '<div style="color:#f3c06a;margin-bottom:6px;">&#9888; NEM version isn&rsquo;t set, so savings may assume the wrong plan.</div>')
+        + '<button onclick="_evSkipToProposal(\'' + id + '\')" style="width:100%;margin:0;padding:11px;background:transparent;border:1.5px solid rgba(141,198,63,0.55);color:#8DC63F;border-radius:100px;font-size:0.8rem;font-weight:800;cursor:pointer;">&#128196; Skip the evaluation &mdash; go to the proposal</button>';
+    } catch (e) { if (host) host.innerHTML = ''; }
+  }
+  window._evSkipToProposal = function(id) {
+    var m = document.getElementById('evGateModal'); if (m) m.remove();
+    try { if (typeof bbLogActivity === 'function') bbLogActivity(id, 'note', null, 'Site Evaluation skipped: proposal started from the data already on file.'); } catch (e) {}
+    if (typeof openProposalBuilder === 'function') openProposalBuilder(id, undefined, true);
+  };
 
   // ── Persistence. Degrades silently if 20260808_lead_evaluations.sql is unapplied:
   // the wizard still uploads and still analyzes, it just can't resume tomorrow.
