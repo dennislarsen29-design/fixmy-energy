@@ -11701,6 +11701,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   };
   window.evGoStep = function(i) {
     _evGbdSkipArmed = false;
+    try { if (typeof evStopVoice === 'function') evStopVoice(); } catch (e) {}
     if (i < 0 || i >= _evSteps().length) return;
     // Quoya's Analysis ends in "Approve Diagnostic Visit", which needs the price — so the
     // tech sets it BEFORE landing there (2026-10-22, per Dennis). Skipped once a fee exists.
@@ -12971,9 +12972,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var low = ref > 0 && mids[i] < ref * 0.08;
       if (mids[i] > 0 && !low) seen = true;
       if (seen && low) { if (!run) run = { from: days[k].ms, to: days[k].ms, n: 0 }; run.to = days[k].ms; run.n++; }
-      else { if (run && run.n >= 3) runs.push(run); run = null; }
+      else { if (run && run.n >= 5) runs.push(run); run = null; }
     });
-    if (run && run.n >= 3) runs.push(run);
+    if (run && run.n >= 5) runs.push(run); // 5+ days in a row: a 3-day gap is usually weather, travel or a holiday, not a fault
     // Phase 3 (2026-10-22): WHEN a problem started, how much energy it cost, year-over-year trend, shiftable export.
     // The meter only sees what crosses the grid boundary (export = production minus what the house used), so every
     // figure here is a floor/inference, never the inverter's own number.
@@ -12993,6 +12994,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // Same dip a year earlier means it is the season (shorter days, more cloud), not a fault.
       var pyMs = days[keys[j0]].ms - 365 * 864e5, pb = win(pyMs, 14, 41), pa = win(pyMs, 0, 6);
       if (pb.length >= 10 && pa.length >= 4) drop.seasonal = med(pb) > 2 && med(pa) < med(pb) * 0.6;
+      // Recovered: the last 4 weeks are back near the level from before the dip, so it was the season (or a short event), not a standing fault.
+      // This is the check that was missing: a file that starts in October always "dips" in November as the days shorten.
+      var recent = med(mids.slice(Math.max(0, n - 28)));
+      if (recent >= bef * 0.7) { drop.recovered = true; drop.seasonal = true; }
     }
     if (drop) out.drop = drop;
     var yoy = {}, nyoy = 0;
@@ -13004,15 +13009,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (nyoy) { var yk = Object.keys(yoy).slice(-6); out.export_yoy = {}; yk.forEach(function(k){ out.export_yoy[k] = yoy[k]; }); }
     out.ok = true; return out;
   }
+  function _fmtDay(iso) { var d = new Date(String(iso).slice(0,10) + 'T12:00:00'); return isNaN(d) ? String(iso) : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); }
   function _gbdSummaryLine(g) {
     if (!g) return '';
     if (g.msg && !g.has_export) return g.msg;
-    var bits = [g.days + ' days of ' + g.interval_min + '-min data', 'peak export ~' + g.peak_export_kw + ' kW'];
-    if (g.flat_top_share >= 0.4) bits.push('export flat-tops on ' + Math.round(g.flat_top_share*100) + '% of strong days (possible clipping — inverter may be undersized)');
-    if (g.down_runs && g.down_runs.length) { var d = g.down_runs[g.down_runs.length-1]; bits.push('~no midday export ' + d.from + ' to ' + d.to + ' (' + d.days + ' days — possible outage/fault)'); }
-    if (g.drop) bits.push('export fell ~' + g.drop.pct + '% around ' + g.drop.date + (g.drop.seasonal ? ' (a similar dip the year before — likely seasonal)' : ' and stayed low (possible fault or degradation)'));
-    bits.push('evenings ~' + g.evening_kwh_per_day + ' kWh/day imported (4–9pm)');
-    return bits.join(' · ');
+    var bits = ['About ' + Math.round(g.days / 30.4) + ' months of meter readings (' + g.days + ' days)', 'best midday export ~' + g.peak_export_kw + ' kW'];
+    if (g.flat_top_share >= 0.4) bits.push('on ' + Math.round(g.flat_top_share*100) + '% of sunny days the export hits a ceiling, so the inverter may be too small for the panels');
+    if (g.down_runs && g.down_runs.length) { var d = g.down_runs[g.down_runs.length-1]; bits.push('almost no solar export for ' + d.days + ' days in a row, ' + _fmtDay(d.from) + ' to ' + _fmtDay(d.to)); }
+    if (g.drop) bits.push(g.drop.recovered ? 'export dipped ' + g.drop.pct + '% in ' + new Date(g.drop.date + 'T12:00:00').toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) + ' but has recovered (looks seasonal)' : g.drop.seasonal ? 'export dipped ' + g.drop.pct + '% around ' + _fmtDay(g.drop.date) + ', the same as a year earlier (seasonal)' : 'export fell ' + g.drop.pct + '% around ' + _fmtDay(g.drop.date) + ' and has stayed low');
+    bits.push('about ' + g.evening_kwh_per_day + ' kWh a day bought from the grid between 4 and 9pm');
+    return bits.join('. ') + '.';
   }
   // ── Excel (.xlsx) reader for Green Button files (2026-10-13) ── an .xlsx is a zip of XML;
   // read it with the browser's own DecompressionStream (no library). Returns CSV text that
@@ -13463,10 +13469,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   function _evSystemRead() {
     var g = (_evLocal.answers || {}).gbd, kw = parseFloat(_evRec && _evRec.system_size) || null, out = [];
     if (g && g.has_export) {
-      if (g.down_runs && g.down_runs.length) { var d = g.down_runs[g.down_runs.length - 1]; out.push({ tone: 'bad', t: 'Looks DOWN: almost no midday export ' + d.from + ' to ' + d.to + ' (' + d.days + ' days) after it exported before.' }); }
-      else if (g.flat_top_share >= 0.4) out.push({ tone: 'warn', t: 'Running, but export flat-tops on ' + Math.round(g.flat_top_share * 100) + '% of strong days: the inverter is probably clipping (undersized), not faulted.' });
-      else if (kw && g.peak_export_kw < kw * 0.35) out.push({ tone: 'warn', t: 'Running but possibly UNDER-producing: best export ~' + g.peak_export_kw + ' kW against a ' + kw + ' kW system. Confirm with a production screenshot (export is only what the house did not use).' });
-      else out.push({ tone: 'good', t: 'Production looks normal in the meter data (peak export ~' + g.peak_export_kw + ' kW).' });
+      if (g.down_runs && g.down_runs.length) { var d = g.down_runs[g.down_runs.length - 1]; out.push({ tone: 'bad', t: 'The system looks like it stopped for ' + d.days + ' days in a row (' + _fmtDay(d.from) + ' to ' + _fmtDay(d.to) + '). It was exporting before and after.' }); }
+      else if (g.flat_top_share >= 0.4) out.push({ tone: 'warn', t: 'The system is running, but on ' + Math.round(g.flat_top_share * 100) + '% of sunny days its output hits a ceiling. The inverter is probably too small for the panels (called clipping), not broken.' });
+      else if (kw && g.peak_export_kw < kw * 0.35) out.push({ tone: 'warn', t: 'The system may be producing less than it should: best export is about ' + g.peak_export_kw + ' kW for a ' + kw + ' kW system. Ask for a production screenshot to be sure.' });
+      else out.push({ tone: 'good', t: 'Production looks normal in the meter data (best export about ' + g.peak_export_kw + ' kW).' });
       if (kw && g.peak_export_kw > kw * 1.05) out.push({ tone: 'warn', t: 'Peak export (' + g.peak_export_kw + ' kW) is higher than the system size on file (' + kw + ' kW): the size on file is probably too small. Check the panel count and nameplate.' });
     } else if (g) out.push({ tone: 'info', t: 'The data file has no export readings, so it can&rsquo;t say whether the system is working.' });
     else out.push({ tone: 'info', t: 'No Green Button data: add it to tell &ldquo;completely down&rdquo; from &ldquo;producing less than it used to&rdquo;.' });
@@ -13568,13 +13574,47 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (a.has_ev || a.has_ac) checked.push({ tone: 'info', t: 'Household', d: (a.has_ev === 'yes' ? 'electric vehicle' + (a.ev_recent === 'yes' ? ' (new)' : '') : a.has_ev === 'no' ? 'no EV' : '') + (a.has_ev && a.has_ac ? ' &middot; ' : '') + (a.has_ac === 'yes' ? 'air conditioning' : a.has_ac === 'no' ? 'no A/C' : '') });
     var diag = false;
     if (codes.length) { diag = true; reasons.push('Your inverter is reporting ' + codes.length + ' fault code' + (codes.length === 1 ? '' : 's') + ' (' + codes.map(function(c){ return esc(c.code); }).join(', ') + ').'); }
-    if (g && g.down_runs && g.down_runs.length) { diag = true; var d = g.down_runs[g.down_runs.length - 1]; reasons.push('Your meter data shows almost no solar export from ' + esc(d.from) + ' to ' + esc(d.to) + ', so the system looks like it stopped producing.'); }
-    if (g && g.drop && !g.drop.seasonal) { diag = true; reasons.push('Your meter data shows solar export dropping about ' + g.drop.pct + '% around ' + esc(g.drop.date) + ' and staying low, which points to a problem that started then.'); }
+    if (g && g.down_runs && g.down_runs.length) { diag = true; var d = g.down_runs[g.down_runs.length - 1]; reasons.push('Your meter data shows almost no solar export for ' + d.days + ' days in a row (' + _fmtDay(d.from) + ' to ' + _fmtDay(d.to) + '), so the system looks like it stopped.'); }
+    if (g && g.drop && !g.drop.seasonal) { diag = true; reasons.push('Your solar export dropped about ' + g.drop.pct + '% around ' + _fmtDay(g.drop.date) + ' and has stayed low, which points to a problem that started then.'); }
     if (a.system_issue === 'yes' && (a.pc_outcome === 'partial' || a.pc_outcome === 'still_down')) { diag = true; reasons.push('The system did not fully recover after a restart.'); }
     if (series.yoy != null && series.yoy >= 15) reasons.push('Your electricity use is up about ' + series.yoy + '% compared with the same months last year.');
     if (yr && (new Date().getFullYear() - yr) >= 10) reasons.push('The system is about ' + (new Date().getFullYear() - yr) + ' years old, which is when inverters start to age out.');
     return { a: a, g: g, ts: ts, codes: codes, series: series, reasons: reasons, checked: checked, diag: diag };
   }
+  // ── Quoya reads the analysis out loud (2026-10-28, per Dennis). Uses the device's own voice (no cost, nothing sent
+  // anywhere); a studio-quality voice can replace speechSynthesis later without changing the script below.
+  var _evSpeaking = false;
+  function _evSayNum(n) { return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+  function _evQuoyaScript() {
+    var f = _evQuoyaFacts(), ser = f.series, a = f.a || {}, P = [];
+    var nm = (_evRec && (_evRec.first_name || '')) || '';
+    P.push('Hi' + (nm ? ' ' + nm : '') + ', I\'m Quoya. Here is what I found.');
+    if (f.diag) P.push('My recommendation is a diagnostic visit. A licensed electrician finds the exact cause and tells you your options. Nothing is repaired without your approval.');
+    else P.push('Your system looks healthy, so the next step is how to lower your bill and add backup power.');
+    f.reasons.slice(0, 3).forEach(function(r){ P.push(String(r).replace(/<[^>]+>/g, '').replace(/&[a-z]+;/g, ' ')); });
+    if (f.codes && f.codes.length) P.push('The inverter is showing ' + f.codes.length + ' fault code' + (f.codes.length === 1 ? '' : 's') + '. That is the clearest sign something needs attention.');
+    if (ser && ser.annual != null) P.push('Over the last 12 months you bought about ' + _evSayNum(ser.annual) + ' kilowatt hours from the grid' + (ser.yoy != null && Math.abs(ser.yoy) >= 5 ? ', which is ' + Math.abs(ser.yoy) + ' percent ' + (ser.yoy > 0 ? 'more' : 'less') + ' than the same months a year ago' : '') + '.');
+    var g = f.g; if (g && g.drop && g.drop.recovered) P.push('Your solar output dipped last winter, but it is back up now, so that looks like the season and not a problem.');
+    var nem = _evNemInfo(); if (nem && nem.ver && nem.ver !== '3' && nem.yrs > 0) P.push('You are on net metering ' + nem.ver + ' point 0, which has about ' + Math.floor(nem.yrs) + ' years left. Keep that in mind before changing your system.');
+    P.push('This is a starting point, not a quote or a guarantee.');
+    return P.join(' ');
+  }
+  function _evVoiceBtnHtml() {
+    if (!window.speechSynthesis) return '';
+    return '<div style="margin:0 0 12px;"><button id="evVoiceBtn" onclick="evToggleVoice()" style="width:auto;margin:0;padding:11px 18px;border-radius:100px;border:1.5px solid #6a8f2a;background:#fff;color:#3f5a14;font-size:0.84rem;font-weight:800;cursor:pointer;">&#128266; Hear Quoya explain this</button></div>';
+  }
+  window.evStopVoice = function() { try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch (e) {} _evSpeaking = false; var b = document.getElementById('evVoiceBtn'); if (b) b.innerHTML = '&#128266; Hear Quoya explain this'; };
+  window.evToggleVoice = function() {
+    if (_evSpeaking) { window.evStopVoice(); return; }
+    try {
+      var u = new SpeechSynthesisUtterance(_evQuoyaScript()), vs = window.speechSynthesis.getVoices() || [];
+      var v = vs.filter(function(x){ return /^en[-_]US/i.test(x.lang) && /(samantha|ava|allison|zoe|google us english|female)/i.test(x.name); })[0] || vs.filter(function(x){ return /^en/i.test(x.lang); })[0];
+      if (v) u.voice = v; u.rate = 0.98; u.pitch = 1.02;
+      u.onend = u.onerror = function() { _evSpeaking = false; var b = document.getElementById('evVoiceBtn'); if (b) b.innerHTML = '&#128266; Hear Quoya explain this'; };
+      window.speechSynthesis.cancel(); window.speechSynthesis.speak(u); _evSpeaking = true;
+      var b = document.getElementById('evVoiceBtn'); if (b) b.innerHTML = '&#9209; Stop';
+    } catch (e) { _evSpeaking = false; }
+  };
   function _evUsageChartLight(series) {
     var list = series.list.slice(-15);
     if (!list.length) return '<div style="font-size:0.82rem;color:#777;padding:14px 0;">Usage trend appears here once a utility bill is read.</div>';
@@ -13675,6 +13715,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (f.reasons.length) h += '<ul style="margin:0 0 0 18px;padding:0;font-size:0.86rem;line-height:1.6;">' + f.reasons.map(function(r){ return '<li>' + r + '</li>'; }).join('') + '</ul>';
       h += '<div style="font-size:0.8rem;color:#4b6a24;line-height:1.5;margin-top:6px;">' + (a.system_issue === 'yes' ? 'Add the inverter photos or meter data above for a firmer answer.' : 'Next we look at how to lower your bill and add backup power.') + '</div></div>';
     }
+    h += _evVoiceBtnHtml();
     // Fault codes.
     if (f.codes.length) {
       h += '<div style="' + card + '"><div style="' + lab + '">Fault codes Quoya found</div>';
@@ -13700,7 +13741,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var tl = _evTimeline();
     if (tl && (tl.drop || tl.runs.length || tl.yoy || tl.batt)) {
       h += '<div style="' + card + '"><div style="' + lab + '">What the meter data shows over time</div>';
-      if (tl.drop) h += '<div style="font-size:0.88rem;line-height:1.55;margin-bottom:8px;"><b>' + (tl.drop.seasonal ? 'A dip in solar export around ' : 'Solar export fell about ' + tl.drop.pct + '% around ') + esc(tl.drop.date) + '</b> (midday export ' + tl.drop.before_kwh + ' &rarr; ' + tl.drop.after_kwh + ' kWh/day). ' + (tl.drop.seasonal ? 'The same dip showed up a year earlier, so it is probably the season, not a fault.' : 'It has stayed low since, which usually means a fault or a failing string rather than weather.') + '</div>';
+      if (tl.drop) h += '<div style="font-size:0.88rem;line-height:1.55;margin-bottom:8px;"><b>' + (tl.drop.seasonal ? 'Solar export dipped around ' : 'Solar export fell about ' + tl.drop.pct + '% around ') + esc(_fmtDay(tl.drop.date)) + '</b> (midday export ' + tl.drop.before_kwh + ' &rarr; ' + tl.drop.after_kwh + ' kWh a day). ' + (tl.drop.recovered ? 'It has since come back up, so this looks like the season (shorter winter days), not a fault.' : tl.drop.seasonal ? 'The same dip showed up a year earlier, so it is probably the season, not a fault.' : 'It has stayed low since, which usually means a fault or a failing string rather than weather.') + '</div>';
       tl.runs.forEach(function(r) { h += '<div style="font-size:0.84rem;line-height:1.55;margin-bottom:6px;">Almost no export ' + esc(r.from) + ' to ' + esc(r.to) + ' (' + r.days + ' days): at least ~' + r.lost_kwh + ' kWh of solar went unexported' + (tl.rate ? ', roughly $' + Math.round(r.lost_kwh * tl.rate) + ' at your ~$' + tl.rate.toFixed(2) + '/kWh' : '') + '.</div>'; });
       if (tl.yoy) {
         var MNm = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
