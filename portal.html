@@ -126,6 +126,7 @@ j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
     .lead-card-actions { display:flex; gap:4px; align-items:flex-start; flex-shrink:0; flex-wrap:wrap; }
     .lead-btn { border:none; border-radius:100px; padding:8px 14px; font-size:0.72rem; font-weight:700; cursor:pointer; text-decoration:none; width:auto; display:inline-flex; align-items:center; }
     .lead-card-actions .lead-btn { padding:5px 9px; font-size:0.67rem; }
+    [hidden] { display:none !important; }
     .lead-btn.lime { background:#8DC63F; color:#1A1A1A; }
     .lead-btn.ghost { background:rgba(255,255,255,0.07); color:#F3EDE3; border:1px solid rgba(255,255,255,0.1); }
     .lead-progress { display:flex; align-items:center; }
@@ -11369,7 +11370,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       blurb: 'What the home uses and pays. This one is required — without it there is no savings math and no proposal.',
       slots: [
         { label: 'Utility Bill', key: 'bill', icon: '&#128196;', required: true, pdf: true, multi: true,
-          hint: 'PDF is best. A photo of the paper bill works if that is all there is — multiple photos are fine for a multi-page True-Up statement.' }
+          hint: 'Upload the FULL bill, every page. A PDF is best. Photos work too: add one for each page. We need the meter number, the NEM Summary and the usage history chart, and those are not on page 1.' }
       ]
     },
     { key: 'gbd', title: 'Green Button Data', icon: '&#9889;', blurb: 'Optional — skip it if the homeowner can\'t get the file. It only adds a hint; nothing here blocks the evaluation.', slots: [] },
@@ -11399,7 +11400,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         blurb: 'Your system has an issue, so a restart is the first thing to try. Read the notice, agree, then follow the steps. If you can see error codes on the inverter, photograph them BEFORE you power anything off.',
         slots: byKey.powercycle.slots.map(function(sl){ return Object.assign({}, sl, { required: false }); })
       });
-      var conC = Object.assign({}, byKey.consumption, { blurb: 'Your most recent utility bill (the first page is enough). Quoya reads it for you.' });
+      var conC = Object.assign({}, byKey.consumption, { blurb: 'Your most recent utility bill. Please upload ALL pages (the whole bill), not just the first page. The meter number, NEM summary and usage history are on the later pages, and Quoya reads them for you. This is required.' });
       steps.push(hwC);
       if (ans.system_issue === 'yes') steps.push(pcC);
       // Quoya audits the bill and the meter data whatever the homeowner says: the data is better than anyone's judgement
@@ -11457,6 +11458,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return _evPhotos().filter(function(p){ return _evPhotoSlotLabel(p) === label && !(label === 'Utility Bill' && _gbdIsDataFile(p)); });
   }
   function _evSlotDone(slot) {
+    if (_evCust && slot.key === 'bill') return _evHas(slot.label).length > 0; // virtual: the bill cannot be skipped
     return _evHas(slot.label).length > 0 || !!_evLocal.skipped[slot.key];
   }
   function _evStepDone(step) {
@@ -11644,6 +11646,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }catch(e){}
   };
   window.evGoStep = function(i) {
+    _evGbdSkipArmed = false;
     if (i < 0 || i >= _evSteps().length) return;
     // Quoya's Analysis ends in "Approve Diagnostic Visit", which needs the price — so the
     // tech sets it BEFORE landing there (2026-10-22, per Dennis). Skipped once a fee exists.
@@ -11655,12 +11658,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var w = document.getElementById('evalWrap'); if (w) w.scrollTop = 0;
   };
 
+  var _evGbdSkipArmed = false;
   window.evNext = function() {
     var steps = _evSteps();
     var step = steps[_evStepIdx];
     if (!step || (!step.optional && !_evStepDone(step))) return;
     var next = steps[_evStepIdx + 1];
     if (!next) return;
+    // Green Button: skipping takes two taps, with the reason shown the first time (2026-10-28, per Dennis).
+    if (step.key === 'gbd' && !(_evLocal.answers && _evLocal.answers.gbd) && !_evGbdSkipArmed) { _evGbdSkipArmed = true; _evRender(); return; }
+    _evGbdSkipArmed = false;
     _evSave({ step: next.key });
     // Landing on the analysis step with nothing computed yet kicks it off, so the rep
     // never has to know there was a button. (The healthy path's Upgrade step needs no
@@ -12388,9 +12395,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       h += '<div id="evStatus" style="font-size:0.72rem;min-height:16px;margin-bottom:8px;color:#8DC63F;"></div>';
       step.slots.forEach(function(s){ h += _evSlotHtml(s); });
       if (step.key === 'hardware') h += _evHardwareFieldsHtml();
-      if (step.key === 'gbd') h += _evChecksHtml() + _evGbdHtml();
+      if (step.key === 'gbd') h += _evChecksHtml({ noNem: true }) + _evGbdHtml();
       if (_utilBelow) h += _evUtilityHelpHtml();
-      if (step.key === 'consumption') h += _evBillAnalysisHtml();
+      if (step.key === 'consumption') h += _evBillAnalysisHtml() + _evNemCardHtml();
       // Troubleshoot card sits BELOW the Error Codes slot — its button needs those
       // photos, so the upload comes first in reading order.
       if (step.key === 'powercycle' && !_evCust) h += _evTroubleshootHtml();
@@ -12401,6 +12408,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // continues, which is exactly what shouldn't happen.
       var hideNext = step.key === 'triage' && (_evLocal.answers || {}).has_solar === 'no';
       var ready = step.optional || _evStepDone(step);
+      if (step.key === 'gbd' && _evGbdSkipArmed && !(_evLocal.answers && _evLocal.answers.gbd)) h += '<div style="background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.4);border-radius:12px;padding:12px 14px;margin-top:14px;font-size:0.78rem;line-height:1.55;color:#f3c06a;"><b>Before you skip:</b> even when solar seems fine, the 15-minute usage file can reveal problems nobody notices, like a string that quietly stopped producing months ago, an inverter that clips on sunny days, or a system that is making less than it used to. It takes about 2 minutes to download from your utility account. Tap &ldquo;Skip anyway&rdquo; only if you can&rsquo;t get it.</div>';
       h += '<div style="display:flex;gap:8px;margin-top:20px;">';
       if (_evStepIdx > 0) {
         h += '<button onclick="evGoStep(' + (_evStepIdx - 1) + ')" style="width:auto;margin:0;flex:0 0 auto;padding:13px 20px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.14);color:#aaa;border-radius:100px;font-size:0.82rem;font-weight:700;cursor:pointer;">&#8592; Back</button>';
@@ -12411,7 +12419,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         if (nextStep && nextStep.key === 'analysis') nextLabel = '&#129302; Run Quoya Analysis';
         if (nextStep && nextStep.key === 'upgrade')  nextLabel = '&#9889; See Upgrade Path';
         if (nextStep && nextStep.key === 'gbd')      nextLabel = '&#9889; Next: Green Button data (optional) &#8594;';
-        if (step.key === 'gbd' && !(_evLocal.answers && _evLocal.answers.gbd) && nextStep && nextStep.key === 'upgrade') nextLabel = 'Skip &mdash; See Upgrade Path';
+        if (step.key === 'gbd' && !(_evLocal.answers && _evLocal.answers.gbd)) nextLabel = _evGbdSkipArmed ? 'Skip anyway &#8594;' : 'Skip this step &#8594;';
         h += '<button onclick="evNext()"' + (ready ? '' : ' disabled') + ' style="flex:1;margin:0;padding:13px;border:none;border-radius:100px;font-size:0.86rem;font-weight:800;cursor:' + (ready ? 'pointer' : 'not-allowed') + ';background:' + (ready ? '#8DC63F' : 'rgba(255,255,255,0.08)') + ';color:' + (ready ? '#1A1A1A' : '#555') + ';">'
           + nextLabel + '</button>';
       }
@@ -12603,7 +12611,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '<label style="flex:1;text-align:center;padding:11px;background:' + (done ? 'rgba(255,255,255,0.06)' : 'rgba(141,198,63,0.14)') + ';border:1px solid ' + (done ? 'rgba(255,255,255,0.14)' : 'rgba(141,198,63,0.4)') + ';color:' + (done ? '#aaa' : '#8DC63F') + ';border-radius:100px;font-size:0.78rem;font-weight:700;cursor:pointer;">'
       + (done ? '&#43; Add another' : '&#128247; Take / Upload')
       + '<input type="file" ' + (slot.multi ? 'multiple ' : '') + 'accept="' + accept + '" style="display:none" onchange="evUpload(this,\'' + slot.label + '\')"></label>';
-    if (!done) {
+    if (!done && !(_evCust && slot.key === 'bill')) {
       h += '<button onclick="evSkipSlot(\'' + slot.key + '\')" style="width:auto;margin:0;flex:0 0 auto;padding:11px 15px;background:' + (skipped ? 'rgba(255,255,255,0.12)' : 'transparent') + ';border:1px solid rgba(255,255,255,0.14);color:#888;border-radius:100px;font-size:0.75rem;font-weight:700;cursor:pointer;white-space:nowrap;">'
         + (skipped ? '&#10003; Skipped' : 'Not present') + '</button>';
     }
@@ -13395,7 +13403,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   }
   window.evNemSet = function(k, v) {
     _evLocal.answers[k] = v; _evSave({ answers: _evLocal.answers });
-    var el = document.getElementById('evChecks'); if (el) el.outerHTML = _evChecksHtml();
+    var el = document.getElementById('evChecks'); if (el) el.outerHTML = _evChecksHtml({ noNem: !!document.getElementById('evNem') });
+    var en = document.getElementById('evNem'); if (en) en.outerHTML = _evNemCardHtml();
   };
   function _evSystemRead() {
     var g = (_evLocal.answers || {}).gbd, kw = parseFloat(_evRec && _evRec.system_size) || null, out = [];
@@ -13411,14 +13420,29 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (yr) { var age = new Date().getFullYear() - yr; out.push({ tone: age >= 10 ? 'warn' : 'info', t: 'System age ~' + age + ' yrs (installed ' + yr + ')' + (age >= 10 ? ': past most standard inverter warranties; Quoya checks the exact serial date.' : '.') }); }
     return out;
   }
-  function _evChecksHtml() {
+  function _evNemInner() {
     var a = _evLocal.answers || {}, nem = _evNemInfo(), col = { good: '#8DC63F', warn: '#ffaa00', bad: '#f87171', info: '#9fb3c8' };
+    var lbl = 'display:block;font-size:0.68rem;font-weight:700;color:#bbb;margin:0 0 4px;';
+    var inp = 'width:100%;box-sizing:border-box;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:9px;color:#fff;padding:9px;font-size:0.8rem;';
+    var h = '<div style="display:flex;gap:10px;margin-bottom:8px;flex-wrap:wrap;">'
+      + '<div style="flex:1;min-width:150px;"><label style="' + lbl + '">NEM version (printed on the bill)</label><select onchange="evNemSet(\'nem_version\',this.value)" style="' + inp + '">'
+      + [['', 'Choose…'], ['1', 'NEM 1.0'], ['2', 'NEM 2.0'], ['3', 'NEM 3.0 / Net Billing']].map(function(o){ return '<option value="' + o[0] + '"' + (String(nem.ver) === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('')
+      + '</select></div>'
+      + '<div style="flex:1;min-width:190px;"><label style="' + lbl + '">Date the solar system was turned on (activated)</label><input type="date" value="' + esc(a.nem_app_date || '') + '" onchange="evNemSet(\'nem_app_date\',this.value)" style="' + inp + '"><div style="font-size:0.64rem;color:#888;margin-top:3px;">Used to work out when the 20 years of NEM end. If unsure, use the date on your utility approval letter (Permission to Operate).</div></div></div>';
+    h += '<div style="font-size:0.74rem;line-height:1.5;color:' + col[nem.tone] + ';margin-bottom:8px;">' + (nem.ver && nem.src ? '<b>NEM ' + (nem.ver === '3' ? '3.0' : nem.ver + '.0') + '</b> <span style="color:#999;">(' + nem.src + (nem.date && nem.dsrc ? '; date: ' + nem.dsrc : '') + ')</span><br>' : '') + nem.text + '</div>';
+    return h;
+  }
+  // NEM version + start date now live under the Utility Bill (that is where the version is printed).
+  function _evNemCardHtml() {
+    return '<div id="evNem" style="background:rgba(155,109,232,0.06);border:1px solid rgba(155,109,232,0.28);border-radius:14px;padding:13px;margin:0 0 14px;">'
+      + '<div style="font-size:0.66rem;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;color:#c4a3f0;margin-bottom:8px;">&#129302; Quoya&rsquo;s NEM check</div>' + _evNemInner() + '</div>';
+  }
+  function _evChecksHtml(o) {
+    o = o || {};
+    var col = { good: '#8DC63F', warn: '#ffaa00', bad: '#f87171', info: '#9fb3c8' };
     var h = '<div id="evChecks" style="background:rgba(155,109,232,0.06);border:1px solid rgba(155,109,232,0.28);border-radius:14px;padding:13px;margin:0 0 14px;">';
     h += '<div style="font-size:0.66rem;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;color:#c4a3f0;margin-bottom:8px;">&#129302; Quoya&rsquo;s quick checks</div>';
-    h += '<div style="display:flex;gap:8px;margin-bottom:8px;"><select onchange="evNemSet(\'nem_version\',this.value)" style="flex:1;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:9px;color:#fff;padding:9px;font-size:0.8rem;">'
-      + [['', 'NEM version…'], ['1', 'NEM 1.0'], ['2', 'NEM 2.0'], ['3', 'NEM 3.0 / Net Billing']].map(function(o){ return '<option value="' + o[0] + '"' + (String(nem.ver) === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('')
-      + '</select><input type="date" value="' + esc(a.nem_app_date || '') + '" onchange="evNemSet(\'nem_app_date\',this.value)" title="Interconnection application date" style="flex:1;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:9px;color:#fff;padding:9px;font-size:0.8rem;"></div>';
-    h += '<div style="font-size:0.74rem;line-height:1.5;color:' + col[nem.tone] + ';margin-bottom:8px;">' + (nem.ver && nem.src ? '<b>NEM ' + (nem.ver === '3' ? '3.0' : nem.ver + '.0') + '</b> <span style="color:#999;">(' + nem.src + (nem.date && nem.dsrc ? '; date: ' + nem.dsrc : '') + ')</span><br>' : '') + nem.text + '</div>';
+    if (!o.noNem) h += _evNemInner();
     _evSystemRead().forEach(function(r){ h += '<div style="font-size:0.74rem;line-height:1.5;color:' + col[r.tone] + ';margin-bottom:5px;">&bull; ' + r.t + '</div>'; });
     h += '</div>';
     return h;
