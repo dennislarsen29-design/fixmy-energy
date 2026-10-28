@@ -39897,22 +39897,128 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         .sort(function(x, y){ return new Date(x.diagnostic_date) - new Date(y.diagnostic_date); });
       return up[0] || jobs[0] || null;
     }
+    // Ops S.U.N. (2026-10-28, per Dennis): today's to-do, this week's schedule, job status board, pay status.
+    // Everything derives from the partner's own assigned jobs + their own job_costs; no new data.
+    function opsFindingsDone(j) { return !!(j.diag_findings && j.diag_findings.submitted_at); }
+    function opsJobDone(j) { return j.lead_category === 'new_solar' ? j.solar_status === 'ns_pto' : (parseInt(j.step, 10) || 1) >= 9; }
+    function opsJobName(j) { return ((j.first_name || '') + ' ' + (j.last_name || '')).trim() || 'Customer'; }
+    function opsStage(j) {
+      // One plain-language stage + what is holding it up. Unknown data never reads as "done".
+      if (opsJobDone(j)) return { k: 'done', label: 'Completed', note: '' };
+      var vt = new Date(j.diagnostic_date || 0).getTime(), now = Date.now(), valid = j.diagnostic_date && !isNaN(vt);
+      var isDiag = j.sold_type !== 'new_solar' && j.sold_type !== 'battery_retrofit';
+      if (isDiag) {
+        if (!valid) return { k: 'unsched', label: 'Not scheduled', note: 'Waiting on Solar Review to set the visit time' };
+        if (vt >= now - 4 * 3600000) return { k: 'sched', label: 'Visit scheduled', note: '' };
+        if (!opsFindingsDone(j)) return { k: 'owed', label: 'Visited — findings needed', note: 'You need to post Diagnostic Findings' };
+        return { k: 'review', label: 'Findings sent', note: 'Solar Review is reviewing and will contact the customer' };
+      }
+      if (j.install_date) { var it = new Date(j.install_date).getTime(); if (!isNaN(it) && it >= now - 86400000) return { k: 'sched', label: 'Install scheduled', note: '' }; }
+      return { k: 'work', label: 'In progress', note: 'Open the job for details' };
+    }
+    function opsIcsLink(j) {
+      var st = new Date(j.diagnostic_date), en = j.arrival_end ? new Date(j.arrival_end) : new Date(st.getTime() + 2 * 3600000);
+      var z = function(d) { return d.toISOString().replace(/[-:]/g, '').replace(/\.\d+/, ''); };
+      var e = function(t) { return String(t || '').replace(/([,;\\])/g, '\\$1').replace(/\n/g, '\\n'); };
+      var ics = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Solar Review//Ops//EN', 'BEGIN:VEVENT', 'UID:' + j.id + '@fixmy.energy', 'DTSTAMP:' + z(new Date()), 'DTSTART:' + z(st), 'DTEND:' + z(en),
+        'SUMMARY:' + e('Diagnostic — ' + opsJobName(j)), 'LOCATION:' + e(j.address), 'DESCRIPTION:' + e('Solar Review visit. Post your findings in the Ops portal when done.'), 'END:VEVENT', 'END:VCALENDAR'].join('\r\n');
+      return 'data:text/calendar;charset=utf-8,' + encodeURIComponent(ics);
+    }
+    window.opsSunOpenJob = function(jid) { opsView = 'jobs'; try { sessionStorage.setItem('opsView_' + ops.id, 'jobs'); } catch (e) {} activeJobId = jid; currentJobId = jid; loadJobPhotos(jid).then(renderOps); };
     window._opsSunHtml = function() {
       var now = Date.now(), t = opsTarget();
-      var upcoming = jobs.filter(function(j){ var d = new Date(j.diagnostic_date || 0).getTime(); return j.diagnostic_date && !isNaN(d) && d >= now - 4*3600000; }).length;
-      var owed = jobs.filter(function(j){ var d = new Date(j.diagnostic_date || 0).getTime(); return j.diagnostic_date && !isNaN(d) && d < now && !(j.diag_findings && j.diag_findings.submitted_at) && j.sold_type !== 'new_solar'; });
       var card = 'background:#fff;border:1px solid rgba(0,0,0,0.1);border-radius:12px;padding:14px;margin-bottom:12px;';
-      var h = '<div style="' + card + '"><div style="font-size:0.7rem;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:#3d6b12;">☀ S.U.N. &middot; ' + _odEsc(ops.name) + '</div>';
+      var hd = function(txt) { return '<div style="font-size:0.7rem;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:#3d6b12;margin-bottom:8px;">' + txt + '</div>'; };
+      var btn = 'padding:8px 12px;border:none;border-radius:8px;font-weight:800;font-size:0.78rem;cursor:pointer;width:auto;margin:0;';
+      var live = jobs.filter(function(j) { return !opsJobDone(j); });
+      var startToday = new Date(); startToday.setHours(0, 0, 0, 0);
+      var st0 = startToday.getTime(), endToday = st0 + 86400000, endWeek = st0 + 7 * 86400000;
+      var vt = function(j) { var v = new Date(j.diagnostic_date || 0).getTime(); return j.diagnostic_date && !isNaN(v) ? v : null; };
+      var h = '';
+      // Next visit (top bar)
+      h += '<div style="' + card + '">' + hd('&#9728; S.U.N. &middot; ' + _odEsc(ops.name));
       if (t && t.diagnostic_date) {
-        h += '<div style="font-size:1rem;font-weight:800;color:#1A1A1A;margin-top:6px;">Next: ' + _odEsc((t.first_name||'') + ' ' + (t.last_name||'')) + '</div>' +
+        h += '<div style="font-size:1rem;font-weight:800;color:#1A1A1A;">Next: ' + _odEsc(opsJobName(t)) + '</div>' +
           '<div style="font-size:0.82rem;color:#555;">' + _odEsc(new Date(t.diagnostic_date).toLocaleString('en-US',{weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})) + ' &middot; ' + _odEsc(t.address || '') + '</div>';
-      } else h += '<div style="font-size:0.88rem;color:#555;margin-top:6px;">Nothing scheduled right now.</div>';
+      } else h += '<div style="font-size:0.88rem;color:#555;">Nothing scheduled right now.</div>';
       h += '</div>' + window._opsTopBarHtml();
-      h += '<div style="' + card + '"><div style="font-size:0.88rem;color:#1A1A1A;line-height:1.7;">' +
-        '&bull; <b>' + upcoming + '</b> upcoming visit' + (upcoming===1?'':'s') + '<br>' +
-        '&bull; <b>' + owed.length + '</b> visit' + (owed.length===1?'':'s') + ' still waiting on your Diagnostic Findings' +
-        (owed.length ? '<div style="margin-top:6px;font-size:0.8rem;color:#b06a00;">' + owed.slice(0,5).map(function(j){ return _odEsc((j.first_name||'') + ' ' + (j.last_name||'')); }).join(', ') + '</div>' : '') +
-        '</div></div>';
+
+      // 1) Today's to-do — ranked, each with one action
+      var todo = [];
+      jobs.forEach(function(j) {
+        var v = vt(j), nm = _odEsc(opsJobName(j));
+        if (opsJobDone(j)) return;
+        if (j.sold_type !== 'new_solar' && j.sold_type !== 'battery_retrofit' && v && v < now - 4 * 3600000 && !opsFindingsDone(j))
+          todo.push({ rank: 1, txt: '<b>' + nm + '</b> &mdash; post Diagnostic Findings (visited ' + _odEsc(new Date(v).toLocaleDateString('en-US',{month:'short',day:'numeric'})) + ')', act: 'Post findings', fn: "opsDiagOpen('" + j.id + "')", red: true });
+        else if (v && v >= st0 && v < endToday && v >= now - 4 * 3600000)
+          todo.push({ rank: 2, txt: '<b>' + nm + '</b> &mdash; visit today at ' + _odEsc(new Date(v).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})) + ', ' + _odEsc(j.address || ''), act: 'Open job', fn: "opsSunOpenJob('" + j.id + "')" });
+        else if (!v && j.sold_type !== 'new_solar' && j.sold_type !== 'battery_retrofit')
+          todo.push({ rank: 3, txt: '<b>' + nm + '</b> &mdash; no visit time set yet. Solar Review will schedule it.', act: 'Open job', fn: "opsSunOpenJob('" + j.id + "')" });
+      });
+      todo.sort(function(a, b) { return a.rank - b.rank; });
+      h += '<div style="' + card + '">' + hd('Today&rsquo;s to-do');
+      if (!todo.length) h += '<div style="font-size:0.88rem;color:#3d6b12;font-weight:700;">&#9989; You&rsquo;re all caught up.</div>';
+      todo.slice(0, 8).forEach(function(x) {
+        h += '<div style="display:flex;gap:10px;align-items:center;justify-content:space-between;padding:8px 0;border-top:1px solid rgba(0,0,0,0.06);">' +
+          '<div style="font-size:0.84rem;color:' + (x.red ? '#b42318' : '#1A1A1A') + ';line-height:1.4;">' + x.txt + '</div>' +
+          '<button onclick="' + x.fn + '" style="' + btn + 'background:#1A1A1A;color:#8DC63F;white-space:nowrap;">' + x.act + '</button></div>';
+      });
+      h += '</div>';
+
+      // 2) This week's schedule (next 7 days)
+      var week = jobs.filter(function(j) { var v = vt(j); return v && v >= now - 4 * 3600000 && v < endWeek; })
+        .sort(function(a, b) { return vt(a) - vt(b); });
+      h += '<div style="' + card + '">' + hd('This week');
+      if (!week.length) h += '<div style="font-size:0.88rem;color:#555;">No visits in the next 7 days.</div>';
+      week.forEach(function(j) {
+        var v = new Date(vt(j)), addr = j.address || '';
+        h += '<div style="padding:9px 0;border-top:1px solid rgba(0,0,0,0.06);">' +
+          '<div style="font-size:0.84rem;font-weight:800;color:#1A1A1A;">' + _odEsc(v.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})) + ' &middot; ' + _odEsc(v.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})) + ' &mdash; ' + _odEsc(opsJobName(j)) + '</div>' +
+          '<div style="font-size:0.76rem;color:#666;margin:2px 0 7px;">' + _odEsc(addr) + '</div>' +
+          '<div style="display:flex;gap:6px;flex-wrap:wrap;">' +
+          (addr ? '<a href="https://maps.apple.com/?daddr=' + encodeURIComponent(addr) + '" target="_blank" rel="noopener" style="' + btn + 'background:#8DC63F;color:#000;text-decoration:none;">Navigate</a>' : '') +
+          (j.phone ? '<a href="tel:' + _odEsc(String(j.phone).replace(/[^\d+]/g, '')) + '" style="' + btn + 'background:rgba(0,0,0,0.07);color:#1A1A1A;text-decoration:none;">Call</a>' : '') +
+          '<a href="' + opsIcsLink(j) + '" download="visit.ics" style="' + btn + 'background:rgba(0,0,0,0.07);color:#1A1A1A;text-decoration:none;">Add to calendar</a></div></div>';
+      });
+      h += '</div>';
+
+      // 3) Job status board
+      var order = ['owed', 'sched', 'unsched', 'work', 'review', 'done'], names = { owed: 'Findings needed', sched: 'Scheduled', unsched: 'Not scheduled', work: 'In progress', review: 'Findings sent', done: 'Completed' };
+      var by = {}; jobs.forEach(function(j) { var s = opsStage(j); (by[s.k] = by[s.k] || []).push({ j: j, s: s }); });
+      h += '<div style="' + card + '">' + hd('Job status board');
+      if (!jobs.length) h += '<div style="font-size:0.88rem;color:#555;">No jobs assigned yet.</div>';
+      order.forEach(function(k) {
+        if (!by[k]) return;
+        h += '<div style="font-size:0.74rem;font-weight:800;color:#555;margin:10px 0 4px;">' + names[k] + ' (' + by[k].length + ')</div>';
+        by[k].slice(0, k === 'done' ? 3 : 20).forEach(function(x) {
+          h += '<div onclick="opsSunOpenJob(\'' + x.j.id + '\')" style="display:flex;justify-content:space-between;gap:8px;padding:7px 0;border-top:1px solid rgba(0,0,0,0.06);cursor:pointer;">' +
+            '<div><div style="font-size:0.84rem;font-weight:700;color:#1A1A1A;">' + _odEsc(opsJobName(x.j)) + '</div>' +
+            '<div style="font-size:0.74rem;color:' + (k === 'owed' ? '#b42318' : '#666') + ';">' + _odEsc(x.s.label + (x.s.note ? ' — ' + x.s.note : '')) + '</div></div>' +
+            '<div style="font-size:0.74rem;color:#999;white-space:nowrap;">' + _odEsc((x.j.address || '').split(',')[0]) + '</div></div>';
+        });
+      });
+      h += '</div>';
+
+      // 4) Pay status — from this partner's own cost lines and milestones only
+      var paid = 0, pend = 0, perJob = [];
+      jobs.forEach(function(j) {
+        var jp = 0, jn = 0;
+        opsCostsFor(j.id).forEach(function(c) { var a = parseFloat(c.amount) || 0; if (c.status === 'paid') jp += a; else jn += a; });
+        [['milestone2_amount', 'milestone2_status'], ['milestone3_amount', 'milestone3_status']].forEach(function(pr) {
+          var a = parseFloat(j[pr[0]]) || 0; if (!a) return; if (j[pr[1]] === 'paid') jp += a; else jn += a;
+        });
+        paid += jp; pend += jn; if (jp || jn) perJob.push({ j: j, jp: jp, jn: jn });
+      });
+      var money = function(n) { return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
+      h += '<div style="' + card + '">' + hd('Pay status');
+      h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">' +
+        '<div style="background:rgba(141,198,63,0.1);border-radius:10px;padding:10px;text-align:center;"><div style="font-size:1.15rem;font-weight:800;color:#3d6b12;">' + money(paid) + '</div><div style="font-size:0.7rem;color:#555;">Paid to you</div></div>' +
+        '<div style="background:rgba(255,170,0,0.1);border-radius:10px;padding:10px;text-align:center;"><div style="font-size:1.15rem;font-weight:800;color:#b06a00;">' + money(pend) + '</div><div style="font-size:0.7rem;color:#555;">Still to be paid</div></div></div>';
+      perJob.filter(function(x) { return x.jn > 0; }).slice(0, 6).forEach(function(x) {
+        h += '<div style="display:flex;justify-content:space-between;font-size:0.8rem;padding:5px 0;border-top:1px solid rgba(0,0,0,0.06);"><span>' + _odEsc(opsJobName(x.j)) + '</span><b style="color:#b06a00;">' + money(x.jn) + ' pending</b></div>';
+      });
+      if (!perJob.length) h += '<div style="font-size:0.8rem;color:#555;">Payments appear here once Solar Review adds your cost for a job.</div>';
+      h += '</div>';
       return h;
     };
     window._opsTopBarHtml = function() {
