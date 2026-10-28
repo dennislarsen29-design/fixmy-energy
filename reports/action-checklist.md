@@ -4,7 +4,7 @@ Status: [ ] open · [x] done · [-] dismissed
 ## A. Make Meta trackable (≈20 min total)
 - [ ] A1. Open Meta Ads Manager → each ACTIVE ad → Edit → "Website URL" → add URL parameters (the box under the URL): `utm_source=facebook&utm_medium=paid&utm_campaign=<name-of-campaign>` → Publish.
 - [x] A2. 2026-10-28: Meta has 2 campaigns ("Powerwall · Oct", "Installer rescue · Oct"), both NOT DELIVERING because the ad account shows "Payment unsettled". $321 spent total, 1 website schedule each.
-- [ ] A0. Tap "Verify payment method" in Meta Ads app (Solar Review account) and fix the card so ads can run.
+- [x] A0. (done 2026-10-28) Tap "Verify payment method" in Meta Ads app (Solar Review account) and fix the card so ads can run.
 - [ ] A3. Google Ads: Settings → Account settings → Auto-tagging ON (confirm).
 - [ ] A4. Decide: add "How did you hear about us?" dropdown to /book and the setter form? (Claude builds it, 10 min.)
 
