@@ -25,5 +25,10 @@ Status: [ ] open · [x] done · [-] dismissed
 - [ ] E1. Decide a price for a "PTO completion" service (or "free evaluation, quote after").
 - [ ] E2. Then Claude drafts the outreach email to EnFin, Participate, GoodLeap, EverBright, Sunrun, Credit Human.
 
+## G. W-9s and ops notifications (added 2026-10-28)
+- [ ] G1. After deploy: every Setter/Tech sees the W-9 form at next login (Ops can skip). Check Team tab for "W-9 on file" badges.
+- [ ] G2. Save the W-9 admin password (given to you in chat) in your password manager; change W9_ADMIN_KEY in Netlify if you want your own.
+- [ ] D3. Enter phone numbers + tick the automatic text/email boxes on each Ops Partner card (Team tab).
+
 ## F. Ads
 - [ ] F1. Send Claude: current Google Ads monthly spend, and which video ads (Quinn vs Quoya) run where. Then compare cost per booked evaluation.
