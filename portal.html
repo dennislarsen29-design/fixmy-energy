@@ -13783,6 +13783,51 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     out.abnormal = !!(ratio && ratio >= 2.5) || (out.spikes.length >= 3 && a.has_ac !== 'yes');
     return out;
   }
+  // ── Quoya Health Score + profile progress (2026-10-28, per Dennis: "high tech, visual, gamified"). The score is a plain, visible
+  // tally: every point lost has a stated reason from the evaluation (fault codes, idle stretch, an un-recovered drop, a failed restart,
+  // clipping, age). Nothing is hidden or invented, and the card says it is an estimate. Progress = how much of the system profile is filled in.
+  var _evScoreShown = false;
+  function _evScoreCalc(f) {
+    var a = f.a || {}, g = f.g, items = [], score = 100, rec = _evRec || {};
+    function lose(n, why) { score -= n; items.push({ n: n, why: why }); }
+    if (f.codes && f.codes.length) lose(Math.min(30, 15 + 5 * f.codes.length), 'Inverter is reporting ' + f.codes.length + ' fault code' + (f.codes.length === 1 ? '' : 's'));
+    if (g && g.down_runs && g.down_runs.length) lose(30, 'Solar stopped exporting for ' + g.down_runs[g.down_runs.length - 1].days + ' days in a row');
+    if (g && g.drop && g.drop.partial) lose(12, 'Solar export fell ' + g.drop.pct + '% and has only partly come back');
+    else if (g && g.drop && !g.drop.seasonal) lose(22, 'Solar export fell ' + g.drop.pct + '% and has stayed low');
+    if (a.system_issue === 'yes' && a.pc_outcome === 'still_down') lose(25, 'System did not come back after a restart');
+    else if (a.system_issue === 'yes' && a.pc_outcome === 'partial') lose(15, 'System only partly came back after a restart');
+    if (g && g.flat_top_share >= 0.4) lose(6, 'Output hits a ceiling on sunny days (inverter may be undersized)');
+    var yr = parseInt(rec.install_year, 10); if (yr && (new Date().getFullYear() - yr) >= 10) lose(5, 'System is ' + (new Date().getFullYear() - yr) + ' years old');
+    score = Math.max(5, Math.min(100, score));
+    var prog = [
+      { k: 'photos', ok: _evHas('Inverter Photo').length > 0, t: 'Inverter photo', add: 'inverter photo', unlock: 'the equipment check', step: 'hardware' },
+      { k: 'bill', ok: !!(f.series && f.series.list && f.series.list.length), t: 'Full utility bill', add: 'full utility bill', unlock: 'your usage trend and savings math', step: 'consumption' },
+      { k: 'meter', ok: !!g, t: 'Meter data (Green Button)', add: 'meter data', unlock: 'the production timeline, outage and A/C checks', step: 'gbd' },
+      { k: 'nem', ok: !!(_evNemInfo() && _evNemInfo().ver), t: 'Net metering plan', add: 'net metering plan', unlock: 'how many years of NEM you have left', step: 'consumption' },
+      { k: 'home', ok: !!(a.has_ev && a.has_ac), t: 'EV and A/C answers', add: 'EV and A/C answers', unlock: 'the EV rate and cooling checks', step: 'triage' }
+    ];
+    return { score: score, items: items, prog: prog, done: prog.filter(function(p){ return p.ok; }).length };
+  }
+  function _evScoreCardHtml(f) {
+    var c = _evScoreCalc(f), sc = c.score, zone = sc >= 80 ? ['#5a8f1d', 'Healthy'] : sc >= 55 ? ['#d98a0b', 'Worth a check'] : ['#c0392b', 'Needs attention'];
+    var animate = !_evScoreShown; _evScoreShown = true;
+    var ARC = 251.3, off = ARC * (1 - sc / 100);
+    var css = '<style>@keyframes qsArc{from{stroke-dashoffset:' + ARC + '}to{stroke-dashoffset:' + off + '}}@keyframes qsPop{0%{transform:scale(.6);opacity:0}70%{transform:scale(1.08)}100%{transform:scale(1);opacity:1}}@keyframes qsBar{from{width:0}}.qs-arc{' + (animate ? 'animation:qsArc 1.4s cubic-bezier(.22,.8,.3,1) both;' : '') + '}.qs-pop{' + (animate ? 'animation:qsPop .6s .3s both;' : '') + '}.qs-bar{' + (animate ? 'animation:qsBar 1.2s .2s both;' : '') + '}</style>';
+    var h = css + '<div style="background:linear-gradient(135deg,#ffffff,#f4f9e8);border:1px solid #dfe8c8;border-radius:22px;padding:18px 16px;margin-bottom:12px;box-shadow:0 6px 22px rgba(106,159,31,0.12);">';
+    h += '<div style="font-size:0.66rem;font-weight:800;letter-spacing:0.12em;text-transform:uppercase;color:#6a9f1f;margin-bottom:6px;">&#9889; Quoya Health Score</div>';
+    h += '<div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;"><div style="flex:0 0 190px;position:relative;margin:0 auto;"><svg viewBox="0 0 200 120" style="width:190px;display:block;"><path d="M20 105 A80 80 0 0 1 180 105" fill="none" stroke="#e8eddb" stroke-width="16" stroke-linecap="round"/><path class="qs-arc" d="M20 105 A80 80 0 0 1 180 105" fill="none" stroke="' + zone[0] + '" stroke-width="16" stroke-linecap="round" stroke-dasharray="' + ARC + '" stroke-dashoffset="' + off + '"/></svg><div class="qs-pop" style="position:absolute;left:0;right:0;top:46px;text-align:center;"><div id="qsNum" data-v="' + sc + '" style="font-size:2.3rem;font-weight:900;line-height:1;color:' + zone[0] + ';">' + (animate ? 0 : sc) + '</div><div style="font-size:0.7rem;font-weight:800;color:' + zone[0] + ';text-transform:uppercase;letter-spacing:0.08em;margin-top:2px;">' + zone[1] + '</div></div></div>';
+    h += '<div style="flex:1;min-width:200px;">' + (c.items.length ? '<div style="font-size:0.74rem;font-weight:800;color:#555;margin-bottom:4px;">Why it is ' + sc + ', not 100</div>' + c.items.map(function(i){ return '<div style="display:flex;gap:8px;font-size:0.8rem;line-height:1.4;margin-bottom:3px;"><b style="color:#c0392b;flex:0 0 34px;">&minus;' + i.n + '</b><span>' + esc(i.why) + '</span></div>'; }).join('') : '<div style="font-size:0.84rem;line-height:1.5;color:#3f5a14;">No problems found in the information so far. Every point is kept.</div>') + '</div></div>';
+    // progress / next unlock
+    var pct = Math.round(c.done / c.prog.length * 100), next = c.prog.filter(function(p){ return !p.ok; })[0];
+    h += '<div style="margin-top:14px;border-top:1px solid #e3ead0;padding-top:12px;"><div style="display:flex;justify-content:space-between;font-size:0.74rem;font-weight:800;color:#555;margin-bottom:5px;"><span>System profile: level ' + c.done + ' of ' + c.prog.length + '</span><span>' + pct + '%</span></div>';
+    h += '<div style="height:12px;background:#e8eddb;border-radius:100px;overflow:hidden;"><div class="qs-bar" style="height:100%;width:' + pct + '%;background:linear-gradient(90deg,#8DC63F,#5a8f1d);border-radius:100px;"></div></div>';
+    h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:9px;">' + c.prog.map(function(p){ return '<span style="font-size:0.68rem;font-weight:800;padding:4px 10px;border-radius:100px;background:' + (p.ok ? '#e6f2cf' : '#f3f1ea') + ';color:' + (p.ok ? '#3f5a14' : '#9a9384') + ';">' + (p.ok ? '&#10003; ' : '&#128274; ') + esc(p.t) + '</span>'; }).join('') + '</div>';
+    if (next) { var steps = _evSteps(), si = steps.map(function(x){ return x.key; }).indexOf(next.step); h += '<div style="margin-top:10px;font-size:0.8rem;line-height:1.5;color:#444;"><b>Next unlock:</b> add your ' + esc(next.add) + ' to unlock ' + esc(next.unlock) + '.' + (si > -1 ? ' <a href="#" onclick="evGoStep(' + si + ');return false;" style="color:#3f7a0a;font-weight:800;">Add it now &rarr;</a>' : '') + '</div>'; }
+    else h += '<div style="margin-top:10px;font-size:0.8rem;font-weight:800;color:#3f5a14;">&#127942; Full profile: every check is unlocked.</div>';
+    h += '<div style="font-size:0.64rem;color:#8a8372;line-height:1.5;margin-top:8px;">An estimate from the information provided. It is a starting point, not an inspection or a guarantee.</div></div></div>';
+    if (animate) setTimeout(function() { var el = document.getElementById('qsNum'); if (!el) return; var v = +el.getAttribute('data-v'), t0 = Date.now(); (function tick() { var p = Math.min(1, (Date.now() - t0) / 1300); el.textContent = Math.round(v * (1 - Math.pow(1 - p, 3))); if (p < 1) requestAnimationFrame(tick); })(); }, 50);
+    return h;
+  }
   function _evQuoyaPageHtml(steps) {
     var f = _evQuoyaFacts(), rec = _evRec || {}, a = f.a, ser = f.series;
     var name = ((rec.first_name || '') + ' ' + (rec.last_name || '')).trim() || 'your home';
@@ -13802,6 +13847,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       h += '<div style="font-size:0.8rem;color:#4b6a24;line-height:1.5;margin-top:6px;">' + (a.system_issue === 'yes' ? 'Add the inverter photos or meter data above for a firmer answer.' : 'Next we look at how to lower your bill and add backup power.') + '</div></div>';
     }
     h += _evVoiceBtnHtml();
+    h += _evScoreCardHtml(f);
     // Fault codes.
     if (f.codes.length) {
       h += '<div style="' + card + '"><div style="' + lab + '">Fault codes Quoya found</div>';
