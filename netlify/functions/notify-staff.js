@@ -21,7 +21,7 @@ async function diagFindings(id, doFetch, H) {
   if (rl) return out(200, { ok: true, skipped: 'already_sent' });
   const name = ((c.first_name || '') + ' ' + (c.last_name || '')).trim() || 'A customer';
   const fix = { swap: 'swap needed', repair: 'repair needed', nothing: 'nothing needed', unsure: 'fix not sure yet' }[f.fix] || '';
-  const msg = 'Diagnostic findings are in for ' + name + (fix ? ' — ' + fix : '') + (f.cause ? ': ' + String(f.cause).slice(0, 120) : '') + '. Open the job to write the customer report.';
+  const msg = 'Diagnostic findings are in for ' + name + (fix ? ' — ' + fix : '') + (f.cause ? ': ' + String(f.cause).slice(0, 120) : '') + '. Open the job, write the customer report, and BOOK THE RESULTS REVIEW with the customer today (Schedule box → Results Review).';
   const ids = [c.rep_id || DEFAULT_REP];
   if (ids.indexOf(DEFAULT_REP) === -1) ids.push(DEFAULT_REP);
   const results = [];

@@ -14,6 +14,7 @@ const COPY = {
   'Solar Evaluation': { noun: 'solar evaluation', note: 'A technician will review your system and answer your questions. Please be home during the window.' },
   'Virtual Solar Evaluation': { noun: 'virtual solar evaluation', note: '' }, // note is built per-appointment (Google Meet link)
   'Welcome Call': { noun: 'FAQs and Enrollment call', note: 'We will call you from (619) 777-6527 — please keep your phone nearby.' },
+  'Results Review': { noun: 'diagnostic results review', note: 'We will walk you through what the electrician found and your options. Please have the decision-makers on the call or at home.' },
   'Diagnostic Visit': { noun: 'diagnostic visit', note: 'Our technician will inspect and test your system. Please be home during the window.' },
   'Repair Service Visit': { noun: 'repair service visit', note: 'Our technician will arrive during the window. Please be home.' },
   'Battery Install': { noun: 'battery installation', note: 'Our crew will arrive during the window. Please be home.' },
