@@ -12996,8 +12996,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (pb.length >= 10 && pa.length >= 4) drop.seasonal = med(pb) > 2 && med(pa) < med(pb) * 0.6;
       // Recovered: the last 4 weeks are back near the level from before the dip, so it was the season (or a short event), not a standing fault.
       // This is the check that was missing: a file that starts in October always "dips" in November as the days shorten.
-      var recent = med(mids.slice(Math.max(0, n - 28)));
-      if (recent >= bef * 0.7) { drop.recovered = true; drop.seasonal = true; }
+      // A dip only counts as recovered if output really climbed back: the latest 4 weeks must be near the pre-dip level AND clearly
+      // higher than the lowest stretch after the dip. A system that dropped and stayed low is never relabeled.
+      var recent = med(mids.slice(Math.max(0, n - 28))), trough = Infinity;
+      for (var w = j0; w + 14 <= n; w += 7) { var wm = med(mids.slice(w, w + 14)); if (wm < trough) trough = wm; }
+      drop.recent_kwh = +recent.toFixed(1); drop.trough_kwh = isFinite(trough) ? +trough.toFixed(1) : null;
+      if (recent >= bef * 0.7 && isFinite(trough) && recent >= trough * 1.25) { drop.recovered = true; drop.seasonal = true; }
+      else if (recent >= bef * 0.5 && isFinite(trough) && recent >= trough * 1.25) drop.partial = true; // came back part of the way: still a real dip
     }
     if (drop) out.drop = drop;
     var yoy = {}, nyoy = 0;
@@ -13016,7 +13021,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var bits = ['About ' + Math.round(g.days / 30.4) + ' months of meter readings (' + g.days + ' days)', 'best midday export ~' + g.peak_export_kw + ' kW'];
     if (g.flat_top_share >= 0.4) bits.push('on ' + Math.round(g.flat_top_share*100) + '% of sunny days the export hits a ceiling, so the inverter may be too small for the panels');
     if (g.down_runs && g.down_runs.length) { var d = g.down_runs[g.down_runs.length-1]; bits.push('almost no solar export for ' + d.days + ' days in a row, ' + _fmtDay(d.from) + ' to ' + _fmtDay(d.to)); }
-    if (g.drop) bits.push(g.drop.recovered ? 'export dipped ' + g.drop.pct + '% in ' + new Date(g.drop.date + 'T12:00:00').toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) + ' but has recovered (looks seasonal)' : g.drop.seasonal ? 'export dipped ' + g.drop.pct + '% around ' + _fmtDay(g.drop.date) + ', the same as a year earlier (seasonal)' : 'export fell ' + g.drop.pct + '% around ' + _fmtDay(g.drop.date) + ' and has stayed low');
+    if (g.drop) bits.push(g.drop.partial ? 'export fell ' + g.drop.pct + '% around ' + _fmtDay(g.drop.date) + ' and has only partly come back (now ' + g.drop.recent_kwh + ' of the earlier ' + g.drop.before_kwh + ' kWh a day)' : g.drop.recovered ? 'export dipped ' + g.drop.pct + '% in ' + new Date(g.drop.date + 'T12:00:00').toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) + ' but has recovered (looks seasonal)' : g.drop.seasonal ? 'export dipped ' + g.drop.pct + '% around ' + _fmtDay(g.drop.date) + ', the same as a year earlier (seasonal)' : 'export fell ' + g.drop.pct + '% around ' + _fmtDay(g.drop.date) + ' and has stayed low');
     bits.push('about ' + g.evening_kwh_per_day + ' kWh a day bought from the grid between 4 and 9pm');
     return bits.join('. ') + '.';
   }
@@ -13575,7 +13580,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var diag = false;
     if (codes.length) { diag = true; reasons.push('Your inverter is reporting ' + codes.length + ' fault code' + (codes.length === 1 ? '' : 's') + ' (' + codes.map(function(c){ return esc(c.code); }).join(', ') + ').'); }
     if (g && g.down_runs && g.down_runs.length) { diag = true; var d = g.down_runs[g.down_runs.length - 1]; reasons.push('Your meter data shows almost no solar export for ' + d.days + ' days in a row (' + _fmtDay(d.from) + ' to ' + _fmtDay(d.to) + '), so the system looks like it stopped.'); }
-    if (g && g.drop && !g.drop.seasonal) { diag = true; reasons.push('Your solar export dropped about ' + g.drop.pct + '% around ' + _fmtDay(g.drop.date) + ' and has stayed low, which points to a problem that started then.'); }
+    if (g && g.drop && !g.drop.seasonal) { diag = true; reasons.push('Your solar export dropped about ' + g.drop.pct + '% around ' + _fmtDay(g.drop.date) + ' and ' + (g.drop.partial ? 'has only partly come back' : 'has stayed low') + ', which points to a problem that started then.'); }
     if (a.system_issue === 'yes' && (a.pc_outcome === 'partial' || a.pc_outcome === 'still_down')) { diag = true; reasons.push('The system did not fully recover after a restart.'); }
     if (series.yoy != null && series.yoy >= 15) reasons.push('Your electricity use is up about ' + series.yoy + '% compared with the same months last year.');
     if (yr && (new Date().getFullYear() - yr) >= 10) reasons.push('The system is about ' + (new Date().getFullYear() - yr) + ' years old, which is when inverters start to age out.');
@@ -13741,7 +13746,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var tl = _evTimeline();
     if (tl && (tl.drop || tl.runs.length || tl.yoy || tl.batt)) {
       h += '<div style="' + card + '"><div style="' + lab + '">What the meter data shows over time</div>';
-      if (tl.drop) h += '<div style="font-size:0.88rem;line-height:1.55;margin-bottom:8px;"><b>' + (tl.drop.seasonal ? 'Solar export dipped around ' : 'Solar export fell about ' + tl.drop.pct + '% around ') + esc(_fmtDay(tl.drop.date)) + '</b> (midday export ' + tl.drop.before_kwh + ' &rarr; ' + tl.drop.after_kwh + ' kWh a day). ' + (tl.drop.recovered ? 'It has since come back up, so this looks like the season (shorter winter days), not a fault.' : tl.drop.seasonal ? 'The same dip showed up a year earlier, so it is probably the season, not a fault.' : 'It has stayed low since, which usually means a fault or a failing string rather than weather.') + '</div>';
+      if (tl.drop) h += '<div style="font-size:0.88rem;line-height:1.55;margin-bottom:8px;"><b>' + (tl.drop.seasonal ? 'Solar export dipped around ' : 'Solar export fell about ' + tl.drop.pct + '% around ') + esc(_fmtDay(tl.drop.date)) + '</b> (midday export ' + tl.drop.before_kwh + ' &rarr; ' + tl.drop.after_kwh + ' kWh a day). ' + (tl.drop.partial ? 'It has only partly come back (now ' + tl.drop.recent_kwh + ' kWh a day), so it is still a real drop worth checking.' : tl.drop.recovered ? 'It has since come back up, so this looks like the season (shorter winter days), not a fault.' : tl.drop.seasonal ? 'The same dip showed up a year earlier, so it is probably the season, not a fault.' : 'It has stayed low since, which usually means a fault or a failing string rather than weather.') + '</div>';
       tl.runs.forEach(function(r) { h += '<div style="font-size:0.84rem;line-height:1.55;margin-bottom:6px;">Almost no export ' + esc(r.from) + ' to ' + esc(r.to) + ' (' + r.days + ' days): at least ~' + r.lost_kwh + ' kWh of solar went unexported' + (tl.rate ? ', roughly $' + Math.round(r.lost_kwh * tl.rate) + ' at your ~$' + tl.rate.toFixed(2) + '/kWh' : '') + '.</div>'; });
       if (tl.yoy) {
         var MNm = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
