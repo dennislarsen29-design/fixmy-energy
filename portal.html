@@ -13007,7 +13007,32 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (drop) out.drop = drop;
     // Weekly midday-export series (median kWh over the 10am-3pm window) for the chart. ~57 numbers, tiny to store.
     out.weekly = [];
-    for (var wi = 0; wi < n; wi += 7) { var wc = mids.slice(wi, wi + 7); if (wc.length >= 4) out.weekly.push({ d: iso(days[keys[wi]].ms), v: +med(wc).toFixed(1) }); }
+    for (var wi = 0; wi < n; wi += 7) {
+      var wc = mids.slice(wi, wi + 7); if (wc.length < 4) continue;
+      var wd = keys.slice(wi, wi + 7).map(function(k){ return days[k]; });
+      out.weekly.push({ d: iso(days[keys[wi]].ms), v: +med(wc).toFixed(1), imp: +med(wd.map(function(x){ return x.tot; })).toFixed(1), pm: +med(wd.map(function(x){ return x.pm; })).toFixed(1), nt: +med(wd.map(function(x){ return x.nt; })).toFixed(1) });
+    }
+    // Pins for the chart. Every pin is a plain rule over the readings, worded as "consistent with", never as a diagnosis.
+    out.events = [];
+    var wk = out.weekly, nw = wk.length;
+    if (drop) out.events.push({ k: 'prod', d: drop.date, t: drop.recovered ? 'Solar export dipped ' + drop.pct + '% (' + drop.before_kwh + ' to ' + drop.after_kwh + ' kWh a day) and later came back up.' : (drop.partial ? 'Solar export fell ' + drop.pct + '% and has only partly come back.' : 'Solar export fell ' + drop.pct + '% (' + drop.before_kwh + ' to ' + drop.after_kwh + ' kWh a day) and has stayed low. On a string inverter this pattern can mean a string stopped; a meter cannot tell which.'), sev: drop.recovered ? 'info' : 'bad' });
+    out.down_runs.forEach(function(r){ out.events.push({ k: 'prod', d: r.from, t: 'Almost no solar export for ' + r.days + ' days in a row (' + r.from + ' to ' + r.to + '), after it was exporting before. About ' + r.lost_kwh + ' kWh of export missed.', sev: 'bad' }); });
+    out.spike_days.slice(-3).forEach(function(x){ out.events.push({ k: 'use', d: x.d, t: 'Unusually high grid use this day: ' + x.kwh + ' kWh, more than double a normal day.', sev: 'warn' }); });
+    // Summer afternoons vs spring/fall afternoons (the same afternoon window the A/C check uses), two weeks or more in a row.
+    var shoulder = wk.filter(function(w){ var m = +w.d.slice(5, 7); return m <= 5 || m >= 10; }).map(function(w){ return w.pm; }), mildPm = med(shoulder);
+    if (mildPm > 1) {
+      var streak = 0;
+      for (var q = 0; q < nw; q++) {
+        var mq = +wk[q].d.slice(5, 7), hot = mq >= 6 && mq <= 9 && wk[q].pm >= mildPm * 2;
+        streak = hot ? streak + 1 : 0;
+        if (streak === 2) { var peak = Math.max(wk[q].pm, wk[q-1].pm); out.events.push({ k: 'ac', d: wk[q-1].d, t: 'Afternoon grid use (1 to 8pm) ran about ' + (peak / mildPm).toFixed(1) + 'x its spring and fall level for 2+ weeks. That fits heavy cooling; if it is far more than the house needs, an A/C check is worth it.', sev: 'info' }); break; }
+      }
+    }
+    // Overnight (12 to 6am) grid use that steps up and stays up: consistent with an EV starting to charge at home.
+    for (var e2 = 8; e2 + 4 <= nw; e2++) {
+      var prior = med(wk.slice(e2 - 8, e2).map(function(w){ return w.nt; })), next4 = wk.slice(e2, e2 + 4).map(function(w){ return w.nt; });
+      if (next4.every(function(v){ return v >= prior + 2.5; })) { out.events.push({ k: 'ev', d: wk[e2].d, t: 'Overnight grid use rose by about ' + (med(next4) - prior).toFixed(1) + ' kWh a night and stayed up. That is consistent with a car starting to charge at home.', sev: 'info' }); break; }
+    }
     var yoy = {}, nyoy = 0;
     Object.keys(mo).sort().forEach(function(m){
       var pm = (+m.slice(0,4) - 1) + m.slice(4); if (!mo[pm] || mo[m].length < 10 || mo[pm].length < 10) return;
@@ -13676,43 +13701,58 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // EXPORT_CREDIT_NB is an editable ESTIMATE of what SDG&E pays per exported kWh under NEM 3.0 / Net Billing; it is NOT read
   // from a tariff. On NEM 1.0/2.0 exports already credit near retail, so a battery's value there is backup + VPP, not savings.
   var EXPORT_CREDIT_NB = 0.05;
-  // Chart of weekly midday solar export: this year (green), the same weeks a year earlier (grey dashed), the dip marked,
-  // stretches with almost no export shaded. Reads straight from the saved meter summary (answers.gbd). dark=true for the Tech's dark step.
-  function _evExportChartHtml(g, dark) {
+  // Interactive meter-data chart (2026-10-28, per Dennis). Production = weekly midday export, Consumption = weekly grid use per day,
+  // Pins = rule-based flags from the analyzer (drops, idle stretches, heavy-cooling weeks, overnight steps). Nothing is invented:
+  // a pin exists only because the numbers triggered its rule, and its wording says "consistent with", not "diagnosis".
+  var _evXState = { prod: true, use: true, notes: true, sel: null, dark: false };
+  function _evXRender() {
+    var g = (_evLocal && _evLocal.answers && _evLocal.answers.gbd) || null, st = _evXState, dark = st.dark;
     if (!g || !g.weekly || g.weekly.length < 8) return '';
-    var wk = g.weekly, W = 640, H = 230, L = 38, R = 12, T = 14, B = 34, n = wk.length;
-    var ink = dark ? '#cfd6c4' : '#444', soft = dark ? 'rgba(255,255,255,0.14)' : '#e6e0d2', mutedC = dark ? '#8a8f84' : '#8a8372';
-    var mx = Math.max.apply(null, wk.map(function(w){ return w.v; }).concat([1])) * 1.1;
+    var wk = g.weekly, W = 640, H = 250, L = 38, R = 12, T = 26, B = 34, n = wk.length, hasUse = wk.some(function(w){ return w.imp != null; });
+    var soft = dark ? 'rgba(255,255,255,0.14)' : '#e6e0d2', mutedC = dark ? '#9aa090' : '#8a8372', inkC = dark ? '#e9eadf' : '#2b2b2b';
+    var vals = []; if (st.prod) wk.forEach(function(w){ vals.push(w.v); }); if (st.use && hasUse) wk.forEach(function(w){ vals.push(w.imp || 0); });
+    var mx = (Math.max.apply(null, vals.concat([1])) * 1.12);
     var x = function(i){ return L + (i / (n - 1)) * (W - L - R); }, y = function(v){ return T + (1 - v / mx) * (H - T - B); };
-    var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;height:auto;display:block;" role="img" aria-label="Weekly solar export over time">';
-    for (var t = 0; t <= 4; t++) { var tv = mx * t / 4; svg += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + y(tv) + '" y2="' + y(tv) + '" stroke="' + soft + '" stroke-width="1"/><text x="' + (L - 6) + '" y="' + (y(tv) + 3) + '" font-size="10" fill="' + mutedC + '" text-anchor="end">' + Math.round(tv) + '</text>'; }
-    // idle stretches
-    (g.down_runs || []).forEach(function(r) {
-      var i0 = -1, i1 = -1; wk.forEach(function(w, i){ if (w.d <= r.to && i1 < i) i1 = i; if (i0 < 0 && w.d >= r.from) i0 = i; });
-      if (i0 < 0) i0 = 0; if (i1 < i0) i1 = i0;
-      svg += '<rect x="' + (x(i0) - 3) + '" y="' + T + '" width="' + Math.max(8, x(i1) - x(i0) + 6) + '" height="' + (H - T - B) + '" fill="#e45b4b" opacity="0.18"/>';
-    });
-    // last year's line (same weeks, 52 weeks earlier)
-    var py = []; for (var i = 52; i < n; i++) py.push((x(i) + ',' + y(wk[i - 52].v)));
-    if (py.length > 4) svg += '<polyline fill="none" stroke="' + (dark ? '#8a8f84' : '#a9a28f') + '" stroke-width="2" stroke-dasharray="5 4" points="' + py.join(' ') + '"/>';
-    // this year's area + line
-    var pts = wk.map(function(w, i){ return x(i) + ',' + y(w.v); });
-    svg += '<polygon points="' + x(0) + ',' + y(0) + ' ' + pts.join(' ') + ' ' + x(n - 1) + ',' + y(0) + '" fill="#8DC63F" opacity="0.18"/><polyline fill="none" stroke="#6a9f1f" stroke-width="2.5" stroke-linejoin="round" points="' + pts.join(' ') + '"/>';
-    // dip marker + the level before the dip
-    var d = g.drop;
-    if (d) {
-      var di = 0; wk.forEach(function(w, i){ if (w.d <= d.date) di = i; });
-      var col = d.recovered ? '#5a8f1d' : '#d9534f';
-      svg += '<line x1="' + x(di) + '" x2="' + x(di) + '" y1="' + T + '" y2="' + (H - B) + '" stroke="' + col + '" stroke-width="1.5" stroke-dasharray="3 3"/>'
-        + '<line x1="' + x(Math.max(0, di - 5)) + '" x2="' + (W - R) + '" y1="' + y(d.before_kwh) + '" y2="' + y(d.before_kwh) + '" stroke="' + col + '" stroke-width="1" stroke-dasharray="2 4" opacity="0.7"/>'
-        + '<text x="' + Math.min(W - R - 4, x(di) + 5) + '" y="' + (T + 11) + '" font-size="10.5" font-weight="700" fill="' + col + '" text-anchor="' + (x(di) > W - 150 ? 'end' : 'start') + '">' + (d.recovered ? 'Dip (recovered)' : d.partial ? 'Drop (partly back)' : 'Drop starts') + ' ' + esc(_fmtDay(d.date)) + '</text>';
+    var idx = function(d){ var k = 0; wk.forEach(function(w, i){ if (w.d <= d) k = i; }); return k; };
+    var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;height:auto;display:block;touch-action:manipulation;" role="img" aria-label="Solar export and grid use by week">';
+    for (var t = 0; t <= 4; t++) { var tv = mx * t / 4; svg += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + y(tv) + '" y2="' + y(tv) + '" stroke="' + soft + '"/><text x="' + (L - 6) + '" y="' + (y(tv) + 3) + '" font-size="10" fill="' + mutedC + '" text-anchor="end">' + Math.round(tv) + '</text>'; }
+    if (st.notes) (g.down_runs || []).forEach(function(r) { var i0 = idx(r.from), i1 = Math.max(i0, idx(r.to)); svg += '<rect x="' + (x(i0) - 3) + '" y="' + T + '" width="' + Math.max(8, x(i1) - x(i0) + 6) + '" height="' + (H - T - B) + '" fill="#e45b4b" opacity="0.2"/>'; });
+    if (st.prod) {
+      var py = []; for (var i = 52; i < n; i++) py.push(x(i) + ',' + y(wk[i - 52].v));
+      if (py.length > 4) svg += '<polyline fill="none" stroke="' + (dark ? '#8a8f84' : '#a9a28f') + '" stroke-width="2" stroke-dasharray="5 4" points="' + py.join(' ') + '"/>';
+      var pts = wk.map(function(w, i){ return x(i) + ',' + y(w.v); });
+      svg += '<polygon points="' + x(0) + ',' + y(0) + ' ' + pts.join(' ') + ' ' + x(n - 1) + ',' + y(0) + '" fill="#8DC63F" opacity="0.18"/><polyline fill="none" stroke="#6a9f1f" stroke-width="2.5" stroke-linejoin="round" points="' + pts.join(' ') + '"/>';
     }
-    // month ticks every ~2 months
+    if (st.use && hasUse) svg += '<polyline fill="none" stroke="#e08a2e" stroke-width="2.5" stroke-linejoin="round" points="' + wk.map(function(w, i){ return x(i) + ',' + y(w.imp || 0); }).join(' ') + '"/>';
+    // pre-dip level
+    var d = g.drop;
+    if (st.notes && d && st.prod) { var di0 = idx(d.date); svg += '<line x1="' + x(Math.max(0, di0 - 5)) + '" x2="' + (W - R) + '" y1="' + y(d.before_kwh) + '" y2="' + y(d.before_kwh) + '" stroke="' + (d.recovered ? '#5a8f1d' : '#d9534f') + '" stroke-width="1" stroke-dasharray="2 4" opacity="0.7"/>'; }
+    // selected week cursor
+    if (st.sel != null && wk[st.sel]) svg += '<line x1="' + x(st.sel) + '" x2="' + x(st.sel) + '" y1="' + T + '" y2="' + (H - B) + '" stroke="' + inkC + '" stroke-width="1" opacity="0.5"/>';
+    // pins (top row)
+    var PIN = { prod: ['#d9534f', '!'], ac: ['#2f7fd1', 'A/C'], ev: ['#8a5cd0', 'EV'], use: ['#e08a2e', '!'] };
+    if (st.notes) (g.events || []).forEach(function(ev, ei) {
+      var p = PIN[ev.k] || PIN.prod, col = ev.sev === 'info' && ev.k === 'prod' ? '#5a8f1d' : p[0], px = x(idx(ev.d)), on = st.sel === 'e' + ei;
+      svg += '<g onclick="evXPick(\'e' + ei + '\')" style="cursor:pointer"><line x1="' + px + '" x2="' + px + '" y1="' + (T - 4) + '" y2="' + (H - B) + '" stroke="' + col + '" stroke-width="1.3" stroke-dasharray="3 3" opacity="0.75"/><circle cx="' + px + '" cy="' + (T - 10) + '" r="' + (on ? 11 : 9.5) + '" fill="' + col + '" stroke="' + (dark ? '#111' : '#fff') + '" stroke-width="2"/><text x="' + px + '" y="' + (T - 6.5) + '" font-size="' + (p[1].length > 1 ? 7 : 11) + '" font-weight="800" fill="#fff" text-anchor="middle">' + p[1] + '</text></g>';
+    });
+    // tap targets for week readout
+    wk.forEach(function(w, i) { svg += '<rect x="' + (x(i) - (W - L - R) / (n - 1) / 2) + '" y="' + T + '" width="' + ((W - L - R) / (n - 1)) + '" height="' + (H - T - B) + '" fill="transparent" onclick="evXPick(' + i + ')" style="cursor:pointer"/>'; });
     var last = ''; wk.forEach(function(w, i) { var ym = w.d.slice(0, 7), m = +w.d.slice(5, 7); if (ym !== last && m % 2 === 1) { last = ym; svg += '<text x="' + x(i) + '" y="' + (H - 14) + '" font-size="10" fill="' + mutedC + '" text-anchor="middle">' + ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][m - 1] + (m === 1 ? " '" + w.d.slice(2, 4) : '') + '</text>'; } });
     svg += '</svg>';
-    var leg = '<div style="display:flex;gap:14px;flex-wrap:wrap;font-size:0.7rem;color:' + mutedC + ';margin-top:4px;"><span><b style="color:#6a9f1f;">&#9632;</b> Midday solar export, by week</span>' + (py.length > 4 ? '<span><b style="color:#a9a28f;">- - -</b> same weeks a year earlier</span>' : '') + ((g.down_runs || []).length ? '<span><b style="color:#e45b4b;">&#9632;</b> almost no export</span>' : '') + '<span>kWh a day, 10am to 3pm</span></div>';
-    return '<div style="margin:8px 0 10px;">' + svg + leg + '<div style="font-size:0.66rem;color:' + mutedC + ';line-height:1.5;margin-top:4px;">The meter sees only what crosses to the grid (what your home did not use), so real production is at least this.</div></div>';
+    var pill = function(k, label, on, col) { return '<button type="button" onclick="evXTog(\'' + k + '\')" style="width:auto;margin:0;padding:6px 12px;border-radius:100px;font-size:0.74rem;font-weight:700;cursor:pointer;border:1.5px solid ' + col + ';background:' + (on ? col : 'transparent') + ';color:' + (on ? '#fff' : col) + ';">' + (on ? '&#10003; ' : '') + label + '</button>'; };
+    var bar = '<div style="display:flex;gap:7px;flex-wrap:wrap;margin-bottom:8px;">' + pill('prod', 'Production', st.prod, '#6a9f1f') + (hasUse ? pill('use', 'Consumption', st.use, '#e08a2e') : '') + pill('notes', 'Flags', st.notes, '#d9534f') + '</div>';
+    var rd = '', sel = st.sel;
+    if (typeof sel === 'string' && sel.charAt(0) === 'e') { var ev = (g.events || [])[+sel.slice(1)]; if (ev) rd = '<b>' + esc(_fmtDay(ev.d)) + ':</b> ' + esc(ev.t); }
+    else if (sel != null && wk[sel]) { var w = wk[sel]; rd = '<b>Week of ' + esc(_fmtDay(w.d)) + ':</b> midday solar export ' + w.v + ' kWh a day' + (w.imp != null ? '; grid use ' + w.imp + ' kWh a day (afternoons ' + w.pm + ', overnight ' + w.nt + ')' : '') + '.'; }
+    else rd = 'Tap a week to see its numbers' + (st.notes && (g.events || []).length ? ', or tap a pin for what the data shows.' : '.');
+    var cap = '<div style="min-height:44px;background:' + (dark ? 'rgba(255,255,255,0.06)' : '#f7f4ec') + ';border-radius:10px;padding:9px 12px;font-size:0.78rem;line-height:1.5;color:' + inkC + ';margin-top:6px;">' + rd + '</div>';
+    var legend = '<div style="display:flex;gap:12px;flex-wrap:wrap;font-size:0.68rem;color:' + mutedC + ';margin-top:6px;"><span><b style="color:#6a9f1f;">&#9632;</b> Production: midday solar export, 10am to 3pm</span>' + (hasUse ? '<span><b style="color:#e08a2e;">&#9632;</b> Consumption: grid use per day</span>' : '') + (st.prod ? '<span><b style="color:#a9a28f;">- - -</b> same weeks a year earlier</span>' : '') + '<span>kWh a day, weekly</span></div>';
+    var note = '<div style="font-size:0.64rem;color:' + mutedC + ';line-height:1.5;margin-top:4px;">The meter sees only what crosses to the grid, so production is at least this and consumption is only what the home bought. Pins are flags from simple rules on the readings, not diagnoses.</div>';
+    return '<div id="evXChart" style="margin:8px 0 10px;">' + bar + svg + cap + legend + note + '</div>';
   }
+  function _evExportChartHtml(g, dark) { _evXState.dark = !!dark; if (_evXState.sel != null) _evXState.sel = null; return _evXRender(); }
+  window.evXTog = function(k) { _evXState[k] = !_evXState[k]; var el = document.getElementById('evXChart'); if (el) el.outerHTML = _evXRender(); };
+  window.evXPick = function(i) { _evXState.sel = (_evXState.sel === i ? null : i); var el = document.getElementById('evXChart'); if (el) el.outerHTML = _evXRender(); };
   function _evTimeline() {
     var a = _evLocal.answers || {}, g = a.gbd || null; if (!g || !g.has_export) return null;
     var ba = (_evLocal.billAnalysis && !_evLocal.billAnalysis._err) ? _evLocal.billAnalysis : null, rate = ba && ba.avg_rate_per_kwh > 0 ? +ba.avg_rate_per_kwh : null;
