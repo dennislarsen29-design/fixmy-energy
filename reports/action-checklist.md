@@ -10,6 +10,8 @@ Status: [ ] open · [x] done · [-] dismissed
 ## B. Search Console (≈10 min, after deploy)
 - [ ] B1. Search Console → URL inspection → paste https://fixmy.energy/electricians → Request indexing.
 - [ ] B2. Same for /careers.
+- [x] B0. 2026-10-28: requested indexing for 5 blog/installer pages (freedom-forever-bankruptcy, sdge-electric-rates-2026, sunrun-vivint, vitl-power, petersen-dean).
+- [ ] B0b. Next batch (tomorrow): /contact, /sungevity, then remaining not-indexed pages.
 - [ ] B3. Same for /southern-california-solar-repair and 5 county pages (5/day max).
 - [ ] B4. Same for the 20 city pages (5/day over 4 days). List is in sitemap.xml.
 
