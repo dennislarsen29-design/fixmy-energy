@@ -26924,6 +26924,84 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // proposal (the ONE path in), and ⚙ Fields moved to the new Document Signer admin tool
   // (see renderDocSignerView). This is read-only status, answering "is this customer
   // done or not" at a glance, per Dennis's own answer when asked what should remain.
+  // ── Completed documents as a real PDF (2026-10-28, per Dennis — "completed documents show up via PDF link on Admin, Tech and Ops portals").
+  // Rebuilds the ORIGINAL template PDF with every captured value stamped at its confirmed field position, plus a one-page signing record
+  // (who, when, IP, device) on the end. Runs in the browser with the vendored pdf-lib; nothing new is stored.
+  function _loadPdfLibOnce() {
+    if (window.PDFLib) return Promise.resolve();
+    window._pdfLibP = window._pdfLibP || new Promise(function(res, rej){ var sc = document.createElement('script'); sc.src = '/assets/vendor/pdf-lib.min.js'; sc.onload = res; sc.onerror = function(){ window._pdfLibP = null; rej(new Error('Could not load the PDF tools.')); }; document.head.appendChild(sc); });
+    return window._pdfLibP;
+  }
+  async function _buildSignedDocPdf(custId, docId) {
+    var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var rr = await Promise.all([
+      client.from('customers').select('*').eq('id', custId).limit(1),
+      client.from('deal_documents').select('*').eq('customer_id', custId).eq('doc_type', docId).limit(1),
+      client.from('document_templates').select('*').eq('doc_type', docId).limit(1)
+    ]);
+    var c = rr[0].data && rr[0].data[0], row = rr[1].data && rr[1].data[0], tpl = rr[2].data && rr[2].data[0];
+    if (!c || !row) throw new Error('That document has not been started for this customer.');
+    if (!tpl || !tpl.pdf_path) throw new Error('This document has no PDF template.');
+    var his = ''; try { if (c.rep_id) { var th = await client.from('team_members').select('his_license_number').eq('id', c.rep_id).limit(1); his = (th.data && th.data[0] && th.data[0].his_license_number) || ''; } } catch (e) {}
+    var fields = tpl.fields || [], vals = _custDocComputeInitialValues(fields, c, row, _opsContractorInfo(c.assigned_ops), his), d = row.data || {};
+    if (row.signed_at) vals.cust_date = new Date(row.signed_at).toLocaleDateString('en-US');
+    if (row.signed_by_name && vals.cust_name !== undefined) vals.cust_name = row.signed_by_name;
+    if (d.customer_initials && vals.pg3_initials !== undefined) vals.pg3_initials = d.customer_initials;
+    await _loadPdfLibOnce();
+    var L = window.PDFLib, bytes = await fetch(tpl.pdf_path).then(function(r){ if (!r.ok) throw new Error('Template PDF missing'); return r.arrayBuffer(); });
+    var pdf = await L.PDFDocument.load(bytes, { ignoreEncryption: true }), pages = pdf.getPages();
+    var helv = await pdf.embedFont(L.StandardFonts.Helvetica), ital = await pdf.embedFont(L.StandardFonts.TimesRomanItalic), bold = await pdf.embedFont(L.StandardFonts.HelveticaBold);
+    var safe = function(t){ return String(t == null ? '' : t).replace(/[^\x20-\x7E]/g, '?'); };
+    for (var i = 0; i < fields.length; i++) {
+      var f = fields[i], v = vals[f.id], pg = pages[parseInt(f.page, 10) || 0]; if (!pg || v == null || v === '' || v === false) continue;
+      var W = pg.getWidth(), H = pg.getHeight(), bx = f.x * W, bw = f.w * W, bh = f.h * H, by = H - (f.y + f.h) * H;
+      if (f.type === 'checkbox') { pg.drawText('X', { x: bx + Math.max(0, (bw - 7) / 2), y: by + Math.max(1, (bh - 8) / 2), size: Math.min(9, Math.max(6, bh * 0.8)), font: bold, color: L.rgb(0, 0, 0) }); continue; }
+      if (typeof v === 'object') {
+        if (v.type === 'drawn' && v.dataUrl) { try { var img = await pdf.embedPng(v.dataUrl), sc = Math.min(bw / img.width, (bh * 1.4) / img.height, 1.2); pg.drawImage(img, { x: bx, y: by, width: img.width * sc, height: img.height * sc }); } catch (e) {} }
+        else if (v.text) pg.drawText(safe(v.text), { x: bx + 2, y: by + bh * 0.2, size: Math.min(16, Math.max(9, bh * 0.85)), font: ital, color: L.rgb(0.05, 0.1, 0.4) });
+        continue;
+      }
+      pg.drawText(safe(v), { x: bx + 2, y: by + bh * 0.28, size: Math.min(10, Math.max(6.5, bh * 0.72)), font: helv, color: L.rgb(0.05, 0.05, 0.05), maxWidth: Math.max(bw, 40) });
+    }
+    // Signing record page
+    var rp = pdf.addPage([612, 792]), ty = 740, au = d.audit || {};
+    function line(t, sz, fnt, gap) { rp.drawText(safe(t), { x: 50, y: ty, size: sz, font: fnt || helv, color: L.rgb(0.1, 0.1, 0.1), maxWidth: 512 }); ty -= (gap || sz + 8); }
+    line('Electronic Signing Record', 18, bold, 30);
+    line('Document: ' + (tpl.label || docId), 11, helv); line('Customer: ' + ((c.first_name || '') + ' ' + (c.last_name || '')).trim(), 11, helv); line('Property: ' + (c.address || ''), 11, helv, 22);
+    line('Signed by the customer: ' + (row.signed_by_name || '') + (row.signed_at ? ' on ' + new Date(row.signed_at).toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }) + ' PT' : ''), 11, helv);
+    line('Signed by the Solar Review representative: ' + (row.reviewed_by_rep_name || '') + (row.reviewed_at ? ' on ' + new Date(row.reviewed_at).toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }) + ' PT' : ''), 11, helv, 22);
+    if (au.ip) line('Customer device IP address: ' + au.ip, 10, helv); if (au.user_agent) line('Device: ' + String(au.user_agent).slice(0, 110), 9, helv);
+    if (au.verified_by) line('Identity check: ' + String(au.verified_by).replace(/_/g, ' '), 10, helv); if (au.template_sha256) line('Template fingerprint (SHA-256): ' + String(au.template_sha256).slice(0, 64), 8, helv);
+    if (au.signature_sha256) line('Signature fingerprint (SHA-256): ' + String(au.signature_sha256).slice(0, 64), 8, helv, 22);
+    line('This record was generated from the signed document stored in the Solar Review portal.', 9, helv);
+    return { bytes: await pdf.save(), name: (tpl.label || docId).replace(/[^A-Za-z0-9]+/g, '-') + '-' + ((c.last_name || 'customer') + '').replace(/[^A-Za-z0-9]+/g, '-') + '.pdf' };
+  }
+  window.downloadSignedDoc = async function(custId, docId, btn) {
+    var orig = btn ? btn.innerHTML : '';
+    try {
+      if (btn) { btn.disabled = true; btn.innerHTML = 'Preparing&hellip;'; }
+      var out = await _buildSignedDocPdf(custId, docId), url = URL.createObjectURL(new Blob([out.bytes], { type: 'application/pdf' })), a = document.createElement('a');
+      a.href = url; a.download = out.name; a.rel = 'noopener'; document.body.appendChild(a); a.click();
+      setTimeout(function(){ a.remove(); URL.revokeObjectURL(url); }, 4000);
+    } catch (e) { alert('Could not build the PDF: ' + (e.message || e)); }
+    finally { if (btn) { btn.disabled = false; btn.innerHTML = orig; } }
+  };
+  function _dealDocPdfBtnHtml(custId, docId, status) {
+    if (status !== 'signed' && status !== 'customer_signed') return '';
+    return '<button onclick="downloadSignedDoc(\'' + custId + '\',\'' + docId + '\',this)" style="width:auto;margin:0;padding:4px 11px;font-size:0.68rem;font-weight:700;background:rgba(74,158,255,0.12);border:1px solid rgba(74,158,255,0.35);border-radius:6px;color:#4a9eff;cursor:pointer;">&#11015; PDF' + (status === 'customer_signed' ? ' (awaiting Tech)' : '') + '</button>';
+  }
+  // Ops portal: list the job's completed documents with PDF links. Looks the rows up itself (the Ops session has no cache).
+  window.dealDocsListInto = async function(elId, custId) {
+    try {
+      var el = document.getElementById(elId); if (!el) return;
+      var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var r = await client.from('deal_documents').select('doc_type,status,signed_at').eq('customer_id', custId).in('status', ['signed', 'customer_signed']);
+      var rows = (r.data || []).filter(function(x){ return DEAL_DOC_TYPES.some(function(d){ return d.id === x.doc_type && d.hasPdfTemplate; }); });
+      if (!rows.length) { el.innerHTML = ''; return; }
+      el.innerHTML = '<div style="background:rgba(255,255,255,0.7);border:1px solid rgba(0,0,0,0.1);border-radius:10px;padding:12px 14px;margin-bottom:12px;"><div style="font-size:0.65rem;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px;">&#128196; Signed Documents</div>' +
+        rows.map(function(x){ var d = DEAL_DOC_TYPES.filter(function(t){ return t.id === x.doc_type; })[0]; return '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:5px 0;"><span style="font-size:0.8rem;color:#333;">' + d.icon + ' ' + esc(d.label) + (x.signed_at ? ' <span style="color:#888;font-size:0.7rem;">' + new Date(x.signed_at).toLocaleDateString('en-US') + '</span>' : '') + '</span>' + _dealDocPdfBtnHtml(custId, x.doc_type, x.status) + '</div>'; }).join('') + '</div>';
+    } catch (e) {}
+  };
   function _dealDocsStatusLineHtml(c) {
     if (!c || !c.id) return '';
     var applicable = DEAL_DOC_TYPES.filter(function(d){ return d.appliesWhen(c); });
@@ -26940,7 +27018,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (d.virtual) { // status lives on the customer row; signed => PDF download
         var vm = d.statusFor(c); meta = vm;
         if (vm.key === 'signed') dl = _diagDownloadBtnHtml(c, true);
-      }
+      } else if (d.hasPdfTemplate) dl = _dealDocPdfBtnHtml(c.id, d.id, status);
       return '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 0;">'+
         '<span style="font-size:0.75rem;color:#F3EDE3;">'+d.icon+' '+esc(d.label)+'</span>'+
         '<span style="display:flex;align-items:center;gap:8px;"><span style="font-size:0.72rem;font-weight:700;color:'+meta.color+';">'+meta.label+'</span>'+dl+'</span>'+
@@ -27550,7 +27628,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         meta = d.statusFor(c);
         if (meta.key === 'signed') dlBtn = _diagDownloadBtnHtml(c, false);
         else if (meta.key === 'pending') meta = { color:'#ffaa00', label:'&#9203; Awaiting your signature \u2014 use the Sign &amp; Pay link we sent' };
-      }
+      } else if (d.hasPdfTemplate) dlBtn = _dealDocPdfBtnHtml(c.id, d.id, status);
       return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 0;border-bottom:1px solid rgba(255,255,255,0.08);">'+
         '<div><div style="font-weight:700;font-size:0.85rem;">'+d.icon+' '+esc(d.label)+'</div>'+
           '<div style="font-size:0.72rem;color:'+meta.color+';margin-top:2px;">'+meta.label+'</div></div>'+
@@ -39312,6 +39390,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // across ALL partners (e.g. Cosmic's), which competing installers shouldn't see.
     var _ssb = document.getElementById('subSheetBtn'); if (_ssb) _ssb.style.display = 'none';
     document.getElementById('dashBody').innerHTML = '<p style="color:#aaa;padding:20px 0;">Loading your jobs...</p>';
+    try { if (typeof _loadCustomDealDocTypes === 'function') _loadCustomDealDocTypes(); } catch(e) {}
     // W-9 prompt for Ops partners (skippable; asked once per browser session).
     try { if (window.W9 && !sessionStorage.getItem('w9Asked_'+ops.id)) { sessionStorage.setItem('w9Asked_'+ops.id,'1'); window.W9.has(ops.id).then(function(h){ if (!h) window.W9.open({ person: ops, required: false }); }); } } catch(e) {}
 
@@ -39651,6 +39730,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
               rows +
               '</div>';
           }());
+
+          // Signed documents (PDF links) for this job
+          h += '<div id="opsDocs_' + job.id + '"></div>'; setTimeout(function(){ if (window.dealDocsListInto) window.dealDocsListInto('opsDocs_' + job.id, job.id); }, 400);
 
           // Flagged photos warning
           h += flaggedHtml;
