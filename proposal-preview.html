@@ -1393,7 +1393,9 @@ button.component-chip.open{border-color:var(--dark);}
           ? (PROP.status === 'accepted'
               ? '<button class="cta-btn" disabled>Accepted &#10003;</button>'
               : '<button id="sendBtn" class="cta-btn" onclick="acceptSelected()">Accept this option</button>')
-          : '<button id="sendBtn" class="cta-btn" onclick="send()">Send to Customer &mdash; Start Paperwork</button>')+
+          : '<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">'+
+              '<button id="approveBtn" class="cta-btn" onclick="approveForCustomer()">1. Approve &mdash; Option '+(selIdx+1)+' &rarr; CPUC</button>'+
+              '<button id="sendBtn" class="cta-btn" style="background:transparent;border:2px solid currentColor;" onclick="send()">2. Send to Customer</button></div>')+
       '</div>'+
       '<div id="sendStatus" class="status-msg"></div>';
   }
@@ -1511,9 +1513,13 @@ button.component-chip.open{border-color:var(--dark);}
           email: CUST.email||'', phone: CUST.phone||'', first_name: CUST.first_name||'', last_name: CUST.last_name||'',
           full_name: ((CUST.first_name||'')+' '+(CUST.last_name||'')).trim(), proposal_option: opt.id, proposal_label: optDisplayName(opt),
           proposal_amount: shown, financing: fin, loan_term: term, accepted_via: 'customer_self_service' } }) }).catch(function(){});
-      // Opens the CPUC guide for our rep and texts them to sign it (the customer is texted their copy right after).
-      try { fetch('/.netlify/functions/proposal-accepted', { method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ customerId: custId, code: (qs.get('code')||'').replace(/\s/g,'') }) }).catch(function(){}); } catch(e) {}
+      // Opens the CPUC guide for our rep and texts them to sign it. Wait for it (max 6s) so the
+      // document exists when the customer lands on the signing screen below.
+      try { await Promise.race([
+        fetch('/.netlify/functions/proposal-accepted', { method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ customerId: custId, code: (qs.get('code')||'').replace(/\s/g,'') }) }).catch(function(){}),
+        new Promise(function(r){ setTimeout(r, 6000); }) ]); } catch(e) {}
+      if (CUSTOMER_MODE && CUST && CUST.email) { location.href = portalSignLink() + '&go=sign'; return; }
       PROP = prop;
       renderBottomBar();
       var app = document.getElementById('app');
@@ -1524,6 +1530,21 @@ button.component-chip.open{border-color:var(--dark);}
       status.className = 'status-msg err'; status.textContent = 'Could not save: ' + (e.message || e) + ' — please call (619) 777-6527.';
     }
   }
+  // Tech's Approve: record which option is being approved, then go straight to the CPUC review screen.
+  async function approveForCustomer(){
+    var opt = OPTS[selIdx], btn = document.getElementById('approveBtn'), status = document.getElementById('sendStatus');
+    btn.disabled = true; btn.textContent = 'Opening CPUC…';
+    try {
+      var prop = Object.assign({}, PROP, { approved_option: opt.id, approved_at: new Date().toISOString() });
+      var r = await client.from('customers').update({ proposal: prop }).eq('id', custId);
+      if (r.error) throw r.error;
+      location.href = '/portal?signdoc=' + encodeURIComponent(custId);
+    } catch(e) {
+      btn.disabled = false; btn.textContent = '1. Approve — Option '+(selIdx+1)+' → CPUC';
+      status.className = 'status-msg err'; status.textContent = 'Could not approve: ' + (e.message || e);
+    }
+  }
+  window.approveForCustomer = approveForCustomer;
   function portalSignLink(){ return '/portal?email='+encodeURIComponent((CUST&&CUST.email)||'')+'&code='+encodeURIComponent((qs.get('code')||'').replace(/\s/g,'')); }
   window.acceptSelected = acceptSelected;
 
