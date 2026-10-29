@@ -3139,7 +3139,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     ov.innerHTML = '<div style="background:#1a1c17;border:1px solid rgba(255,255,255,0.12);border-radius:18px;padding:24px;max-width:460px;width:100%;position:relative;">' +
       '<button class="pv-close pv-abs" onclick="jobNextClose()" aria-label="Close" title="Close">&#10005;</button>' + inner + '</div>';
   }
-  window.jobNextClose = function() { var ov = document.getElementById('jobNextOv'); if (ov) ov.remove(); if (adminView === 'jobs') renderJobsView(); else if (adminView === 'pipeline') renderPipelineView(); };
+  window.jobNextClose = function() { var ov = document.getElementById('jobNextOv'); if (ov) ov.remove(); if (CURRENT_ROLE !== 'admin') { if (typeof window.salesRerender === 'function') window.salesRerender(); return; } if (adminView === 'jobs') renderJobsView(); else if (adminView === 'pipeline') renderPipelineView(); };
   var _jnBtn = 'width:100%;margin:0;padding:13px;border:none;border-radius:100px;font-size:0.9rem;font-weight:800;cursor:pointer;';
   window.jobNext = async function(id, onlyIfTodos) {
     var c = adminCustomers.find(function(x){ return x.id === id; }); if (!c) return;
@@ -3374,7 +3374,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   };
   window._plMenu = function(id) { var m = document.getElementById('plm_' + id); if (m) m.hidden = !m.hidden; };
   window._plAssignTech = async function(id, v) { try { await assignLeadTech(id, v); } catch (e) {} if (adminView === 'pipeline') renderPipelineView(); };
-  window._plLeadCardHtml = function(c) {
+  window._plLeadCardHtml = function(c, opts) {
+    opts = opts || {};
     var nx = _plNextStep(c), sg = _sharedStage(c), col = nx.tone === 'hot' ? '#ef4444' : nx.tone === 'ok' ? '#8DC63F' : '#f5a623';
     var name = ((c.first_name || '') + (c.last_name ? ' ' + c.last_name : '')).trim() || c.email || c.phone || 'Unknown';
     var pd = (c.phone || '').replace(/\D/g, ''), aside = _plIsAside(c);
@@ -3394,7 +3395,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       (pd ? '<a class="lead-btn ghost" href="sms:' + pd + '" style="text-decoration:none;">&#128172; Text</a>' : '') +
       (c.email ? '<button class="lead-btn ghost" onclick="sendMagicLink(\'' + magic + '\',\'' + esc(c.email) + '\')">&#128279; Link</button>' : '') +
       (c.address ? '<a class="lead-btn ghost" href="https://maps.apple.com/?q=' + encodeURIComponent(c.address) + '" target="_blank" rel="noopener" style="text-decoration:none;">&#128506; Navigate</a>' : '') +
-      '<label style="font-size:0.66rem;color:#888;text-transform:uppercase;letter-spacing:0.06em;">Tech <select onchange="_plAssignTech(\'' + c.id + '\',this.value)" style="width:auto;display:inline-block;margin-left:4px;"><option value="">Unassigned</option>' + techOpts + '</select></label>' +
+      (opts.rep ? '' : '<label style="font-size:0.66rem;color:#888;text-transform:uppercase;letter-spacing:0.06em;">Tech <select onchange="_plAssignTech(\'' + c.id + '\',this.value)" style="width:auto;display:inline-block;margin-left:4px;"><option value="">Unassigned</option>' + techOpts + '</select></label>') +
       (aside ? '<button class="lead-btn ghost" onclick="reopenLead(\'' + c.id + '\')" style="color:#8DC63F;">&#8617; Reopen</button>'
              : '<button class="lead-btn ghost" onclick="openExitModal(\'' + c.id + '\')" style="color:#f87171;">&#9208; Set aside</button>') + '</div>';
     return '<div class="lead-card" id="lead-' + c.id + '" style="border-left:5px solid ' + col + ';">' +
@@ -3406,7 +3407,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center;">' +
       (pd ? '<a class="lead-btn lime" href="tel:' + pd + '" style="text-decoration:none;' + (nx.tone === 'hot' ? 'background:#ef4444;border-color:#ef4444;color:#fff;' : '') + '">&#128222; Call</a>' : '') +
       '<button class="lead-btn ghost" onclick="jobNext(\'' + c.id + '\')" style="color:#8DC63F;border-color:rgba(141,198,63,0.4);">&#9654; Next step</button>' +
-      '<button class="lead-btn ghost" data-id="' + c.id + '" onclick="openLeadEditor(this.dataset.id)">Open lead</button>' +
+      '<button class="lead-btn ghost" data-id="' + c.id + '" onclick="' + (opts.rep ? 'salesEditLead' : 'openLeadEditor') + '(this.dataset.id)">Open lead</button>' +
       '<button class="lead-btn ghost" onclick="_plMenu(\'' + c.id + '\')" aria-label="More actions" style="min-width:42px;">&#8943;</button></div>' + menu + '</div>';
   };
   // J2 pieces ------------------------------------------------------------------------------
@@ -35999,6 +36000,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // per-device/session sticky via sessionStorage, same as every other view, so a rep
     // who navigates away and comes back mid-session stays where they left off.
     var salesView = sessionStorage.getItem('salesView_'+person.id) || 'hq';
+    var _rpl = { type: 'all', stage: -1, q: '', aside: false };   // rep Pipeline filters (display only)
+    function _repPipelineOn() { try { return localStorage.getItem('pipelineClassic') !== '1'; } catch (e) { return true; } }
+    if (_repPipelineOn() && (salesView === 'leads' || salesView === 'jobs')) salesView = 'pipeline';
     var OPS_NAMES = {ops1:'Klos Electric',ops2:'John Espinoza',ops3:'Cosmic Solar',ops4:'Axia',dennis:'Dennis'};
 
     function fmtDt(iso) {
@@ -36391,8 +36395,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var myApptCount = allRecords.filter(function(r){ return (r.diagnostic_date&&new Date(r.diagnostic_date).getTime()>nowTs-7*86400000)||(r.install_date&&new Date(r.install_date).getTime()>nowTs-7*86400000); }).length;
       h += '<div style="display:flex;gap:6px;margin-bottom:16px;flex-wrap:wrap;">';
       h += tBtn('hq','&#9728; S.U.N.');
-      h += tBtn('leads','📋 Leads ('+myLeads.length+')');
-      h += tBtn('jobs','💼 Jobs ('+payJobs.length+')');
+      if (_repPipelineOn()) h += tBtn('pipeline','&#129517; Pipeline ('+(myLeads.length+payJobs.length)+')');
+      else { h += tBtn('leads','📋 Leads ('+myLeads.length+')'); h += tBtn('jobs','💼 Jobs ('+payJobs.length+')'); }
       h += tBtn('payroll','💵 Payroll');
       h += tBtn('canvass','📦 Black Box');
       if (showFieldJobs) h += tBtn('field','🔧 Field ('+fieldJobs.length+')');
@@ -36408,6 +36412,84 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h2 += '<button onclick="'+setterFn+'(\'new_solar\')" style="'+cst+'background:'+(catVar==='new_solar'?'#4a9eff':'rgba(255,255,255,0.07)')+';color:'+(catVar==='new_solar'?'#fff':'#888')+';">&#9728; Axia/QCells ('+nsList.length+')</button>';
         h2 += '</div>';
         return h2;
+      }
+
+      function repJobCardHtml(j) {
+        var h = '';
+            var isNSJ = j.lead_category === 'new_solar';
+            h += '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:14px;margin-bottom:8px;">';
+            h += '<div style="display:flex;justify-content:space-between;align-items:flex-start;">';
+            if (isNSJ) {
+              var nsJRec = NS_STATUSES[j.solar_status]||{label:'Axia/QCells',color:'#4a9eff'};
+              h += '<div style="flex:1;"><div style="font-size:0.92rem;font-weight:700;">'+(j.first_name||'')+' '+(j.last_name||'')+'</div>'+
+                '<div style="font-size:0.75rem;color:#888;margin-top:2px;">'+(j.address||'No address')+'</div>'+
+                (j.monthly_bill?'<div style="font-size:0.7rem;color:#8DC63F;margin-top:2px;">$'+j.monthly_bill+'/mo</div>':'')+
+              '</div>';
+              h += '<div style="background:'+nsJRec.color+'22;border-radius:6px;padding:4px 10px;font-size:0.72rem;font-weight:700;color:'+nsJRec.color+';border:1px solid '+nsJRec.color+'44;">'+nsJRec.label+'</div>';
+              h += '</div>';
+              h += _installDateBlockHtml(j);
+              h += '<div id="repJobComm_'+j.id+'">'+_axiaCommLineHtmlForRep(j.id, person)+'</div>';
+              h += '</div>';
+            } else {
+              var inv = j.invoice_status||'';
+              var iClr = inv==='paid'?'#8DC63F':inv==='overdue'?'#ef4444':'#ffaa00';
+              var iBg  = inv==='paid'?'rgba(141,198,63,0.1)':inv==='overdue'?'rgba(239,68,68,0.1)':'rgba(255,170,0,0.1)';
+              var iLbl = {paid:'✓ Paid',pending:'⏳ Payment Due',sent:'📧 Invoice Sent',overdue:'⚠ Overdue',draft:'Draft'}[inv]||inv;
+              var opsHtml = '';
+              if (j.assigned_ops && (j.diagnostic_date||j.install_date)) {
+                var partnerName = OPS_NAMES[j.assigned_ops]||j.assigned_ops;
+                var apptStr = fmtDt(j.install_date||j.diagnostic_date);
+                opsHtml = '<div style="background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.2);border-radius:8px;padding:8px 12px;margin-top:8px;font-size:0.78rem;"><span style="color:#8DC63F;font-weight:700;">&#10003; '+partnerName+' Assigned</span>'+(apptStr?'<br/><span style="color:#aaa;font-size:0.72rem;">&#128197; '+apptStr+'</span>':'')+'</div>';
+              } else if (j.ops_ready) {
+                opsHtml = '<div style="background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.2);border-radius:8px;padding:8px 12px;margin-top:8px;font-size:0.78rem;color:#ffaa00;font-weight:700;">&#9203; Pending Admin Assignment</div>';
+              } else {
+                opsHtml = '<button onclick="sendToOps(\''+j.id+'\')" style="margin-top:8px;width:100%;padding:9px;background:rgba(249,115,22,0.1);border:1px solid rgba(249,115,22,0.3);border-radius:8px;color:#f97316;font-size:0.78rem;font-weight:700;cursor:pointer;">&#128228; Send to Ops</button>';
+              }
+              h += '<div style="flex:1;"><div style="font-size:0.92rem;font-weight:700;">'+(j.first_name||'')+' '+(j.last_name||'')+'</div>'+
+                '<div style="font-size:0.75rem;color:#888;margin-top:2px;">'+(j.address||'No address')+'</div>'+
+                (j.install_type?'<div style="font-size:0.7rem;color:#666;margin-top:1px;">'+j.install_type+'</div>':'')+
+              '</div>';
+              var propStatus = (j.proposal&&j.proposal.status)||'';
+              var propBadge = propStatus==='accepted' ? '<span style="font-size:0.65rem;padding:2px 7px;border-radius:20px;background:rgba(141,198,63,0.15);color:#8DC63F;border:1px solid rgba(141,198,63,0.3);margin-left:6px;">✓ Accepted</span>'
+                : propStatus==='sent' ? '<span style="font-size:0.65rem;padding:2px 7px;border-radius:20px;background:rgba(74,158,255,0.1);color:#4a9eff;border:1px solid rgba(74,158,255,0.25);margin-left:6px;">Proposal Sent</span>' : '';
+              h += '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">';
+              h += '<div style="background:'+iBg+';border-radius:6px;padding:4px 10px;font-size:0.72rem;font-weight:700;color:'+iClr+';">'+iLbl+'</div>';
+              h += '</div>';
+              h += '</div>';
+              if (propBadge) h += '<div style="margin-top:6px;">'+propBadge+'</div>';
+              h += _installDateBlockHtml(j);
+              h += '<div id="repJobComm_'+j.id+'">'+_jobCommLineHtmlForRep(j.id, person)+'</div>';
+              h += (j.rep_id && j.rep_id !== person.id ? '' : opsHtml)+'</div>'; // handed-off deal: closer runs ops, setter just follows
+            }
+          
+        return h;
+      }
+      function handedOffHtml() {
+        var h = '';
+        if (handedOff.length) {
+          h += '<div style="margin-top:22px;padding-top:16px;border-top:1px solid rgba(255,255,255,0.08);">';
+          h += '<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:4px;">';
+          h += '<span style="font-size:0.82rem;font-weight:800;">&#129309; Booked by me</span>';
+          h += '<span style="font-size:0.7rem;color:#8DC63F;font-weight:700;">'+handedOff.length+'</span>';
+          h += '</div>';
+          h += '<div style="font-size:0.7rem;color:#777;line-height:1.5;margin-bottom:10px;">You set these &mdash; a closing Tech is running them. You still earn the setter share. View only.</div>';
+          handedOff.forEach(function(l) {
+            var nm = ((l.first_name||'')+' '+(l.last_name||'')).trim() || l.title_owner || 'No name';
+            var when = l.diagnostic_date ? new Date(l.diagnostic_date) : null;
+            var whenTxt = when && !isNaN(when.getTime())
+              ? when.toLocaleString('en-US',{ weekday:'short', month:'short', day:'numeric', hour:'numeric', minute:'2-digit' })
+              : 'No appointment date';
+            var closer = _closerLabel(l.rep_id);
+            h += '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:11px 13px;margin-bottom:7px;">';
+            h += '<div style="font-size:0.85rem;font-weight:700;margin-bottom:2px;">'+esc(nm)+'</div>';
+            h += '<div style="font-size:0.72rem;color:#888;margin-bottom:4px;">'+esc(l.address||'')+'</div>';
+            h += '<div style="font-size:0.72rem;color:#8DC63F;font-weight:600;">&#128197; '+esc(whenTxt)+'</div>';
+            h += '<div style="font-size:0.68rem;color:#666;margin-top:3px;">Closing: '+esc(closer)+(l.step ? ' &middot; step '+l.step : '')+'</div>';
+            h += '</div>';
+          });
+          h += '</div>';
+        }
+        return h;
       }
 
       // ── Tech Dashboard view ────────────────────────────────────────────────
@@ -36455,29 +36537,48 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         // ── Booked by me (read-only) ────────────────────────────────────────
         // Deals this rep set that a closing Tech is running. Not editable — two people
         // editing one appointment is how a customer gets called twice with two times.
-        if (handedOff.length) {
-          h += '<div style="margin-top:22px;padding-top:16px;border-top:1px solid rgba(255,255,255,0.08);">';
-          h += '<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:4px;">';
-          h += '<span style="font-size:0.82rem;font-weight:800;">&#129309; Booked by me</span>';
-          h += '<span style="font-size:0.7rem;color:#8DC63F;font-weight:700;">'+handedOff.length+'</span>';
-          h += '</div>';
-          h += '<div style="font-size:0.7rem;color:#777;line-height:1.5;margin-bottom:10px;">You set these &mdash; a closing Tech is running them. You still earn the setter share. View only.</div>';
-          handedOff.forEach(function(l) {
-            var nm = ((l.first_name||'')+' '+(l.last_name||'')).trim() || l.title_owner || 'No name';
-            var when = l.diagnostic_date ? new Date(l.diagnostic_date) : null;
-            var whenTxt = when && !isNaN(when.getTime())
-              ? when.toLocaleString('en-US',{ weekday:'short', month:'short', day:'numeric', hour:'numeric', minute:'2-digit' })
-              : 'No appointment date';
-            var closer = _closerLabel(l.rep_id);
-            h += '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:11px 13px;margin-bottom:7px;">';
-            h += '<div style="font-size:0.85rem;font-weight:700;margin-bottom:2px;">'+esc(nm)+'</div>';
-            h += '<div style="font-size:0.72rem;color:#888;margin-bottom:4px;">'+esc(l.address||'')+'</div>';
-            h += '<div style="font-size:0.72rem;color:#8DC63F;font-weight:600;">&#128197; '+esc(whenTxt)+'</div>';
-            h += '<div style="font-size:0.68rem;color:#666;margin-top:3px;">Closing: '+esc(closer)+(l.step ? ' &middot; step '+l.step : '')+'</div>';
-            h += '</div>';
-          });
+        h += handedOffHtml();
+      }
+
+      // ── Pipeline view (2026-10-29, per Dennis: Tech portal matches the admin Pipeline) ──
+      // One screen for this person's own leads + jobs: type chips, the 8 shared stages, the new lead card
+      // (headline next step) and a rep-safe job card (own pay only, never company margin or other people's pay).
+      else if (salesView === 'pipeline') {
+        var _rq = _rpl.q.trim().toLowerCase(), _rqd = _rq.replace(/\D/g, '');
+        var _seen = {}, _pool = [];
+        allRecords.concat(payJobs).forEach(function(c){ if (!_seen[c.id]) { _seen[c.id] = 1; _pool.push(c); } });
+        var _rows = _pool.filter(function(c){ return !c.black_box || c.lead_source === 'lead_locker'; }).map(function(c){ return { c: c, job: !!c.sold_type, type: _plTypeKey(c), stage: _sharedStage(c).i, aside: _plIsAside(c) }; });
+        if (_rq) _rows = _rows.filter(function(r){ var c = r.c, hay = ((c.first_name||'')+' '+(c.last_name||'')+' '+(c.address||'')+' '+(c.email||'')).toLowerCase(); return hay.indexOf(_rq) > -1 || (_rqd.length >= 3 && String(c.phone||'').replace(/\D/g,'').indexOf(_rqd) > -1); });
+        var _nAside = _rows.filter(function(r){ return r.aside; }).length, _live = _rows.filter(function(r){ return !r.aside; });
+        var _inT = function(r){ return _rpl.type === 'all' || r.type === _rpl.type; };
+        var _tc = {}; _live.forEach(function(r){ _tc[r.type] = (_tc[r.type]||0) + 1; });
+        var _chips = PL_TYPES.filter(function(t){ return t[0] === 'all' || _tc[t[0]] || _rpl.type === t[0]; }).map(function(t){
+          var n = t[0] === 'all' ? _live.length : (_tc[t[0]]||0), on = _rpl.type === t[0] && !_rpl.aside;
+          return '<button onclick="_rplSet(\'type\',\''+t[0]+'\')" style="width:auto;padding:6px 14px;border-radius:100px;font-size:0.74rem;font-weight:700;cursor:pointer;border:1px solid '+(on?'#8DC63F':'rgba(255,255,255,0.12)')+';background:'+(on?'rgba(141,198,63,0.16)':'transparent')+';color:'+(on?'#8DC63F':'#aaa')+';">'+t[1]+' <span style="opacity:.7;">'+n+'</span></button>';
+        }).join('');
+        var _base = _rpl.aside ? _rows.filter(function(r){ return r.aside && _inT(r); }) : _live.filter(_inT);
+        var _sc = [0,0,0,0,0,0,0,0]; _base.forEach(function(r){ _sc[r.stage]++; });
+        var _seg = SHARED_STAGES.map(function(n,i){
+          var on = _rpl.stage === i, zero = !_sc[i];
+          return '<button onclick="_rplSet(\'stage\','+(on?-1:i)+')" style="flex:1;min-width:84px;padding:9px 6px;border-radius:10px;border:1px solid '+(on?'#8DC63F':'rgba(255,255,255,0.1)')+';background:'+(on?'rgba(141,198,63,0.16)':'rgba(255,255,255,0.03)')+';color:'+(zero?'#555':'#eee')+';cursor:pointer;text-align:center;">'+
+            '<div style="font-size:1.05rem;font-weight:800;">'+_sc[i]+'</div><div style="font-size:0.62rem;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;opacity:0.8;">'+(i+1)+' '+esc(n)+'</div></button>';
+        }).join('');
+        var _list = _base.filter(function(r){ return _rpl.stage < 0 ? r.stage !== 7 : r.stage === _rpl.stage; });
+        _list.sort(function(a,b){ return new Date(b.c.updated_at||b.c.created_at||0) - new Date(a.c.updated_at||a.c.created_at||0); });
+        h += (typeof window.followUpsBannerHtml === 'function' ? window.followUpsBannerHtml() : '');
+        h += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px;"><input id="rplSearch" type="text" placeholder="&#128269; Search name, address, phone, email" value="'+esc(_rpl.q)+'" oninput="_rplSearch(this.value)" style="flex:1;min-width:200px;">'+
+          (_nAside ? '<button onclick="_rplSet(\'aside\','+(!_rpl.aside)+')" style="width:auto;padding:6px 14px;border-radius:100px;font-size:0.74rem;font-weight:700;cursor:pointer;border:1px solid '+(_rpl.aside?'#f5a623':'rgba(255,255,255,0.12)')+';background:transparent;color:'+(_rpl.aside?'#f5a623':'#aaa')+';">Set aside '+_nAside+'</button>' : '')+
+          '<button onclick="openSalesArchivedModal()" style="width:auto;padding:9px 13px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:100px;color:#aaa;font-size:0.74rem;font-weight:700;cursor:pointer;">&#128451; Archived</button></div>'+
+          '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">'+_chips+'</div>'+
+          '<div style="font-size:0.62rem;color:#777;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:5px;">Leads: 1&ndash;3 &middot; Jobs: 4&ndash;8'+(_rpl.aside?' &middot; showing set-aside records':'')+'</div>'+
+          '<div style="display:flex;gap:6px;overflow-x:auto;margin-bottom:14px;">'+_seg+'</div>';
+        if (!_list.length) h += '<div style="text-align:center;padding:32px;color:#555;">Nothing here'+(_rq?' for &ldquo;'+esc(_rpl.q)+'&rdquo;':'')+'. '+(_rq?'':'Tap + New Lead to add one.')+'</div>';
+        else {
+          h += '<div class="sales-card-grid">';
+          _list.forEach(function(r){ h += r.job ? repJobCardHtml(r.c) : _plLeadCardHtml(r.c, { rep: true }); });
           h += '</div>';
         }
+        h += handedOffHtml();
       }
 
       // ── Jobs view ───────────────────────────────────────────────────────────
@@ -36491,53 +36592,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           h += '<div style="text-align:center;padding:32px;color:#555;">No '+(salesJobCat==='new_solar'?'Axia/QCells':'FixMy.Energy')+' jobs yet.</div>';
         } else {
           h += '<div class="sales-card-grid">';
-          viewJobs.forEach(function(j) {
-            var isNSJ = j.lead_category === 'new_solar';
-            h += '<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:14px;margin-bottom:8px;">';
-            h += '<div style="display:flex;justify-content:space-between;align-items:flex-start;">';
-            if (isNSJ) {
-              var nsJRec = NS_STATUSES[j.solar_status]||{label:'Axia/QCells',color:'#4a9eff'};
-              h += '<div style="flex:1;"><div style="font-size:0.92rem;font-weight:700;">'+(j.first_name||'')+' '+(j.last_name||'')+'</div>'+
-                '<div style="font-size:0.75rem;color:#888;margin-top:2px;">'+(j.address||'No address')+'</div>'+
-                (j.monthly_bill?'<div style="font-size:0.7rem;color:#8DC63F;margin-top:2px;">$'+j.monthly_bill+'/mo</div>':'')+
-              '</div>';
-              h += '<div style="background:'+nsJRec.color+'22;border-radius:6px;padding:4px 10px;font-size:0.72rem;font-weight:700;color:'+nsJRec.color+';border:1px solid '+nsJRec.color+'44;">'+nsJRec.label+'</div>';
-              h += '</div>';
-              h += _installDateBlockHtml(j);
-              h += '<div id="repJobComm_'+j.id+'">'+_axiaCommLineHtmlForRep(j.id, person)+'</div>';
-              h += '</div>';
-            } else {
-              var inv = j.invoice_status||'';
-              var iClr = inv==='paid'?'#8DC63F':inv==='overdue'?'#ef4444':'#ffaa00';
-              var iBg  = inv==='paid'?'rgba(141,198,63,0.1)':inv==='overdue'?'rgba(239,68,68,0.1)':'rgba(255,170,0,0.1)';
-              var iLbl = {paid:'✓ Paid',pending:'⏳ Payment Due',sent:'📧 Invoice Sent',overdue:'⚠ Overdue',draft:'Draft'}[inv]||inv;
-              var opsHtml = '';
-              if (j.assigned_ops && (j.diagnostic_date||j.install_date)) {
-                var partnerName = OPS_NAMES[j.assigned_ops]||j.assigned_ops;
-                var apptStr = fmtDt(j.install_date||j.diagnostic_date);
-                opsHtml = '<div style="background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.2);border-radius:8px;padding:8px 12px;margin-top:8px;font-size:0.78rem;"><span style="color:#8DC63F;font-weight:700;">&#10003; '+partnerName+' Assigned</span>'+(apptStr?'<br/><span style="color:#aaa;font-size:0.72rem;">&#128197; '+apptStr+'</span>':'')+'</div>';
-              } else if (j.ops_ready) {
-                opsHtml = '<div style="background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.2);border-radius:8px;padding:8px 12px;margin-top:8px;font-size:0.78rem;color:#ffaa00;font-weight:700;">&#9203; Pending Admin Assignment</div>';
-              } else {
-                opsHtml = '<button onclick="sendToOps(\''+j.id+'\')" style="margin-top:8px;width:100%;padding:9px;background:rgba(249,115,22,0.1);border:1px solid rgba(249,115,22,0.3);border-radius:8px;color:#f97316;font-size:0.78rem;font-weight:700;cursor:pointer;">&#128228; Send to Ops</button>';
-              }
-              h += '<div style="flex:1;"><div style="font-size:0.92rem;font-weight:700;">'+(j.first_name||'')+' '+(j.last_name||'')+'</div>'+
-                '<div style="font-size:0.75rem;color:#888;margin-top:2px;">'+(j.address||'No address')+'</div>'+
-                (j.install_type?'<div style="font-size:0.7rem;color:#666;margin-top:1px;">'+j.install_type+'</div>':'')+
-              '</div>';
-              var propStatus = (j.proposal&&j.proposal.status)||'';
-              var propBadge = propStatus==='accepted' ? '<span style="font-size:0.65rem;padding:2px 7px;border-radius:20px;background:rgba(141,198,63,0.15);color:#8DC63F;border:1px solid rgba(141,198,63,0.3);margin-left:6px;">✓ Accepted</span>'
-                : propStatus==='sent' ? '<span style="font-size:0.65rem;padding:2px 7px;border-radius:20px;background:rgba(74,158,255,0.1);color:#4a9eff;border:1px solid rgba(74,158,255,0.25);margin-left:6px;">Proposal Sent</span>' : '';
-              h += '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">';
-              h += '<div style="background:'+iBg+';border-radius:6px;padding:4px 10px;font-size:0.72rem;font-weight:700;color:'+iClr+';">'+iLbl+'</div>';
-              h += '</div>';
-              h += '</div>';
-              if (propBadge) h += '<div style="margin-top:6px;">'+propBadge+'</div>';
-              h += _installDateBlockHtml(j);
-              h += '<div id="repJobComm_'+j.id+'">'+_jobCommLineHtmlForRep(j.id, person)+'</div>';
-              h += (j.rep_id && j.rep_id !== person.id ? '' : opsHtml)+'</div>'; // handed-off deal: closer runs ops, setter just follows
-            }
-          });
+          viewJobs.forEach(function(j) { h += repJobCardHtml(j); });
           h += '</div>'; // .sales-card-grid
         }
       }
@@ -37324,6 +37379,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // divs in place once the shared cache has data, no full re-render needed. Axia/QCells
       // now gets the same treatment as FixMy (2026-08-29) — the rep-side card previously
       // showed no commission info at all for that pipeline.
+      if (salesView === 'pipeline') {
+        var _pf = payFixmyJobs.map(function(j){ return j.id; }), _pn = payNSJobs.map(function(j){ return j.id; });
+        Promise.all([_pf.length ? _loadFixmyJobCommissions(_pf) : 0, _pn.length ? _loadAxiaJobCommissions(_pn) : 0]).then(function(){
+          payFixmyJobs.forEach(function(j){ var el = document.getElementById('repJobComm_'+j.id); if (el) el.innerHTML = _jobCommLineHtmlForRep(j.id, person); });
+          payNSJobs.forEach(function(j){ var el = document.getElementById('repJobComm_'+j.id); if (el) el.innerHTML = _axiaCommLineHtmlForRep(j.id, person); });
+        });
+      }
       if (salesView === 'jobs' && salesJobCat !== 'new_solar' && payFixmyJobs.length) {
         _loadFixmyJobCommissions(payFixmyJobs.map(function(j){ return j.id; })).then(function(){
           payFixmyJobs.forEach(function(j){ var el = document.getElementById('repJobComm_'+j.id); if (el) el.innerHTML = _jobCommLineHtmlForRep(j.id, person); });
@@ -37614,6 +37676,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }
       salesView=v; sessionStorage.setItem('salesView_'+person.id,v); renderSales();
     };
+    window._rplSet = function(k, v) { _rpl[k] = v; if (k === 'type' || k === 'aside') _rpl.stage = -1; renderSales(); };
+    window._rplSearch = function(v) { _rpl.q = v; clearTimeout(window._rplT); window._rplT = setTimeout(function() { renderSales(); var el = document.getElementById('rplSearch'); if (el) { el.focus(); el.setSelectionRange(v.length, v.length); } }, 250); };
     window.dismissWelcome = function(id) { try { sessionStorage.removeItem('showWelcome_'+id); } catch(e){} renderSales(); };
     window.renderSales = renderSales;
     window.salesRerender = function() { renderSales(); };
