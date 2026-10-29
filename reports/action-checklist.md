@@ -39,3 +39,7 @@ Status: [ ] open · [x] done · [-] dismissed
 ## H. New SEO pages (added 2026-10-29, after deploy)
 - [ ] H1. Request indexing in Search Console (5/day) for the 5 new guides first: /solar-panels-not-producing, /solar-inverter-replacement, /solar-monitoring-offline, /add-powerwall-to-existing-solar, /solar-system-health-check. Then the 19 new city pages (list is in sitemap.xml).
 - [ ] H2. Submit sitemap.xml again in Search Console (Sitemaps → resubmit) so Google sees all 79 pages.
+- [ ] H3. Utah (Salt Lake Valley): after deploy, request indexing for /utah-solar-repair and then the 16 city pages (5/day). Pages are in sitemap.xml.
+- [ ] H4. Utah operations: bookings from Utah are flagged Virtual automatically (50+ miles from every Tech). To allow in-person visits there, enter a Utah ZIP as a Tech's home base (Team card). Tell Claude who the Utah electrician/partner is so we can assign jobs to them.
+- [ ] H5. Setter recruiting: post the setter job on LinkedIn (1 free post), Facebook groups, UCSD/SDSU/college boards, Nextdoor, using links like https://fixmy.energy/careers?utm_source=linkedin&utm_medium=job-board&utm_campaign=setter-nov . Applicants show their source in the Hiring tab.
+- [ ] H6. Review the careers page income claims ($50-90K year-1 average, $150K top performer): keep only what you can back up with real payroll numbers.

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Generates problem/service landing pages (high-intent searches). Run: python3 scripts/build-service-pages.py
-# ORDER MATTERS: each script re-imports build-county-pages.py (which rewrites the hub). Run: county -> service -> city.
+# ORDER MATTERS: county -> service -> city -> utah (county rewrites the hub).
 Content is practical, no prices, no promised outcomes. Reuses helpers from build-county-pages.py."""
 import importlib.util, json, re
 spec = importlib.util.spec_from_file_location('cp', 'scripts/build-county-pages.py'); cp = importlib.util.module_from_spec(spec); spec.loader.exec_module(cp)
