@@ -139,6 +139,7 @@ exports.handler = async function(event) {
   const assignedUserId = await resolveAssignedUserId(ghlHeaders);
   let appointmentId;
   let apptError = null;
+  const virtualMeetUrl = (virtual === true) ? (require('./lib/virtual-meet').meetFor({}) || '') : '';
   try {
     const apptResp = await fetch(`${GHL_BASE}/calendars/events/appointments`, {
       method:  'POST',
@@ -152,8 +153,16 @@ exports.handler = async function(event) {
         endTime:             apptEndISO,
         // Virtual (self-service / remote-assist) evaluations always start with "Virtual" so the team and customer can tell them apart on the calendar.
         title:               `${virtual === true ? 'Virtual Solar Evaluation' : 'Solar Evaluation'} — ${(firstName || '')} ${(lastName || '')}`.trim(),
-        meetingLocationType: 'default',
-        address:             address || undefined,
+        // Virtual evaluations: the calendar invite's location is the Google Meet link (not the customer's home),
+        // so it shows on the invite the customer and team open. No link configured -> a plain note, never an invented URL.
+        meetingLocationType: (virtual === true && virtualMeetUrl) ? 'custom' : 'default',
+        address:             virtual === true
+                               ? (virtualMeetUrl || 'Virtual evaluation: Google Meet link is sent by text and email')
+                               : (address || undefined),
+        // The customer's address and contact details go in the description for the team.
+        description:         virtual === true
+                               ? ('Virtual Solar Evaluation (45 min, Google Meet).' + (virtualMeetUrl ? '\nJoin: ' + virtualMeetUrl : '') + '\nCustomer address: ' + (address || 'n/a') + '\nPhone: ' + (phone || 'n/a') + '\nEmail: ' + (email || 'n/a'))
+                               : undefined,
         // Manual/override times (Black Box Dialer, editor) aren't validated free
         // slots and can fall outside the calendar's configured availability, so
         // GHL would silently reject them. These flags let an API booking land at
