@@ -156,6 +156,7 @@ def hub_html():
       'Free solar evaluation, inverter and panel diagnostics, and Powerwall battery retrofits in Los Angeles, Orange, Riverside, San Bernardino, Imperial and San Diego counties.',
       SITE+'/southern-california-solar-repair', [json.dumps(hub), faqld, bc], body)
 
-for c in COUNTIES: open(c['slug']+'.html', 'w', encoding='utf-8').write(county_html(c))
-open('southern-california-solar-repair.html', 'w', encoding='utf-8').write(hub_html())
-print('wrote', len(COUNTIES) + 1, 'pages; tracking block found:', bool(tracking))
+if __name__ == '__main__':
+    for c in COUNTIES: open(c['slug']+'.html', 'w', encoding='utf-8').write(county_html(c))
+    open('southern-california-solar-repair.html', 'w', encoding='utf-8').write(hub_html())
+    print('wrote', len(COUNTIES) + 1, 'pages; tracking block found:', bool(tracking))

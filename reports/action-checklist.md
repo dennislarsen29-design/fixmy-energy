@@ -35,3 +35,7 @@ Status: [ ] open · [x] done · [-] dismissed
 
 ## F. Ads
 - [ ] F1. Send Claude: current Google Ads monthly spend, and which video ads (Quinn vs Quoya) run where. Then compare cost per booked evaluation.
+
+## H. New SEO pages (added 2026-10-29, after deploy)
+- [ ] H1. Request indexing in Search Console (5/day) for the 5 new guides first: /solar-panels-not-producing, /solar-inverter-replacement, /solar-monitoring-offline, /add-powerwall-to-existing-solar, /solar-system-health-check. Then the 19 new city pages (list is in sitemap.xml).
+- [ ] H2. Submit sitemap.xml again in Search Console (Sitemaps → resubmit) so Google sees all 79 pages.
