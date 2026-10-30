@@ -1,4 +1,4 @@
-var CACHE = 'fixmy-v4';
+var CACHE = 'fixmy-v5';   // bumped 2026-10-30: purges /portal pages cached cache-first by the old rule below
 
 // Pre-cache the shell on install
 self.addEventListener('install', function(e) {
@@ -30,7 +30,12 @@ self.addEventListener('fetch', function(e) {
   if (url.includes('supabase.co') || url.includes('.netlify/functions') || url.includes('googleapis.com/maps/api')) return;
 
   var origin = self.location.origin;
-  var isAppShell = url.includes('portal.html')
+  // ⚠️ 2026-10-30: the real app URLs are /portal and /portal?r=ops&email=... (NO ".html"), so the old check
+  // never matched them — they fell into the cache-first branch below and Ops/reps kept getting an old
+  // copy of the portal (notes/photo fixes "missing"). Every page navigation is now network-first.
+  var isAppShell = e.request.mode === 'navigate'
+    || e.request.destination === 'document'
+    || url.includes('portal.html')
     || url === origin + '/'
     || url === origin
     || url.startsWith(origin + '/?')
