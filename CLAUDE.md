@@ -2832,3 +2832,17 @@ The admin lead editor now shows `window._edStageBarHtml(c)` (type · Stage N of 
 - **Dead = Do Not Contact on both pipelines:** `exitSave` sets `dnc=true` with Dead; `lib/notify.js` refuses SMS/email to `disposition_exit==='dead'`; `recapture-send.js` also refuses `dnc`. Reopen does NOT clear `dnc` (clear by hand if wrong). Inbound STOP already sets `dnc` (`sms-reply-inbound.js`).
 - **Paused:** rep-approved reminder every 3 days, 3 total (2 if sensitive); Not interested keeps 30/30-day touches. Sends still need a rep tap.
 - **Newsletter list:** `newsletter-listing.js` (daily) sets `customers.newsletter_status='listed'` for Not-interested leads silent 60 days and Paused leads that finished their reminders; never for Dead/DNC/sold/no email/Black Box, Lead Locker or Sunrun leads. `newsletter-unsubscribe.js` + `lib/newsletter.js` give a stateless unsubscribe link. Migration applied. **No newsletter is sent yet** — email only, include `unsubscribeUrl(id)`; no SMS newsletter.
+
+## Quoya images & S.U.N. hero (2026-10-30, per Dennis — "save Quoya images so we can use them later")
+Quoya is the AI assistant's face. Keep every version; Dennis iterates on her look. All files live in `assets/` (committed, so they survive sessions).
+| File | What it is | Where used |
+|---|---|---|
+| `quoya-cgi.webp` | **LIVE** CGI hero image (currently = v2 mature) | S.U.N. hero (`.sun-brief::after`, `mix-blend-mode:screen`) |
+| `quoya-cgi-v2-mature.webp` | Mature, professional CGI Quoya (late 30s–40s), big eyes, flowing lime neural-network hair. Canva media id **`MAHZhgRytNc`** | current choice (2026-10-30) |
+| `quoya-cgi-v1-younger.webp` | Younger, "cute" CGI Quoya, same style. Canva media id **`MAHZhfUes64`** | Dennis asked for ~10 years older, so retired but kept |
+| `quoya-cutout.webp` | Real-photo cut-out of the video-poster woman (GrabCut), transparent background | first hero attempt, unused now |
+| `quoya-poster.png` | 320px poster frame of the live-avatar video woman | `quoya-avatar.js` poster / customer avatar |
+- **Generated with** Canva `generate-image` (square, on a pure black background so a screen blend removes the background). Prompt core: *CGI AI assistant "Quoya", bust portrait, large bright expressive eyes, long flowing hair of glowing lime-green (#8DC63F) neural-network strands, semi-translucent holographic skin with fine wireframe mesh, soft rim light, centered on pure black, no text.* Mature version added: *woman in her late 30s to early 40s, poised, intelligent, warm, calm confident smile, refined features, executive and trustworthy.*
+- ⚠️ The tool only returns a **200px** preview, which was upscaled to 400px. For a crisper file, open the Canva media id above and export larger.
+- **Hero build** (portal.html `_sunCss`): `.sun-brief` is always dark (own tokens) in both themes; `::before` = the sphere (dark core + lime rim, rotating conic shimmer via `@property --sunang`, halo rings); `::after` = Quoya. Nothing may glow over her face (Dennis, 2026-10-30) — keep the sphere's centre dark. Narrow screens show a 104px orb in the corner. Runs on Admin, Tech and Setter S.U.N. (Ops does not use `.sun-brief`).
+- To swap her look: replace `assets/quoya-cgi.webp` (keep a black background), nothing else changes.
