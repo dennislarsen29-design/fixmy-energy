@@ -75,28 +75,34 @@ exports.handler = async function (event) {
     '- Use ONLY these section headings, each on its own line ending with a colon, in this order, and OMIT any section the notes do not support: ' + HEADINGS.join(' | '),
     '- Put the plain-text body directly under its heading. Separate sections with one blank line. Bullets (a leading "- ") are fine for lists of items.',
     '',
+    '- The notes may be a rough call transcript with small talk. Extract only the diagnostic findings. If there are NO findings at all, return an empty report string and explain in needs_detail.',
+    '',
     'Respond with ONLY valid JSON, no extra text:',
     '{ "report": "<the report text>", "needs_detail": "<ONE short sentence telling the owner what crucial information is missing or unclear in the notes (e.g. what the recommended fix is), or null if the notes are enough>" }'
   ].filter(function (l) { return l !== ''; }).join('\n');
 
   try {
-    const resp = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({
-        model: 'claude-sonnet-5',
-        max_tokens: 900,
-        messages: [{ role: 'user', content: prompt }]
-      })
-    });
-    const data = await resp.json();
+    // max_tokens must leave room for any internal reasoning; at 900 the model could spend it all and return NO text
+    // (the reported "Could not read the draft: " with nothing after it). One retry with a bigger budget if text is empty.
+    const callOnce = async (maxTokens) => {
+      const r = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
+        body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: maxTokens, messages: [{ role: 'user', content: prompt }] })
+      });
+      return { resp: r, data: await r.json() };
+    };
+    const textOf = (d) => ((d.content || []).filter(function (b) { return b && b.type === 'text'; }).map(function (b) { return b.text; }).join('\n') || '').trim();
+    let { resp, data } = await callOnce(4000);
+    if (resp.ok && !textOf(data)) { console.error('diag-report-draft empty text, stop_reason:', data.stop_reason); ({ resp, data } = await callOnce(8000)); }
     if (!resp.ok) {
       const upstream = (data.error && data.error.message) || ('Anthropic HTTP ' + resp.status);
       console.error('diag-report-draft upstream failed:', resp.status, upstream);
       // Rep-safe generic error; raw cause only in the separate detail field (portal shows it to admin only).
       return reply({ error: 'unavailable', detail: String(upstream).slice(0, 300) });
     }
-    let raw = ((data.content || []).filter(function (b) { return b && b.type === 'text'; }).map(function (b) { return b.text; }).join('\n') || '').trim()
+    if (!textOf(data)) return reply({ error: 'unparseable', detail: 'Quoya returned no text (stop_reason: ' + (data.stop_reason || 'unknown') + ')' });
+    let raw = textOf(data)
       .replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
     const brace = raw.indexOf('{'); if (brace > 0) raw = raw.slice(brace);
     let parsed;
@@ -110,7 +116,10 @@ exports.handler = async function (event) {
       }
     }
     let report = String(parsed.report || '').replace(/\*\*/g, '').trim();
-    if (!report) return reply({ error: 'unparseable', detail: 'Empty draft' });
+    if (!report) {
+      const why = typeof parsed.needs_detail === 'string' && parsed.needs_detail.trim();
+      return reply({ error: 'no_findings', detail: why ? why.slice(0, 220) : 'The notes do not describe any diagnostic findings yet.' });
+    }
     const needs = typeof parsed.needs_detail === 'string' && parsed.needs_detail.trim() ? parsed.needs_detail.trim().slice(0, 220) : null;
     return reply({ report: report.slice(0, 3500), needs_detail: needs });
   } catch (e) {
