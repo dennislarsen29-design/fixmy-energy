@@ -28891,6 +28891,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       build.diagCredit = parseFloat(opt.diag_credit) || 0;
       if (!build.diagCredit && opt.line_items) { var _dcl = opt.line_items.find(function(li){ return li.id === 'diagnostic_credit' && (li.price||0) < 0; }); if (_dcl) build.diagCredit = Math.abs(_dcl.price); }
       build.pillNote = opt.pill_note || '';
+      if (opt.kind === 'axia' || opt.kind === 'service') { build.kind = opt.kind; build.title = opt.title || ''; build.participate = false; }
       // Rehydrate the reroof + R&R blocks (their line items are display-only echoes,
       // filtered out below so they can't double-count against the recomputed price)
       if (opt.reroof && opt.reroof.squares > 0) {
@@ -29302,7 +29303,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // Build options from _propBuilds (menu builder state)
     var options = [];
     _propBuilds.forEach(function(build, optIdx) {
-      if (!build.lineItems.length || !build.price) return;
+      if (!build.lineItems.length || (!build.price && build.kind !== 'axia')) return;
       var price = build.price;
       var primaryItem = build.lineItems.find(function(li){ return !li.isCustom; });
       var partPriceEl = document.getElementById('propPartPrice_' + optIdx);
@@ -29339,6 +29340,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         milestones: milestones,
         line_items: build.lineItems.map(function(li){ return { id: li.id || null, name: li.name, price: li.price, isCustom: !!li.isCustom }; })
       };
+      if (build.kind === 'axia' || build.kind === 'service') {
+        // Template options: an Axia/QCells upgrade (no price here — Aurora carries it) and a flat service replacement.
+        opt.kind = build.kind;
+        opt.id = build.kind === 'axia' ? 'axia_upgrade' : 'service_replacement';
+        opt.title = build.title || (build.kind === 'axia' ? 'Second solar system (Axia / QCells) + inverter swap' : 'Service replacement — inverter swap');
+        opt.participate = false; opt.participate_price = null;
+        if (build.kind === 'axia') { opt.price = 0; opt.price_hidden = true; }
+        else opt.sign_pay = true;
+      }
       if (build.teslaRebate) opt.tesla_rebate = build.teslaRebate;
       // Only ever sent when the rep has explicitly confirmed eligibility (the checkbox
       // above build.sdcpQualified) — territory alone is not enough, per Dennis: this also
@@ -29406,7 +29416,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
 
     // Sort options descending by price — most expensive = Option 1
-    options.sort(function(a, b) { return b.price - a.price; });
+    options.sort(function(a, b) { return (a.kind === 'axia' ? -1 : 0) - (b.kind === 'axia' ? -1 : 0) || b.price - a.price; });
 
     // Compute savings scenarios for each option — production-based (kWh × rate), not bill-offset
     var custRec = adminCustomers.find(function(x){ return x.id === id; });
@@ -29421,6 +29431,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       { key: 'significant',  confidence: 1.15, r: 0.10 }
     ];
     options.forEach(function(opt, oIdx) {
+      if (opt.kind) return;   // template options (Axia / service) carry no savings model
       var buildForOpt = _propBuilds[oIdx] || _propBuilds[0];
       var annualUsageKwh = _usage.annualUsageKwh;
       var prod = _propCalcBaseProduction(buildForOpt, _propSolarData, custRec ? custRec.system_size : null, annualUsageKwh);
@@ -29609,7 +29620,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // ── PROPOSAL MENU BUILDER HELPERS ─────────────────────────────────────────
 
   function _propInitBuild() {
-    return { lineItems: [], price: 0, basePrice: 0, priceManual: false, deposit: 0, participate: true, partPrice: null, teslaRebate: 0, sdcpRebate: 0, sdcpQualified: false, redline: 0, baseDealerCost: 0, dealerCostManual: false, auroraImg: '', auroraPortal: '', nonExport: false, restoreArray: false, arrayOutputPct: 25, reroof: null, rr: null, diagCredit: 0, pillNote: '' };
+    return { lineItems: [], price: 0, basePrice: 0, priceManual: false, deposit: 0, participate: true, partPrice: null, teslaRebate: 0, sdcpRebate: 0, sdcpQualified: false, redline: 0, baseDealerCost: 0, dealerCostManual: false, auroraImg: '', auroraPortal: '', nonExport: false, restoreArray: false, arrayOutputPct: 25, reroof: null, rr: null, diagCredit: 0, pillNote: '', kind: null };
   }
   // Reroof squares from surface area (100 sq ft = 1 square). Cost is a fixed $700/sq
   // (the sub-sheet rate); the charge-per-square is the editable retail the rep sets.
@@ -29713,6 +29724,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   function _propRecalcRedline(optIdx) {
     var build = _propBuilds[optIdx];
     if (!build) return;
+    // Axia/QCells option: priced in Aurora, never here — no price, no dealer cost, no commission math.
+    if (build.kind === 'axia') { build.price = 0; build.redline = 0; build.partPrice = null; return; }
     // SDCP upfront incentive follows the battery size + income tier unless the rep typed their own.
     if (build.sdcpRebate > 0 && !build.sdcpManual) { var _f = _propSdcpFormula(build); if (_f > 0) build.sdcpRebate = _f; }
     var lineSum = build.lineItems
@@ -29764,6 +29777,29 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (nameEl)  nameEl.value  = '';
     if (priceEl) priceEl.value = '';
     window._propUpdateTotal(optIdx);
+    window._propRenderBuilds();
+  };
+
+  // One-tap pair for a customer with a failed inverter who could also take a second Axia/QCells system:
+  //  Option 1 = Axia/QCells upgrade with the inverter swap included (NO price here — the Aurora design carries it)
+  //  Option 2 = flat service replacement, less the paid diagnostic fee (customer pays the difference).
+  window._propApplyAxiaServiceTemplate = function() {
+    var has = _propBuilds.some(function(b){ return b.lineItems && b.lineItems.length; });
+    if (has && !confirm('Replace the options currently in the builder with the Axia upgrade + service replacement template?')) return;
+    var cust = (typeof adminCustomers !== 'undefined' && adminCustomers) ? (adminCustomers.find(function(x){ return x.id === _propPropId; }) || {}) : {};
+    var credit = parseFloat(cust.invoice_amount) || 0;
+    var a = _propInitBuild();
+    a.kind = 'axia'; a.participate = false; a.diagCredit = credit; a.title = 'Second solar system (Axia / QCells) + inverter swap';
+    a.lineItems = [
+      { id: null, name: 'Second solar system upgrade (Axia / QCells)', price: 0, isCustom: true },
+      { id: null, name: 'Inverter swap included — failed inverter replaced with a new microinverter', price: 0, isCustom: true }
+    ];
+    var b = _propInitBuild();
+    b.kind = 'service'; b.participate = false; b.diagCredit = credit; b.title = 'Service replacement — inverter swap';
+    b.lineItems = [{ id: null, name: 'Service replacement — failed inverter swapped for a new microinverter', price: 1390, isCustom: true }];
+    b.priceManual = true; b.basePrice = 1390;
+    _propBuilds = [a, b];
+    _propRecalcRedline(0); _propRecalcRedline(1);
     window._propRenderBuilds();
   };
 
@@ -30353,6 +30389,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     });
     // Add Another Option
     h += '<div data-pstep="1">';
+    h += '<button onclick="_propApplyAxiaServiceTemplate()" style="width:100%;padding:9px;margin-bottom:6px;background:rgba(0,150,255,0.05);border:1px dashed rgba(0,150,255,0.3);border-radius:10px;color:#5bb4ff;cursor:pointer;font-size:0.74rem;font-weight:600;">&#9889; Template: Axia upgrade + service replacement (inverter swap)</button>';
     h += '<button onclick="_propAddOption()" style="width:100%;padding:9px;background:rgba(141,198,63,0.03);border:1px dashed rgba(141,198,63,0.22);border-radius:10px;color:#8DC63F;cursor:pointer;font-size:0.77rem;font-weight:600;letter-spacing:0.01em;">&#65291; Add Another Option</button>';
     h += '</div>';
     h += _propReviewHtml();
@@ -30364,7 +30401,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (_subEl) _subEl.style.display = 'none';
     // Footer: Next on steps 1-2, Send (or Request Approval) on step 3
     var _anyBelowMin = _propBuilds.some(function(b) {
-      if (!b.lineItems.length) return false;
+      if (!b.lineItems.length || b.kind) return false;
       return Math.round((b.price + (b.diagCredit||0) - b.redline) * 0.40) < 1000;
     });
     var _st = window._propStep || 1;
@@ -30411,7 +30448,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   }
   function _propReviewHtml() {
     var any = _propBuilds.some(function(b){ return b.lineItems.length; });
-    var below = _propBuilds.some(function(b){ return b.lineItems.length && Math.round(Math.max(0, b.price + (b.diagCredit||0) - b.redline) * 0.40) < 1000; });
+    var below = _propBuilds.some(function(b){ return b.lineItems.length && !b.kind && Math.round(Math.max(0, b.price + (b.diagCredit||0) - b.redline) * 0.40) < 1000; });
     if (!any) return '<div data-pstep="3" style="font-size:0.8rem;color:#ef4444;margin-bottom:12px;">Nothing to send yet &mdash; go back to step 1 and pick at least one item.</div>';
     return '<div data-pstep="3" style="background:rgba(141,198,63,0.05);border:1px solid rgba(141,198,63,0.25);border-radius:12px;padding:12px 14px;margin-bottom:12px;">' +
       '<div style="font-size:0.7rem;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;color:#8DC63F;margin-bottom:2px;">Exactly what the customer will see</div>' +

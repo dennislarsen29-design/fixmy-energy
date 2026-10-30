@@ -30,6 +30,21 @@ exports.handler = async function (event, context, deps) {
   // Axia/QCells leads that went through the Internal Tool (Cosmic new system) follow the same chain.
   if (c.lead_category === 'new_solar' && !(prop.options && prop.options.length)) return out(200, { ok: true, skipped: 'axia' });
 
+  // Template options (Axia upgrade priced in Aurora / flat service replacement): no CPUC guide, no battery conversion.
+  // Alert the team with exactly what was accepted and what to do next.
+  const kopt = chain.acceptedOption(prop);
+  if (kopt && (kopt.kind === 'axia' || kopt.kind === 'service')) {
+    const kname = ((c.first_name || '') + ' ' + (c.last_name || '')).trim() || 'A customer';
+    const next = kopt.kind === 'axia'
+      ? 'Next: send the Aurora design / Axia paperwork. The diagnostic fee is credited toward the project.'
+      : 'Next: collect $' + Number(kopt.price || 0).toLocaleString('en-US', { minimumFractionDigits: 2 }) + ' (service replacement less the diagnostic credit) and schedule the inverter swap.';
+    const kmsg = '\u2705 ' + kname + ' approved "' + (kopt.title || kopt.name || 'their option') + '". ' + next;
+    const kctx = { doFetch, H, SUPA_URL };
+    let ktexted = 0;
+    try { for (const t of await chain.ownerPhones(kctx, c)) { const r2 = await notify.sendSms({ phone: t.phone, first_name: t.name }, kmsg, doFetch); if (r2.ok) ktexted++; } } catch (e) {}
+    return out(200, { ok: true, kind: kopt.kind, texted: ktexted, skipped: 'no_cpuc_for_kind' });
+  }
+
   // Battery sale -> switch the lead to Battery Retrofit accounting automatically (Revenue = the option's
   // System Price before Participate, Redline = its dealer cost). Same result as the admin's "Convert to
   // Battery Retrofit" button, minus the typing. Only when the option really has a Powerwall line, both
