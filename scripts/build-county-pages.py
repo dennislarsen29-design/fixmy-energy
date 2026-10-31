@@ -123,6 +123,20 @@ OTHERS_NOTE = 'Not sure which area you are in? <a href="/southern-california-sol
 CTA = ('<div class="cta-box"><h3>Get a free evaluation</h3><p>Tell us about your system and we will start with your photos and your bill. Where it makes sense, we will schedule a technician visit or a guided video evaluation. No obligation.</p>'
        '<a href="/book" class="cta-btn">Book a Free Evaluation &rarr;</a> <a href="tel:6197776527" style="margin-left:12px;font-weight:600;">Call %s</a></div>') % PHONE
 
+import glob, re
+def city_links(c):
+    # City pages that link up to this county page (they are written separately); link back down so crawlers and visitors can reach them.
+    out = []
+    for f in sorted(glob.glob('solar-repair-*.html')):
+        slug = f[:-5]
+        if slug.endswith('-county') or slug.endswith('-ut'): continue
+        t = open(f, encoding='utf-8').read()
+        if 'href="/%s"' % c['slug'] in t:
+            m = re.search(r'<h1[^>]*>(.*?)</h1>', t, re.S)
+            name = slug[len('solar-repair-'):].replace('-', ' ').title()
+            out.append('<a href="/%s">%s</a>' % (slug, name))
+    return ('<div class="related"><h3>Town pages in %s</h3>%s</div>' % (c['name'], ''.join(out))) if out else ''
+
 def county_html(c):
     others = ''.join('<a href="/%s">%s</a>' % (o['slug'], o['name']) for o in COUNTIES if o is not c)
     faq = ''.join('<div class="faq-q">%s</div><p>%s</p>' % (esc(q), esc(a)) for q, a in c['faqs'])
@@ -133,9 +147,9 @@ def county_html(c):
       '<h2>What is hard on solar here</h2>\n<p>%s</p>\n'
       '<h2>If your installer closed</h2>\n<p>%s</p>\n'
       '<p>See our guides for specific cases: <a href="/sunpower">SunPower</a>, <a href="/titan">Titan Solar</a>, <a href="/sunnova">Sunnova</a>, and <a href="/freedom-forever">Freedom Forever</a>.</p>\n'
-      '%s\n<h2>Common questions</h2>\n%s\n'
+      '%s\n<h2>Common questions</h2>\n%s\n%s\n'
       '<div class="related"><h3>Other Southern California areas</h3>%s<a href="/southern-california-solar-repair">All of Southern California</a></div>\n<p style="font-size:0.85rem;color:var(--muted);">%s</p>\n</article>') % (
-      esc(c['eyebrow']), esc(c['h1']), esc(c['lede']), esc(c['name']), esc(c['cities']), c['utilities'][0], c['utilities'][1], c['local'][0], esc(c['installers']), CTA, faq, others, OTHERS_NOTE)
+      esc(c['eyebrow']), esc(c['h1']), esc(c['lede']), esc(c['name']), esc(c['cities']), c['utilities'][0], c['utilities'][1], c['local'][0], esc(c['installers']), CTA, faq, city_links(c), others, OTHERS_NOTE)
     return page(c['title'], c['desc'], SITE+'/'+c['slug'], [jsonld_service(c), jsonld_faq(c), jsonld_bc(c)], body)
 
 def hub_html():
@@ -158,5 +172,5 @@ def hub_html():
 
 if __name__ == '__main__':
     for c in COUNTIES: open(c['slug']+'.html', 'w', encoding='utf-8').write(county_html(c))
-    open('southern-california-solar-repair.html', 'w', encoding='utf-8').write(hub_html())
+    # the hub page has hand-added sections (services, cities, Utah link); do not regenerate it here
     print('wrote', len(COUNTIES) + 1, 'pages; tracking block found:', bool(tracking))
