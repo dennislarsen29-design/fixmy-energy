@@ -40575,6 +40575,78 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (!codeHtml && !causes) out += '<div style="background:rgba(155,109,232,0.08);border:1px solid rgba(155,109,232,0.3);border-radius:12px;padding:12px;font-size:0.84rem;color:#444;margin-bottom:10px;">Quoya has no fault read yet. Add the error-screen photo in the next step and run <b>Quoya troubleshoot</b> &mdash; it researches the exact model and code.</div>';
       return out + '<div style="font-size:0.74rem;color:#777;margin-top:4px;">Skip ahead any time.</div>';
     }
+    // ── Equipment protocols (2026-10-31, per Dennis: "specific protocols when dealing with specific solar equipment that AI can help us
+    // cut the learning curve substantially with" — and the manufacturer is often out of business). A protocol = steps + a parser for what the
+    // equipment's OWN local installer interface reports. First entry: SunPower PVS6. Built from public community documentation of the
+    // PVS local interface (hass-sunpower / sungazer projects), NOT from SunPower or a field-tested run — so it is labelled DRAFT in the UI.
+    var OD_PROTOCOLS = { sunpower: { name: 'SunPower PVS6 + micro-inverters', status: 'draft', note: 'Draft protocol built from public community documentation of the PVS local installer interface. Not yet validated in the field — tell Solar Review what differs.' } };
+    function odNum(v) { var n = parseFloat(v); return isNaN(n) ? null : n; }
+    function odMedian(a) { if (!a.length) return null; var b = a.slice().sort(function(x, y){ return x - y; }), m = Math.floor(b.length / 2); return b.length % 2 ? b[m] : (b[m - 1] + b[m]) / 2; }
+    function odPvsAnalyze(raw, installed) {
+      var txt = String(raw || ''), i = txt.indexOf('{'), j = txt.lastIndexOf('}');
+      if (i < 0 || j <= i) return { error: 'That does not look like the device list. Open the DeviceList page, select everything (Cmd/Ctrl-A), copy, and paste it here.' };
+      var data; try { data = JSON.parse(txt.slice(i, j + 1)); } catch (e) { return { error: 'Could not read that text as the device list (it may have been cut off). Copy the whole page and try again.' }; }
+      if (!data || !Array.isArray(data.devices)) return { error: 'The text has no "devices" list. If the page asked you to log in or showed an error, resolve that first and pull it again.' };
+      var devs = data.devices, pvs = devs.filter(function(d){ return d.DEVICE_TYPE === 'PVS'; })[0] || null;
+      var inv = devs.filter(function(d){ return d.DEVICE_TYPE === 'Inverter'; }).map(function(d){
+        return { serial: String(d.SERIAL || '?'), state: String(d.STATE || 'unknown'), model: d.MODEL || '', descr: d.DESCR || '', kw: odNum(d.p_mppt1_kw != null ? d.p_mppt1_kw : d.p_3phsum_kw), v: odNum(d.v_mppt1_v), a: odNum(d.i_mppt1_a), t: odNum(d.t_htsnk_degc), kwh: odNum(d.ltea_3phsum_kwh), when: d.DATATIME || '' };
+      });
+      var out = { total: inv.length, working: 0, bad: [], low: [], lowLife: [], hot: [], stale: [], lines: [], pvs: null, missingCount: 0 };
+      var okUnits = inv.filter(function(x){ return x.state === 'working'; });
+      out.working = okUnits.length;
+      out.bad = inv.filter(function(x){ return x.state !== 'working'; }).map(function(x){ return { serial: x.serial, state: x.state }; });
+      var mP = odMedian(okUnits.map(function(x){ return x.kw; }).filter(function(v){ return v != null; }));
+      var mK = odMedian(okUnits.map(function(x){ return x.kwh; }).filter(function(v){ return v != null; }));
+      var mT = odMedian(okUnits.map(function(x){ return x.t; }).filter(function(v){ return v != null; }));
+      okUnits.forEach(function(x){
+        if (mP != null && mP >= 0.03 && x.kw != null && x.kw < mP * 0.25) out.low.push({ serial: x.serial, kw: x.kw });
+        if (mK != null && mK > 10 && x.kwh != null && x.kwh < mK * 0.5) out.lowLife.push({ serial: x.serial, kwh: x.kwh });
+        if (mT != null && x.t != null && x.t > mT + 20) out.hot.push({ serial: x.serial, t: x.t });
+      });
+      var parse = function(w){ var m = String(w).match(/(\d{4})\D(\d{1,2})\D(\d{1,2})\D(\d{1,2})\D(\d{1,2})\D(\d{1,2})/); return m ? Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]) : null; };
+      var times = inv.map(function(x){ return parse(x.when); }), tmax = Math.max.apply(null, times.filter(function(t){ return t != null; }).concat([0]));
+      if (tmax) inv.forEach(function(x, k){ if (times[k] != null && tmax - times[k] > 30 * 60 * 1000) out.stale.push({ serial: x.serial, mins: Math.round((tmax - times[k]) / 60000) }); });
+      if (pvs) out.pvs = { model: pvs.MODEL || '', serial: pvs.SERIAL || '', state: pvs.STATE || '', comm_err: pvs.dl_comm_err, err_count: pvs.dl_err_count, skipped: pvs.dl_skipped_scans, untransmitted: pvs.dl_untransmitted, cpu: pvs.dl_cpu_load, mem: pvs.dl_mem_used, flash: pvs.dl_flash_avail, uptime: pvs.dl_uptime };
+      var inst = parseInt(installed, 10);
+      if (inst > 0 && inst > out.total) out.missingCount = inst - out.total;
+      out.lines.push(out.total + ' micro-inverters in the list: ' + out.working + ' working' + (out.bad.length ? ', ' + out.bad.length + ' not working (' + out.bad.map(function(b){ return b.serial + ' ' + b.state; }).join('; ') + ')' : '') + '.');
+      if (out.missingCount) out.lines.push(out.missingCount + ' of the ' + inst + ' installed units do not appear in the list at all (never discovered, or dropped off the PVS).');
+      if (out.low.length) out.lines.push(out.low.length + ' working unit(s) producing far below their neighbours right now: ' + out.low.map(function(b){ return b.serial + ' ' + b.kw + ' kW'; }).join('; ') + '.');
+      if (out.lowLife.length) out.lines.push('Lifetime energy far below neighbours (intermittent or joined late): ' + out.lowLife.map(function(b){ return b.serial; }).join(', ') + '.');
+      if (out.hot.length) out.lines.push('Running hotter than neighbours: ' + out.hot.map(function(b){ return b.serial + ' ' + b.t + ' C'; }).join('; ') + '.');
+      if (out.stale.length) out.lines.push('Last report is stale on: ' + out.stale.map(function(b){ return b.serial + ' (' + b.mins + ' min behind)'; }).join('; ') + '.');
+      return out;
+    }
+    window.opsDiagPvs = function() {
+      var ta = document.getElementById('odPvsRaw'); if (!ta || !OD) return;
+      var res = odPvsAnalyze(ta.value, OD.d.installed);
+      if (res.error) { OD.d.pvs = { error: res.error }; odSave(); opsDiagRender(); return; }
+      OD.d.pvs = res;
+      if (!OD.d.installed) OD.d.installed = String(Math.max(res.total, 0));
+      OD.d.reporting = String(res.working);
+      var miss = res.bad.map(function(b){ return b.serial + ' (' + b.state + ')'; }).concat(res.low.map(function(b){ return b.serial + ' (low output)'; }));
+      OD.d.missing = miss.join(', ');
+      OD.d.f_edited = OD.d.f_edited || false;
+      odSave(); opsDiagRender();
+    };
+    window.opsDiagSetR = function(k, v) { OD.d[k] = v; odSave(); opsDiagRender(); };
+    function odPvsResultHtml(r) {
+      if (!r) return '';
+      if (r.error) return '<div style="background:rgba(255,170,0,0.1);border:1px solid rgba(255,170,0,0.4);border-radius:10px;padding:10px;font-size:0.82rem;color:#7a4a00;margin-top:8px;">&#9888; ' + _odEsc(r.error) + '</div>';
+      var li = function(t, c){ return '<div style="font-size:0.84rem;line-height:1.5;color:' + (c || '#1A1A1A') + ';padding:2px 0;">' + t + '</div>'; };
+      var h = '<div style="background:#fff;border:2px solid rgba(141,198,63,0.5);border-radius:12px;padding:12px;margin-top:8px;"><div style="font-size:0.66rem;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;color:#3d6b12;margin-bottom:6px;">&#129302; Quoya read of the device list</div>';
+      r.lines.forEach(function(t, i){ h += li(_odEsc(t), i === 0 && (r.bad.length || r.missingCount) ? '#b3261e' : '#1A1A1A'); });
+      if (r.pvs) {
+        var bits = [];
+        [['comm_err', 'communication errors'], ['err_count', 'error count'], ['skipped', 'skipped scans'], ['untransmitted', 'untransmitted records'], ['cpu', 'CPU load'], ['mem', 'memory used'], ['flash', 'flash free'], ['uptime', 'uptime (s)']].forEach(function(k){ if (r.pvs[k[0]] != null && r.pvs[k[0]] !== '') bits.push(k[1] + ' ' + r.pvs[k[0]]); });
+        h += li('<b>Comms box:</b> ' + _odEsc([r.pvs.model, r.pvs.serial, r.pvs.state].filter(Boolean).join(' &middot; ')) + (bits.length ? '<div style="font-size:0.76rem;color:#555;">' + _odEsc(bits.join(' &middot; ')) + '</div>' : ''));
+      }
+      if (r.bad.length || r.missingCount || r.low.length) {
+        h += '<div style="font-size:0.78rem;line-height:1.55;color:#444;margin-top:6px;border-top:1px solid rgba(0,0,0,0.08);padding-top:6px;"><b>How to isolate it:</b> 1) Power-cycle the PVS6, wait for it to rediscover, pull the list once more &mdash; a unit that was only dropped will come back. ' +
+          '2) If the same unit stays silent while its neighbours report, suspect that unit or its connector. 3) If a whole run of neighbouring units is silent, suspect the shared AC branch, its breaker or trunk connection. 4) If nothing is in the list at all, suspect the PVS or its link. Confirm on site before replacing anything.</div>';
+      }
+      return h + '</div>';
+    }
     function odFlags() {
       var d = OD.d, f = [];
       var ac = parseFloat(d.ac_v), dc = parseFloat(d.dc_v);
@@ -40597,6 +40669,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       else if (d.status === 'no_display') parts.push('Inverter has no display / no power.');
       if (miss > 0) parts.push(miss + ' micro-inverter/panel unit' + (miss > 1 ? 's' : '') + ' not reporting in the comms box' + (d.missing ? ' (' + d.missing + ')' : '') + '.');
       odFlags().filter(function(x){ return /outside|low|Insulation/.test(x); }).forEach(function(x){ parts.push(x); });
+      if (d.pvs && d.pvs.lines) parts.push('PVS6 device list: ' + d.pvs.lines.join(' '));
       if (d.notes) parts.push(d.notes);
       d.f_cause = parts.join(' ');
       d.f_codes = d.codes || '';
@@ -40641,10 +40714,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           (fl.length ? '<div style="background:rgba(255,170,0,0.1);border:1px solid rgba(255,170,0,0.4);border-radius:8px;padding:10px;font-size:0.82rem;line-height:1.5;color:#7a4a00;">⚠ ' + fl.map(_odEsc).join('<br>⚠ ') + '</div>' : '');
       } else if (s === 3) {
         var sp = d.sys === 'sunpower';
-        body = sel('sys', 'Monitoring / comms device', [['','Choose…'],['sunpower','SunPower comms box (PVS)'],['enphase','Enphase Envoy'],['solaredge','SolarEdge'],['other','Other / none']]) +
+        body = sel('sys', 'Monitoring / comms device', [['','Choose…'],['sunpower','SunPower comms box (PVS)'],['enphase','Enphase Envoy'],['solaredge','SolarEdge'],['other','Other / none']], 'opsDiagSetR') +
           (sp ? '<div style="background:#fff;border:1px solid rgba(0,0,0,0.12);border-radius:10px;padding:12px;font-size:0.84rem;line-height:1.65;color:#1A1A1A;margin-bottom:10px;"><b>Find a micro-inverter that isn\'t reporting</b><br>' +
-            '1. Open the lower door on the SunPower PVS6 and plug your laptop in to the <b>LAN1</b> port (labeled &ldquo;Local Ethernet &mdash; inverter or installer computer&rdquo;). <b>Not</b> WAN/LAN2 &mdash; that one is the customer&rsquo;s internet.<br>2. Open the comms box\'s device list page (same way Jon did at Ethan Dickerson\'s).<br>3. Count the devices that show as reporting and note any that are missing or in error.<br>4. Photo the screen below.<br>' +
-            '<span style="font-size:0.74rem;color:#777;">Steps vary by comms firmware — if something differs, note it in Findings.</span></div>' + photoBtn('Comms Screen', 'Photo of the comms device list') + '<div id="opsDiagStatus" style="font-size:0.78rem;color:#4a9eff;min-height:16px;"></div>' : '') +
+            '1. Open the lower door on the SunPower PVS6 and plug your laptop in to the <b>LAN1</b> port (labeled &ldquo;Local Ethernet &mdash; inverter or installer computer&rdquo;). <b>Not</b> WAN/LAN2 &mdash; that one is the customer&rsquo;s internet.<br>2. In the laptop\'s browser open <b>http://172.27.153.1/cgi-bin/dl_cgi?Command=DeviceList</b>. The PVS is slow &mdash; give it a minute or two, and pull it <b>once</b> (repeated requests can stress the unit).<br>3. Select everything on the page (Cmd/Ctrl-A), copy, and paste it into the box below.<br>4. If it asks for a login or says 403: community docs report the installer login on this port is user <b>ssm_owner</b> with the <b>last 5 characters of the serial number printed on this PVS</b> as the password (unverified on every firmware). Use it only on the unit in front of you.<br>' +
+            '<span style="font-size:0.74rem;color:#777;">Draft protocol built from public community documentation of the PVS installer interface &mdash; not yet field-validated. If anything differs, put it in Findings.</span></div>' +
+            lb('Paste the device list here') + '<textarea id="odPvsRaw" rows="4" placeholder="Paste the whole page of text" style="' + inp + 'font-family:ui-monospace,monospace;font-size:0.72rem;"></textarea>' +
+            '<button onclick="opsDiagPvs()" style="width:100%;padding:12px;background:#1A1A1A;color:#8DC63F;border:none;border-radius:10px;font-weight:800;font-size:0.88rem;cursor:pointer;margin-bottom:8px;">Analyze device list</button>' + odPvsResultHtml(d.pvs) +
+            '<div style="font-size:0.74rem;color:#777;margin:6px 0 4px;">Can\'t get the list? Photograph whatever the comms box shows instead.</div>' + photoBtn('Comms Screen', 'Photo of the comms device list') + '<div id="opsDiagStatus" style="font-size:0.78rem;color:#4a9eff;min-height:16px;"></div>' : '') +
           txt('installed', 'Panels / micro-inverters installed', 'e.g. 21', 'number') + txt('reporting', 'Reporting in the device list', 'e.g. 20', 'number') +
           lb('Not reporting — serials or roof positions') + '<textarea oninput="opsDiagSet(\'missing\',this.value)" rows="3" style="' + inp + '">' + _odEsc(d.missing) + '</textarea>' +
           (odFlags().filter(function(x){ return /reporting|All /.test(x); }).map(function(x){ return '<div style="background:rgba(141,198,63,0.12);border:1px solid rgba(141,198,63,0.4);border-radius:8px;padding:10px;font-size:0.84rem;line-height:1.5;color:#1A1A1A;">' + _odEsc(x) + '</div>'; }).join(''));
@@ -40676,7 +40752,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (!d.f_cause && !d.f_fix) { if (msg) { msg.style.color = '#b06a00'; msg.textContent = 'Add what is wrong, or the fix needed.'; } return; }
       var f = { cause: String(d.f_cause||'').slice(0,1500), codes: String(d.f_codes||'').slice(0,1500), fix: d.f_fix||'', warranty: d.f_warranty||'', parts: String(d.f_parts||'').slice(0,1500), working: d.f_working||'',
         submitted_at: new Date().toISOString(), by: ops.name || 'Ops',
-        diag: { status: d.status||'', restart: d.restart||'', ac_v: d.ac_v||'', dc_v: d.dc_v||'', kw_now: d.kw_now||'', iso: d.iso||'', breaker: d.breaker||'', sys: d.sys||'', installed: d.installed||'', reporting: d.reporting||'', missing: String(d.missing||'').slice(0,800), notes: String(d.notes||'').slice(0,800) } };
+        diag: { pvs: d.pvs && !d.pvs.error ? { total: d.pvs.total, working: d.pvs.working, bad: d.pvs.bad, low: d.pvs.low, lines: d.pvs.lines } : null, status: d.status||'', restart: d.restart||'', ac_v: d.ac_v||'', dc_v: d.dc_v||'', kw_now: d.kw_now||'', iso: d.iso||'', breaker: d.breaker||'', sys: d.sys||'', installed: d.installed||'', reporting: d.reporting||'', missing: String(d.missing||'').slice(0,800), notes: String(d.notes||'').slice(0,800) } };
       var c2 = supabase.createClient(SUPA_URL, SUPA_KEY), jid = OD.jid;
       var res = await c2.from('customers').update({ diag_findings: f }).eq('id', jid).select('id');
       if (res.error || !res.data || !res.data.length) { if (msg) { msg.style.color = '#c0392b'; msg.textContent = 'Could not save — check your signal and try again.'; } return; }
