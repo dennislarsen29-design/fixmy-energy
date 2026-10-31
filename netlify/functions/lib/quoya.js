@@ -30,6 +30,7 @@ const PHOTO_CATEGORIES = [
   'Utility Bill',
   'Front of House',
   'Attic',
+  'Warranty Contact',
   'Additional Photos'
 ];
 

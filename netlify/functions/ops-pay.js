@@ -13,7 +13,7 @@ exports.handler = async function (event) {
   const id = String(b.customerId || '');
   if (!/^[0-9a-fA-F-]{36}$/.test(id)) return { statusCode: 400, headers: cors, body: JSON.stringify({ error: 'Bad request' }) };
   try {
-    const r = b.action === 'bonus' ? await pay.bonus(id) : b.action === 'reconcile' ? await pay.reconcile(id) : { ok: false, reason: 'unknown_action' };
+    const r = b.action === 'bonus' ? await pay.bonus(id) : b.action === 'approve_bonus' ? await pay.approveBonus(id) : b.action === 'reconcile' ? await pay.reconcile(id) : { ok: false, reason: 'unknown_action' };
     return { statusCode: 200, headers: cors, body: JSON.stringify(r) };
   } catch (e) { console.error('[ops-pay]', e.message); return { statusCode: 200, headers: cors, body: JSON.stringify({ ok: false, reason: 'error' }) }; }
 };
