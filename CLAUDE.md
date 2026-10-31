@@ -2846,3 +2846,6 @@ Quoya is the AI assistant's face. Keep every version; Dennis iterates on her loo
 - ⚠️ The tool only returns a **200px** preview, which was upscaled to 400px. For a crisper file, open the Canva media id above and export larger.
 - **Hero build** (portal.html `_sunCss`): `.sun-brief` is always dark (own tokens) in both themes; `::before` = the sphere (dark core + lime rim, rotating conic shimmer via `@property --sunang`, halo rings); `::after` = Quoya. Nothing may glow over her face (Dennis, 2026-10-30) — keep the sphere's centre dark. Narrow screens show a 104px orb in the corner. Runs on Admin, Tech and Setter S.U.N. (Ops does not use `.sun-brief`).
 - To swap her look: replace `assets/quoya-cgi.webp` (keep a black background), nothing else changes.
+
+## S.U.N. admin: Solar Review margin + Dennis's commission are one "Company" category (2026-10-31, per Dennis)
+They land in the same bank account, so the Founder "Sales revenue" tile shows a "This month: Company $X (Solar Review + Dennis) · Team $Y" line (`_sunTrendFill`, payee `solar_review_corp` or `DEFAULT_CLOSER_ID`; everyone else is Team). Keep it this way until Partners join the Partner Pool, then split them again. The tile's total is still every commission row by lock-in date (battery jobs are counted twice — see the 2026-10-31 audit; not yet changed).
