@@ -37,6 +37,32 @@ async function diagFindings(id, doFetch, H) {
   return out(200, { ok: results.some(r => r.ok), results });
 }
 
+// Ops partner priced the repair from the Ops portal → text the assigned rep + Dennis. State-checked; one alert per quote.
+async function repairQuote(id, doFetch, H) {
+  const get = async (path) => (await (await doFetch(SUPA_URL + '/rest/v1' + path, { headers: H })).json().catch(() => null));
+  const c = ((await get('/customers?id=eq.' + id + '&select=first_name,last_name,rep_id,diag_findings&limit=1')) || [])[0];
+  const q = c && c.diag_findings && c.diag_findings.repair_quote;
+  if (!q || !q.amount || !q.quoted_at) return out(409, { ok: false, reason: 'state' });
+  const rlKey = 'staffalert_repair_quote_' + id + '_' + String(q.quoted_at).slice(0, 19);
+  const rl = ((await get('/pipeline_state?key=eq.' + encodeURIComponent(rlKey) + '&select=value')) || [])[0];
+  if (rl) return out(200, { ok: true, skipped: 'already_sent' });
+  const name = ((c.first_name || '') + ' ' + (c.last_name || '')).trim() || 'A customer';
+  const msg = (q.by || 'The Ops partner') + ' priced the repair for ' + name + ': $' + Number(q.amount).toLocaleString('en-US') + (q.start ? ' (can start ' + q.start + ')' : '') + '. Open the job to build the customer proposal.';
+  const ids = [c.rep_id || DEFAULT_REP];
+  if (ids.indexOf(DEFAULT_REP) === -1) ids.push(DEFAULT_REP);
+  const results = [];
+  for (const tid of ids) {
+    const tm = ((await get('/team_members?id=eq.' + encodeURIComponent(tid) + '&select=name,phone&limit=1')) || [])[0];
+    if (!tm || !tm.phone) { results.push({ to: tid, ok: false, reason: 'no_phone' }); continue; }
+    const r = await notify.sendSms({ phone: tm.phone, first_name: tm.name }, msg, doFetch);
+    results.push({ to: tid, ok: r.ok, reason: r.reason });
+  }
+  if (results.some(r => r.ok)) {
+    await doFetch(SUPA_URL + '/rest/v1/pipeline_state', { method: 'POST', headers: Object.assign({}, H, { Prefer: 'resolution=merge-duplicates,return=minimal' }), body: JSON.stringify({ key: rlKey, value: { at: new Date().toISOString() } }) });
+  }
+  return out(200, { ok: results.some(r => r.ok), results });
+}
+
 // An Ops partner checked in at a diagnostic job (portal check-in writes a "📍 Check-in" note).
 // State-checked against that note (must be this job, recent, by someone other than staff alerts),
 // one alert per check-in. SMS + email to the assigned Tech and to Dennis (admin).
@@ -89,10 +115,11 @@ exports.handler = async function (event, context, deps) {
   const H = { apikey: KEY, Authorization: 'Bearer ' + KEY, 'Content-Type': 'application/json' };
   let b; try { b = JSON.parse(event.body); } catch (e) { return out(400, { error: 'Invalid JSON' }); }
   const ev = b.event, id = String(b.customerId || ''), docType = String(b.docType || '');
-  if (['document_opened', 'document_signed', 'diag_findings', 'ops_checkin'].indexOf(ev) === -1) return out(400, { error: 'Unknown event' });
-  if (!/^[0-9a-fA-F-]{36}$/.test(id) || (ev !== 'diag_findings' && ev !== 'ops_checkin' && !/^[a-z0-9_]{1,60}$/.test(docType))) return out(400, { error: 'Bad request' });
+  if (['document_opened', 'document_signed', 'diag_findings', 'ops_checkin', 'repair_quote'].indexOf(ev) === -1) return out(400, { error: 'Unknown event' });
+  if (!/^[0-9a-fA-F-]{36}$/.test(id) || (ev !== 'diag_findings' && ev !== 'ops_checkin' && ev !== 'repair_quote' && !/^[a-z0-9_]{1,60}$/.test(docType))) return out(400, { error: 'Bad request' });
 
   if (ev === 'diag_findings') return diagFindings(id, doFetch, H);
+  if (ev === 'repair_quote') return repairQuote(id, doFetch, H);
   if (ev === 'ops_checkin') return opsCheckin(id, doFetch, H);
 
   const get = async (path) => (await (await doFetch(SUPA_URL + '/rest/v1' + path, { headers: H })).json().catch(() => null));

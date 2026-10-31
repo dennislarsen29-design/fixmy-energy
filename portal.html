@@ -9596,6 +9596,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           var lbl = 'display:block;font-size:0.7rem;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#8DC63F;margin:12px 0 5px;';
           var privCount = _parseNotes(jobNotes).length;
           var body =
+            (c.diag_findings && c.diag_findings.repair_quote && c.diag_findings.repair_quote.amount ? '<div style="margin:6px 0 10px;padding:10px 12px;border-radius:8px;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.4);font-size:0.82rem;line-height:1.5;color:#ddd;"><b style="color:#8DC63F;">&#128178; Repair quote from '+esc(c.diag_findings.repair_quote.by||inst)+':</b> $'+Number(c.diag_findings.repair_quote.amount).toLocaleString()+(c.diag_findings.repair_quote.start?' &middot; can start '+esc(c.diag_findings.repair_quote.start):'')+(c.diag_findings.repair_quote.scope?'<div style="color:#aaa;margin-top:3px;">'+esc(c.diag_findings.repair_quote.scope)+'</div>':'')+'<div style="color:#888;font-size:0.72rem;margin-top:3px;">This is their price to Solar Review. Build the customer proposal from it.</div></div>' : '')+
             '<label style="'+lbl+'">What did '+esc(inst)+' tell you?</label>'+
             '<textarea id="drNotes" rows="4" style="'+ta+'min-height:84px;" placeholder="Type or paste it your way — shorthand is fine. Only you see this box.">'+esc((function(){ var f = c.diag_findings; if (!f || hasResults) return ''; var fx = {swap:'swap/replace',repair:'repair',nothing:'nothing needed',unsure:'not sure yet'}[f.fix] || ''; return [f.cause && ('Cause: ' + f.cause), f.codes && ('Error codes: ' + f.codes), fx && ('Fix: ' + fx), f.warranty && ('Under warranty: ' + f.warranty), f.parts && ('Parts: ' + f.parts), f.working && ('Working now: ' + f.working)].filter(Boolean).join('\n'); })())+'</textarea>'+
             '<button class="job-save-btn" id="drDraftBtn" style="margin-top:8px;background:linear-gradient(135deg,#7c3aed,#8DC63F);" onclick="draftDiagReport(\''+c.id+'\')">&#10024; Quoya Assist: write the customer version</button>'+
@@ -39929,11 +39930,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var opsJobIds = jobs.map(function(j){ return j.id; });
     if (opsJobIds.length) {
       try {
-        var jcResp = await client.from('job_costs').select('customer_id,label,amount,status').in('customer_id', opsJobIds);
+        var jcResp = await client.from('job_costs').select('customer_id,label,amount,status,created_by').in('customer_id', opsJobIds);
         opsJobCosts = jcResp.data || [];
       } catch(e) { opsJobCosts = []; }
     }
-    function opsCostsFor(jobId) { return opsJobCosts.filter(function(c){ return c.customer_id === jobId; }); }
+    function opsCostsFor(jobId) {
+      // A line tagged payee:<ops id> was paid to a specific partner (e.g. the first partner on a reassigned job). Only that partner sees it.
+      return opsJobCosts.filter(function(c){ return c.customer_id === jobId && !(String(c.created_by || '').indexOf('payee:') === 0 && String(c.created_by) !== 'payee:' + ops.id); });
+    }
+    function opsNeedsQuote(j) { var f = j.diag_findings; return !!(f && f.submitted_at && (f.fix === 'swap' || f.fix === 'repair') && !(f.repair_quote && f.repair_quote.amount)); }
 
     // This partner's OWN rate sheet (only their row — never another partner's).
     var opsRates = {};
@@ -40292,6 +40297,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
               '<button class="tech-save-btn" onclick="saveOpsFindings(\'' + jid + '\', this)">Submit Findings</button>' +
               '<div data-ff-msg style="font-size:0.74rem;margin-top:6px;min-height:1em;"></div></div>';
           }());
+          h += (function(){
+            var f = job.diag_findings || {}, q = f.repair_quote || null;
+            if (!(f.submitted_at && (f.fix === 'swap' || f.fix === 'repair'))) return '';
+            var inp = 'width:100%;box-sizing:border-box;padding:11px;border-radius:10px;border:1px solid var(--ln2);background:var(--deep);color:var(--fg);font-size:0.95rem;font-family:inherit;margin-bottom:8px;';
+            var lb = '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:var(--mu);margin:6px 0 3px;">';
+            return '<div class="tech-section-title">&#128178; Price the Repair</div>' +
+              '<div id="opsQuote_' + jid + '" style="background:var(--p2);border:1px solid ' + (q ? 'var(--tintln)' : 'var(--amb)') + ';border-radius:12px;padding:12px;margin-bottom:10px;">' +
+              '<div style="font-size:0.78rem;color:var(--mu);margin-bottom:6px;">Your price to do the repair Solar Review found. This is your price to Solar Review, not the customer\'s.' + (q ? ' <b style="color:var(--mint);">Sent ' + _odEsc(String(q.quoted_at || '').slice(0, 10)) + '. You can update it.</b>' : '') + '</div>' +
+              lb + 'Your price ($)</div><input data-q="amount" type="number" inputmode="decimal" value="' + _odEsc(q ? q.amount : '') + '" placeholder="e.g. 2400" style="' + inp + '"/>' +
+              lb + 'What it includes</div><textarea data-q="scope" rows="3" placeholder="Parts, labor, trip fees, anything the price depends on" style="' + inp + '">' + _odEsc(q ? q.scope : '') + '</textarea>' +
+              lb + 'Earliest you can start (optional)</div><input data-q="start" type="date" value="' + _odEsc(q ? q.start : '') + '" style="' + inp + '"/>' +
+              '<button class="tech-save-btn" onclick="saveOpsQuote(\'' + jid + '\', this)">' + (q ? 'Update quote' : 'Send quote to Solar Review') + '</button>' +
+              '<div data-q-msg style="font-size:0.76rem;margin-top:6px;min-height:1em;"></div></div>';
+          }());
           h += '<div class="tech-section-title">📝 Ops Notes</div>' +
             '<div id="opsNotesLog_' + jid + '">' + _renderNotesLog(_parseNotes(job.assessment_notes)) + '</div>' +
             '<textarea class="tech-notes-area" data-notes-jid="' + jid + '" placeholder="Observations, issues found, materials used..."></textarea>' +
@@ -40370,6 +40389,23 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var job = jobs.find(function(j){ return j.id === jid; }); if (job) job.diag_findings = f;
       try { await fetch('/.netlify/functions/notify-staff', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ event: 'diag_findings', customerId: jid }) }); } catch (e) {}
       if (msg) { msg.style.color = 'var(--mint)'; msg.textContent = '✓ Submitted — Solar Review has been notified.'; }
+    };
+    window.saveOpsQuote = async function(jid, btn) {
+      var box = document.getElementById('opsQuote_' + jid); if (!box) return;
+      var g = function(k){ var el = box.querySelector('[data-q="' + k + '"]'); return el ? String(el.value || '').trim() : ''; };
+      var msg = box.querySelector('[data-q-msg]'), amt = parseFloat(g('amount'));
+      if (!(amt > 0)) { if (msg) { msg.style.color = 'var(--amb)'; msg.textContent = 'Enter your price first.'; } return; }
+      var job = jobs.find(function(j){ return j.id === jid; }); if (!job || !job.diag_findings) return;
+      var f = Object.assign({}, job.diag_findings, { repair_quote: { amount: Math.round(amt * 100) / 100, scope: g('scope').slice(0, 1500), start: g('start'), quoted_at: new Date().toISOString(), by: ops.name || 'Ops' } });
+      if (btn) btn.disabled = true;
+      var c2 = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var res = await c2.from('customers').update({ diag_findings: f }).eq('id', jid).select('id');
+      if (btn) btn.disabled = false;
+      if (res.error || !res.data || !res.data.length) { if (msg) { msg.style.color = 'var(--red)'; msg.textContent = 'Could not save. Check your signal and try again.'; } return; }
+      job.diag_findings = f;
+      try { await fetch('/.netlify/functions/notify-staff', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ event: 'repair_quote', customerId: jid }) }); } catch (e) {}
+      if (msg) { msg.style.color = 'var(--mint)'; msg.textContent = 'Sent. Solar Review has been notified.'; }
+      setTimeout(function(){ renderOps(); }, 900);
     };
     window.saveOpsNotes = async function(jid) {
       var ta = document.querySelector('[data-notes-jid="' + jid + '"]');
@@ -40459,6 +40495,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           todo.push({ rank: 1, txt: '<b>' + nm + '</b> &mdash; post Diagnostic Findings (visited ' + _odEsc(new Date(v).toLocaleDateString('en-US',{month:'short',day:'numeric'})) + ')', act: 'Post findings', fn: "opsDiagOpen('" + j.id + "')", red: true });
         else if (v && v >= st0 && v < endToday && v >= now - 4 * 3600000)
           todo.push({ rank: 2, txt: '<b>' + nm + '</b> &mdash; visit today at ' + _odEsc(new Date(v).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})) + ', ' + _odEsc(j.address || ''), act: 'Open job', fn: "opsSunOpenJob('" + j.id + "')" });
+        else if (opsNeedsQuote(j))
+          todo.push({ rank: 1, txt: '<b>' + nm + '</b> &mdash; price the repair (findings are in)', act: 'Price repair', fn: "opsSunOpenJob('" + j.id + "')" });
         else if (!v && j.sold_type !== 'new_solar' && j.sold_type !== 'battery_retrofit')
           todo.push({ rank: 3, txt: '<b>' + nm + '</b> &mdash; no visit time set yet. Solar Review will schedule it.', act: 'Open job', fn: "opsSunOpenJob('" + j.id + "')" });
       });
