@@ -462,6 +462,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       <span id="userName" style="font-size:0.75rem;color:#aaa;"></span>
       <span id="portalBuild" title="Which deploy this device is running. If this does not change after a fix ships, you are on a cached copy — force-reload." style="font-size:0.6rem;color:#444;font-family:ui-monospace,monospace;"></span>
       <button id="pvThemeBtn" type="button" onclick="PvTheme.cycle()" style="background:none;border:1px solid rgba(128,128,128,.4);color:#888;border-radius:100px;padding:3px 10px;font-size:0.68rem;font-weight:700;cursor:pointer;width:auto;white-space:nowrap;">Auto</button>
+      <button id="changeCodeBtn" class="sign-out" onclick="openChangeCode()" style="display:none;">Change code</button>
       <button class="sign-out" onclick="signOut()">Sign Out</button>
     </div>
   </div>
@@ -899,6 +900,68 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     try { localStorage.removeItem('fmUser'); localStorage.removeItem('fmUserExp'); } catch(e){}
     try { sessionStorage.removeItem('user'); } catch(e){}
   }
+
+  // ── Staff can set their own access code (2026-10-31, per Dennis: "they should be able to create their own portal code or change
+  // their code"). Changes team_members.code, and the portal_credentials override when one exists, because login reads that first.
+  window._staffSession = function() { try { var u = JSON.parse(sessionStorage.getItem('user') || localStorage.getItem('fmUser') || 'null'); return u && u.id && !u.isAdmin ? u : null; } catch (e) { return null; } };
+  window._syncChangeCodeBtn = function() { var b = document.getElementById('changeCodeBtn'); if (b) b.style.display = window._staffSession() ? '' : 'none'; };
+  window.openChangeCode = function() {
+    var u = window._staffSession(); if (!u) return;
+    var o = document.getElementById('chCodeOverlay'); if (o) o.remove();
+    o = document.createElement('div'); o.id = 'chCodeOverlay';
+    o.style.cssText = 'position:fixed;inset:0;z-index:99995;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;padding:16px;';
+    var inp = 'width:100%;box-sizing:border-box;padding:12px;margin:4px 0 10px;border-radius:10px;border:1px solid #444;background:#1a1a1a;color:#F3EDE3;font-size:1rem;';
+    o.innerHTML = '<div style="background:#262626;border:1px solid #444;border-radius:16px;padding:20px;max-width:380px;width:100%;color:#F3EDE3;">' +
+      '<div style="font-weight:800;font-size:1.05rem;margin-bottom:4px;">Choose your access code</div>' +
+      '<div style="font-size:0.78rem;color:#aaa;margin-bottom:12px;line-height:1.5;">At least 8 characters, no spaces. Pick something you will remember and that nobody can guess.</div>' +
+      '<label style="font-size:0.7rem;font-weight:700;color:#8DC63F;text-transform:uppercase;">Current code</label><input id="chOld" type="password" autocomplete="current-password" style="' + inp + '"/>' +
+      '<label style="font-size:0.7rem;font-weight:700;color:#8DC63F;text-transform:uppercase;">New code</label><input id="chNew" type="password" autocomplete="new-password" style="' + inp + '"/>' +
+      '<label style="font-size:0.7rem;font-weight:700;color:#8DC63F;text-transform:uppercase;">New code again</label><input id="chNew2" type="password" autocomplete="new-password" style="' + inp + '"/>' +
+      '<div id="chMsg" style="font-size:0.8rem;min-height:1.2em;margin-bottom:8px;"></div>' +
+      '<div style="display:flex;gap:8px;"><button onclick="saveChangeCode()" style="flex:1;padding:13px;border:none;border-radius:100px;background:#8DC63F;color:#1A1A1A;font-weight:800;cursor:pointer;">Save new code</button>' +
+      '<button onclick="document.getElementById(\'chCodeOverlay\').remove()" style="width:auto;padding:13px 18px;border:1px solid #555;border-radius:100px;background:none;color:#ccc;font-weight:700;cursor:pointer;">Cancel</button></div></div>';
+    document.body.appendChild(o);
+  };
+  window.saveChangeCode = async function() {
+    var u = window._staffSession(), msg = document.getElementById('chMsg'); if (!u || !msg) return;
+    var val = function(id){ return ((document.getElementById(id) || {}).value || ''); };
+    var oldC = val('chOld').trim(), n1 = val('chNew'), n2 = val('chNew2');
+    var bad = function(t){ msg.style.color = '#ff8a8a'; msg.textContent = t; };
+    if (!oldC) return bad('Enter your current code.');
+    if (n1.length < 8) return bad('The new code needs at least 8 characters.');
+    if (/\s/.test(n1)) return bad('No spaces, please.');
+    if (n1 !== n2) return bad('The two new codes do not match.');
+    if (n1 === oldC) return bad('Pick a code different from the current one.');
+    if (/^(.)\1+$/.test(n1) || /^(?:0123|1234|abcd|password)/i.test(n1)) return bad('That is too easy to guess.');
+    msg.style.color = '#aaa'; msg.textContent = 'Saving...';
+    try {
+      var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var cur = await c.from('team_members').select('code').eq('id', u.id).maybeSingle();
+      var ov = await c.from('portal_credentials').select('code').eq('rep_id', u.id).maybeSingle();
+      var real = (ov.data && ov.data.code) || (cur.data && cur.data.code);
+      if (!real || real !== oldC) return bad('Your current code is not right.');
+      var r1 = await c.from('team_members').update({ code: n1 }).eq('id', u.id).select('id');
+      if (r1.error || !r1.data || !r1.data.length) return bad('Could not save. Check your signal and try again.');
+      if (ov.data) { var r2 = await c.from('portal_credentials').update({ code: n1, updated_at: new Date().toISOString() }).eq('rep_id', u.id).select('rep_id'); if (r2.error) return bad('Saved partly. Please tell Solar Review.'); }
+      try { localStorage.setItem('codeNudgeDone_' + u.id, '1'); } catch (e) {}
+      var nb = document.getElementById('codeNudge'); if (nb) nb.remove();
+      msg.style.color = '#8DC63F'; msg.textContent = 'Done. Use your new code next time you sign in.';
+      setTimeout(function(){ var o = document.getElementById('chCodeOverlay'); if (o) o.remove(); }, 1800);
+    } catch (e) { bad('Something went wrong. Try again.'); }
+  };
+  // Gentle one-time prompt on a new device until they pick their own code (or dismiss it).
+  window._codeNudge = function() {
+    var u = window._staffSession(); window._syncChangeCodeBtn();
+    if (!u) return;
+    try { if (localStorage.getItem('codeNudgeDone_' + u.id)) return; } catch (e) {}
+    var db = document.getElementById('dashBody'); if (!db || document.getElementById('codeNudge')) return;
+    var d = document.createElement('div'); d.id = 'codeNudge';
+    d.style.cssText = 'margin:0 0 12px;padding:12px 14px;border-radius:12px;background:rgba(141,198,63,.12);border:1px solid rgba(141,198,63,.4);display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:0.82rem;';
+    d.innerHTML = '<span style="flex:1;min-width:180px;">Want your own access code? Pick one you will remember.</span>' +
+      '<button onclick="openChangeCode()" style="width:auto;padding:9px 16px;border:none;border-radius:100px;background:#8DC63F;color:#1A1A1A;font-weight:800;cursor:pointer;">Choose code</button>' +
+      '<button onclick="try{localStorage.setItem(\'codeNudgeDone_' + u.id + '\',\'1\')}catch(e){}this.parentNode.remove()" style="width:auto;padding:9px 12px;border:none;background:none;color:#999;cursor:pointer;">Not now</button>';
+    db.parentNode.insertBefore(d, db);
+  };
   function signOut() {
     _clearUser(); try { sessionStorage.clear(); } catch(e){}
     // Navigate to the bare path (NOT location.reload): a magic link's ?email=&code= params would
@@ -6605,8 +6668,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (subTab === 'team') {
 
     h += '<div class="admin-header-row"><h2 style="font-size:1.1rem;font-weight:700;">Team &amp; Credentials</h2>'+
-      '<button onclick="adminShowOnboard()" title="Creates the login, sends the welcome email with their portal credentials, and includes the Gusto link for 1099 payment setup." style="padding:6px 14px;background:rgba(155,109,232,0.15);border:1px solid rgba(155,109,232,0.45);color:#c4a3f0;border-radius:100px;font-size:0.75rem;font-weight:700;cursor:pointer;margin-right:6px;">&#128640; Onboard New Hire</button>'+
-      '<button onclick="adminShowAddMember()" style="padding:6px 14px;background:#8DC63F;color:#1A1A1A;border:none;border-radius:100px;font-size:0.75rem;font-weight:700;cursor:pointer;">+ Add Member</button></div>';
+      '<button onclick="adminShowOnboard()" title="Creates the login, sends the welcome email with their portal credentials, and includes the Gusto link for 1099 payment setup." style="padding:6px 14px;background:rgba(155,109,232,0.15);border:1px solid rgba(155,109,232,0.45);color:#c4a3f0;border-radius:100px;font-size:0.75rem;font-weight:700;cursor:pointer;margin-right:6px;">&#128640; Onboard Team Member</button>'+
+      '</div>';
     h += '<div id="addMemberSlot"></div>';
     if (teamFetchError) h += '<div style="padding:10px 14px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.25);border-radius:8px;font-size:0.72rem;color:#ef4444;margin-bottom:12px;">&#9888; '+teamFetchError+'</div>';
 
@@ -7197,13 +7260,21 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '<div><label class="ed-label">Full Name *</label><input type="text" id="obName" class="ed-input" placeholder="Jane Smith"/></div>'+
           '<div><label class="ed-label">Email *</label><input type="email" id="obEmail" class="ed-input" placeholder="jane@example.com"/></div>'+
           '<div><label class="ed-label">Phone *</label><input type="tel" id="obPhone" class="ed-input" placeholder="619-555-0100"/></div>'+
-          '<div><label class="ed-label">Role *</label><select id="obRole" class="ed-input">'+
+          '<div><label class="ed-label">Role *</label><select id="obRole" class="ed-input" onchange="obRoleChanged()">'+
             '<option value="setter">Setter / Black Box Dialer</option>'+
             '<option value="tech">Tech / Sales Rep</option>'+
+            '<option value="ops">Ops Partner (installer / electrician)</option>'+
           '</select></div>'+
           '<div><label class="ed-label">Market</label><input type="text" id="obMarket" class="ed-input" value="San Diego"/></div>'+
+          '<div id="obZipWrap" style="display:none;"><label class="ed-label">Home ZIP (where they work from)</label><input type="text" id="obZip" class="ed-input" inputmode="numeric" maxlength="5" placeholder="e.g. 84009"/></div>'+
           '<div><label class="ed-label">Start Date</label><input type="date" id="obStart" class="ed-input" value="'+new Date().toISOString().slice(0,10)+'"/></div>'+
         '</div>'+
+        '<div id="obOpsPrefs" style="display:none;margin:12px 0;padding:10px 12px;background:rgba(74,158,255,0.05);border:1px solid rgba(74,158,255,0.25);border-radius:8px;">'+
+          '<div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#4a9eff;margin-bottom:6px;">&#128276; Automatic texts &amp; emails (Ops Partner)</div>'+
+          [['job_assigned_sms','Job assigned &mdash; text'],['job_assigned_email','Job assigned &mdash; email'],['calendar_link','Include one-tap &ldquo;Add to calendar&rdquo; link'],['eod_reminder_sms','End-of-day findings reminder &mdash; text'],['eod_reminder_email','End-of-day findings reminder &mdash; email']].map(function(x){
+            return '<label style="display:flex;align-items:center;gap:6px;font-size:0.8rem;margin:4px 0;"><input type="checkbox" id="obn_'+x[0]+'" checked style="width:auto;margin:0;"> '+x[1]+'</label>'; }).join('')+
+        '</div>'+
+        '<div style="font-size:0.7rem;color:#888;margin-top:10px;line-height:1.5;">Everyone is created the same way: a login with a generated access code, the welcome email, and the same first sign-in steps as someone who joins from the careers page. They can change their code themselves after signing in.</div>'+
         '<div style="margin-top:10px;"><label class="ed-label">Gusto contractor invite link</label>'+
         '<input type="url" id="obGusto" class="ed-input" placeholder="https://app.gusto.com/..." value="'+String(savedGusto).replace(/"/g,'&quot;')+'"/>'+
         '<div style="font-size:0.66rem;color:#666;margin-top:3px;">Saved on this device and reused for every hire. Leave blank to skip the Gusto section in the email.</div></div>'+
@@ -7214,12 +7285,27 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '</div></div>';
     };
 
+    window.obRoleChanged = function() {
+      var r = (document.getElementById('obRole') || {}).value;
+      var z = document.getElementById('obZipWrap'), o = document.getElementById('obOpsPrefs');
+      if (z) z.style.display = r === 'tech' ? 'block' : 'none';
+      if (o) o.style.display = r === 'ops' ? 'block' : 'none';
+    };
+
     window.adminRunOnboard = async function(btn) {
       var v = function(id){ return ((document.getElementById(id)||{}).value || '').trim(); };
       var name = v('obName'), email = v('obEmail').toLowerCase(), phone = v('obPhone');
       var role = v('obRole'), market = v('obMarket') || 'San Diego', gusto = v('obGusto'), start = v('obStart');
       var st = document.getElementById('obStatus');
       if (!name || !email || !phone) { alert('Name, email, and phone are required.'); return; }
+      var zip = v('obZip'), homeLat = null, homeLng = null, prefs = null;
+      if (role === 'tech' && zip) {
+        if (!/^\d{5}$/.test(zip)) { alert('Home ZIP needs 5 digits.'); return; }
+        try { var gz = await _geocodeFull(zip); if (gz && gz.status === 'OK') { homeLat = gz.lat; homeLng = gz.lng; } } catch(e) {}
+      }
+      if (role === 'ops') {
+        prefs = {}; ['job_assigned_sms','job_assigned_email','calendar_link','eod_reminder_sms','eod_reminder_email'].forEach(function(k){ var el = document.getElementById('obn_'+k); prefs[k] = !!(el && el.checked); });
+      }
       try { if (gusto) localStorage.setItem('gustoOnboardUrl', gusto); } catch(e) {}
       if (btn) { btn.disabled = true; btn.textContent = 'Creating…'; }
       if (st) { st.style.color = '#888'; st.textContent = 'Creating login and sending welcome email…'; }
@@ -7228,7 +7314,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             full_name: name, email: email, phone: phone, market: market,
-            role: role, role_type: role === 'setter' ? 'Setter' : 'Sales Rep',
+            role: role, role_type: role === 'setter' ? 'Setter' : (role === 'ops' ? 'Ops Partner' : 'Sales Rep'),
+            home_zip: (role === 'tech' && zip) ? zip : undefined, home_lat: homeLat, home_lng: homeLng, notify_prefs: prefs || undefined,
             source: 'admin-onboard', gusto_url: gusto || undefined, start_date: start || undefined
           })
         });
@@ -36032,6 +36119,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
   // ── UNIFIED SALES / TECH DASHBOARD ────────────────────────────────────────
   async function loadSalesDashboard(person, config) {
+    try { setTimeout(function(){ if (window._codeNudge) window._codeNudge(); }, 1200); } catch (e) {}
     config = config || {};
     var roleLabel = config.roleLabel || 'Sales';
     var showFieldJobs = !!config.showFieldJobs;
@@ -39802,6 +39890,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
   // ── OPS DASHBOARD (install partners) ───────────────────────────────────────
   async function loadOpsDashboard(ops) {
+    try { setTimeout(function(){ if (window._codeNudge) window._codeNudge(); }, 1200); } catch (e) {}
     document.getElementById('loginBox').style.display = 'none';
     document.getElementById('dashboard').style.display = 'block';
     document.getElementById('userName').textContent = ops.name + ' · Ops';

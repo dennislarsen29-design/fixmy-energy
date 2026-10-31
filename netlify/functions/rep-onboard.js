@@ -111,7 +111,9 @@ exports.handler = async function(event) {
   }
 
   // Generate credentials
-  var repId   = 'tech_' + randomCode(6).toLowerCase();
+  // One onboarding path for every role (2026-10-31, per Dennis): Setter, Tech/Sales, or Ops Partner (installer/electrician).
+  const roleKey = ['setter', 'ops'].indexOf(body.role) > -1 ? body.role : 'tech';
+  var repId   = (roleKey === 'ops' ? 'ops_' : 'tech_') + randomCode(6).toLowerCase();
   var repCode = randomCode(8);
   var displayName = preferred_name || full_name.split(' ')[0];
 
@@ -126,9 +128,13 @@ exports.handler = async function(event) {
       code:       repCode,
       // Setters get the setter role so they land in the dialer-first dashboard rather
       // than the field-tech view; everyone else keeps the original 'tech' default.
-      role:       body.role === 'setter' ? 'setter' : 'tech',
+      role:       roleKey,
       active:     true,
       phone:      phone,
+      home_zip:   body.home_zip || null,
+      home_lat:   body.home_lat != null ? body.home_lat : null,
+      home_lng:   body.home_lng != null ? body.home_lng : null,
+      notify_prefs: roleKey === 'ops' && body.notify_prefs && typeof body.notify_prefs === 'object' ? body.notify_prefs : null,
       market:     market,
       role_type:  role_type,
       source:     source || 'onboarding',
@@ -148,7 +154,7 @@ exports.handler = async function(event) {
     const retryResp = await fetch(SUPA_URL + '/rest/v1/team_members', {
       method:  'POST',
       headers: supaHeaders,
-      body:    JSON.stringify({ id: repId, name: full_name, email, code: repCode, role: body.role === 'setter' ? 'setter' : 'tech', active: true })
+      body:    JSON.stringify({ id: repId, name: full_name, email, code: repCode, role: roleKey, active: true })
     });
     if (!retryResp.ok) {
       const retryErr = await retryResp.text();
@@ -306,6 +312,7 @@ ${gustoUrl ? `
             </td></tr>
           </table>` : ''}
 
+          <p style="margin:0 0 20px;font-size:13px;color:#999;line-height:1.6;">Want your own code? After you sign in, tap <b>Change code</b> at the top of the portal and pick one you will remember.</p>
           <p style="margin:0 0 8px;font-size:13px;color:#555;line-height:1.6;">Questions? Call or text: <a href="tel:8012328301" style="color:#8DC63F;text-decoration:none;">801-232-8301</a> or email <a href="mailto:info@fixmy.energy" style="color:#8DC63F;text-decoration:none;">info@fixmy.energy</a></p>
           <p style="margin:0;font-size:12px;color:#333;">Solar Review Corp · FixMy.Energy</p>
         </td></tr>
