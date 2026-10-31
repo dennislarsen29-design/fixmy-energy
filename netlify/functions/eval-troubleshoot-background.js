@@ -136,6 +136,18 @@ const TOOL = {
   }
 };
 
+// Ops portal (2026-10-31, per Dennis): the reader is the licensed electrician doing the paid diagnostic, not a sales rep.
+const ELECTRICIAN_NOTE = [
+  '',
+  'AUDIENCE OVERRIDE: the reader is a LICENSED ELECTRICIAN on the paid diagnostic visit, standing at the',
+  'equipment, not a sales rep. Write for a professional: name the component, the string/MPPT/optimizer/',
+  'micro-inverter/comms path to check first, and the manufacturer-documented expected readings or LED/',
+  'status meanings. You may include manufacturer-documented test procedures a licensed electrician would',
+  'follow; never instruct anything the manufacturer says not to do, never skip lockout/tagout where the',
+  'manufacturer requires it, and keep the burnt/melted/smoke rule (stop, photograph, leave it off).',
+  'Still: no prices, no promised outcomes, and never invent warranty coverage.'
+].join('\n');
+
 const SYSTEM = [
   'You are Quoya, Solar Review\'s field troubleshooting expert. A sales rep — NOT an electrician,',
   'NOT a solar technician — is standing at a homeowner\'s faulting/downed solar system in Southern',
@@ -224,7 +236,7 @@ async function runTroubleshoot(body) {
       model: MODEL,
       max_tokens: 4000,
       thinking: { type: 'adaptive' },
-      system: SYSTEM,
+      system: (body && body.audience === 'electrician') ? SYSTEM + ELECTRICIAN_NOTE : SYSTEM,
       tools: [
         { type: 'web_search_20250305', name: 'web_search', max_uses: 8 },
         TOOL

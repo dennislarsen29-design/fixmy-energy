@@ -9499,9 +9499,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             '<label style="'+lbl+'">What did '+esc(inst)+' tell you?</label>'+
             '<textarea id="drNotes" rows="4" style="'+ta+'min-height:84px;" placeholder="Type or paste it your way — shorthand is fine. Only you see this box.">'+esc((function(){ var f = c.diag_findings; if (!f || hasResults) return ''; var fx = {swap:'swap/replace',repair:'repair',nothing:'nothing needed',unsure:'not sure yet'}[f.fix] || ''; return [f.cause && ('Cause: ' + f.cause), f.codes && ('Error codes: ' + f.codes), fx && ('Fix: ' + fx), f.warranty && ('Under warranty: ' + f.warranty), f.parts && ('Parts: ' + f.parts), f.working && ('Working now: ' + f.working)].filter(Boolean).join('\n'); })())+'</textarea>'+
             '<button class="job-save-btn" id="drDraftBtn" style="margin-top:8px;background:linear-gradient(135deg,#7c3aed,#8DC63F);" onclick="draftDiagReport(\''+c.id+'\')">&#10024; Quoya Assist: write the customer version</button>'+
-            '<div id="drDraftMsg" style="font-size:0.74rem;margin-top:6px;min-height:1em;"></div>'+
+            '<div id="drDraftMsg" style="font-size:0.74rem;margin-top:6px;min-height:1em;">'+(!hasResults && c.diag_findings && c.diag_findings.report_draft ? '<span style="color:#8DC63F;">&#10024; Quoya already drafted this from the electrician\'s findings &mdash; read it, edit anything, then Save. The customer sees nothing until you save.</span>' : '')+'</div>'+
             '<label style="'+lbl+'">Customer report <span style="text-transform:none;letter-spacing:0;color:#999;font-weight:400;">&mdash; exactly what the customer will see (edit freely)</span></label>'+
-            '<textarea id="drReport" rows="8" style="'+ta+'min-height:150px;" placeholder="Quoya&rsquo;s draft appears here. You can also type the report yourself.">'+esc(c.diagnostic_findings||'')+'</textarea>'+
+            '<textarea id="drReport" rows="8" style="'+ta+'min-height:150px;" placeholder="Quoya&rsquo;s draft appears here. You can also type the report yourself.">'+esc(c.diagnostic_findings || (c.diag_findings && c.diag_findings.report_draft) || '')+'</textarea>'+
             '<button class="job-save-btn" style="margin-top:12px;" onclick="saveDiagResults(\''+c.id+'\')">&#10003; Save Diagnostic Results</button>'+
             '<button class="job-save-btn" style="margin-top:8px;background:rgba(74,158,255,0.14);border:1px solid rgba(74,158,255,0.4);color:#4a9eff;" onclick="printDiagReport(\''+c.id+'\')">&#128196; Download PDF</button>'+
             '<div id="drStatus" style="font-size:0.74rem;margin-top:8px;min-height:1em;"></div>'+
@@ -39849,7 +39849,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     async function opsLoadEval(jid) {
       opsEvalCache[jid] = { row: null, loading: true };
       try {
-        var r = await client.from('lead_evaluations').select('inverter_brand,inverter_model,inverter_serial,utility,answers,troubleshoot').eq('customer_id', jid).limit(1);
+        var r = await client.from('lead_evaluations').select('id,inverter_brand,inverter_model,inverter_serial,utility,answers,troubleshoot,analysis').eq('customer_id', jid).limit(1);
         opsEvalCache[jid] = { row: (!r.error && r.data && r.data[0]) || null };
       } catch (e) { opsEvalCache[jid] = { row: null }; }
       if (activeJobId === jid) renderOps();
@@ -40087,7 +40087,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             if (a.system_issue === 'yes') rowsHtml += row('Restart', pcDone ? ('Tech did ' + pcDone + ' of 8 restart steps') : 'Not tried yet');
             if (a.eval_notes) rowsHtml += row('Tech notes', esc(a.eval_notes).replace(/\n/g,'<br>'));
             if (a.gbd && window._gbdSummaryLine) rowsHtml += row('Meter data', esc(window._gbdSummaryLine(a.gbd)) + '<div style="font-weight:500;font-size:0.7rem;color:#777;">Hint from the homeowner\'s utility data — not proof.</div>');
-            var codes = ts && Array.isArray(ts.identified) ? ts.identified.filter(function(c){ return c && c.code; }) : [];
+            var codes = odCodes(ts);
             if (codes.length) rowsHtml += row('Error codes', codes.map(function(c){ return '<div><b>' + esc(c.code) + '</b>' + (c.meaning ? ' <span style="font-weight:500;color:#555;">&mdash; ' + esc(c.meaning) + '</span>' : '') + '</div>'; }).join(''), true);
             if (ts && ts.diagnosis) rowsHtml += row('Likely cause', esc(ts.diagnosis));
             if (job.field_notes) { /* admin notes shown below */ }
@@ -40433,7 +40433,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         (t.sold_type==='battery_retrofit' ? '' : '<button onclick="opsDiagOpen(\'' + t.id + '\')" style="padding:9px 16px;background:#1A1A1A;color:#8DC63F;border:none;border-radius:8px;font-weight:800;font-size:0.82rem;cursor:pointer;width:auto;">🧪 Start Diagnostic</button>') + '</div></div>';
     };
 
-    var OD_STEPS = ['Quoya Analysis', 'Restart & Codes', 'Measurements', 'Panel Check', 'Findings'];
+    var OD_STEPS = ['Quoya Brief', 'Photos & Codes', 'Measurements', 'Panel Check', 'Findings'];
     var OD = null;
     window.opsDiagOpen = function(jid) {
       var job = jobs.find(function(j){ return j.id === jid; }); if (!job) return;
@@ -40456,6 +40456,125 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       currentJobId = OD.jid;
       uploadPhotos(files, label, 'opsDiagStatus').then(function(){ return loadJobPhotos(OD.jid); }).then(function(){ if (OD) opsDiagRender(); });
     };
+    function odCodes(ts) {
+      if (!ts) return [];
+      var arr = Array.isArray(ts.codes) ? ts.codes : (Array.isArray(ts.identified) ? ts.identified : []);
+      return arr.filter(function(c){ return c && c.code; });
+    }
+    var OD_SLOTS = [['Inverter Photo','Inverter',true],['Serial Number','Serial / data plate',true],['Error Codes','Error screen / LEDs',false],['Meter Photo','Utility meter',false],['Solar Array','Array / roof',false],['MSP Sticker Photo','Main panel sticker',false]];
+    function odSlotsHtml(jid) {
+      var photos = jobPhotos[jid] || [];
+      return OD_SLOTS.map(function(sl){
+        var mine = photos.filter(function(p){ return (p.label || p.Label) === sl[0]; });
+        var thumbs = mine.slice(0, 6).map(function(p){ return '<img src="' + _odEsc(p.url) + '" data-href="' + _odEsc(p.url) + '" onclick="openPhoto(this)" style="width:54px;height:54px;object-fit:cover;border-radius:8px;border:1px solid rgba(0,0,0,0.15);"/>'; }).join('');
+        return '<div style="display:flex;align-items:center;gap:10px;background:#fff;border:1px solid ' + (mine.length ? 'rgba(141,198,63,0.6)' : 'rgba(0,0,0,0.12)') + ';border-radius:12px;padding:10px 12px;margin-bottom:8px;">' +
+          '<div style="flex:1;min-width:0;"><div style="font-size:0.84rem;font-weight:800;color:#1A1A1A;">' + (mine.length ? '&#10003; ' : '') + sl[1] + (sl[2] ? ' <span style="font-weight:600;color:#b06a00;font-size:0.66rem;">needed</span>' : '') + '</div>' +
+          '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;">' + (thumbs || '<span style="font-size:0.72rem;color:#999;">No photo yet</span>') + '</div></div>' +
+          '<label style="flex:none;padding:10px 14px;background:#1A1A1A;color:#8DC63F;border-radius:10px;font-weight:800;font-size:0.8rem;cursor:pointer;">&#128247; ' + (mine.length ? 'Add more' : 'Add') +
+          '<input type="file" accept="image/*" multiple style="display:none" onchange="opsDiagPhoto(event,\'' + sl[0] + '\')"/></label></div>';
+      }).join('');
+    }
+    function odTsHtml(jid, ev) {
+      var t = ev && ev.troubleshoot, st = t && t.status;
+      var card = 'background:rgba(155,109,232,0.08);border:1px solid rgba(155,109,232,0.35);border-radius:12px;padding:12px;margin-top:12px;';
+      var head = '<div style="font-size:0.68rem;font-weight:800;text-transform:uppercase;letter-spacing:0.07em;color:#6b3fb5;margin-bottom:6px;">&#129302; Quoya troubleshoot</div>';
+      if (st === 'analyzing') return '<div style="' + card + '">' + head + '<div style="font-size:0.84rem;color:#333;">Quoya is reading the codes and researching this exact model&hellip; it can take a couple of minutes. You can keep working.</div></div>';
+      if (st === 'ready' && t.result) {
+        var r = t.result, codes = odCodes(r), steps = Array.isArray(r.on_site_steps) ? r.on_site_steps : [];
+        return '<div style="' + card + '">' + head +
+          (codes.length ? '<div style="margin-bottom:6px;">' + codes.map(function(c){ return '<div style="font-size:0.84rem;"><b>' + _odEsc(c.code) + '</b>' + (c.severity ? ' <span style="font-size:0.66rem;color:#b06a00;text-transform:uppercase;">' + _odEsc(c.severity) + '</span>' : '') + (c.meaning ? ' &mdash; ' + _odEsc(c.meaning) : '') + '</div>'; }).join('') + '</div>' : '') +
+          (r.diagnosis ? '<div style="font-size:0.86rem;line-height:1.55;color:#1A1A1A;margin-bottom:6px;">' + _odEsc(r.diagnosis) + '</div>' : '') +
+          (steps.length ? '<div style="font-size:0.82rem;line-height:1.55;color:#333;">' + steps.slice(0, 8).map(function(x, i){ return (i + 1) + '. ' + _odEsc(x && x.step ? x.step : x) + (x && x.detail ? ' <span style="color:#777;">(' + _odEsc(x.detail) + ')</span>' : ''); }).join('<br>') + '</div>' : '') +
+          (r.warranty_note ? '<div style="font-size:0.8rem;margin-top:6px;color:#333;"><b>Warranty:</b> ' + _odEsc(r.warranty_note) + '</div>' : '') +
+          (r.photo_retake ? '<div style="font-size:0.8rem;margin-top:6px;color:#b06a00;">&#9888; ' + _odEsc(r.photo_retake) + '</div>' : '') +
+          '<button onclick="opsDiagRunTs(\'' + jid + '\')" style="margin-top:8px;width:auto;padding:7px 12px;background:none;border:1px solid rgba(155,109,232,0.5);border-radius:8px;color:#6b3fb5;font-size:0.74rem;font-weight:700;cursor:pointer;">&#8635; Re-run</button></div>';
+      }
+      return '<div style="' + card + '">' + head +
+        '<div style="font-size:0.82rem;color:#444;margin-bottom:8px;">' + (st === 'failed' ? 'The last run did not finish. Try again.' : 'Add the error-screen photo (or the inverter brand), then let Quoya research the exact fault and what to check first.') + '</div>' +
+        '<button onclick="opsDiagRunTs(\'' + jid + '\')" style="width:100%;padding:12px;background:#6b3fb5;color:#fff;border:none;border-radius:10px;font-weight:800;font-size:0.88rem;cursor:pointer;">Run Quoya troubleshoot</button></div>';
+    }
+    window.opsDiagRunTs = async function(jid) {
+      var ev = (opsEvalCache[jid] || {}).row, d = (OD && OD.d) || {};
+      var photos = (jobPhotos[jid] || []).map(function(p){ return { url: p.url, label: p.label || p.Label || '' }; });
+      var brand = (ev && ev.inverter_brand) || d.brand || '';
+      if (!photos.some(function(p){ return p.label === 'Error Codes'; }) && !brand) { alert('Add the error-screen photo first, or type the inverter brand, so Quoya has something to work from.'); return; }
+      var job = jobs.find(function(j){ return j.id === jid; }) || {};
+      try {
+        if (!ev || !ev.id) {
+          var ins = await client.from('lead_evaluations').insert({ customer_id: jid, rep_name: ops.name || 'Ops', answers: {} }).select('id,inverter_brand,inverter_model,inverter_serial,utility,answers,troubleshoot,analysis');
+          if (ins.error || !ins.data || !ins.data[0]) { alert('Could not start the troubleshoot — tell Solar Review.'); return; }
+          ev = ins.data[0]; opsEvalCache[jid] = { row: ev };
+        }
+        ev.troubleshoot = { status: 'analyzing', at: new Date().toISOString() };
+        await client.from('lead_evaluations').update({ troubleshoot: ev.troubleshoot }).eq('id', ev.id);
+        if (OD) opsDiagRender();
+        var r = await fetch('/.netlify/functions/eval-troubleshoot-background', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+          evalId: ev.id, audience: 'electrician', photos: photos,
+          hardware: { brand: brand, model: ev.inverter_model || '', serial: ev.inverter_serial || '' },
+          answers: Object.assign({}, ev.answers || {}, { system_issue: 'yes', pc_outcome: ({ fixed: 'restored', partial: 'partial', down: 'still_down' })[d.restart] || (ev.answers || {}).pc_outcome }),
+          lead: { address: job.address || '', system_size: job.system_size || '', install_year: job.install_year || '', original_installer: job.original_installer || '' } }) });
+        if (!r.ok && r.status !== 202) throw new Error('HTTP ' + r.status);
+      } catch (e) {
+        if (ev) ev.troubleshoot = { status: 'failed', error: 'start' };
+        if (OD) opsDiagRender(); return;
+      }
+      odPollTs(jid, 0);
+    };
+    function odPollTs(jid, n) {
+      if (n > 80) return;
+      setTimeout(async function(){
+        try {
+          var r = await client.from('lead_evaluations').select('troubleshoot').eq('customer_id', jid).limit(1);
+          var t = r.data && r.data[0] && r.data[0].troubleshoot, ev = (opsEvalCache[jid] || {}).row;
+          if (t && t.status && t.status !== 'analyzing') { if (ev) ev.troubleshoot = t; if (OD && OD.jid === jid) opsDiagRender(); return; }
+        } catch (e) {}
+        odPollTs(jid, n + 1);
+      }, 3000);
+    }
+    function odBriefHtml(job, ev) {
+      var a = (ev && ev.answers) || {}, ts = (ev && ev.troubleshoot && ev.troubleshoot.status === 'ready' && ev.troubleshoot.result) || null;
+      var an = (ev && ev.analysis && typeof ev.analysis === 'object') ? ev.analysis : null, g = a.gbd || null, eq = (an && an.equipment) || {};
+      var fmt = function(iso){ var d = new Date(String(iso).slice(0,10) + 'T12:00:00'); return isNaN(d) ? String(iso) : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); };
+      var card = function(title, inner, tone) { return inner ? '<div style="background:#fff;border:' + (tone === 'warn' ? '2px solid rgba(255,170,0,0.55)' : '1px solid rgba(0,0,0,0.12)') + ';border-radius:12px;padding:12px 14px;margin-bottom:10px;"><div style="font-size:0.66rem;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;color:#3d6b12;margin-bottom:6px;">' + title + '</div>' + inner + '</div>' : ''; };
+      var li = function(t){ return '<div style="font-size:0.86rem;line-height:1.55;color:#1A1A1A;padding:3px 0;">' + t + '</div>'; };
+      var sys = [(ev && ev.inverter_brand) || eq.brand, (ev && ev.inverter_model) || eq.model].filter(Boolean).join(' ');
+      var serial = (ev && ev.inverter_serial) || eq.serial;
+      var yr = parseInt(job.install_year, 10), age = yr ? (new Date().getFullYear() - yr) : null;
+      var sysRows = '';
+      if (job.reported_issue) sysRows += li('<b>Reported:</b> ' + _odEsc(job.reported_issue));
+      sysRows += li('<b>System:</b> ' + (sys ? _odEsc(sys) + (serial ? ' &middot; serial ' + _odEsc(serial) : '') : 'not captured yet &mdash; photograph the inverter and serial plate in the next step'));
+      var sb = [job.system_size ? _odEsc(job.system_size) + ' kW' : '', yr ? 'installed ' + yr + (age != null ? ' (~' + age + ' yrs)' : '') : '', (ev && ev.utility) || job.utility || '', job.original_installer ? 'original installer ' + _odEsc(job.original_installer) : ''].filter(Boolean);
+      if (sb.length) sysRows += li('<b>Size &middot; age:</b> ' + sb.join(' &middot; '));
+      if (eq.manufacture_year) sysRows += li('<b>Manufactured:</b> ' + _odEsc(eq.manufacture_year));
+      if (eq.warranty_status) sysRows += li('<b>Warranty:</b> ' + _odEsc(eq.warranty_status) + (eq.warranty_action ? '<div style="font-size:0.8rem;color:#555;">' + _odEsc(eq.warranty_action) + '</div>' : ''));
+      else if (ts && ts.warranty_note) sysRows += li('<b>Warranty:</b> ' + _odEsc(ts.warranty_note));
+      if (a.system_issue === 'yes') { var oc = { restored:'came back online', partial:'only partly came back', still_down:'is still down' }[a.pc_outcome]; sysRows += li('<b>Tech restart:</b> ' + (oc ? 'system ' + oc + ' after a restart' : 'not tried / no result recorded')); }
+      var data = '', anomalous = false;
+      if (g && g.has_export) {
+        (g.down_runs || []).forEach(function(r){ anomalous = true; data += li('<b>No solar export for ' + r.days + ' days</b> (' + fmt(r.from) + ' &ndash; ' + fmt(r.to) + (r.lost_kwh ? ', roughly ' + r.lost_kwh + ' kWh not produced' : '') + ') &mdash; the system was off or not communicating.'); });
+        if (g.drop && !g.drop.seasonal) { anomalous = true; data += li('<b>Export fell about ' + g.drop.pct + '%</b> around ' + fmt(g.drop.date) + ' (' + g.drop.before_kwh + ' &rarr; ' + g.drop.after_kwh + ' kWh/day) and ' + (g.drop.partial ? 'has only partly come back' : 'has stayed low') + ' &mdash; a string, optimizer or micro-inverter loss fits this shape.'); }
+        else if (g.drop && g.drop.seasonal) data += li('Export dipped around ' + fmt(g.drop.date) + ', but the same dip happened a year earlier &mdash; likely seasonal.');
+        if (g.flat_top_share >= 0.4) { anomalous = true; data += li('Output hits a ceiling on ' + Math.round(g.flat_top_share * 100) + '% of sunny days (possible inverter clipping or undersizing).'); }
+        var kw = parseFloat(job.system_size);
+        if (kw && g.peak_export_kw && g.peak_export_kw < kw * 0.35) { anomalous = true; data += li('Best export is only ~' + g.peak_export_kw + ' kW on a ' + kw + ' kW system (export is production minus what the house used, so this is a floor, not proof).'); }
+        var yv = g.export_yoy ? Object.keys(g.export_yoy).map(function(k){ return g.export_yoy[k]; }) : [];
+        if (yv.length >= 3) { var avg = Math.round(yv.reduce(function(t, v){ return t + v; }, 0) / yv.length); if (avg <= -15) { anomalous = true; data += li('Solar export is down about ' + Math.abs(avg) + '% against the same months last year.'); } }
+        if (anomalous && g.import_kwh_per_day) data += li('<span style="color:#555;">Home pulls about ' + g.import_kwh_per_day + ' kWh/day from the grid &mdash; shown only because the system data looks abnormal.</span>');
+        if (!anomalous) data = li('Production looks normal in the meter data (best export ~' + (g.peak_export_kw || '?') + ' kW). No anomalies found.');
+        data += '<div style="font-size:0.7rem;color:#777;margin-top:4px;">Hints from the homeowner&rsquo;s utility meter data &mdash; not proof. Confirm on site.</div>';
+      }
+      var causes = '';
+      if (an && Array.isArray(an.likely_causes) && an.likely_causes.length) causes += an.likely_causes.slice(0, 4).map(function(c){ return li('<b>' + _odEsc(c.cause) + '</b> <span style="font-size:0.68rem;font-weight:800;color:' + (c.likelihood === 'high' ? '#b3261e' : c.likelihood === 'medium' ? '#b06a00' : '#777') + ';text-transform:uppercase;">' + _odEsc(c.likelihood || '') + '</span>' + (c.evidence ? '<div style="font-size:0.8rem;color:#555;">' + _odEsc(c.evidence) + '</div>' : '')); }).join('');
+      if (an && an.diagnosis) causes = li(_odEsc(an.diagnosis)) + causes;
+      if (ts && ts.diagnosis) causes += li('<b>Quoya troubleshoot:</b> ' + _odEsc(ts.diagnosis));
+      var codes = odCodes(ts), codeHtml = codes.map(function(c){ return li('<b>' + _odEsc(c.code) + '</b>' + (c.severity ? ' <span style="font-size:0.66rem;color:#b06a00;text-transform:uppercase;">' + _odEsc(c.severity) + '</span>' : '') + (c.meaning ? ' &mdash; ' + _odEsc(c.meaning) : '')); }).join('');
+      var steps = ts && Array.isArray(ts.on_site_steps) ? ts.on_site_steps.slice(0, 6) : [];
+      var stepHtml = steps.map(function(x, i){ return li((i + 1) + '. ' + _odEsc(x && x.step ? x.step : x) + (x && x.detail ? ' <span style="color:#666;">(' + _odEsc(x.detail) + ')</span>' : '')); }).join('');
+      var out = card('System &amp; warranty', sysRows) + card('What the data shows', data, anomalous ? 'warn' : '') + card('Error codes', codeHtml) + card('Likely cause', causes) + card('Where to check first', stepHtml);
+      if (a.eval_notes) out += card('First-visit Tech notes', li(_odEsc(a.eval_notes).replace(/\n/g, '<br>')));
+      if (!codeHtml && !causes) out += '<div style="background:rgba(155,109,232,0.08);border:1px solid rgba(155,109,232,0.3);border-radius:12px;padding:12px;font-size:0.84rem;color:#444;margin-bottom:10px;">Quoya has no fault read yet. Add the error-screen photo in the next step and run <b>Quoya troubleshoot</b> &mdash; it researches the exact model and code.</div>';
+      return out + '<div style="font-size:0.74rem;color:#777;margin-top:4px;">Skip ahead any time.</div>';
+    }
     function odFlags() {
       var d = OD.d, f = [];
       var ac = parseFloat(d.ac_v), dc = parseFloat(d.dc_v);
@@ -40503,26 +40622,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var body = '';
       var s = OD.step;
       if (s === 0) {
-        var rows = [];
-        if (job.reported_issue) rows.push('<b>Reported:</b> ' + _odEsc(job.reported_issue));
-        var sys = ev ? [ev.inverter_brand, ev.inverter_model].filter(Boolean).join(' ') : '';
-        rows.push('<b>System:</b> ' + (sys ? _odEsc(sys) + (ev.inverter_serial ? ' (serial ' + _odEsc(ev.inverter_serial) + ')' : '') : 'not captured yet'));
-        if (job.system_size || job.utility || (ev && ev.utility)) rows.push('<b>Size · Utility:</b> ' + _odEsc([job.system_size ? job.system_size + ' kW' : '', (ev && ev.utility) || job.utility || ''].filter(Boolean).join(' · ')));
-        if (a.system_issue === 'yes') rows.push('<b>Problem:</b> system has an issue' + ({restored:' — back online after the tech restart', partial:' — only partly back after the restart', still_down:' — still down after the restart'}[a.pc_outcome] || ''));
-        if (a.eval_notes) rows.push('<b>Tech notes:</b> ' + _odEsc(a.eval_notes));
-        var codes = ts && Array.isArray(ts.identified) ? ts.identified.filter(function(c){ return c && c.code; }) : [];
-        if (codes.length) rows.push('<b>Error codes:</b> ' + codes.map(function(c){ return _odEsc(c.code) + (c.meaning ? ' — ' + _odEsc(c.meaning) : ''); }).join('; '));
-        if (ts && ts.diagnosis) rows.push('<b>Likely cause:</b> ' + _odEsc(ts.diagnosis));
-        if (ts && Array.isArray(ts.on_site_steps) && ts.on_site_steps.length) rows.push('<b>Quoya suggests:</b><br>' + ts.on_site_steps.slice(0,6).map(function(x, i){ return (i+1) + '. ' + _odEsc(x); }).join('<br>'));
-        body = '<div style="background:#fff;border:2px solid rgba(141,198,63,0.5);border-radius:12px;padding:14px;line-height:1.7;font-size:0.9rem;color:#1A1A1A;">' + rows.join('<br>') + '</div>' +
-          '<div style="font-size:0.74rem;color:#777;margin-top:8px;">This is what the evaluation already found. Skip ahead any time.</div>';
+        body = odBriefHtml(job, ev);
       } else if (s === 1) {
-        body = sel('status', 'What does the inverter show?', [['','Choose…'],['ok','Running normally'],['fault','Fault / error code'],['offline','Offline / not communicating'],['no_display','No display / no power']]) +
+        body = '<div style="font-size:0.74rem;color:#666;margin-bottom:8px;">Add photos right here, one slot at a time. Everything lands in the job file and Solar Review sees it too.</div>' +
+          odSlotsHtml(OD.jid) +
+          '<div id="opsDiagStatus" style="font-size:0.78rem;color:#4a9eff;min-height:16px;margin:4px 0 8px;"></div>' +
+          sel('status', 'What does the inverter show?', [['','Choose…'],['ok','Running normally'],['fault','Fault / error code'],['offline','Offline / not communicating'],['no_display','No display / no power']]) +
           txt('codes', 'Error code(s) on the display', 'e.g. 2x1, 18xC, F34') +
-          photoBtn('Error Codes', 'Photo of the error screen') +
           sel('restart', 'Did you power-cycle it?', [['','Choose…'],['no','Not yet'],['fixed','Yes — back online'],['partial','Yes — partly back'],['down','Yes — still down']]) +
-          '<div id="opsDiagStatus" style="font-size:0.78rem;color:#4a9eff;min-height:16px;"></div>' +
-          '<div style="font-size:0.74rem;color:#777;">Switches and breakers only — never open a cover or touch conductors.</div>';
+          (ev && (ev.inverter_brand || ev.inverter_model) ? '' : txt('brand', 'Inverter brand / model (helps Quoya)', 'e.g. Enphase IQ7, SolarEdge SE7600')) +
+          odTsHtml(OD.jid, ev) +
+          '<div style="font-size:0.74rem;color:#777;margin-top:10px;">Follow the manufacturer\'s procedure and your own lockout/tagout. If anything is burnt, melted or smells of smoke: stop, photograph it, leave it off.</div>';
       } else if (s === 2) {
         var fl = odFlags().filter(function(x){ return /voltage|DC input|Insulation/.test(x); });
         body = txt('ac_v', 'AC voltage at the inverter (V)', '240', 'number') + txt('dc_v', 'DC input voltage (V)', '', 'number') + txt('kw_now', 'Producing right now (kW)', '', 'number') +
@@ -40572,6 +40682,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (res.error || !res.data || !res.data.length) { if (msg) { msg.style.color = '#c0392b'; msg.textContent = 'Could not save — check your signal and try again.'; } return; }
       var job = jobs.find(function(j){ return j.id === jid; }); if (job) job.diag_findings = f;
       try { await fetch('/.netlify/functions/notify-staff', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ event: 'diag_findings', customerId: jid }) }); } catch (e) {}
+      // Quoya drafts the customer version from these findings (Dennis reviews/edits/saves it — nothing reaches the customer from here).
+      try {
+        var ctrl = new AbortController(), to = setTimeout(function(){ ctrl.abort(); }, 24000);
+        var dn = ['Cause: ' + f.cause, f.codes ? 'Error codes: ' + f.codes : '', f.fix ? 'Fix needed: ' + f.fix : '', f.warranty ? 'Under warranty: ' + f.warranty : '', f.parts ? 'Parts: ' + f.parts : '', f.working ? 'Working now: ' + f.working : '', d.notes ? 'Notes: ' + d.notes : ''].filter(Boolean).join('\n');
+        var dr = await fetch('/.netlify/functions/diag-report-draft', { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: ctrl.signal, body: JSON.stringify({ notes: dn, context: { first_name: (jobs.find(function(j){ return j.id === jid; }) || {}).first_name || '', address: (jobs.find(function(j){ return j.id === jid; }) || {}).address || '' } }) });
+        clearTimeout(to);
+        var dd = await dr.json();
+        if (dd && dd.report) { f.report_draft = dd.report; await c2.from('customers').update({ diag_findings: f }).eq('id', jid); if (job) job.diag_findings = f; }
+      } catch (e) {}
       try { sessionStorage.removeItem('opsdiag_' + jid); } catch (e) {}
       alert('Findings submitted — Solar Review has been notified.');
       window.opsDiagClose();
