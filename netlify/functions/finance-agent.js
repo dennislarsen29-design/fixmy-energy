@@ -65,13 +65,17 @@ async function callClaude(messages, tools, system, toolChoice) {
 //           + marketing_expenses (Lead Generation)
 // Expense = expense_transactions grouped by account
 function monthKey(d) { return String(d || '').slice(0, 7); }
+// Dennis (tech4) is the owner. His commission is auto-marked paid when it is locked in and lands in the SAME
+// bank account as Solar Review's share, so it is a ledger entry, NOT a cash payout. The portal's P&L still
+// books it to COGS 'Incentives - Sales', so we report it separately and show an adjusted margin.
+const OWNER_PAYEE = 'tech4';
 
 async function buildBooks(key) {
   // Two small batches instead of five parallel heavy reads — the big parallel burst is what
   // tripped Supabase's gateway (504). supaGet also retries transient gateway errors.
   const [pays, comms, costs] = await Promise.all([
     supaGet('/payments?select=amount,paid_at,category,customer_id&limit=5000', key),
-    supaGet('/commissions?select=amount,status,kind,payee,payee_name,line,sold_at,paid_at&limit=5000', key),
+    supaGet('/commissions?select=amount,status,kind,payee,payee_name,line,note,customer_id,sold_at,paid_at&limit=5000', key),
     supaGet('/job_costs?select=amount,status,label,paid_at,created_at,customer_id&limit=5000', key)
   ]);
   const expenses = await supaGet('/expense_transactions?select=txn_date,description,merchant,amount,account_name,review_status&limit=10000', key).catch(() => []);
@@ -89,11 +93,17 @@ function pnlSnapshot(b) {
     sec[account] = (sec[account] || 0) + amt;
   };
   b.pays.forEach(p => { if ((p.category || 'revenue') === 'revenue') bump(monthKey(p.paid_at), 'income', 'Commission Income', parseFloat(p.amount) || 0); });
+  const ownerAuto = {};
   b.comms.forEach(c => {
     const amt = parseFloat(c.amount) || 0;
-    if (c.payee === 'solar_review_corp' && c.status === 'paid') bump(monthKey(c.paid_at || c.sold_at), 'income', 'Commission Income', amt);
-    else if (c.kind === 'rep_commission' && c.status === 'paid') bump(monthKey(c.paid_at || c.sold_at), 'cogs', 'Incentives - Sales', amt);
-    else if (c.kind === 'travel_reimbursement' && c.status === 'paid') bump(monthKey(c.paid_at || c.sold_at), 'expense', 'Travel Expense', amt);
+    const mk = monthKey(c.paid_at || c.sold_at);
+    if (c.payee === 'solar_review_corp' && c.status === 'paid') bump(mk, 'income', 'Commission Income', amt);
+    // Match the portal exactly: rep AND setter commissions are 'Incentives - Sales' (setters were missing here before).
+    else if ((c.kind === 'rep_commission' || c.kind === 'setter_commission') && c.status === 'paid') {
+      bump(mk, 'cogs', 'Incentives - Sales', amt);
+      if (c.payee === OWNER_PAYEE && mk) ownerAuto[mk] = (ownerAuto[mk] || 0) + amt;
+    }
+    else if (c.kind === 'travel_reimbursement' && c.status === 'paid') bump(mk, 'expense', 'Travel Expense', amt);
   });
   b.costs.forEach(c => { if (c.status === 'paid') bump(monthKey(c.paid_at || c.created_at), 'cogs', 'Subcontracted Services', parseFloat(c.amount) || 0); });
   b.marketing.forEach(m => {
@@ -122,8 +132,16 @@ function pnlSnapshot(b) {
     out[m] = {
       income: sum(v.income), cogs: sum(v.cogs), grossProfit: sum(v.income) - sum(v.cogs),
       expenses: sum(v.expense), netIncome: sum(v.income) - sum(v.cogs) - sum(v.expense),
-      expenseByAccount: Object.fromEntries(Object.entries(v.expense).map(([k, x]) => [k, Math.round(x * 100) / 100]))
+      expenseByAccount: Object.fromEntries(Object.entries(v.expense).map(([k, x]) => [k, Math.round(x * 100) / 100])),
+      cogsByAccount: Object.fromEntries(Object.entries(v.cogs).map(([k, x]) => [k, Math.round(x * 100) / 100]))
     };
+    const oa = Math.round((ownerAuto[m] || 0) * 100) / 100;
+    if (oa) {
+      out[m].ownerAutoPaidCommission = oa;
+      out[m].adjustedNote = 'cogs/grossProfit/netIncome above INCLUDE $' + oa + ' of the owner\'s auto-paid commission (a ledger entry, not cash out). Adjusted for it: cogs ' + Math.round((out[m].cogs - oa) * 100) / 100 + ', netIncome ' + Math.round((out[m].netIncome + oa) * 100) / 100 + '.';
+      out[m].cogsExcludingOwnerAutoPaid = Math.round((out[m].cogs - oa) * 100) / 100;
+      out[m].netIncomeExcludingOwnerAutoPaid = Math.round((out[m].netIncome + oa) * 100) / 100;
+    }
     if (v.owner) {
       const o = Math.round(v.owner.out * 100) / 100, i = Math.round(v.owner.in * 100) / 100;
       out[m].ownerEquity = { takenOut: o, putIn: i, net: Math.round((o - i) * 100) / 100,
@@ -157,7 +175,14 @@ async function executeTool(name, input, key, cache) {
 
   switch (name) {
     case 'get_pnl_snapshot':
-      return JSON.stringify(pnlSnapshot(b));
+      return JSON.stringify({
+        notes: [
+          'Income here = customer payments + override rows RECEIVED by Solar Review Corp. Rep/setter pay is booked to COGS when marked paid. Because the gross commission a partner (Axia/Cosmic) pays is not all booked as income, a month with many rep payouts and few received overrides shows a big negative margin that is TIMING/BOOKING, not job losses.',
+          'The owner\'s own commission is auto-marked paid when locked in and lands in the same bank account — see ownerAutoPaidCommission and the *ExcludingOwnerAutoPaid fields; judge margin on those, and say which basis you are quoting.',
+          'Nothing in this system "closes" a month. Never say books are closed/finalized; a month is just complete or not.'
+        ],
+        months: pnlSnapshot(b)
+      });
 
     case 'get_expense_breakdown': {
       const monthsBack = Math.min(Math.max(parseInt(input.months_back, 10) || 6, 1), 24);
@@ -173,7 +198,12 @@ async function executeTool(name, input, key, cache) {
       const biggest = rows.slice().sort((a, c) => (parseFloat(c.amount) || 0) - (parseFloat(a.amount) || 0)).slice(0, 15)
         .map(e => ({ date: e.txn_date, description: (e.description || '').slice(0, 60), amount: e.amount, account: e.account_name }));
       const needsReview = rows.filter(e => e.review_status === 'needs_review' || !e.account_name).length;
-      return JSON.stringify({ totalsByAccount: byAccount, byAccountMonth, biggestTransactions: biggest, needsReviewCount: needsReview, transactionCount: rows.length });
+      const allNeeds = b.expenses.filter(e => e.review_status === 'needs_review' || !e.account_name);
+      const ownerLike = /1065|larsen,\s*dennis|dennis larsen|chase/i;
+      const likelyOwnerTransfers = allNeeds.filter(e => ownerLike.test(e.description || '')).map(e => ({ date: e.txn_date, description: (e.description || '').slice(0, 60), amount: e.amount }));
+      const uncategorizedByMonth = {};
+      b.expenses.filter(e => !e.account_name || e.account_name === 'Uncategorized').forEach(e => { const m = monthKey(e.txn_date); uncategorizedByMonth[m] = (uncategorizedByMonth[m] || 0) + (parseFloat(e.amount) || 0); });
+      return JSON.stringify({ totalsByAccount: byAccount, byAccountMonth, biggestTransactions: biggest, needsReviewCountInWindow: needsReview, needsReviewCountAllTime: allNeeds.length, uncategorizedAmountByMonth: uncategorizedByMonth, likelyOwnerTransfersInQueue: likelyOwnerTransfers, transactionCount: rows.length, note: 'An Uncategorized amount only distorts the month it is dated in (not later months). Transfers to the owner\'s personal Chase (****1065) or "Larsen,Dennis" are owner distributions (equity, off the P&L) — recommend coding them as Shareholder Distributions, not as an expense problem.' });
     }
 
     case 'get_recurring_charges': {
@@ -204,6 +234,7 @@ async function executeTool(name, input, key, cache) {
 
     case 'get_commissions_summary': {
       const sum = rows => rows.reduce((t, x) => t + (parseFloat(x.amount) || 0), 0);
+      const r2 = n => Math.round(n * 100) / 100;
       const owedReps = b.comms.filter(c => c.status === 'sold' && c.payee !== 'solar_review_corp');
       const owedSRC = b.comms.filter(c => c.status === 'sold' && c.payee === 'solar_review_corp');
       const paid = b.comms.filter(c => c.status === 'paid');
@@ -213,11 +244,32 @@ async function executeTool(name, input, key, cache) {
         byPayee[p] = byPayee[p] || { sold: 0, paid: 0 };
         byPayee[p][c.status === 'paid' ? 'paid' : 'sold'] += parseFloat(c.amount) || 0;
       });
-      return JSON.stringify({ owedToReps: sum(owedReps), overrideIncomeDueToSRC: sum(owedSRC), caveat: 'Rows with status sold are LOCKED-IN commissions on jobs that may not be installed yet — not payable until the job is installed/PTO. Do not describe all of owedToReps as cash due now.', totalPaidOut: sum(paid.filter(c => c.payee !== 'solar_review_corp')), byPayee });
+      // Which unreceived override rows are actually DUE? Look at each job's real state.
+      const ids = [...new Set(owedSRC.map(c => c.customer_id).filter(Boolean))];
+      let cust = {};
+      if (ids.length) {
+        const rows = await supaGet('/customers?select=id,first_name,last_name,sold_type,step,solar_status,install_completed_at,ns_pto_at&id=in.(' + ids.join(',') + ')&limit=500', key).catch(() => []);
+        rows.forEach(r => { cust[r.id] = r; });
+      }
+      const dueNow = [], notYet = [];
+      owedSRC.forEach(c => {
+        const j = cust[c.customer_id] || {};
+        const nm = ((j.first_name || '') + ' ' + (j.last_name || '')).trim() || 'unknown job';
+        const amt = parseFloat(c.amount) || 0;
+        let due = false, why = '';
+        if (c.note === 'cosmic_sale') { due = true; why = 'Cosmic 50% at sale — Cosmic pays on request'; }
+        else if (c.note === 'cosmic_done') { due = (j.step || 0) >= 9; why = due ? 'job installed — Cosmic 50% at completion is payable' : 'waiting on job completion'; }
+        else if (c.note === 'dc_bonus') { due = !!j.ns_pto_at; why = due ? 'PTO granted' : 'Domestic Content bonus waits for PTO'; }
+        else if (j.sold_type === 'new_solar') { due = !!j.install_completed_at; why = due ? 'install completed — Axia Payment 1 payable' : 'waiting on install completion'; }
+        else { why = 'state unclear'; }
+        (due ? dueNow : notYet).push({ job: nm, amount: r2(amt), why });
+      });
+      return JSON.stringify({ owedToReps: r2(sum(owedReps)), overrideIncomeLockedTotal: r2(sum(owedSRC)), overrideIncomeDueNow: r2(dueNow.reduce((t, x) => t + x.amount, 0)), overrideIncomeNotYetDue: r2(notYet.reduce((t, x) => t + x.amount, 0)), dueNowJobs: dueNow, notYetDueJobs: notYet, caveat: 'overrideIncomeLockedTotal is NOT all collectable — only overrideIncomeDueNow is. Tell Dennis to collect only the due-now jobs. owedToReps includes the owner (auto-paid, not cash) and rows on not-yet-installed jobs, which are not payable yet.', totalPaidOut: r2(sum(paid.filter(c => c.payee !== 'solar_review_corp'))), byPayee });
     }
 
     case 'get_cash_position': {
-      const custs = await supaGet('/customers?select=id,first_name,last_name,invoice_amount,invoice_status,sold_type&limit=3000', key);
+      const custs = await supaGet('/customers?select=id,first_name,last_name,invoice_amount,invoice_status,sold_type,step,disposition_exit&limit=3000', key);
+      const byId = {}; custs.forEach(c => { byId[c.id] = c; });
       const paysByCust = {};
       b.pays.forEach(p => { if ((p.category || 'revenue') === 'revenue' && p.customer_id) paysByCust[p.customer_id] = (paysByCust[p.customer_id] || 0) + (parseFloat(p.amount) || 0); });
       let outstanding = 0, outstandingCount = 0;
@@ -227,15 +279,25 @@ async function executeTool(name, input, key, cache) {
         const bal = target - (paysByCust[c.id] || 0);
         if (bal > 0.005 && c.invoice_status !== 'paid') { outstanding += bal; outstandingCount++; }
       });
-      const unpaidCosts = b.costs.filter(c => c.status === 'pending').reduce((t, c) => t + (parseFloat(c.amount) || 0), 0);
-      const owedReps = b.comms.filter(c => c.status === 'sold' && c.payee !== 'solar_review_corp').reduce((t, c) => t + (parseFloat(c.amount) || 0), 0);
-      return JSON.stringify({ customerBalancesOutstanding: Math.round(outstanding * 100) / 100, customersWithBalance: outstandingCount, unpaidJobCosts: unpaidCosts, commissionsOwedToReps: owedReps, caveat: 'commissionsOwedToReps includes locked-in commissions on not-yet-installed jobs, which are not payable yet; the owner draws his own auto-paid commission, so it is not a cash obligation.' });
+      // Unpaid job costs: separate real payables from accruals and suspect lines.
+      let real = 0, accrued = 0; const suspect = [];
+      b.costs.filter(c => c.status === 'pending').forEach(c => {
+        const amt = parseFloat(c.amount) || 0, j = byId[c.customer_id] || {};
+        const nm = ((j.first_name || '') + ' ' + (j.last_name || '')).trim() || 'unknown';
+        if (j.sold_type === 'battery_retrofit' && amt > 2000) suspect.push({ job: nm, amount: amt, label: c.label, why: 'battery retrofits are collected directly by Cosmic — Solar Review should carry no job cost, so this is probably a stale/wrong line' });
+        else if (/test/i.test(nm)) suspect.push({ job: nm, amount: amt, why: 'looks like a test record' });
+        else if (j.disposition_exit || j.step === 7) suspect.push({ job: nm, amount: amt, why: 'lead was set aside / not sold — confirm the visit happened before paying' });
+        else if ((j.step || 0) <= 3) accrued += amt;
+        else real += amt;
+      });
+      const owedReps = b.comms.filter(c => c.status === 'sold' && c.payee !== 'solar_review_corp' && c.payee !== OWNER_PAYEE).reduce((t, c) => t + (parseFloat(c.amount) || 0), 0);
+      return JSON.stringify({ customerBalancesOutstanding: Math.round(outstanding * 100) / 100, customersWithBalance: outstandingCount, unpaidJobCostsConfirmed: real, unpaidJobCostsAccruedVisitNotDone: accrued, suspectJobCostLines: suspect, commissionsOwedToTeamNonOwner: Math.round(owedReps * 100) / 100, caveat: 'Do NOT add suspect lines to "owed out". Do NOT compare owed-out to only customer invoices — also use get_commissions_summary overrideIncomeDueNow for money coming in. Locked rep commissions on not-yet-installed jobs are not payable yet; the owner\'s own commission is auto-paid, never a cash obligation.' });
     }
 
     case 'get_recent_reports': {
       const since = new Date(); since.setDate(since.getDate() - 7);
-      const rows = await supaGet('/agent_reports?select=title,created_at&agent=eq.finance&created_at=gte.' + since.toISOString() + '&order=created_at.desc&limit=30', key);
-      return JSON.stringify(rows);
+      const rows = await supaGet('/agent_reports?select=title,priority,body,created_at&agent=eq.finance&created_at=gte.' + since.toISOString() + '&order=created_at.desc&limit=30', key);
+      return JSON.stringify(rows.map(r => ({ date: r.created_at, priority: r.priority, title: r.title, said: String(r.body || '').slice(0, 220) })));
     }
 
     case 'write_recommendation': {
@@ -265,7 +327,13 @@ Your analysis, in priority order:
 5. BOOKS HYGIENE — uncategorized/needs-review transactions piling up; months with income but no expense data (statements not uploaded).
 
 Rules:
-- Check get_recent_reports FIRST and do not repeat a recommendation made in the last 7 days unless the numbers changed materially.
+- Check get_recent_reports FIRST. Do NOT repeat a recommendation or reminder from the last 7 days unless a number changed by more than ~10% or the situation changed. Never write a countdown/deadline nag ("N days left", "due today") more than once. Write at most 3 reports a night; if nothing material changed write ONE "books are quiet" note.
+- RECONCILE BEFORE YOU FLAG. Never ask Dennis to "confirm whether it's timing or real losses" — work it out yourself with the tools (get_pnl_snapshot cogsByAccount, ownerAutoPaidCommission, get_commissions_summary due-now vs not-yet-due) and state what the numbers show.
+- The owner's (Dennis's) commission is auto-marked paid and lands in the same bank account — it is a ledger entry, not cash out. When you quote a margin, state whether it includes it, and prefer the *ExcludingOwnerAutoPaid figures. Do not call it a cash payout or compute payroll tax on it as if cash moved.
+- Never say books are "closed" or "finalized" and never invent a close deadline — this system has no close step. A bucket of uncategorized transactions only affects the month it is dated in.
+- Money coming in: only overrideIncomeDueNow is collectable. Never tell Dennis to "collect" the full locked override total, and never describe the cash gap using unpaidJobCostsAccruedVisitNotDone or suspectJobCostLines — those are not obligations. Quote customerBalancesOutstanding, unpaidJobCostsConfirmed, overrideIncomeDueNow and commissionsOwedToTeamNonOwner.
+- Transfers to the owner's personal Chase (****1065) or to "Larsen,Dennis" are owner distributions (equity), not uncategorized expenses — recommend coding them as Shareholder Distributions.
+- Quote counts exactly as the tools return them (needsReviewCountAllTime vs InWindow); never round or guess.
 - If the books are empty or nothing material changed, write ONE brief "books are quiet" note at normal priority — never invent findings.
 - Owner money: each month's "ownerEquity" shows takenOut, putIn and net. Judge distributions by the NET over the period, never the sum of monthly sizes. Owner transfers in from personal accounts are not income and not expenses; they reduce net distributions, and a net contribution means no distribution-vs-salary issue from those months. Flag a distribution-without-salary concern only when the cumulative net taken out is positive, and quote that net.
 - Be specific: dollar amounts, merchant names, month names, exact next actions. No generic advice.
