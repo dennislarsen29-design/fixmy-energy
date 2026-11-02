@@ -21,7 +21,7 @@ exports.handler = async function (event, context, deps) {
   const id = String(b.customerId || ''); const code = String(b.code || '');
   if (!/^[0-9a-f-]{36}$/i.test(id) || !code) return out(400, { error: 'missing fields' });
 
-  const r = await doFetch(SUPA_URL + '/rest/v1/customers?id=eq.' + id + '&select=id,first_name,last_name,phone,email,access_code,rep_id,lead_category,proposal,sold_type,step,sold_at,br_revenue,br_redline&limit=1', { headers: H });
+  const r = await doFetch(SUPA_URL + '/rest/v1/customers?id=eq.' + id + '&select=id,address,first_name,last_name,phone,email,access_code,rep_id,lead_category,proposal,sold_type,step,sold_at,br_revenue,br_redline&limit=1', { headers: H });
   const rows = await r.json().catch(function () { return null; });
   const c = Array.isArray(rows) && rows[0];
   if (!c || !codeMatches(code, c)) return out(403, { error: 'Not authorized' });
@@ -67,6 +67,10 @@ exports.handler = async function (event, context, deps) {
       } else batteryConverted = { skipped: 'missing price or dealer cost on the accepted option' };
     }
   } catch (e) {}
+
+  // Utah homes never get the California-only CPUC guide (2026-11-02, per Dennis).
+  const _addr = String(c.address || '');
+  if (/\bUtah\b/i.test(_addr) || /,\s*UT\b/i.test(_addr) || /\bUT\s+84\d{3}\b/i.test(_addr)) return out(200, { ok: true, skipped: 'utah_no_cpuc', batteryConverted });
 
   // Open the CPUC guide for the rep. ignore-duplicates: a second call (refresh/replay) changes nothing and doesn't re-text.
   const ins = await doFetch(SUPA_URL + '/rest/v1/deal_documents?on_conflict=customer_id,doc_type', {

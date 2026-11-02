@@ -70,11 +70,12 @@ function initialsText(v, fallback) {
 }
 
 // Fingerprint of the exact Diagnostic Agreement text in force at signing time.
-function diagTermsFingerprint(signedAtIso) {
+function diagTermsFingerprint(signedAtIso, address) {
   const A = diag();
   const cap = A.capFor(signedAtIso);
-  const sections = A.sectionsFor(cap, signedAtIso);
-  return { cap, sha256: sha256(JSON.stringify({ cap, sections, fee: A.feeNoticeFor(signedAtIso) })) };
+  const variant = A.variantFor ? A.variantFor(address) : 'ca';
+  const sections = A.sectionsFor(cap, signedAtIso, variant);
+  return { cap, variant, sha256: sha256(JSON.stringify({ cap, sections, fee: A.feeNoticeFor(signedAtIso) })) };
 }
 
 function signatureFingerprint(sd) {

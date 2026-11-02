@@ -116,7 +116,7 @@ exports.handler = async function(event) {
     agreement_user_agent: signingUserAgent,
     agreement_signature_data: signatureData,
     agreement_audit: (function () {
-      const terms = sigAudit.diagTermsFingerprint(actualSignedAt);
+      const terms = sigAudit.diagTermsFingerprint(actualSignedAt, c.address);
       return {
         method: 'card', signed_at: actualSignedAt, ip: signingIp, user_agent: signingUserAgent,
         location: signingLocation || null, printed_name: String(signature).slice(0, 120),

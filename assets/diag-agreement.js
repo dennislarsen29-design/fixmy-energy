@@ -38,6 +38,15 @@
     if (isNaN(t)) return CAP_CURRENT;
     return t < new Date(CAP_CHANGE_ISO).getTime() ? CAP_LEGACY : CAP_CURRENT;
   }
+  // Utah variant (2026-11-02, per Dennis): Utah homes get Utah governing law and a Utah venue instead of
+  // California law + AAA arbitration in San Diego. Chosen from the property address (state UT or a 84xxx ZIP).
+  // ⚠️ Drafted ahead of the Utah licensing/consumer-law review — have counsel confirm before relying on it.
+  function variantFor(address) {
+    var a = String(address || '');
+    if (/\bUtah\b/i.test(a) || /,\s*UT\b/i.test(a) || /\bUT\s+84\d{3}\b/i.test(a)) return 'ut';
+    return 'ca';
+  }
+  var GOVERNING_UT = "This agreement is governed by the laws of the State of Utah. Any disputes shall first be addressed through good-faith mediation. If unresolved, either party may bring the dispute in the state or federal courts located in Salt Lake County, Utah. Nothing in this agreement limits any right or remedy you have under Utah consumer-protection law, and the prevailing party in any court action may recover reasonable attorney fees as allowed by Utah law.";
   function money(n) { return '$' + Number(n).toLocaleString('en-US'); }
 
   var SECTIONS = [
@@ -80,10 +89,11 @@
   function fill(text, cap) { return String(text).replace(/\{\{CAP\}\}/g, money(cap)); }
 
   // Sections with {{CAP}} resolved for a given cap.
-  function sectionsFor(cap, signedAtIso) {
+  function sectionsFor(cap, signedAtIso, variant) {
     var v2 = cancelV2(signedAtIso);
     return SECTIONS.map(function (s, i) {
       var paras = s.paras.slice();
+      if (variant === 'ut' && i === 5) paras = [GOVERNING_UT];
       if (v2 && i === 1) paras.splice(1, 0, CANCEL_PARA_V2); // Section 2: cancellation terms before the non-refundable line
       return { title: s.title, paras: paras.map(function (p) { return fill(p, cap); }) };
     });
@@ -96,15 +106,15 @@
     return esc.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
   }
 
-  function termsHtml(cap, signedAtIso) {
-    return sectionsFor(cap, signedAtIso).map(function (s) {
+  function termsHtml(cap, signedAtIso, variant) {
+    return sectionsFor(cap, signedAtIso, variant).map(function (s) {
       return '<h4>' + mdToHtml(s.title) + '</h4>' + s.paras.map(function (p) { return '<p>' + mdToHtml(p) + '</p>'; }).join('');
     }).join('');
   }
 
   root.DIAG_AGREEMENT = {
     CAP_CURRENT: CAP_CURRENT, CAP_LEGACY: CAP_LEGACY, CAP_CHANGE_ISO: CAP_CHANGE_ISO,
-    capFor: capFor, cancelV2: cancelV2, feeNoticeFor: feeNoticeFor, CANCEL_CHANGE_ISO: CANCEL_CHANGE_ISO, money: money, sectionsFor: sectionsFor, termsHtml: termsHtml, mdToHtml: mdToHtml,
+    variantFor: variantFor, capFor: capFor, cancelV2: cancelV2, feeNoticeFor: feeNoticeFor, CANCEL_CHANGE_ISO: CANCEL_CHANGE_ISO, money: money, sectionsFor: sectionsFor, termsHtml: termsHtml, mdToHtml: mdToHtml,
     FEE_NOTICE: FEE_NOTICE, ESIGN: ESIGN
   };
 
@@ -206,7 +216,7 @@
 
     // Terms (as signed: cap depends on signing date)
     var atIso = signed ? c.agreement_signed_at : null;
-    sectionsFor(cap, atIso).forEach(function (s) {
+    sectionsFor(cap, atIso, variantFor(c.address)).forEach(function (s) {
       need(40);
       y -= 4;
       textLine(s.title, bold, 11, ink);

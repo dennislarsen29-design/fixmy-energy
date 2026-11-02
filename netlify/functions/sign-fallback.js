@@ -86,7 +86,7 @@ exports.handler = async function(event) {
     const signingIp = sigAudit.clientIp(event);
     const signingUa = sigAudit.userAgent(event);
     const signedNow = new Date().toISOString(); // server clock — never the client's
-    const terms = sigAudit.diagTermsFingerprint(signedNow);
+    const terms = sigAudit.diagTermsFingerprint(signedNow, c.address);
 
     const patch = await fetch(SUPA_URL + '/rest/v1/customers?id=eq.' + c.id, {
       method: 'PATCH', headers: { ...H, Prefer: 'return=minimal' },
