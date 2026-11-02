@@ -46,7 +46,7 @@ Status: [ ] open · [x] done · [-] dismissed
 
 ## I. Added 2026-11-02 (deploy went live today)
 - [x] I1. (done 2026-11-02) Search Console: the hub, LA, Orange and Riverside pages were already indexed; San Bernardino County indexing requested.
-- [ ] I2. Netlify env var VIRTUAL_MEET_URL = a meet.google.com link (Site configuration → Environment variables), then trigger a deploy.
+- [x] I2. (Dennis added it 2026-11-02; takes effect after the next deploy) Netlify env var VIRTUAL_MEET_URL = a meet.google.com link (Site configuration → Environment variables), then trigger a deploy.
 - [ ] I3. Tell Claude: Axia paid on 11/6 (mark $2,438.10 DC share received); Vijay Ranu $300 keep/delete; "go" to delete the two stale job costs (Sandberg $15,272, Dennis Test $300).
 - [ ] I4. Utah compliance questions (HB 57 registration/bond, W-2 vs 1099 reps, contractor license) → counsel or Utah Division of Consumer Protection. Parked in S.U.N., not blocking.
 - [ ] H1b. 2026-11-02: the 5 new guides are requested. Still to request (5/day): /utah-solar-repair, then the Utah and California city pages from sitemap.xml.
