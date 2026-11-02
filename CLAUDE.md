@@ -2869,3 +2869,6 @@ Audit of the Nov 1 digest against the database found: the "-70.7% October margin
 
 ### Utah compliance is a watch item, not a gate (2026-11-02, per Dennis — "don't put in road blocks")
 Cody Larsen sells in Utah now; nothing in the code blocks Utah selling. The open state-level questions (HB 57 retailer registration/bond, W-2-vs-1099 reps, contractor license for a sell-and-subcontract company, Utah cancel notice/disclosure, city solicitor permits) show as a low-priority S.U.N. Founder queue item (`ut_compliance_2026_11`, kind `clean`). Post future state-level concerns the same way (one queue item each), never as a gate.
+
+## Job page: Administration is an expand-style row (2026-11-02, per Dennis)
+On the job detail (`openJob`) the Administration entry is now a left-aligned row styled like "Site Evaluation Photos"/"Diagnostic Results" (same `detailSecStyle`/`detailSummaryStyle`); tapping it opens the lead editor's Administration tab. The duplicate top-right "Edit Details" button was removed. Parse-checked only.
