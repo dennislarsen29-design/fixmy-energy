@@ -9,11 +9,11 @@ Status: [ ] open · [x] done · [-] dismissed
 - [ ] A4. Decide: add "How did you hear about us?" dropdown to /book and the setter form? (Claude builds it, 10 min.)
 
 ## B. Search Console (≈10 min, after deploy)
-- [ ] B1. Search Console → URL inspection → paste https://fixmy.energy/electricians → Request indexing.
-- [ ] B2. Same for /careers.
+- [x] B1. (done 2026-11-02) Search Console → URL inspection → paste https://fixmy.energy/electricians → Request indexing.
+- [x] B2. (done 2026-11-02) Same for /careers.
 - [x] B0. 2026-10-28: requested indexing for 5 blog/installer pages (freedom-forever-bankruptcy, sdge-electric-rates-2026, sunrun-vivint, vitl-power, petersen-dean).
-- [ ] B0b. Next batch (tomorrow): /contact, /sungevity, then remaining not-indexed pages.
-- [ ] B3. Same for /southern-california-solar-repair and 5 county pages (5/day max).
+- [x] B0b. (done 2026-11-02) /contact, /sungevity, then remaining not-indexed pages.
+- [x] B3. (done 2026-11-02) Same for /southern-california-solar-repair and 5 county pages.
 - [ ] B4. Same for the 20 city pages (5/day over 4 days). List is in sitemap.xml.
 
 ## C. Close the loop on sold jobs
@@ -38,7 +38,7 @@ Status: [ ] open · [x] done · [-] dismissed
 
 ## H. New SEO pages (added 2026-10-29, after deploy)
 - [ ] H1. Request indexing in Search Console (5/day) for the 5 new guides first: /solar-panels-not-producing, /solar-inverter-replacement, /solar-monitoring-offline, /add-powerwall-to-existing-solar, /solar-system-health-check. Then the 19 new city pages (list is in sitemap.xml).
-- [ ] H2. Submit sitemap.xml again in Search Console (Sitemaps → resubmit) so Google sees all 79 pages.
+- [x] H2. (done 2026-11-02) Submit sitemap.xml again in Search Console (Sitemaps → resubmit) so Google sees all 79 pages.
 - [ ] H3. Utah (Salt Lake City, UT): after deploy, request indexing for /utah-solar-repair and then the 16 city pages (5/day). Pages are in sitemap.xml.
 - [ ] H4. Utah operations: bookings from Utah are flagged Virtual automatically (50+ miles from every Tech). To allow in-person visits there, enter a Utah ZIP as a Tech's home base (Team card). Tell Claude who the Utah electrician/partner is so we can assign jobs to them.
 - [ ] H5. Setter recruiting: post the setter job on LinkedIn (1 free post), Facebook groups, UCSD/SDSU/college boards, Nextdoor, using links like https://fixmy.energy/careers?utm_source=linkedin&utm_medium=job-board&utm_campaign=setter-nov . Applicants show their source in the Hiring tab.
@@ -49,3 +49,4 @@ Status: [ ] open · [x] done · [-] dismissed
 - [ ] I2. Netlify env var VIRTUAL_MEET_URL = a meet.google.com link (Site configuration → Environment variables), then trigger a deploy.
 - [ ] I3. Tell Claude: Axia paid on 11/6 (mark $2,438.10 DC share received); Vijay Ranu $300 keep/delete; "go" to delete the two stale job costs (Sandberg $15,272, Dennis Test $300).
 - [ ] I4. Utah compliance questions (HB 57 registration/bond, W-2 vs 1099 reps, contractor license) → counsel or Utah Division of Consumer Protection. Parked in S.U.N., not blocking.
+- [ ] H1b. 2026-11-02: the 5 new guides are requested. Still to request (5/day): /utah-solar-repair, then the Utah and California city pages from sitemap.xml.
