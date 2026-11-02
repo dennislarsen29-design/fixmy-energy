@@ -47,5 +47,5 @@ Status: [ ] open · [x] done · [-] dismissed
 ## I. Added 2026-11-02 (deploy went live today)
 - [ ] I1. Search Console: request indexing (5/day) for /southern-california-solar-repair, /solar-repair-los-angeles-county, -orange-county, -riverside-county, -san-bernardino-county.
 - [ ] I2. Netlify env var VIRTUAL_MEET_URL = a meet.google.com link (Site configuration → Environment variables), then trigger a deploy.
-- [ ] I3. Tell Claude: Axia paid on 11/6 (mark $2,438.10 DC share received); Merlin Loch Wolf payment date ($250 + $50); Vijay Ranu $300 keep/delete; "go" to delete the two stale job costs (Sandberg $15,272, Dennis Test $300).
+- [ ] I3. Tell Claude: Axia paid on 11/6 (mark $2,438.10 DC share received); Vijay Ranu $300 keep/delete; "go" to delete the two stale job costs (Sandberg $15,272, Dennis Test $300).
 - [ ] I4. Utah compliance questions (HB 57 registration/bond, W-2 vs 1099 reps, contractor license) → counsel or Utah Division of Consumer Protection. Parked in S.U.N., not blocking.
