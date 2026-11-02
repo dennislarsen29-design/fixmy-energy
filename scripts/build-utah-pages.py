@@ -5,7 +5,7 @@ import importlib.util, json, re
 spec = importlib.util.spec_from_file_location('cp', 'scripts/build-county-pages.py'); cp = importlib.util.module_from_spec(spec); spec.loader.exec_module(cp)
 esc, page, CTA, SITE = cp.esc, cp.page, cp.CTA, cp.SITE
 
-RMP = 'Most homes in the Salt Lake City, UT are served by <strong>Rocky Mountain Power</strong>. Solar customers who signed up more recently are generally credited at a lower rate for power they send to the grid than older customers were, which is why a healthy inverter and, in some cases, a battery matter. We confirm your plan from your bill.'
+RMP = 'Most homes in Salt Lake City, UT are served by <strong>Rocky Mountain Power</strong>. Solar customers who signed up more recently are generally credited at a lower rate for power they send to the grid than older customers were, which is why a healthy inverter and, in some cases, a battery matter. We confirm your plan from your bill.'
 CITYPWR = ' %s runs its own city electric utility for part of the area, so some addresses are not on Rocky Mountain Power. We confirm from your bill which one you are on.'
 DRY = 'Utah has strong sun, cold winters and hot dry summers. Snow load, freeze and thaw, and summer heat all stress inverters, connectors and roof mounts, and a fault can go unnoticed because winter production is low anyway.'
 CITIES = [
@@ -27,7 +27,7 @@ CITIES = [
  ('lehi','Lehi',RMP + CITYPWR % 'Lehi',['draper','bluffdale','south-jordan']),
 ]
 names = {c[0]: c[1] for c in CITIES}
-UT_FAQ = lambda n: [('Do you serve %s?' % n, 'Yes. We are expanding in the Salt Lake City, UT. We start with your photos and utility bill, then arrange a technician visit or a guided video evaluation. The first evaluation is free.'),
+UT_FAQ = lambda n: [('Do you serve %s?' % n, 'Yes. We are expanding in Salt Lake City, UT. We start with your photos and utility bill, then arrange a technician visit or a guided video evaluation. The first evaluation is free.'),
   ('Does it matter who installed my system?', 'No. We work on systems from any installer, including companies that have closed.'),
   ('Is the first evaluation free?', 'Yes. We start with your photos and utility bill, then a technician visit or a guided video evaluation. No obligation.')]
 
@@ -43,7 +43,7 @@ def city_html(c):
       '<p>We diagnose and repair existing solar systems (inverters, panels, optimizers, wiring, monitoring) and add Tesla Powerwall batteries to existing systems. You do not need to have bought your system from us. We start with photos and your bill, so most homeowners never have to wait for a first visit.</p>\n'
       '<h2>Your utility decides what upgrades are worth</h2>\n<p>%s</p>\n<h2>What is hard on solar here</h2>\n<p>%s</p>\n'
       '<p>Common problems we fix: <a href="/solar-panels-not-producing">solar panels not producing</a>, <a href="/solar-inverter-replacement">inverter replacement</a>, <a href="/solar-monitoring-offline">monitoring offline</a>, and <a href="/add-powerwall-to-existing-solar">adding a Powerwall to existing solar</a>.</p>\n%s\n'
-      '<h2>Common questions</h2>\n%s\n<div class="related"><h3>Nearby</h3>%s<a href="/utah-solar-repair">All of the Salt Lake City, UT</a></div>\n</article>') % (
+      '<h2>Common questions</h2>\n%s\n<div class="related"><h3>Nearby</h3>%s<a href="/utah-solar-repair">All of Salt Lake City, UT</a></div>\n</article>') % (
       esc(name), esc(name), esc(name), esc(name), util, DRY, CTA, ''.join('<div class="faq-q">%s</div><p>%s</p>' % (esc(q), esc(a)) for q, a in faqs), near_links)
     svc = json.dumps({"@context":"https://schema.org","@type":"Service","name":"Solar panel repair and inverter diagnostics in "+name+", Utah",
       "provider":{"@type":"Organization","name":"Solar Review","url":SITE,"telephone":"+1-619-777-6527"},
@@ -55,18 +55,18 @@ def city_html(c):
 
 def hub_html():
     lst = ''.join('<li><a href="/solar-repair-%s-ut">%s</a></li>' % (c[0], c[1]) for c in CITIES)
-    faqs = [('Do you serve Utah?', 'Yes, in the Salt Lake City, UT, starting around South Jordan. We start with photos and your bill, then a technician visit or a guided video evaluation.'), UT_FAQ('the Salt Lake City, UT')[1]]
-    body = ('<article class="wrap">\n<div class="eyebrow">Utah</div>\n<h1>Solar Repair and Inverter Diagnostics in the Salt Lake City, UT</h1>\n'
-      '<p class="lede">Solar not producing, an inverter error, or an installer that closed? We diagnose existing solar systems and add batteries across the Salt Lake City, UT. The first evaluation is free.</p>\n'
+    faqs = [('Do you serve Utah?', 'Yes, in Salt Lake City, UT, starting around South Jordan. We start with photos and your bill, then a technician visit or a guided video evaluation.'), UT_FAQ('Salt Lake City, UT')[1]]
+    body = ('<article class="wrap">\n<div class="eyebrow">Utah</div>\n<h1>Solar Repair and Inverter Diagnostics in Salt Lake City, UT</h1>\n'
+      '<p class="lede">Solar not producing, an inverter error, or an installer that closed? We diagnose existing solar systems and add batteries across Salt Lake City, UT. The first evaluation is free.</p>\n'
       '<p class="meta">Solar Review &middot; Updated October 2026</p>\n<h2>Cities we serve</h2>\n<ul id="ut-city-list">%s</ul>\n'
       '<h2>How it works</h2>\n<p>Send photos of your inverter and a recent utility bill. We tell you what we see, then arrange a technician visit or a guided video evaluation if it makes sense. Nothing is sold before you know what is wrong.</p>\n'
       '<h2>Guides</h2>\n<p><a href="/solar-panels-not-producing">Solar panels not producing</a> &middot; <a href="/solar-inverter-replacement">Inverter replacement</a> &middot; <a href="/solar-monitoring-offline">Monitoring offline</a> &middot; <a href="/add-powerwall-to-existing-solar">Add a Powerwall</a> &middot; <a href="/solar-system-health-check">Free health check</a></p>\n%s\n'
       '<h2>Common questions</h2>\n%s\n</article>') % (lst, CTA, ''.join('<div class="faq-q">%s</div><p>%s</p>' % (esc(q), esc(a)) for q, a in faqs))
-    svc = json.dumps({"@context":"https://schema.org","@type":"Service","name":"Solar repair and diagnostics in the Salt Lake City, UT","provider":{"@type":"Organization","name":"Solar Review","url":SITE,"telephone":"+1-619-777-6527"},
+    svc = json.dumps({"@context":"https://schema.org","@type":"Service","name":"Solar repair and diagnostics in Salt Lake City, UT","provider":{"@type":"Organization","name":"Solar Review","url":SITE,"telephone":"+1-619-777-6527"},
       "areaServed":{"@type":"AdministrativeArea","name":"Salt Lake County, Utah"},"url":SITE+"/utah-solar-repair"})
     faqld = json.dumps({"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":q,"acceptedAnswer":{"@type":"Answer","text":a}} for q,a in faqs]})
-    return 'utah-solar-repair', page('Solar Panel Repair & Inverter Diagnostics in the Salt Lake City, UT, UT | Solar Review',
-      'Solar not producing in Utah? Free evaluation, inverter and panel diagnostics and Powerwall battery retrofits across the Salt Lake City, UT, even if your installer closed.', SITE+'/utah-solar-repair', [svc, faqld], body)
+    return 'utah-solar-repair', page('Solar Panel Repair & Inverter Diagnostics in Salt Lake City, UT | Solar Review',
+      'Solar not producing in Utah? Free evaluation, inverter and panel diagnostics and Powerwall battery retrofits across Salt Lake City, UT, even if your installer closed.', SITE+'/utah-solar-repair', [svc, faqld], body)
 
 pages = [hub_html()] + [city_html(c) for c in CITIES]
 sm = open('sitemap.xml').read(); nt = open('netlify.toml').read()
