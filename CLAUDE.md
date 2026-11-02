@@ -2858,3 +2858,6 @@ Audit of the Nov 1 digest against the database found: the "-70.7% October margin
 
 ## CA HIS license is required only for California reps (2026-11-02, per Dennis — Utah onboarding)
 `window._hisRequired(u)` (portal.html, above `_refreshTeamMemberFields`): a rep whose `home_zip` is a 5-digit ZIP outside 90001–96162 does not need a CA HIS registration; a blank/unknown ZIP stays **required** (safe default). Applied to: the Team card (shows "not required"), the 4-step onboarding count (HIS counts as done, so the gauge can reach 4/4), the compact tile badge, the rep-side "HIS License Required" banner, the Eval wizard's diagnostic-send gate (`_bbDialerHis`) and `confirmSalesDiagFee`. Set the rep's Home ZIP on their Team card for this to apply. ⚠️ The CPUC document's HIS field and the Diagnostic agreement text are still California-specific; Utah has its own licensing questions, not handled here.
+
+## W-9 required for new Ops partners (2026-11-02, per Dennis)
+`loadOpsDashboard` now makes the W-9 screen **required** for Ops partners whose `team_members.created_at >= 2026-11-02`; earlier partners (Cosmic, Klos, John, Wolf) stay skippable. A manually recorded W-9 (`team_members.w9_signed_at`) counts as on file. Wolf Building's was recorded manually 2026-11-02 (paper copy; the admin W-9 download won't work for it — no digital copy).
