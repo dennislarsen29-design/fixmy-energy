@@ -3323,6 +3323,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     else workDone = false;
     // Pre-work questions only a person can answer.
     if (c.sold_type && (!c.assigned_ops || c.assigned_ops === 'none') && step < 9) todos.push({ key: 'ops', label: 'No install partner assigned' });
+    // Electrician's findings are in but no upgrade path / proposal exists yet → the Tech's next move (2026-11-03).
+    if (c.sold_type === 'diagnostic' && c.diag_findings && c.diag_findings.submitted_at && c.diag_findings.fix !== 'nothing' && step < 6 && !(c.proposal && c.proposal.options && c.proposal.options.length)) todos.push({ key: 'review', label: 'Review findings, build upgrade path' });
     if (!workDone) {
       if (c.sold_type !== 'diagnostic' && step >= 7 && step < 9) todos.push({ key: 'install', label: 'Install not marked finished' });
       return { known: true, complete: false, workDone: false, missing: todos.map(function(t){ return t.label; }), todos: todos };
@@ -3457,6 +3459,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (t.key === 'axinstall') { q = 'Was the install completed?'; detail = 'Saying yes records today as the completion date. Payment 1 follows once the audit is signed off.'; yes = 'Yes, it is completed'; }
     else if (t.key === 'audit') { q = 'Is the install audit signed off?'; detail = 'Compare the sold design with the installed one. Payment 1 waits on this.'; yes = 'Yes, signed off'; }
     else if (t.key === 'pto') { q = 'Has the utility granted permission to operate (PTO)?'; detail = 'This starts the second Axia payment, the Domestic Content bonus.'; yes = 'Yes, PTO granted'; }
+    else if (t.key === 'review') { q = 'The electrician\'s findings are in. Review them and build the upgrade path.'; detail = 'Open the job: read the findings and photos, write the customer report, book the Diagnostic Evaluation (Results Review) with the customer, then build the proposal.'; yes = 'Open the job'; }
     else if (t.key === 'ops') { q = 'Which partner installs this job?'; detail = 'Assigns the Ops partner so they see it in their portal.'; yes = 'Choose a partner'; }
     else if (t.key === 'install') { q = 'Is the install finished?'; detail = 'Saying yes marks the job Installed today. That starts the pay clock for the team.'; yes = 'Yes, it is installed'; }
     else if (t.key === 'fee') { q = 'Has the diagnostic fee been paid?'; detail = 'Zelle, check or any other way. This turns the lead into a paid job.'; yes = 'Yes, mark it paid'; }
@@ -3501,6 +3504,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var yb = document.getElementById('jnYes'); if (yb) { yb.disabled = true; yb.textContent = 'Saving…'; }
     var cl = supabase.createClient(SUPA_URL, SUPA_KEY), ts = new Date().toISOString();
     try {
+      if (key === 'review') { jobNextClose(); if (typeof openJob === 'function') openJob(id); return; }
       if (key === 'install') await _doMarkInstalled(id);
       else if (key === 'axinstall' || key === 'audit' || key === 'pto' || key === 'ops') {
         var upd = key === 'axinstall' ? { install_completed_at: c.install_completed_at || ts }
@@ -10023,7 +10027,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return msg.includes('cors') || msg.includes('network') || msg.includes('failed to fetch') || msg.includes('load failed') || msg.includes('typeerror');
   }
 
-  async function uploadPhotos(files, forcedLabel, statusElId) {
+  // Which visit a photo belongs to. The storage path is the tag (jobs/<id>/diag/... = electrician's Diagnostic visit);
+  // everything else is the Solar Evaluation. No database column needed, so older photos classify correctly too.
+  window._photoVisit = function(p) { return /\/diag\//.test(String((p && (p.path || p.Path)) || '')) ? 'diagnostic' : 'evaluation'; };
+  async function uploadPhotos(files, forcedLabel, statusElId, opts) {
     if (!files.length || !currentJobId) return;
     // forcedLabel is captured ONCE here, in this call's own local scope — never read from
     // window._evForceLabel per-file inside the loop below. Two slot uploads fired in quick
@@ -10059,118 +10066,94 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       console.error('[Photo Upload]', diag.title, diag.detail);
     }
 
-    // Step 1 — test bucket access. This is a diagnostic canary, not a hard requirement —
-    // the real per-file uploads below have their own independent error handling. A single
-    // transient connectivity blip here (Safari "Load failed" etc.) used to abort the whole
-    // batch before a single real file was even attempted, so: retry once on a network-class
-    // error, and if it's STILL failing for network reasons, proceed to the real uploads
-    // anyway. A genuine policy/permission/bucket-not-found error still aborts immediately.
-    status.textContent = 'Checking storage access...';
-    var testPath = 'jobs/' + String(currentJobId) + '/_test_' + Date.now() + '.txt';
-    var testBlob = new Blob(['test'], { type: 'text/plain' });
-    var testResult = await client.storage.from(BUCKET).upload(testPath, testBlob, { upsert: true });
-    if (testResult.error && _isNetworkClassError(testResult.error)) {
-      await new Promise(function(r){ setTimeout(r, 700); });
-      status.textContent = 'Checking storage access (retrying)...';
-      testResult = await client.storage.from(BUCKET).upload(testPath, testBlob, { upsert: true });
+    // Reliable bulk path (2026-11-03, per Dennis: "some photos never save / it is slow or times out").
+    // The old loop uploaded one file at a time, did a throwaway test upload+delete on EVERY batch, sent
+    // full-resolution phone photos, inserted one row per file, and pushed a row into the on-screen list
+    // even when its database insert had failed (so a photo looked saved when it was not).
+    // Now: no preflight (each file has its own error handling), big photos are shrunk in the browser,
+    // 4 uploads run at once with retries on network-class errors, rows are inserted in one batch, and
+    // only rows the database really accepted appear in the list. Failed files are named so they can be re-sent.
+    var hadError = false;
+    var _visit = (opts && opts.visit) || null;       // 'diagnostic' → stored under jobs/<id>/diag/ (the path IS the visit tag)
+    var _prefix = 'jobs/' + String(currentJobId) + '/' + (_visit === 'diagnostic' ? 'diag/' : '');
+    var forced = _forcedLabelForThisCall;
+    var quoyaState = (forced && typeof PHOTO_CATEGORIES !== 'undefined' && PHOTO_CATEGORIES.indexOf(forced) >= 0) ? 'done' : 'pending';
+    var okRows = [], failed = [], doneCount = 0, total = files.length;
+    function tick() { status.style.color = '#4a9eff'; status.textContent = 'Uploading ' + doneCount + ' of ' + total + '…'; }
+    tick();
+    async function shrink(file) {
+      try {
+        if (!/^image\/(jpeg|png|webp)$/i.test(file.type) || file.size < 1500000 || typeof createImageBitmap !== 'function') return file;
+        var bmp = await createImageBitmap(file), MAX = 2000, sc = Math.min(1, MAX / Math.max(bmp.width, bmp.height));
+        var cv = document.createElement('canvas'); cv.width = Math.round(bmp.width * sc); cv.height = Math.round(bmp.height * sc);
+        cv.getContext('2d').drawImage(bmp, 0, 0, cv.width, cv.height);
+        var blob = await new Promise(function(res){ cv.toBlob(res, 'image/jpeg', 0.85); });
+        if (bmp.close) bmp.close();
+        return (blob && blob.size < file.size) ? blob : file;
+      } catch (e) { return file; }
     }
-    if (testResult.error) {
-      if (_isNetworkClassError(testResult.error)) {
-        console.warn('[Photo Upload] preflight network blip — proceeding to real uploads anyway:', testResult.error);
-      } else {
-        showError(diagnoseBucketError(testResult.error, BUCKET));
-        return;
+    async function one(file, i) {
+      var safeName = (file.name || 'photo.jpg').replace(/[^a-zA-Z0-9._-]/g, '_').replace(/\.(heic|heif|png|webp)$/i, function(m){ return m; });
+      var path = _prefix + Date.now() + '_' + i + '_' + Math.random().toString(36).slice(2, 6) + '_' + safeName;
+      var body = await shrink(file), err = null;
+      for (var attempt = 0; attempt < 3; attempt++) {
+        var r = await client.storage.from(BUCKET).upload(path, body, { upsert: true, contentType: (body && body.type) || file.type || undefined });
+        if (!r.error) { err = null; break; }
+        err = r.error;
+        if (!_isNetworkClassError(r.error)) break;
+        await new Promise(function(res){ setTimeout(res, 600 * (attempt + 1)); });
       }
-    } else {
-      await client.storage.from(BUCKET).remove([testPath]);
-    }
-
-    // Step 2 — upload each file. AI categorization is INTENTIONALLY not run here —
-    // it used to run synchronously per photo (quoyaAutoAssess), which made
-    // multi-photo uploads slow and let one flaky AI call fail the whole batch.
-    // Photos save immediately with quoya_status='pending'; the "Sync with Quoya"
-    // button (quoyaSyncLead) or the nightly sweep (quoya-sync-background.js)
-    // categorizes them afterward. See netlify/functions/lib/quoya.js.
-    var hadError = false; // tracks real per-file failures — do NOT sniff status.innerHTML for
-                           // this (assigning innerHTML with an HTML entity like &#9888; and
-                           // reading it back returns the rendered character, not the entity
-                           // text, so a naive .includes('&#9888;') check never matches).
-    for (var i = 0; i < files.length; i++) {
-      var file = files[i];
-      status.textContent = 'Uploading ' + (i+1) + ' of ' + files.length + ' — ' + file.name;
-
-      var safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-      var path = 'jobs/' + String(currentJobId) + '/' + Date.now() + '_' + safeName;
-
-      var uploadResult = await client.storage.from(BUCKET).upload(path, file, { upsert: true });
-      if (uploadResult.error) {
-        var diag = diagnoseBucketError(uploadResult.error, BUCKET);
-        showError({ title: 'Photo ' + (i+1) + ' failed — ' + diag.title, detail: diag.detail });
-        status.style.color = '#ef4444';
-        hadError = true;
-        continue;
-      }
-
-      var publicUrl = client.storage.from(BUCKET).getPublicUrl(path).data.publicUrl;
-
-      // The evaluation wizard always knows which slot it asked for, so it stamps the
-      // category up front (same as the customer portal's upload cards) instead of
-      // leaving the categorizer to guess. Quoya still runs its quality pass.
-      var forced = _forcedLabelForThisCall;
-      var photoRecord = {
+      doneCount++; tick();
+      if (err) { failed.push({ name: file.name, why: diagnoseBucketError(err, BUCKET).title }); hadError = true; return; }
+      okRows.push({
         job_id: String(currentJobId),
-        url: publicUrl,
-        path: path,
-        label: forced,
-        expected_label: forced,
-        quality_flag: null,
-        quality_note: null,
-        quoya_status: (forced && typeof PHOTO_CATEGORIES !== 'undefined' && PHOTO_CATEGORIES.indexOf(forced) >= 0) ? 'done' : 'pending'
-      };
+        url: client.storage.from(BUCKET).getPublicUrl(path).data.publicUrl,
+        path: path, label: forced, expected_label: forced,
+        quality_flag: null, quality_note: null, quoya_status: quoyaState
+      });
+    }
+    var queue = Array.prototype.slice.call(files).map(function(f, i){ return [f, i]; });
+    var workers = [];
+    for (var w = 0; w < Math.min(4, queue.length); w++) {
+      workers.push((async function(){ while (queue.length) { var it = queue.shift(); await one(it[0], it[1]); } })());
+    }
+    await Promise.all(workers);
 
-      // Step 3 — save to DB
-      var insertResult = await client.from('job_photos').insert(photoRecord).select();
-      if (insertResult.error) {
-        var ie = insertResult.error;
-        var iMsg = (ie.message || '').toLowerCase();
-        var iDetail = ie.message || JSON.stringify(ie);
-        var iHint = ie.hint ? ' Hint: ' + ie.hint : '';
-        var iCode = ie.code || '';
+    if (okRows.length) {
+      var ins = null;
+      for (var at = 0; at < 2; at++) {
+        ins = await client.from('job_photos').insert(okRows).select();
+        if (!ins.error) break;
+        await new Promise(function(res){ setTimeout(res, 800); });
+      }
+      if (ins.error) {
+        var ie = ins.error, iMsg = (ie.message || '').toLowerCase(), iCode = ie.code || '';
         var dbDiag = iCode === '42501' || iMsg.includes('policy')
-          ? 'RLS policy is blocking INSERT on job_photos table. Fix: Supabase → Table Editor → job_photos → Policies → add INSERT policy for authenticated/anon.'
-          : iCode === '23503'
-          ? 'Foreign key error — the job_id ' + currentJobId + ' does not exist in the jobs table yet.'
-          : iCode === '42P01'
-          ? 'Table "job_photos" does not exist in Supabase. Check Table Editor.'
-          : iCode === '42703'
-          ? 'Column mismatch on job_photos table — run supabase/migrations/20260722_job_photos_schema_fix.sql.'
-          : iDetail + iHint;
-        status.innerHTML =
-          '<div style="color:#ffaa00;font-size:0.82rem;line-height:1.6;">' +
-          '<strong>&#9888; Photo uploaded but DB record failed</strong><br>' +
-          '<span style="color:#aaa;font-size:0.74rem;">' + dbDiag + '</span>' +
-          '</div>';
-        console.warn('[DB Insert]', iDetail, ie);
-        jobPhotos[currentJobId].push(photoRecord);
+          ? 'RLS policy is blocking INSERT on job_photos table.'
+          : iCode === '42703' ? 'Column mismatch on job_photos table — run supabase/migrations/20260722_job_photos_schema_fix.sql.'
+          : (ie.message || JSON.stringify(ie));
+        status.innerHTML = '<div style="color:#ffaa00;font-size:0.82rem;line-height:1.6;"><strong>&#9888; ' + okRows.length + ' file(s) uploaded but the database did not save them</strong><br><span style="color:#aaa;font-size:0.74rem;">' + dbDiag + ' Please re-send these photos.</span></div>';
+        console.warn('[DB Insert]', ie);
         hadError = true;
       } else {
-        var savedRecord = (insertResult.data && insertResult.data[0]) ? insertResult.data[0] : photoRecord;
-        jobPhotos[currentJobId].push(savedRecord);
-        uploaded++;
-        status.style.color = '#8DC63F';
-        status.textContent = '✓ Photo ' + (i+1) + ' of ' + files.length + ' uploaded';
+        (ins.data || okRows).forEach(function(rw){ jobPhotos[currentJobId].push(rw); });
+        uploaded = okRows.length;
       }
       renderPhotoGrid();
     }
+    if (failed.length) {
+      status.innerHTML = '<div style="color:#ef4444;font-size:0.82rem;line-height:1.6;"><strong>&#9888; ' + failed.length + ' of ' + total + ' photo(s) did not upload</strong><br><span style="color:#aaa;font-size:0.74rem;">' +
+        failed.slice(0, 6).map(function(f){ return String(f.name).replace(/</g, '&lt;') + ' — ' + f.why; }).join('<br>') + '<br>Pick them again to retry.</span></div>';
+    }
 
     if (uploaded > 0) {
-      status.textContent = '✓ ' + uploaded + ' of ' + files.length + ' photo(s) uploaded — tap 🔄 Sync with Quoya to categorize, or they\'ll sync automatically tonight';
-      status.style.color = '#8DC63F';
+      if (!failed.length && !hadError) status.textContent = '✓ ' + uploaded + ' of ' + files.length + ' photo(s) uploaded — tap 🔄 Sync with Quoya to categorize, or they\'ll sync automatically tonight';
+      if (!failed.length && !hadError) status.style.color = '#8DC63F';
       // Advance the lead to step 2 (Photos Uploaded) on first photos — same as
       // the customer-portal upload path. Leads only: skip sold jobs and New Solar.
       try {
         var _pRec = (typeof adminCustomers !== 'undefined' && adminCustomers || []).find(function(x){ return x.id === currentJobId; });
-        if (_pRec && !_pRec.sold_type && _pRec.lead_category !== 'new_solar' && (parseInt(_pRec.step)||1) < 2) {
+        if (_pRec && _visit !== 'diagnostic' && !_pRec.sold_type && _pRec.lead_category !== 'new_solar' && (parseInt(_pRec.step)||1) < 2) {
           client.from('customers').update({ step: 2 }).eq('id', currentJobId).then(function(){});
           _pRec.step = 2;
         }
@@ -11835,7 +11818,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   var _evTsRunning = false, _evTsTimer = null; // Quoya Troubleshoot (power-cycle step)
   var _evLocal = { brand: '', model: '', serial: '', platform: '', utility: '', skipped: {}, answers: {}, billAnalysis: null };
 
-  function _evPhotos() { return (jobPhotos[_evId] || []); }
+  function _evPhotos() { return (jobPhotos[_evId] || []).filter(function(p){ return window._photoVisit(p) !== 'diagnostic'; }); }
   // A photo belongs to the slot the rep UPLOADED it into (expected_label), not to whatever
   // category Quoya later decided it looked like. Quoya's sync overwrites `label` with its own
   // read, so matching on label alone made a perfectly good Serial Number upload "vanish" from
@@ -26371,10 +26354,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (typeof _jobEvalPhotosRender === 'function') _jobEvalPhotosRender();
     var grid = document.getElementById('photoGrid');
     if (!grid) return;
-    var photos = jobPhotos[currentJobId] || [];
+    var allPhotos = jobPhotos[currentJobId] || [];
+    var nDiag = allPhotos.filter(function(p){ return window._photoVisit(p) === 'diagnostic'; }).length;
+    var vf = window._photoVisitFilter || 'all';
+    if (!nDiag) vf = 'all';
+    var photos = vf === 'all' ? allPhotos : allPhotos.filter(function(p){ return window._photoVisit(p) === vf; });
+    var visitTabs = '';
+    if (nDiag) {
+      var tab = function(k, l, n){ var on = vf === k; return '<button onclick="window._photoVisitFilter=\'' + k + '\';renderPhotoGrid()" style="width:auto;margin:0 6px 0 0;padding:6px 14px;border-radius:100px;font-size:0.76rem;font-weight:700;cursor:pointer;border:1px solid ' + (on ? '#8DC63F' : 'rgba(255,255,255,0.18)') + ';background:' + (on ? 'rgba(141,198,63,0.18)' : 'transparent') + ';color:' + (on ? '#8DC63F' : '#aaa') + ';">' + l + ' (' + n + ')</button>'; };
+      visitTabs = '<div style="margin-bottom:10px;">' + tab('all', 'All', allPhotos.length) + tab('evaluation', 'Evaluation', allPhotos.length - nDiag) + tab('diagnostic', 'Diagnostic', nDiag) + '</div>';
+    }
 
     if (!photos.length) {
-      grid.innerHTML = '<div class="photo-empty-state">&#128247; No photos yet</div>';
+      grid.innerHTML = visitTabs + '<div class="photo-empty-state">&#128247; No photos yet</div>';
       return;
     }
 
@@ -26395,7 +26387,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (groups[PENDING_GROUP]) keys.push(PENDING_GROUP);
     keys = keys.concat(PHOTO_CATEGORIES.filter(function(cat) { return groups[cat]; }));
     Object.keys(groups).forEach(function(k) { if (keys.indexOf(k) === -1) keys.push(k); });
-    var h = '<div class="photo-summary-bar">&#128247; ' + photos.length + ' photo' + (photos.length !== 1 ? 's' : '') + ' across ' + keys.length + ' categor' + (keys.length !== 1 ? 'ies' : 'y') + '</div>';
+    var h = visitTabs + '<div class="photo-summary-bar">&#128247; ' + photos.length + ' photo' + (photos.length !== 1 ? 's' : '') + ' across ' + keys.length + ' categor' + (keys.length !== 1 ? 'ies' : 'y') + '</div>';
 
     keys.forEach(function(label) {
       var grp = groups[label];
@@ -40982,7 +40974,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     window.opsDiagPhoto = function(ev, label) {
       var files = Array.from(ev.target.files || []); if (!files.length) return;
       currentJobId = OD.jid;
-      uploadPhotos(files, label, 'opsDiagStatus').then(function(){ return loadJobPhotos(OD.jid); }).then(function(){ if (OD) opsDiagRender(); });
+      uploadPhotos(files, label, 'opsDiagStatus', { visit: 'diagnostic' }).then(function(){ return loadJobPhotos(OD.jid); }).then(function(){ if (OD) opsDiagRender(); });
     };
     function odCodes(ts) {
       if (!ts) return [];
@@ -40993,7 +40985,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     function odSlotsHtml(jid) {
       var photos = jobPhotos[jid] || [];
       return OD_SLOTS.map(function(sl){
-        var mine = photos.filter(function(p){ return (p.label || p.Label) === sl[0]; });
+        var mine = photos.filter(function(p){ return (p.label || p.Label) === sl[0] && window._photoVisit(p) === 'diagnostic'; });
         var thumbs = mine.slice(0, 6).map(function(p){ return '<img src="' + _odEsc(p.url) + '" data-href="' + _odEsc(p.url) + '" onclick="openPhoto(this)" style="width:54px;height:54px;object-fit:cover;border-radius:8px;border:1px solid var(--ln);"/>'; }).join('');
         return '<div style="display:flex;align-items:center;gap:10px;background:var(--p2);border:1px solid ' + (mine.length ? 'rgba(141,198,63,0.6)' : 'var(--ln)') + ';border-radius:12px;padding:10px 12px;margin-bottom:8px;">' +
           '<div style="flex:1;min-width:0;"><div style="font-size:0.84rem;font-weight:800;color:var(--fg);">' + (mine.length ? '&#10003; ' : '') + sl[1] + (sl[2] ? ' <span style="font-weight:600;color:var(--amb);font-size:0.66rem;">needed</span>' : '') + '</div>' +
@@ -41216,7 +41208,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var txt = function(k, label, ph, type) { return lb(label) + '<input type="' + (type||'text') + '" inputmode="' + (type==='number'?'decimal':'text') + '" value="' + _odEsc(d[k]) + '" placeholder="' + _odEsc(ph||'') + '" oninput="opsDiagSet(\'' + k + '\',this.value)" style="' + inp + '"/>'; };
       var sel = function(k, label, opts, fn) { return lb(label) + '<select onchange="' + (fn||'opsDiagSet') + '(\'' + k + '\',this.value)" style="' + inp + '">' + opts.map(function(o){ return '<option value="' + o[0] + '"' + (d[k] === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select>'; };
       var photoBtn = function(label, text) {
-        var n = (jobPhotos[OD.jid] || []).filter(function(p){ return (p.label || p.Label) === label; }).length;
+        var n = (jobPhotos[OD.jid] || []).filter(function(p){ return (p.label || p.Label) === label && window._photoVisit(p) === 'diagnostic'; }).length;
         return '<label style="display:inline-block;padding:10px 14px;background:#8DC63F;color:#1A1A1A;border-radius:8px;font-weight:700;font-size:0.82rem;cursor:pointer;margin-bottom:6px;">📷 ' + text + (n ? ' (' + n + ' added)' : '') +
           '<input type="file" accept="image/*" multiple style="display:none" onchange="opsDiagPhoto(event,\'' + label + '\')"/></label>';
       };

@@ -21,20 +21,34 @@ async function diagFindings(id, doFetch, H) {
   if (rl) return out(200, { ok: true, skipped: 'already_sent' });
   const name = ((c.first_name || '') + ' ' + (c.last_name || '')).trim() || 'A customer';
   const fix = { swap: 'swap needed', repair: 'repair needed', nothing: 'nothing needed', unsure: 'fix not sure yet' }[f.fix] || '';
-  const msg = 'Diagnostic findings are in for ' + name + (fix ? ' — ' + fix : '') + (f.cause ? ': ' + String(f.cause).slice(0, 120) : '') + '. Open the job, write the customer report, and BOOK THE RESULTS REVIEW with the customer today (Schedule box → Results Review).';
+  const msg = 'Diagnostic findings are in for ' + name + (fix ? ' — ' + fix : '') + (f.cause ? ': ' + String(f.cause).slice(0, 120) : '') + '. Open the job, review the findings and photos, then BOOK THE DIAGNOSTIC EVALUATION (Results Review) with the customer and build the upgrade path.';
   const ids = [c.rep_id || DEFAULT_REP];
   if (ids.indexOf(DEFAULT_REP) === -1) ids.push(DEFAULT_REP);
-  const results = [];
+  const results = [], emails = [];
   for (const tid of ids) {
-    const tm = ((await get('/team_members?id=eq.' + encodeURIComponent(tid) + '&select=name,phone&limit=1')) || [])[0];
-    if (!tm || !tm.phone) { results.push({ to: tid, ok: false, reason: 'no_phone' }); continue; }
+    const tm = ((await get('/team_members?id=eq.' + encodeURIComponent(tid) + '&select=name,phone,email&limit=1')) || [])[0];
+    if (!tm) { results.push({ to: tid, ok: false, reason: 'no_member' }); continue; }
+    if (tm.email && tid !== DEFAULT_REP) emails.push(tm.email);
+    if (!tm.phone) { results.push({ to: tid, ok: false, reason: 'no_phone' }); continue; }
     const r = await notify.sendSms({ phone: tm.phone, first_name: tm.name }, msg, doFetch);
     results.push({ to: tid, ok: r.ok, reason: r.reason });
   }
-  if (results.some(r => r.ok)) {
+  emails.push(process.env.AGENT_REPORT_EMAIL || 'dennislarsen29@gmail.com');
+  const seen = {}, emailResults = [];
+  const lines = [msg];
+  if (f.codes) lines.push('Error codes: ' + String(f.codes).slice(0, 200));
+  if (f.parts) lines.push('Parts: ' + String(f.parts).slice(0, 200));
+  if (f.warranty) lines.push('Warranty: ' + String(f.warranty).slice(0, 120));
+  for (const em of emails) {
+    if (seen[em.toLowerCase()]) continue; seen[em.toLowerCase()] = 1;
+    const r = await notify.sendEmail({ email: em }, 'Diagnostic findings in: ' + name, 'Diagnostic findings', lines, { url: notify.SITE + '/portal', label: 'Open the portal' }, doFetch);
+    emailResults.push({ to: em, ok: r.ok, reason: r.reason });
+  }
+  const anyOk = results.some(r => r.ok) || emailResults.some(r => r.ok);
+  if (anyOk) {
     await doFetch(SUPA_URL + '/rest/v1/pipeline_state', { method: 'POST', headers: Object.assign({}, H, { Prefer: 'resolution=merge-duplicates,return=minimal' }), body: JSON.stringify({ key: rlKey, value: JSON.stringify({ ts: Date.now() }), updated_at: new Date().toISOString() }) }).catch(() => {});
   }
-  return out(200, { ok: results.some(r => r.ok), results });
+  return out(200, { ok: anyOk, results, emailResults });
 }
 
 // Ops partner priced the repair from the Ops portal → text the assigned rep + Dennis. State-checked; one alert per quote.
