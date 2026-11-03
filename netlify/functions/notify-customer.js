@@ -12,7 +12,7 @@ const notify = require('./lib/notify');
 const SUPA_URL = 'https://kbtobyoumvbcxfbugsid.supabase.co';
 const cors = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' };
 const out = (code, obj) => ({ statusCode: code, headers: cors, body: JSON.stringify(obj) });
-const TYPES = ['proposal_sent', 'document_ready', 'all_documents_signed'];
+const TYPES = ['proposal_sent', 'document_ready', 'all_documents_signed', 'referral_ask'];
 const RATE_MS = 120000;
 
 exports.handler = async function (event, context, deps) {
@@ -29,7 +29,7 @@ exports.handler = async function (event, context, deps) {
   if (TYPES.indexOf(type) === -1) return out(400, { error: 'Unknown type' });
   if (!/^[0-9a-fA-F-]{36}$/.test(String(id || ''))) return out(400, { error: 'Bad customerId' });
 
-  const cr = await doFetch(SUPA_URL + '/rest/v1/customers?id=eq.' + id + '&select=id,first_name,last_name,email,phone,access_code,proposal&limit=1', { headers: H });
+  const cr = await doFetch(SUPA_URL + '/rest/v1/customers?id=eq.' + id + '&select=id,first_name,last_name,email,phone,access_code,proposal,dnc,disposition_exit,sold_type,step,solar_status,installed_at,install_completed_at,ns_pto_at&limit=1', { headers: H });
   const rows = await cr.json().catch(function () { return null; });
   const c = Array.isArray(rows) && rows[0];
   if (!c) return out(404, { error: 'Customer not found' });
@@ -43,6 +43,12 @@ exports.handler = async function (event, context, deps) {
   if (type === 'proposal_sent' && !(c.proposal && c.proposal.status === 'sent')) return out(409, { ok: false, reason: 'no_sent_proposal' });
   if (type === 'document_ready' && !reviewed) return out(409, { ok: false, reason: 'nothing_to_sign' });
   if (type === 'all_documents_signed' && (reviewed || waitingRep || !signed)) return out(409, { ok: false, reason: 'not_all_signed' });
+  if (type === 'referral_ask') {
+    // Only a customer whose system is actually in (installed / PTO) and who hasn't opted out.
+    const done = !!(c.installed_at || c.install_completed_at || c.ns_pto_at || c.solar_status === 'ns_pto' || (c.sold_type && (c.step || 0) >= 9));
+    if (!done) return out(409, { ok: false, reason: 'not_installed_yet' });
+    if (c.dnc || c.disposition_exit === 'dead') return out(409, { ok: false, reason: 'do_not_contact' });
+  }
   if (!notify.toE164(c.phone) && !notify.validEmail(c.email)) return out(200, { ok: false, reason: 'no_contact', sms: { ok: false, reason: 'no_phone' }, email: { ok: false, reason: 'no_email' } });
 
   // Rate limit (one send per type per customer per 2 min)
@@ -76,6 +82,12 @@ exports.handler = async function (event, context, deps) {
   } else if (type === 'document_ready') {
     sms = 'Hi ' + first + '! Your Solar Review documents are ready to sign: ' + link + '\nOpen the link and tap Sign. Questions? Call (619) 777-6527.';
     mail = { subject: 'Your Solar Review documents are ready to sign', heading: 'Your documents are ready to sign', lines: ['Hi ' + first + ', your paperwork is ready. Open your portal and tap <b>Sign</b> — it takes about two minutes.', 'For your protection we will send a one-time code to this phone/email before you sign. Only enter it yourself.'], cta: { url: link, label: 'Review &amp; sign' } };
+  } else if (type === 'referral_ask') {
+    let code = null;
+    try { code = await require('./lib/referrals').ensureCode(require('./lib/referrals').client(deps), id); } catch (e) { /* falls back to the plain link */ }
+    const share = 'https://fixmy.energy/book' + (code ? '?ref=' + encodeURIComponent(code) : '');
+    sms = 'Hi ' + first + '! Thank you for choosing Solar Review. Know someone with solar that is down, or a high bill? Text them this link for a free solar check-up: ' + share + '\nYou earn a thank-you when they become a customer. Reply STOP to opt out.';
+    mail = { subject: 'Know someone who could use a free solar check-up?', heading: 'Thank you, ' + first, lines: ['It means a lot that you trusted us. If a friend or family member has solar that is not working or a bill that is too high, send them your link for a free solar check-up.', 'You earn a thank-you when they become a customer. Your portal shows everything you have earned.'], cta: { url: share, label: 'My share link' } };
   } else {
     sms = 'Hi ' + first + '! Everything is signed — thank you. Your signed documents are in your portal: ' + link;
     mail = { subject: 'Your documents are signed — thank you', heading: 'All signed — thank you, ' + first, lines: ['Your signed documents are saved in your portal anytime.'], cta: { url: link, label: 'Open my portal' } };

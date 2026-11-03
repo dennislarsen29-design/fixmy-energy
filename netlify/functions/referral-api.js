@@ -27,6 +27,16 @@ exports.handler = async function (event, context, deps) {
       if (!me) return out(403, { error: 'not found' });
       return out(200, Object.assign({ ok: true }, await R.mapFor(db, me.id)));
     }
+    if (b.action === 'lookup') {
+      // Preview for the New Lead form: who would this text link to? Nothing is written.
+      const f = await R.findReferrer(db, b.raw, null);
+      let ids = f.status === 'linked' ? [f.id] : (f.status === 'needs_review' ? f.candidates : []);
+      ids = ids.filter(x => UUID.test(x)).slice(0, 6);
+      if (!ids.length) return out(200, { ok: true, status: f.status === 'none' ? 'none' : 'unmatched', matches: [] });
+      const rows = await db.get('/customers?id=in.(' + ids.join(',') + ')&select=id,first_name,last_name,address,phone');
+      const matches = rows.map(r => ({ id: r.id, name: ((r.first_name || '') + ' ' + (r.last_name || '')).trim(), address: String(r.address || '').split(',').slice(-2).join(',').trim(), phone_last4: R.digits10(r.phone).slice(-4) }));
+      return out(200, { ok: true, status: f.status === 'linked' ? 'linked' : 'several', matches });
+    }
     if (!UUID.test(String(b.customer_id || ''))) return out(400, { error: 'bad customer id' });
     if (b.action === 'match_lead') {
       const r = await R.linkReferral(db, b.customer_id, b.raw, { assign: b.assign === true });

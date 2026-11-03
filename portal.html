@@ -3364,6 +3364,25 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       (t ? '<span style="background:' + t.color + ';color:#fff;padding:2px 9px;border-radius:100px;">' + esc(t.n) + '</span>' : '') +
       '<span style="border:1px solid rgba(255,255,255,0.18);color:#bbb;padding:2px 9px;border-radius:100px;">' + (sg.i + 1) + ' ' + esc(sg.n) + '</span></div>';
   };
+  window.jobSendReferralLink = async function(id) {
+    var b = document.getElementById('jnRefSend'), m = document.getElementById('jnRefMsg');
+    if (b) { b.disabled = true; b.style.opacity = '0.6'; }
+    var say = function(t, c) { if (m) { m.style.color = c || '#aaa'; m.textContent = t; } };
+    say('Sending…');
+    try {
+      var r = await fetch('/.netlify/functions/notify-customer', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'referral_ask', customerId: id }) });
+      var d = await r.json().catch(function(){ return {}; });
+      var parts = [];
+      if (d.sms && d.sms.ok) parts.push('texted');
+      if (d.email && d.email.ok) parts.push('emailed');
+      if (parts.length) say('Customer ' + parts.join(' + ') + ' their share link.', '#8DC63F');
+      else if (d.reason === 'not_installed_yet') say('Not yet — available once the install is completed or PTO is granted.', '#e8a838');
+      else if (d.reason === 'do_not_contact') say('This customer is marked do-not-contact.', '#e8a838');
+      else if (d.reason === 'rate_limited') say('Already sent a moment ago.', '#e8a838');
+      else { say('Not sent (' + (d.reason || 'unknown') + ').', '#e8a838'); }
+    } catch (e) { say('Could not reach the server.', '#e8a838'); }
+    if (b) { b.disabled = false; b.style.opacity = '1'; }
+  };
   window._jobReferralSms = function(c) {
     var ph = String(c.phone || '').replace(/\D/g, ''); if (!ph) return '';
     var msg = 'Hi ' + (c.first_name || 'there') + ', thank you again for trusting Solar Review with your system! If you know a neighbor, friend or family member who would like a free solar check-up, please send them to fixmy.energy/book. We really appreciate it.';
@@ -3449,6 +3468,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       q = 'Have you asked for a referral?'; detail = 'A short text to the customer asking who else could use a free solar check-up.'; yes = 'Yes, I asked';
       var href = _jobReferralSms(c);
       extra = href ? '<a href="' + href + '" style="display:block;text-align:center;margin-top:10px;padding:11px;border-radius:100px;border:1px solid rgba(74,158,255,0.45);color:#4a9eff;font-weight:700;font-size:0.85rem;text-decoration:none;">&#128172; Text the ask now</a>' : '';
+      extra = '<button id="jnRefSend" onclick="jobSendReferralLink(\'' + id + '\')" style="width:100%;margin-top:10px;padding:11px;border-radius:100px;border:1px solid rgba(141,198,63,0.5);background:rgba(141,198,63,0.1);color:#8DC63F;font-weight:700;font-size:0.85rem;cursor:pointer;">&#127873; Send their share link (text + email)</button><div id="jnRefMsg" style="font-size:0.74rem;color:#aaa;margin-top:6px;text-align:center;"></div>' + extra;
     }
     _jnShell(head + '<div style="font-size:0.7rem;color:#777;margin-bottom:12px;">' + left + ' step' + (left > 1 ? 's' : '') + ' left to close out</div>' +
       '<div style="font-size:1.15rem;font-weight:800;color:#fff;margin:0 0 8px;line-height:1.3;">' + q + '</div>' +
@@ -33485,7 +33505,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<div id="nlReferralNote" style="display:none;padding:10px 14px;background:rgba(141,198,63,0.07);border:1px solid rgba(141,198,63,0.2);border-radius:8px;margin-bottom:16px;font-size:0.75rem;color:#aaa;line-height:1.6;">'+
           '&#127381; <strong style="color:#8DC63F;">Referral Program</strong> &mdash; The referring customer (and the people who referred them) are paid automatically once Solar Review collects cash on this lead&rsquo;s job. '+
           '<br><label class="ed-label" style="margin-top:8px;display:block;">Referring customer &mdash; name, phone or referral code</label>'+
-          '<input type="text" id="nlReferredBy" class="ed-input" placeholder="e.g. Mariana Salerno or 619-555-1234" style="margin-top:4px;margin-bottom:0;"/>'+
+          '<input type="text" id="nlReferredBy" class="ed-input" placeholder="e.g. Mariana Salerno or 619-555-1234" style="margin-top:4px;margin-bottom:0;" oninput="nlReferrerLookup()"/>'+
+          '<div id="nlReferrerResult" style="margin-top:6px;font-size:0.76rem;min-height:1em;"></div>'+
         '</div>'+
         (true ?
           '<div id="nlGenericBookWrap" style="display:none;">'+
@@ -33652,6 +33673,29 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (note) note.innerHTML = nlAutomationNoteHtml(on);
   }
 
+  var _nlRefTimer = null, _nlRefSeq = 0;
+  window.nlReferrerLookup = function() {
+    clearTimeout(_nlRefTimer);
+    var el = document.getElementById('nlReferredBy'), out = document.getElementById('nlReferrerResult');
+    if (!el || !out) return;
+    var raw = (el.value || '').trim();
+    if (raw.length < 4) { out.innerHTML = ''; return; }
+    out.innerHTML = '<span style="color:#888;">Looking up&hellip;</span>';
+    var seq = ++_nlRefSeq;
+    _nlRefTimer = setTimeout(async function() {
+      var line = function(c, t) { return '<span style="color:' + c + ';">' + t + '</span>'; };
+      try {
+        var r = await fetch('/.netlify/functions/referral-api', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'lookup', raw: raw }) });
+        var d = await r.json();
+        if (seq !== _nlRefSeq) return;
+        if (!d || !d.ok) { out.innerHTML = line('#e8a838', 'Lookup unavailable &mdash; the referral will still be saved and checked after you create the lead.'); return; }
+        var desc = function(m) { return esc(m.name || 'Customer') + (m.address ? ' &middot; ' + esc(m.address) : '') + (m.phone_last4 ? ' &middot; ph ...' + esc(m.phone_last4) : ''); };
+        if (d.status === 'linked') out.innerHTML = line('#8DC63F', '&#10003; Will link to ' + desc(d.matches[0]));
+        else if (d.status === 'several') out.innerHTML = line('#e8a838', 'Several customers match &mdash; add a phone number or referral code. ' + d.matches.map(desc).join(' | '));
+        else out.innerHTML = line('#e8a838', 'No customer found yet &mdash; the name is saved and a person can link it later.');
+      } catch (e) { if (seq === _nlRefSeq) out.innerHTML = line('#e8a838', 'Lookup unavailable &mdash; the referral will still be saved.'); }
+    }, 450);
+  };
   function nlLeadSourceChanged(val) {
     var el = document.getElementById('nlReferralNote');
     if (el) el.style.display = val === 'referral' ? 'block' : 'none';

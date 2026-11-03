@@ -2883,3 +2883,10 @@ Customers refer friends/family; the referrer and the two people above them are p
 - ⚠️ **Needs the migration `20261103_referrals.sql` applied** (the Supabase approval card timed out): run it in the Supabase SQL editor. Until then the referral screens show a "run the migration" notice and nothing breaks.
 - ⚠️ **Legal review before launch:** multi-level payouts can be read as a pyramid/MLM scheme in California; the copy says it's a thank-you program with no purchase or recruiting required, but have counsel confirm. Also confirm CSLB rules on paying referral fees. Not built yet: P&L booking of referral rewards, referrer notification texts, referral stats on S.U.N.
 - Verified: 40-assertion node test against an in-memory PostgREST fake (matching, chain, tiers, difference, idempotence, void, API auth), browser render of the customer screen, parse checks. Not exercised against the live database.
+
+### Referral program — follow-ups (2026-11-03, per Dennis)
+- **/book is NOT changed for referrals** (keep it clean for ad conversations): the visible "Who referred you?" field was removed. Only the invisible `?ref=CODE` capture remains, so a friend who taps a customer's share link is linked automatically.
+- **New Lead form (shared by admin, Ronda, Dennis):** Lead Source "Referral" already existed; its referrer box now does a live lookup (`referral-api` action `lookup`, nothing written) showing "Will link to <name>", "several match — add a phone/code", or "not found". The link itself is still made after the lead is created.
+- **Post-install referral push:** the Next-step "Referral not asked" question has **Send their share link (text + email)** → `notify-customer` type `referral_ask`: only after install completed / PTO / job at step 9+, refused for DNC/dead, sends `https://fixmy.energy/book?ref=<their code>`, STOP line included, 2-min rate limit. The customer portal's Refer & Earn card already has "Text a friend". Not automatic: a rep/admin taps it. Ask Dennis before making it fire on its own at PTO.
+- Parse-checked and gate-tested with a mocked fetch; code-in-link not verified end to end (test mock couldn't return the PATCHed code).
+
