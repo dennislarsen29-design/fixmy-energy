@@ -55,4 +55,4 @@ Status: [ ] open · [x] done · [-] dismissed
 - [ ] J1. SDG&E: get listed in the Trade Professional directory / Trade Professional Alliance (needs the CSLB license, so confirm with Cosmic first). Parked: Dennis can't do the TPA now.
 - [ ] J2. SDG&E: call the solar contractor support center and ask whether there is a referral path for independent solar repair contractors when a customer calls about a high bill.
 - [ ] J3. San Diego Community Power: ask about a partner or referral path (they get the same high-bill calls and already run battery programs).
-- [ ] J4. Referral map (multi-level customer referral program): Claude asked clarifying questions 2026-11-03; build starts once answered. Needs legal review of multi-level payouts before launch.
+- [ ] J4. Referral program built 2026-11-03 (feature branch). To finish: (a) run supabase/migrations/20261103_referrals.sql in the Supabase SQL editor, (b) confirm Level 3 amounts, (c) legal review of multi-level payouts, (d) say "Deploy".
