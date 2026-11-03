@@ -27,7 +27,7 @@ exports.handler = async function (event, context, deps) {
   const audit = a => doFetch(SUPA + '/pipeline_state', { method: 'POST', headers: Object.assign({}, H, { Prefer: 'resolution=merge-duplicates,return=minimal' }), body: JSON.stringify({ key: 'w9_access_' + Date.now() + '_' + id, value: JSON.stringify(a), updated_at: new Date().toISOString() }) }).catch(() => {});
 
   if (b.action === 'status') {
-    if (!/^[a-zA-Z0-9_-]{1,40}$/.test(id)) return out(400, { error: 'bad id' });
+    if (!/^[a-zA-Z0-9_-]{1,40}$/.test(id) && !/^[0-9a-f-]{36}$/i.test(id)) return out(400, { error: 'bad id' });
     const r = (await get('/w9_forms?member_id=eq.' + encodeURIComponent(id) + '&select=signed_at,tin_last4,name'))[0];
     return out(200, { ok: true, submitted: !!r, signed_at: r && r.signed_at, tin_last4: r && r.tin_last4 });
   }
@@ -43,11 +43,24 @@ exports.handler = async function (event, context, deps) {
 
   if (b.action === 'submit') {
     const m = (await get('/team_members?id=eq.' + encodeURIComponent(id) + '&active=eq.true&select=id,name,code'))[0];
-    if (!m) return out(404, { error: 'Member not found' });
-    let code = m.code;
-    const pc = (await get('/portal_credentials?rep_id=eq.' + encodeURIComponent(id) + '&select=code'))[0];
-    if (pc && pc.code) code = pc.code;
-    if (!b.code || !code || !same(code, b.code)) return out(403, { error: 'Access code incorrect.' });
+    let isCustomer = false;
+    if (!m) {
+      // Referral program (2026-11-03): a customer who earns referral payouts files a W-9 with their portal code
+      // (access code, or the phone number on file) before a payout of $600+ in a year.
+      const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      const cu = UUID.test(id) ? (await get('/customers?id=eq.' + id + '&select=id,access_code,phone'))[0] : null;
+      if (!cu) return out(404, { error: 'Member not found' });
+      const d10 = x => String(x || '').replace(/\D/g, '').slice(-10);
+      const given = String(b.code || '').trim();
+      const okCode = (cu.access_code && same(cu.access_code, given)) || (d10(cu.phone).length === 10 && given.replace(/\D/g, '').length >= 10 && same(d10(cu.phone), d10(given)));
+      if (!okCode) return out(403, { error: 'Access code incorrect.' });
+      isCustomer = true;
+    } else {
+      let code = m.code;
+      const pc = (await get('/portal_credentials?rep_id=eq.' + encodeURIComponent(id) + '&select=code'))[0];
+      if (pc && pc.code) code = pc.code;
+      if (!b.code || !code || !same(code, b.code)) return out(403, { error: 'Access code incorrect.' });
+    }
     const f = b.form || {};
     const tin = String(f.tin || '').replace(/\D/g, '');
     const str = (v, n) => String(v == null ? '' : v).trim().slice(0, n);
@@ -69,7 +82,7 @@ exports.handler = async function (event, context, deps) {
     const row = { member_id: id, name: clean.name, tin_last4: tin.slice(-4), data_enc: encrypt({ form: clean, signature: sig, signed_at: now }), audit: aud, signed_at: now, updated_at: now };
     const r = await doFetch(SUPA + '/w9_forms', { method: 'POST', headers: Object.assign({}, H, { Prefer: 'resolution=merge-duplicates,return=minimal' }), body: JSON.stringify(row) });
     if (!r.ok) return out(500, { error: 'Could not save.' });
-    await doFetch(SUPA + '/team_members?id=eq.' + encodeURIComponent(id), { method: 'PATCH', headers: Object.assign({}, H, { Prefer: 'return=minimal' }), body: JSON.stringify({ w9_signed_at: now }) });
+    if (!isCustomer) await doFetch(SUPA + '/team_members?id=eq.' + encodeURIComponent(id), { method: 'PATCH', headers: Object.assign({}, H, { Prefer: 'return=minimal' }), body: JSON.stringify({ w9_signed_at: now }) });
     return out(200, { ok: true, tin_last4: tin.slice(-4) });
   }
   return out(400, { error: 'unknown action' });

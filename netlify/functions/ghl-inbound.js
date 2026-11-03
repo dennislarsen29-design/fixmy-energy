@@ -342,6 +342,16 @@ exports.handler = async function(event) {
     } catch (e) { /* best-effort cleanup — never block the booking */ }
   }
 
+  // Referral program: "Who referred you?" typed on /book, or a ?ref=CODE link. Only a UNIQUE match is linked;
+  // anything unclear is flagged for a setter to confirm. Never blocks the booking.
+  try {
+    const refRaw = String(payload.referredBy || payload.ref || '').trim();
+    if (refRaw && resultId && process.env.SUPA_SERVICE_KEY) {
+      const R = require('./lib/referrals');
+      await R.linkReferral(R.client(), resultId, refRaw, { assign: true });
+    }
+  } catch (e) { console.warn('referral link failed:', e.message); }
+
   // Home match: add what Black Box already knows about this address (fill blanks only, nothing overwritten).
   if (!isPartial && address && resultId) {
     try { await require('./lib/home-match').enrich(resultId); } catch (e) { /* never block the booking */ }
