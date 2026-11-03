@@ -14,7 +14,7 @@ const SITE = 'https://fixmy.energy';
 const RATES = {
   1: { service: 50,  battery: 250, system: 500 },
   2: { service: 5,   battery: 25,  system: 100 },
-  3: { service: 1,   battery: 10,  system: 25 }
+  3: { service: 5,   battery: 25,  system: 100 }
 };
 const TIERS = ['service', 'battery', 'system'];
 const W9_THRESHOLD = 600; // lifetime owed+paid at which a W-9 is required before paying
