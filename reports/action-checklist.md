@@ -50,3 +50,9 @@ Status: [ ] open · [x] done · [-] dismissed
 - [ ] I3. Tell Claude: Axia paid on 11/6 (mark $2,438.10 DC share received); Vijay Ranu $300 keep/delete; "go" to delete the two stale job costs (Sandberg $15,272, Dennis Test $300).
 - [ ] I4. Utah compliance questions (HB 57 registration/bond, W-2 vs 1099 reps, contractor license) → counsel or Utah Division of Consumer Protection. Parked in S.U.N., not blocking.
 - [ ] H1b. 2026-11-02: the 5 new guides are requested. Still to request (5/day): /utah-solar-repair, then the Utah and California city pages from sitemap.xml.
+
+## J. Higher priority (added 2026-11-03)
+- [ ] J1. SDG&E: get listed in the Trade Professional directory / Trade Professional Alliance (needs the CSLB license, so confirm with Cosmic first). Parked: Dennis can't do the TPA now.
+- [ ] J2. SDG&E: call the solar contractor support center and ask whether there is a referral path for independent solar repair contractors when a customer calls about a high bill.
+- [ ] J3. San Diego Community Power: ask about a partner or referral path (they get the same high-bill calls and already run battery programs).
+- [ ] J4. Referral map (multi-level customer referral program): Claude asked clarifying questions 2026-11-03; build starts once answered. Needs legal review of multi-level payouts before launch.
