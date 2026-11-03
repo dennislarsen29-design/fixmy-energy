@@ -34111,7 +34111,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (!c) return;
     if (!confirm('Resend agreement to ' + (c.email || c.phone || 'customer') + '?')) return;
     try {
+      // The function only texts/emails when it is given a sign link, and an expired link is useless — mint a fresh one when needed.
+      var _tok = c.sign_token, _exp = c.sign_token_expires_at;
+      if (!_tok || !_exp || new Date(_exp) < new Date()) {
+        _tok = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : (Math.random().toString(36).slice(2) + Date.now().toString(36));
+        _exp = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString();
+        var _upd = await supabase.createClient(SUPA_URL, SUPA_KEY).from('customers').update({ sign_token: _tok, sign_token_expires_at: _exp }).eq('id', id).select('id');
+        if (_upd.error || !_upd.data || !_upd.data.length) throw new Error('Could not create a fresh sign link' + (_upd.error ? ': ' + _upd.error.message : ''));
+        c.sign_token = _tok; c.sign_token_expires_at = _exp;
+      }
       var payload = {
+        signLink: 'https://fixmy.energy/sign?t=' + _tok,
         firstName: c.first_name||'', lastName: c.last_name||'',
         full_name: ((c.first_name||'')+' '+(c.last_name||'')).trim(),
         email: c.email||'', phone: c.phone||'', address1: c.address||'',
@@ -34229,6 +34239,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
     // Sign & Pay lead — copy the sign link instead of invoice_url
     if (c.sign_token) {
+      if (c.sign_token_expires_at && new Date(c.sign_token_expires_at) < new Date()) {
+        alert('⚠ This Sign & Pay link has EXPIRED (' + new Date(c.sign_token_expires_at).toLocaleString() + '). Use "Resend agreement" to create a fresh link and send it.');
+        return;
+      }
       var signLink = 'https://fixmy.energy/sign?t=' + c.sign_token;
       if (!confirm('Copy Sign & Pay link to share with ' + (c.first_name||'customer') + '?')) return;
       navigator.clipboard.writeText(signLink).then(function(){
