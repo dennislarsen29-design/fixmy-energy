@@ -35720,6 +35720,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }catch(e){ console.warn('loadUploadStatus error:', e); }
   }
 
+  // Shrink big phone photos in the browser before they reach storage (max 2000px JPEG, 0.85).
+  // Anthropic downscales above ~1568px anyway, so nothing Quoya reads is lost. Non-images/PDFs pass through.
+  async function _shrinkCustPhoto(file){
+    try{
+      if(!/^image\/(jpeg|png|webp)$/i.test(file.type)||file.size<700000||typeof createImageBitmap!=='function') return file;
+      var bmp=await createImageBitmap(file), sc=Math.min(1,2000/Math.max(bmp.width,bmp.height));
+      var cv=document.createElement('canvas'); cv.width=Math.round(bmp.width*sc); cv.height=Math.round(bmp.height*sc);
+      cv.getContext('2d').drawImage(bmp,0,0,cv.width,cv.height);
+      var blob=await new Promise(function(res){ cv.toBlob(res,'image/jpeg',0.85); });
+      if(bmp.close) bmp.close();
+      return (blob&&blob.size<file.size)?blob:file;
+    }catch(e){ return file; }
+  }
   async function handleUpload(type,input){
     if(!input.files||!input.files[0]||!currentUser) return;
     var el=document.getElementById('ust-'+type);
@@ -35744,7 +35757,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
       // 1 — Upload to job_photos storage bucket
       var path='jobs/'+custId+'/customer_'+type+'_'+Date.now()+'_'+safeName;
-      var {data,error}=await client.storage.from('job_photos').upload(path,file,{upsert:true});
+      var _upBody=await _shrinkCustPhoto(file);
+      var {data,error}=await client.storage.from('job_photos').upload(path,_upBody,{upsert:true,contentType:(_upBody&&_upBody.type)||file.type||undefined});
       if(error){if(el) el.textContent='Error: '+(error.message||'Upload failed');return;}
 
       // 2 — Get public URL
