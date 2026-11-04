@@ -2289,7 +2289,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (pov === 'admin') {
         var r = await Promise.all([
           c.from('payments').select('amount,created_at').eq('category', 'revenue').gte('created_at', since).limit(5000),
-          c.from('commissions').select('amount,status,sold_at,paid_at,created_at,payee').or('sold_at.gte.' + since + ',created_at.gte.' + since).limit(5000)
+          c.from('commissions').select('amount,status,sold_at,paid_at,created_at,payee,note').or('sold_at.gte.' + since + ',created_at.gte.' + since).limit(5000)
         ]);
         pay = { ok: !r[0].error, data: r[0].data || [] }; com = { ok: !r[1].error, data: r[1].data || [] };
       } else {
@@ -2298,6 +2298,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         com = { ok: !r2.error, data: r2.data || [] };
       }
     } catch (e) {}
+    // Cosmic's 50% payments (note cosmic_sale / cosmic_done) are cash received on a job already sold — they count in Cash collected, never in Sales revenue.
+    var _isCosmicPay = function(x){ return x.note === 'cosmic_sale' || x.note === 'cosmic_done'; };
+    var _cosmicPaid = com.ok ? com.data.filter(function(x){ return _isCosmicPay(x) && x.status === 'paid'; }) : [];
+    if (com.ok) com = { ok: true, data: com.data.filter(function(x){ return !_isCosmicPay(x); }) };
     var sold = com.ok ? _sunBucket(com.data, function(x){ return x.sold_at || x.created_at; }, money, months) : null;
     if (pov === 'admin') {
       // Company = Solar Review's margin + Dennis's own commission (same bank account) — one category until Partners join the Partner Pool.
@@ -2305,10 +2309,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (com.ok) com.data.forEach(function(x){ var d = x.sold_at || x.created_at; if (!d) return; var dt = new Date(d), k = dt.getFullYear() + '-' + (dt.getMonth() + 1); if (k !== _mk) return; if (x.payee === DEFAULT_CLOSER_ID || x.payee === 'solar_review_corp') _coNow += money(x); else _tmNow += money(x); });
       tiles.push(_sunTrendTile({ id: 'tr_sales', label: 'Sales revenue', series: sold, months: months, pov: pov, key: 'sales', unknown: com.ok ? null : 'Commissions could not be loaded.',
         extra: com.ok ? 'This month: <b>Company ' + _sunMoney(_coNow) + '</b> (Solar Review + Dennis, one bank account) &middot; Team ' + _sunMoney(_tmNow) : '',
-        info: '<b>Definition:</b> commissions sold by month (every split: Tech, Setter and Solar Review).<br><b>Source:</b> commissions table, by the date each was locked in as sold.<br><b>Goal:</b> your best earlier month unless you set one.' }));
-      var cash = pay.ok ? _sunBucket(pay.data, function(x){ return x.created_at; }, money, months) : null;
+        info: '<b>Definition:</b> commissions sold by month (every split: Tech, Setter and Solar Review) — new jobs sold. Cosmic paying its 50% on an already-sold job is Cash collected, not here.<br><b>Source:</b> commissions table, by the date each was locked in as sold.<br><b>Goal:</b> your best earlier month unless you set one.' }));
+      var cash = pay.ok ? _sunBucket(pay.data.concat(_cosmicPaid.map(function(x){ return { amount: x.amount, created_at: x.paid_at || x.sold_at || x.created_at }; })), function(x){ return x.created_at; }, money, months) : null;
       tiles.push(_sunTrendTile({ id: 'tr_cash', label: 'Cash collected', series: cash, months: months, pov: pov, key: 'cash', unknown: pay.ok ? null : 'Payments could not be loaded.',
-        info: '<b>Definition:</b> payments recorded as revenue, by month.<br><b>Source:</b> payments ledger.<br><b>Goal:</b> your best earlier month unless you set one.' }));
+        info: '<b>Definition:</b> money actually received, by month: customer payments plus Cosmic paying Solar Review its 50% on sold jobs.<br><b>Source:</b> payments ledger + Cosmic payments recorded in Payroll.<br><b>Goal:</b> your best earlier month unless you set one.' }));
       var owed = opts.owed || 0, cashNow = cash ? cash[cash.length - 1] : 0, rate = (cashNow + owed) > 0 ? cashNow / (cashNow + owed) : null;
       tiles.push(_sunTrendTile({ id: 'tr_owed', label: 'Cash owed', series: _sunOwedHist('admin', months, owed), months: months, pov: pov, key: 'owed', lowerBetter: true, noGoal: true, ringPct: rate, ringLabel: 'Share of billed money already collected this month',
         subOverride: (opts.owedN != null ? opts.owedN + ' invoice' + (opts.owedN === 1 ? '' : 's') + ' unpaid' : ''), goalText: 'Ring = collected &divide; (collected + owed) this month. Lower owed is better.',
@@ -2513,8 +2517,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       wrap('applicants', c.from('candidates').select('id,first_name,last_name,position,city,created_at').eq('status', 'applied').order('created_at', { ascending: false }).limit(50)),
       wrap('search queries', c.from('seo_queries').select('date,dimension,key,clicks,impressions,position').order('date', { ascending: false }).limit(150)),
       wrap('roadmap', c.from('roadmap_items').select('key,title,status,priority,effort,dennis_action,group_key,blocked_by,description').neq('group_key', 'history').limit(150)),
-      wrap('meta leads', c.from('customers').select('id,created_at,utm_source,utm_campaign,fbclid,arrival_window,diagnostic_date,sold_type,partial_capture,archived').or('fbclid.not.is.null,utm_source.ilike.%facebook%,utm_source.ilike.%instagram%,utm_source.ilike.%meta%').gte('created_at', new Date(now.getTime() - 30 * 86400000).toISOString()).order('created_at', { ascending: false }).limit(1000))
+      wrap('meta leads', c.from('customers').select('id,created_at,utm_source,utm_campaign,fbclid,arrival_window,diagnostic_date,sold_type,partial_capture,archived').or('fbclid.not.is.null,utm_source.ilike.%facebook%,utm_source.ilike.%instagram%,utm_source.ilike.%meta%').gte('created_at', new Date(now.getTime() - 30 * 86400000).toISOString()).order('created_at', { ascending: false }).limit(1000)),
+      // Cosmic paying Solar Review its 50% on a sold job is CASH COLLECTED (not Sales revenue).
+      wrap('cosmic payments', c.from('commissions').select('amount,paid_at,sold_at,created_at').in('note', ['cosmic_sale', 'cosmic_done']).eq('status', 'paid').limit(1000))
     ]);
+    if (res[0].ok && res[10].ok) res[0].data = (res[0].data || []).concat((res[10].data || []).map(function(x){ return { amount: x.amount, created_at: x.paid_at || x.sold_at || x.created_at }; }).filter(function(x){ return new Date(x.created_at) >= prevStart; }));
     var D = { now: now, pay: res[0], comm: res[1], shifts: res[2], agents: res[3], sys: res[4], seo: res[5], apps: res[6], seoq: res[7], road: res[8], meta: res[9], monthStart: monthStart, prevStart: prevStart, prevCut: prevCut, refreshed: new Date() };
     // Earned dates need the per-job commission caches (same ones payroll uses).
     var commIds = {}; (D.comm.data || []).forEach(function(x){ commIds[x.customer_id] = x.line; });
