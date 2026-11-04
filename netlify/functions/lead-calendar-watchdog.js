@@ -22,10 +22,16 @@ exports.handler = async function () {
     const now = Date.now();
     const since = new Date(now - LOOKBACK_DAYS * 864e5).toISOString();
     const before = new Date(now - GRACE_MIN * 60000).toISOString();
-    const leads = await get('/customers?select=id,first_name,last_name,phone,address,rep_id,created_at,diagnostic_date'
+    let leads = await get('/customers?select=id,first_name,last_name,phone,email,address,rep_id,created_at,diagnostic_date'
       + '&arrival_window=is.null&sold_type=is.null&disposition_exit=is.null&step=lte.1&created_at=gte.' + since + '&created_at=lte.' + before
       + '&and=(or(archived.is.null,archived.eq.false),or(black_box.is.null,black_box.eq.false),or(partial_capture.is.null,partial_capture.eq.false),or(lead_category.is.null,lead_category.neq.new_solar))'
       + '&order=created_at.desc&limit=100');
+
+    // Dennis often puts an appointment straight onto the GHL calendar instead of using the booking page,
+    // so arrival_window stays empty even though the lead IS scheduled. Ask GHL before alerting; if the
+    // contact has a live appointment, record it on the lead (which also clears the portal's Command Center row).
+    const onCal = await checkGhlCalendar(leads, H, REST);
+    leads = leads.filter(l => !onCal.has(l.id));
 
     let state = {};
     try {
@@ -90,6 +96,42 @@ exports.handler = async function () {
     return { statusCode: 200, body: 'error: ' + e.message };
   }
 };
+
+// Returns the set of lead ids that already have a live (not canceled / no-show) GHL appointment from yesterday onward.
+// A lead we can't look up (no GHL key, no contact, API error) is simply NOT treated as scheduled, so the alert still fires.
+async function checkGhlCalendar(leads, H, REST) {
+  const out = new Set();
+  const KEY = process.env.GHL_API_KEY, LOC = process.env.GHL_LOCATION_ID;
+  if (!KEY || !LOC) return out;
+  const gh = { Authorization: 'Bearer ' + KEY, Version: '2021-07-28' };
+  const fmt = d => d.toLocaleTimeString('en-US', { timeZone: 'America/Los_Angeles', hour: 'numeric', minute: '2-digit' });
+  const floor = Date.now() - 864e5;
+  for (const l of leads.slice(0, 30)) {
+    try {
+      let cid = null;
+      for (const q of [(l.phone || '').replace(/\D/g, '').slice(-10), l.email]) {
+        if (!q || cid) continue;
+        const r = await fetch(GHL_BASE + '/contacts/?locationId=' + LOC + '&query=' + encodeURIComponent(q), { headers: gh });
+        if (!r.ok) continue;
+        const c = ((await r.json()).contacts || [])[0]; if (c) cid = c.id;
+      }
+      if (!cid) continue;
+      const ar = await fetch(GHL_BASE + '/contacts/' + cid + '/appointments', { headers: gh });
+      if (!ar.ok) continue;
+      const ev = ((await ar.json()).events || []).filter(e => {
+        const st = String(e.appointmentStatus || e.status || '').toLowerCase();
+        return e.startTime && new Date(e.startTime).getTime() >= floor && st !== 'cancelled' && st !== 'canceled' && st !== 'noshow' && st !== 'no_show' && st !== 'invalid';
+      }).sort((a, b) => new Date(a.startTime) - new Date(b.startTime))[0];
+      if (!ev) continue;
+      const st = new Date(ev.startTime), en = ev.endTime ? new Date(ev.endTime) : new Date(st.getTime() + 120 * 60000);
+      const patch = { arrival_window: fmt(st) + ' – ' + fmt(en), arrival_end: en.toISOString() };
+      if (!l.diagnostic_date) patch.diagnostic_date = st.toISOString();
+      const pr = await fetch(REST + '/customers?id=eq.' + l.id + '&arrival_window=is.null', { method: 'PATCH', headers: { ...H, Prefer: 'return=minimal' }, body: JSON.stringify(patch) });
+      if (pr.ok) { out.add(l.id); console.log('[lead-watchdog] on GHL calendar already:', l.id, ev.startTime); }
+    } catch (e) { console.warn('[lead-watchdog] calendar check failed for', l.id, e.message); }
+  }
+  return out;
+}
 
 function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 async function save(H, REST, state) {
