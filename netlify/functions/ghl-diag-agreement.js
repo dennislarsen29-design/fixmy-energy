@@ -98,17 +98,11 @@ exports.handler = async function(event) {
         'Tap here to review, sign, and pay:\n' + payload.signLink + '\n\n' +
         'Questions? Call (619) 777-6527. — Solar Review Corp';
 
-      const smsMsgBody = { type: 'SMS', contactId, message: smsMessage, locationId: GHL_LOCATION_ID };
-      if (GHL_FROM_NUMBER) smsMsgBody.fromNumber = GHL_FROM_NUMBER;
-      if (phone) smsMsgBody.toNumber = phone;
-
-      const smsResp = await fetch('https://services.leadconnectorhq.com/conversations/messages', {
-        method: 'POST', headers: ghlConvHeaders, body: JSON.stringify(smsMsgBody)
-      });
-      smsStatus = smsResp.status;
-      const smsBody = await smsResp.text();
-      convDebug.smsBody = smsBody.slice(0, 400);
-      console.log('GHL SMS send:', smsStatus, smsBody.slice(0, 400));
+      // Shared sender: logs every attempt to notification_log (+ sms_last_failure) and reports the real reason.
+      const sr = await notify.sendSms({ phone: payload.phone, email: payload.email, first_name: payload.firstName, last_name: payload.lastName }, smsMessage);
+      smsStatus = sr.ok ? 200 : (sr.reason || 'failed');
+      convDebug.sms = sr;
+      console.log('diag-agreement SMS:', JSON.stringify(sr));
     } catch(e) {
       convDebug.error = e.message;
       console.warn('GHL SMS error (non-fatal):', e.message);
@@ -125,7 +119,7 @@ exports.handler = async function(event) {
         { url: payload.signLink, label: 'Review, sign & pay' });
     } catch (e) { emailResult = { ok: false, reason: 'email_error' }; }
   }
-  const smsOk = smsStatus >= 200 && smsStatus < 300;
+  const smsOk = smsStatus === 200;
   const delivered = !payload.signLink || smsOk || !!(emailResult && emailResult.ok);
   return {
     statusCode: 200,
