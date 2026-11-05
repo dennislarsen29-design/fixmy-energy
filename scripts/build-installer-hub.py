@@ -18,17 +18,17 @@ L = [
  ('Lumio','Chapter 11, March 2024','lumio'),
  ('Sunworks / Solcius','Chapter 7, February 2024','sunworks'),
  ('PosiGen','Chapter 11, November 2025','posigen'),
- ('Infinity Energy','Ceased operations 2023',None),
- ('Suntuity Renewables','Shut down around 2024',None),
- ('ADT Solar / SunPro Solar','Shut down January 2023',None),
- ('Pink Energy','Chapter 7, October 2022',None),
- ('Harness Power','Shut down spring 2023 (Pasadena)',None),
- ('Vision Solar','Chapter 7, July 2021',None),
- ('American Solar Direct','Shut down 2019',None),
- ('RGS Energy (Real Goods Solar)','Delisted and defunct, 2019',None),
- ('Verengo','Shut down 2014',None),
- ('OneRoof Energy','Shut down 2016',None),
- ('Kota Energy','Shut down around 2022',None),
+ ('Infinity Energy','Ceased operations 2023','infinity-energy'),
+ ('Suntuity Renewables','Shut down around 2024','suntuity'),
+ ('ADT Solar / SunPro Solar','Shut down January 2023','adt-solar'),
+ ('Pink Energy','Chapter 7, October 2022','pink-energy'),
+ ('Harness Power','Shut down spring 2023 (Pasadena)','harness-power'),
+ ('Vision Solar','Chapter 7, July 2021','vision-solar'),
+ ('American Solar Direct','Shut down 2019','american-solar-direct'),
+ ('RGS Energy (Real Goods Solar)','Delisted and defunct, 2019','rgs-energy'),
+ ('Verengo','Shut down 2014','verengo'),
+ ('OneRoof Energy','Shut down 2016','oneroof-energy'),
+ ('Kota Energy','Shut down around 2022','kota-energy'),
 ]
 def li(n,w,p):
     name = '<a href="/%s">%s</a>' % (p, html.escape(n)) if p else '<strong>%s</strong>' % html.escape(n)
@@ -38,6 +38,7 @@ faqs = [('My solar installer went out of business. What happens to my warranty?'
         ('Who services my solar system now?','Solar Review services systems from any installer, including the companies listed on this page. We start with your photos and utility bill, then schedule a technician visit or a guided video evaluation.'),
         ('Is my installer on this list?','If not, it does not matter. We work on any installer\'s system. This list covers the companies we hear about most.')]
 ld_faq = json.dumps({"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":q,"acceptedAnswer":{"@type":"Answer","text":a}} for q,a in faqs]})
+ld_list = json.dumps({"@context":"https://schema.org","@type":"ItemList","name":"Closed solar installers we service systems for","itemListElement":[{"@type":"ListItem","position":i+1,"name":n,"url":b.SITE+'/'+p if p else b.SITE+'/defunct-solar-installers'} for i,(n,w,p) in enumerate(L)]})
 ld_bc = json.dumps({"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Home","item":b.SITE+"/"},{"@type":"ListItem","position":2,"name":"Closed solar installers","item":b.SITE+"/defunct-solar-installers"}]})
 body = ('<article class="wrap">\n<div class="eyebrow">Closed solar installers</div>\n<h1>Solar Installers That Went Out of Business: Who Services Your System Now</h1>\n'
  '<p class="lede">If the company that installed your solar went bankrupt or shut down, your system still needs care. Here are the California installers that have closed, and where to get help.</p>\n'
@@ -45,5 +46,5 @@ body = ('<article class="wrap">\n<div class="eyebrow">Closed solar installers</d
  items, b.CTA, ''.join('<div class="faq-q">%s</div><p>%s</p>' % (b.esc(q), b.esc(a)) for q, a in faqs))
 open('defunct-solar-installers.html','w',encoding='utf-8').write(b.page('Solar Installers That Went Out of Business | Who Services Your System | Solar Review',
  'List of California solar installers that went bankrupt or closed, including SunPower, Titan, Sunnova and Freedom Forever, and where to get your system serviced.',
- b.SITE+'/defunct-solar-installers',[ld_faq,ld_bc],body))
+ b.SITE+'/defunct-solar-installers',[ld_faq,ld_bc,ld_list],body))
 print('ok')

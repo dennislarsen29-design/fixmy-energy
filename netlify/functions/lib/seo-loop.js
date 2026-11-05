@@ -16,7 +16,8 @@ const WINDOW_DAYS = 9;             // seo-insights page snapshots cover the 9 da
 const MIN_IMPRESSIONS = 40;        // below this in either period a verdict would be noise
 // Pages whose title/meta come from JavaScript, not static HTML — the loop cannot edit them safely.
 const DYNAMIC_PAGES = [];   // installer pages are static since 2026-11-05 (installers/<id>.html, built by scripts/build-installer-pages.js)
-const INSTALLER_PAGES = ['/sunpower', '/titan', '/sunnova', '/sullivan', '/petersen-dean', '/sungevity', '/mosaic', '/freedom-forever'];
+const INSTALLER_PAGES = ['/sunpower', '/titan', '/sunnova', '/sullivan', '/petersen-dean', '/sungevity', '/mosaic', '/freedom-forever',
+  '/lumio', '/simply-solar', '/solare-energy', '/posigen', '/sunworks', '/infinity-energy', '/suntuity', '/adt-solar', '/pink-energy', '/harness-power', '/vision-solar', '/american-solar-direct', '/rgs-energy', '/verengo', '/oneroof-energy', '/kota-energy'];
 
 function sbH(key, extra) { return Object.assign({ apikey: key, Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' }, extra || {}); }
 function ghH() { return { Authorization: 'Bearer ' + process.env.GITHUB_TOKEN, Accept: 'application/vnd.github+json', 'User-Agent': 'solar-review-seo-agent', 'Content-Type': 'application/json' }; }
