@@ -40,6 +40,9 @@ async function sbGet(path, key) {
   if (!r.ok) throw new Error('GET ' + path + ' ' + r.status);
   return r.json();
 }
+async function clearWaiting(prUrl, key) {
+  try { await sbPatch('/agent_reports?agent=eq.seo&action_url=eq.' + encodeURIComponent(prUrl) + '&reviewed=eq.false', { reviewed: true }, key); } catch (e) {}
+}
 async function sbPatch(path, body, key) {
   const r = await fetch(SB + path, { method: 'PATCH', headers: sbH(key, { Prefer: 'return=minimal' }), body: JSON.stringify(body) });
   if (!r.ok) throw new Error('PATCH ' + path + ' ' + r.status);
@@ -99,6 +102,10 @@ async function proposeChange(input, key) {
   await fetch(SB + '/seo_experiments', { method: 'POST', headers: sbH(key, { Prefer: 'return=minimal' }), body: JSON.stringify({
     page_url: page, file_path: file, hypothesis: input.hypothesis || null, old_title: oldTitle, new_title: title, old_meta: oldMeta, new_meta: meta,
     pr_url: pj.html_url, pr_number: pj.number, status: 'pr_opened', baseline }) });
+  // Surface it in S.U.N. + the daily digest email so a waiting merge is never missed.
+  try { await fetch(SB + '/agent_reports', { method: 'POST', headers: sbH(key, { Prefer: 'return=minimal' }), body: JSON.stringify({
+    agent: 'seo', priority: 'high', title: 'SEO change waiting for your merge: ' + page,
+    body: 'New title: ' + title + '\nNew meta: ' + meta + '\nWhy: ' + (input.hypothesis || '') + '\nMerge the pull request to apply it; close it to reject.', action_url: pj.html_url }) }); } catch (e) {}
   return { ok: true, pr_url: pj.html_url, baseline };
 }
 
@@ -126,9 +133,11 @@ async function syncExperiments(key) {
         if (pr.merged_at) {
           const at = new Date(pr.merged_at);
           await sbPatch('/seo_experiments?id=eq.' + e.id, { status: 'applied', applied_at: at.toISOString(), measure_after: new Date(at.getTime() + MEASURE_DELAY_DAYS * 86400000).toISOString() }, key);
+          await clearWaiting(e.pr_url, key);
           out.applied++;
         } else if (pr.state === 'closed') {
           await sbPatch('/seo_experiments?id=eq.' + e.id, { status: 'rejected', verdict: 'rejected', lesson: 'Dennis closed the PR without merging — do not propose this style of change for ' + e.page_url + ' again without a new reason.', measured_at: new Date().toISOString() }, key);
+          await clearWaiting(e.pr_url, key);
           out.rejected++;
         }
       } else if (e.status === 'applied' && e.measure_after && new Date(e.measure_after) <= new Date()) {

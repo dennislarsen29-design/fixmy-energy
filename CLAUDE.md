@@ -2948,3 +2948,6 @@ The weekly SEO agent used to give advice and forget it. Now every title/meta fix
 - ⚠️ **Needs Netlify env `GITHUB_TOKEN`** (fine-grained PAT on `dennislarsen29-design/fixmy-energy`: Contents + Pull requests read/write). Without it the tool returns a clear error and the agent falls back to a normal recommendation.
 - Limits: only the top-25 pages in the daily snapshots can be measured; a verdict is correlation, not proof (seasonality, ranking changes); the `seo_queries` page keys are assumed to be `https://fixmy.energy<path>`. Verified with a mocked-fetch run (PR content, verdict thresholds); not run against live GitHub/Search Console.
 - Not built (Dennis chose draft-not-auto-apply): committing straight to main and auto-rollback.
+
+### SEO loop → S.U.N. (2026-11-05, per Dennis)
+A proposed SEO PR also writes an `agent_reports` row ("SEO change waiting for your merge: <page>", priority high, `action_url` = PR). S.U.N.'s Founder mission queue turns it into an item with a **Review & merge** button, and a measured-results report into a "Mark read" item. When the PR is merged or closed, the next agent run (`syncExperiments`) marks the row reviewed so the item disappears. The same row also rides the daily digest email.
