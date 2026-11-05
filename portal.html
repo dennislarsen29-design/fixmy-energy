@@ -3309,6 +3309,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       workDone = !!c.install_completed_at;
       var ptoDone = c.solar_status === 'ns_pto';
       if (!workDone) {
+        // Pre-install moves (2026-11-05): one question per status, in order, so the Pipeline Status dropdown isn't needed.
+        if (c.sold_type) {
+          if (c.solar_status === 'ns_welcome_closed') todos.push({ key: 'axbutton', label: 'Button-up not marked done' });
+          else if (c.solar_status === 'ns_button_up') todos.push({ key: 'axpermit', label: 'Permit not marked submitted' });
+          else if (c.solar_status === 'ns_permit_submitted') todos.push({ key: 'axsched', label: 'Install not scheduled yet' });
+        }
         if (c.sold_type && (c.solar_status === 'ns_install_scheduled' || (c.install_date && new Date(c.install_date) < new Date()))) todos.push({ key: 'axinstall', label: 'Install not marked completed' });
         return { known: true, complete: false, workDone: false, missing: todos.map(function(t){ return t.label; }), todos: todos };
       }
@@ -3331,6 +3337,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (c.sold_type && (!c.assigned_ops || c.assigned_ops === 'none') && step < 9) todos.push({ key: 'ops', label: 'No install partner assigned' });
     // Electrician's findings are in but no upgrade path / proposal exists yet → the Tech's next move (2026-11-03).
     if (c.sold_type === 'diagnostic' && c.diag_findings && c.diag_findings.submitted_at && c.diag_findings.fix !== 'nothing' && step < 6 && !(c.proposal && c.proposal.options && c.proposal.options.length)) todos.push({ key: 'review', label: 'Review findings, build upgrade path' });
+    if (c.sold_type && c.sold_type !== 'diagnostic' && step === 6) todos.push({ key: 'fxbook', label: 'Install not booked yet' });
     if (!workDone) {
       if (c.sold_type !== 'diagnostic' && step >= 7 && step < 9) todos.push({ key: 'install', label: 'Install not marked finished' });
       return { known: true, complete: false, workDone: false, missing: todos.map(function(t){ return t.label; }), todos: todos };
@@ -3462,7 +3469,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var left = k.todos.length, q = '', detail = '', yes = '', extra = '';
     var d = (c.lead_category === 'new_solar' ? _axiaCommCache : _fixmyCommCache)[id] || {};
     var who = function(p) { return (typeof repName === 'function' && repName(p)) || p; };
-    if (t.key === 'axinstall') { q = 'Was the install completed?'; detail = 'Saying yes records today as the completion date. Payment 1 follows once the audit is signed off.'; yes = 'Yes, it is completed'; }
+    if (t.key === 'axbutton') { q = 'Is the button-up (final design and paperwork package) done?'; detail = 'Moves the job to Button Up.'; yes = 'Yes, button-up done'; }
+    else if (t.key === 'axpermit') { q = 'Has the permit been submitted?'; detail = 'Moves the job to Permit Submitted.'; yes = 'Yes, submitted'; }
+    else if (t.key === 'axsched') { q = 'Is the install scheduled?'; detail = 'Moves the job to Install Scheduled. Set the date in the lead\'s Schedule box.'; yes = 'Yes, it is scheduled'; }
+    else if (t.key === 'fxbook') { q = 'Is the install booked?'; detail = 'Moves the job to Install Booked. Set the date in the lead\'s Schedule box.'; yes = 'Yes, it is booked'; }
+    else if (t.key === 'axinstall') { q = 'Was the install completed?'; detail = 'Saying yes records today as the completion date. Payment 1 follows once the audit is signed off.'; yes = 'Yes, it is completed'; }
     else if (t.key === 'audit') { q = 'Is the install audit signed off?'; detail = 'Compare the sold design with the installed one. Payment 1 waits on this.'; yes = 'Yes, signed off'; }
     else if (t.key === 'pto') { q = 'Has the utility granted permission to operate (PTO)?'; detail = 'This starts the second Axia payment, the Domestic Content bonus.'; yes = 'Yes, PTO granted'; }
     else if (t.key === 'review') { q = 'The electrician\'s findings are in. Review them and build the upgrade path.'; detail = 'Open the job: read the findings and photos, write the customer report, book the Diagnostic Evaluation (Results Review) with the customer, then build the proposal.'; yes = 'Open the job'; }
@@ -3512,6 +3523,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     try {
       if (key === 'review') { jobNextClose(); if (typeof openJob === 'function') openJob(id); return; }
       if (key === 'install') await _doMarkInstalled(id);
+      else if (key === 'axbutton' || key === 'axpermit' || key === 'axsched') {
+        var _ns = { axbutton: 'ns_button_up', axpermit: 'ns_permit_submitted', axsched: 'ns_install_scheduled' }[key];
+        var okw = await _leadWrite(id, { solar_status: _ns }, 'Status: ' + (NS_STATUSES[_ns] ? NS_STATUSES[_ns].label : _ns));
+        if (!okw) { jobNextClose(); return; }
+      }
+      else if (key === 'fxbook') { var okb = await _leadWrite(id, { step: 8 }, 'Install booked. Moved to Install Booked.'); if (!okb) { jobNextClose(); return; } }
       else if (key === 'axinstall' || key === 'audit' || key === 'pto' || key === 'ops') {
         var upd = key === 'axinstall' ? { install_completed_at: c.install_completed_at || ts }
           : key === 'audit' ? { ns_audit_at: ts, ns_audit_note: 'Signed off from the Next step popup' }
@@ -32275,11 +32292,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       (isNSEdit ?
         '<div class="editor-section-title">Axia/QCells Pipeline</div>'+
         window._edStageBarHtml(c)+
-        '<details style="margin-bottom:12px;"><summary style="cursor:pointer;font-size:0.72rem;color:#888;padding:4px 0;">Admin override: set status by hand</summary>'+
-        '<div class="ed-grid" style="margin:8px 0;">'+
-          edSelect('Pipeline Status (★ = Job phase)','edSolarStatus',c.solar_status||'ns_eval_booked',nsStatusOpts)+
-        '</div>'+
-        '<div style="padding:8px 12px;background:rgba(74,158,255,0.07);border:1px solid rgba(74,158,255,0.18);border-radius:8px;font-size:0.7rem;color:#4a9eff;margin-bottom:12px;">&#9733; Statuses move this lead to <strong>Axia/QCells Jobs</strong> automatically.</div></details>'
+        ''
       :
         ''
       )+
@@ -32302,11 +32315,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '</div>'+
       '</details>'+
       '<div class="editor-section-title">Progress & Scheduling</div>'+
-      (isNSEdit ? '' : window._edStageBarHtml(c)+'<details style="margin-bottom:12px;"><summary style="cursor:pointer;font-size:0.72rem;color:#888;padding:4px 0;">Admin override: set step by hand</summary>')+
-      '<div class="ed-grid">'+
-        (isNSEdit ? '' : edSelect('Progress Step','edStep',c.step||1,[[1,'1 - Evaluation Booked'],[2,'2 - Photos Uploaded'],[3,'3 - Diagnostic Booked'],[4,'4 - Analysis Done'],[5,'5 - Proposal Sent'],[6,'6 - Sold / Deposit Collected'],[7,'7 - Not Sold / Dead'],[8,'8 - Install Booked'],[9,'9 - Installed'],[10,'10 - Monitoring Online']]))+
-      '</div>'+
-      (isNSEdit ? '' : '</details>')+
+      (isNSEdit ? '' : window._edStageBarHtml(c))+
       window._schedControlHtml(c, isNSEdit)+
       (!isNSEdit ?
         '<div style="margin:-4px 0 16px;">'+
@@ -34991,20 +35000,6 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   }
   function sendMagicLink(link,email){ navigator.clipboard.writeText(link).then(function(){alert('Portal link copied!\n\nSend this to '+email);}).catch(function(){prompt('Copy this portal link for '+email+':', link);}); }
   function callLead(phone){ if(!phone){alert('No phone number on file.');return;} window.location.href='tel:'+phone.replace(/\D/g,''); }
-  async function adminQuickAdvanceStep(id) {
-    var c = adminCustomers.find(function(x){ return x.id===id; });
-    if (!c || c.lead_category === 'new_solar') return;
-    var step = parseInt(c.step)||1;
-    if (step >= 7) return;
-    var next = step + 1;
-    if (next === 3) { openDiagFeeModal(id, { step: 3 }); return; }
-    var client = supabase.createClient(SUPA_URL, SUPA_KEY);
-    var res = await client.from('customers').update({step: next}).eq('id', id);
-    if (res.error) { alert('Error: ' + res.error.message); return; }
-    window._logStatusChange(id, c, step, null, next, null);
-    c.step = next;
-    renderAdminView(adminView);
-  }
   function exportCSV(){
     var cols=['first_name','last_name','email','phone','address','monthly_bill','step','invoice_status','agreement_status','source','created_at'];
     var rows=[cols.join(',')];

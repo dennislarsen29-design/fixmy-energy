@@ -2918,3 +2918,9 @@ Satellite pin tool for the Main Service Panel, inverter, comms/gateway box and s
 
 ### Equipment pins relocated (2026-11-05, per Dennis — "stash it under Admin tab")
 The pin card no longer sits at the top of the lead editor. `equipRowHtml(c)` wraps it in a collapsed "📍 Equipment Locations — N pins marked" row, used in (1) the admin editor **inside the Administration Tab** (top of its body; not for Axia) and (2) the Ops job detail. Removed from the Tech editor (the Eval wizard hardware step is the Tech's only entry, still full `equipCardHtml`). Parse-checked only.
+
+## Pipeline merge finished — override dropdowns removed (2026-11-05, per Dennis)
+The Axia "Pipeline Status" and FixMy "Progress Step" admin-override dropdowns are gone from the lead editor, and `adminQuickAdvanceStep` is deleted; the editor shows only the stage line + ▶ Next step. `saveLeadEditor` still falls back to the record's current `step`/`solar_status` when those fields aren't rendered, so saves are unchanged.
+- **New Next-step questions (`_jobCompletion` → `jobNextAnswer`, verified writes via `_leadWrite`):** Axia `axbutton` (welcome closed → Button Up), `axpermit` (→ Permit Submitted), `axsched` (→ Install Scheduled); FixMy `fxbook` (sold non-diagnostic job at step 6 → step 8 Install Booked). Install completed / PTO / Installed already had questions.
+- **Not removed:** the classic admin Leads/Jobs screens and `pipelineClassic` kill switch (rep screens still read it). Setting an arbitrary status/step by hand is no longer possible from the UI; use the DB if ever needed.
+- Still pending from the same request: Details-toggle polish on remaining cards, one entry point per task (evaluations/documents), rep Leads/Jobs screens matched to the new cards. Parse-checked 4/4 only; not run in a browser.
