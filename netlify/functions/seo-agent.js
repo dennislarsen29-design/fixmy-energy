@@ -75,6 +75,16 @@ const WRITE_TOOL = {
   }
 };
 
+const PROPOSE_TOOL = {
+  name: 'propose_title_meta_change',
+  description: 'Open a GitHub pull request that rewrites ONE static page\'s <title> and meta description, and start tracking it as an experiment (baseline now, measured ~2 weeks after Dennis merges). Use this for any title/meta fix instead of write_recommendation. Works only for static pages (blog posts and root .html pages) — NOT the homepage or the installer pages /sunpower /titan /sunnova etc. (their titles are set by JavaScript). One per page; max 3 per run. Title 20-65 chars, meta 110-160 chars, no unverifiable claims.',
+  input_schema: { type: 'object', properties: {
+    page_url: { type: 'string', description: 'e.g. /blog/sunpower-out-of-business' },
+    new_title: { type: 'string' }, new_meta: { type: 'string' },
+    hypothesis: { type: 'string', description: 'Why this should raise CTR/position, citing the exact query/impression data' }
+  }, required: ['page_url', 'new_title', 'new_meta', 'hypothesis'] }
+};
+
 async function runTool(name, input, key) {
   switch (name) {
     case 'get_seo_metrics': {
@@ -102,6 +112,11 @@ async function runTool(name, input, key) {
       });
       return JSON.stringify(agg);
     }
+    case 'propose_title_meta_change': {
+      if (global.__seoProposals >= 3) return 'Limit reached: 3 proposals per run.';
+      global.__seoProposals = (global.__seoProposals || 0) + 1;
+      return JSON.stringify(await require('./lib/seo-loop').proposeChange(input, key));
+    }
     case 'write_recommendation':
       await supaInsert('agent_reports', {
         agent: 'seo', priority: normalizePriority(input.priority),
@@ -121,7 +136,7 @@ Context you must factor in:
 - Strategy: own "orphaned solar installer" queries (SunPower/Titan/Sunnova bankruptcies), solar repair symptom queries, and battery-retrofit + SGIP/SDCP rebate queries in San Diego County.
 - The business goal is booked evaluations, not traffic. Weigh queries by commercial intent.
 
-Each week: pull the data, compare the recent period to the prior one, and write 2-5 concrete recommendations via write_recommendation (most important first). Good recommendations name a specific page, query, or metric and a specific change ("write a page targeting X — it gets N impressions at position 40 with no dedicated page", "title of /sunpower truncated in SERPs, shorten to ...", "CTR on query X is 1.2% at position 4 — rewrite the meta description"). If data is missing or too thin to analyze, write ONE 'normal' recommendation explaining exactly what setup step is missing and stop.`;
+SELF-CORRECTION LOOP: your title/meta fixes are NOT just advice. Use propose_title_meta_change to open a pull request for Dennis to merge; each one is tracked and measured ~2 weeks after merging, and the verdicts (win/loss/rejected) come back to you in EXPERIMENT HISTORY. Learn from it: copy the pattern of titles that won, drop patterns that lost, never re-propose something Dennis rejected, and do not touch a page that is still measuring. Use write_recommendation only for things a PR cannot do (new pages, content, links, off-site work).\n\nEach week: pull the data, compare the recent period to the prior one, and write 2-5 concrete recommendations via write_recommendation (most important first). Good recommendations name a specific page, query, or metric and a specific change ("write a page targeting X — it gets N impressions at position 40 with no dedicated page", "title of /sunpower truncated in SERPs, shorten to ...", "CTR on query X is 1.2% at position 4 — rewrite the meta description"). If data is missing or too thin to analyze, write ONE 'normal' recommendation explaining exactly what setup step is missing and stop.`;
 
 exports.handler = async function() {
   const key = process.env.SUPA_SERVICE_KEY;
@@ -132,14 +147,27 @@ exports.handler = async function() {
 
   const today = new Date().toISOString().slice(0, 10);
   const _fb = await require('./lib/agent-replies').loadFeedback('seo', key);
+  const loop = require('./lib/seo-loop');
+  global.__seoProposals = 0;
+  // 1) advance experiments (PR merged/closed, measure finished ones) — deterministic, not LLM
+  let synced = { applied: 0, rejected: 0, measured: [] };
+  try { synced = await loop.syncExperiments(key); } catch (e) { console.warn('seo-agent sync:', e.message); }
+  if (synced.measured.length) {
+    const wins = synced.measured.filter(m => m.verdict === 'win').length, losses = synced.measured.filter(m => m.verdict === 'loss').length;
+    try { await supaInsert('agent_reports', { agent: 'seo', priority: 'normal',
+      title: 'SEO experiments measured — ' + wins + ' win(s), ' + losses + ' loss(es)',
+      body: synced.measured.map(m => '• ' + m.page + ' [' + m.verdict.toUpperCase() + ']\n  was: ' + m.old_title + '\n  now: ' + m.new_title + '\n  ' + m.lesson).join('\n\n') +
+        '\n\nThese results are fed into next week\'s recommendations automatically.', action_url: null }, key); } catch (e) {}
+  }
+  const _hist = await loop.history(key);
   const messages = [{
     role: 'user',
-    content: _fb.text + 'Run your weekly SEO analysis. Today is ' + today + '. Gather data with get_seo_metrics (90 days), get_top_queries, and get_lead_outcomes, then write your recommendations.'
+    content: _fb.text + _hist + 'Run your weekly SEO analysis. Today is ' + today + '. Gather data with get_seo_metrics (90 days), get_top_queries, and get_lead_outcomes, then write your recommendations.'
   }];
 
   try {
     let turns = 0, wrote = 0;
-    const tools = DATA_TOOLS.concat([WRITE_TOOL]);
+    const tools = DATA_TOOLS.concat([WRITE_TOOL, PROPOSE_TOOL]);
     while (turns++ < 10) {
       const response = await callClaude(messages, tools, SYSTEM);
       messages.push({ role: 'assistant', content: response.content });
@@ -156,7 +184,7 @@ exports.handler = async function() {
       messages.push({ role: 'user', content: results });
     }
     console.log('seo-agent: done —', wrote, 'recommendations written');
-    return { statusCode: 200, body: JSON.stringify({ ok: true, recommendations: wrote }) };
+    return { statusCode: 200, body: JSON.stringify({ ok: true, recommendations: wrote, experiments: { applied: synced.applied, rejected: synced.rejected, measured: synced.measured.length } }) };
   } catch (e) {
     console.error('seo-agent:', e.message);
     return { statusCode: 500, body: JSON.stringify({ error: e.message }) };
