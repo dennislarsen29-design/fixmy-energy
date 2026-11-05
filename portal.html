@@ -35979,6 +35979,28 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     for (var i=0;i<40;i++){ if (window.google && google.maps && google.maps.Map) return true; await new Promise(function(r){ setTimeout(r,200); }); }
     return false;
   }
+  // Guided flow (2026-11-05, per Dennis: "four clicks = completed", skip questions Quoya can predict):
+  // the tech is asked ONE thing at a time ("Tap the Main Service Panel"), each tap drops the pin and
+  // moves on, and the last tap saves. Which pins are asked for depends on the equipment:
+  //   SolarEdge/SMA/Fronius/Tesla/etc. → MSP + inverter (comms is built into the inverter, not asked)
+  //   Enphase micro-inverters          → MSP + solar breaker/combiner box (IQ Combiner has the gateway; no inverter)
+  //   SunPower/other micro-inverters   → MSP + breaker box + comms (separate PVS/gateway)
+  //   unknown                          → MSP + inverter; extras can be added from the always-visible chips.
+  _eqTypes[0].ask='Tap the Main Service Panel';   _eqTypes[0].hint='The gray breaker box, usually next to the electric meter.';
+  _eqTypes[1].ask='Tap the inverter';             _eqTypes[1].hint='The box that converts solar power, often on a wall near the panel or in the garage.';
+  _eqTypes[2].ask='Tap the comms / gateway box';  _eqTypes[2].hint='The small box with the monitoring gateway (Envoy, PVS, etc.).';
+  _eqTypes[3].ask='Tap the solar breaker box';    _eqTypes[3].hint='The small combiner / breaker box the micro-inverters connect to.';
+  window._eqPlan = function(rec, ev){
+    var ib = String((ev && (ev.inverter_brand || '') + ' ' + (ev && ev.inverter_model || '')) || '').trim();
+    var txt = ib || String((rec && rec.original_installer) || '');
+    var enph = /enphase|\biq\s?\d|\bm2[15]0\b/i.test(txt), sunp = /sunpower|equinox/i.test(txt), micro = enph || sunp || /micro/i.test(txt);
+    var builtin = /solaredge|\bsma\b|sunny|fronius|tesla|solarcity|delta|\babb\b|power-one|growatt|sol-ark|outback|schneider|generac|pika/i.test(txt);
+    var nice = ib || txt;
+    if (enph) return { steps:['msp','pvbox'], note:'Enphase: the IQ Combiner includes the gateway, so no separate comms pin.' };
+    if (micro) return { steps:['msp','pvbox','comms'], note:'Micro-inverters sit under the panels, so there is no inverter pin.' };
+    if (builtin) return { steps:['msp','inverter'], note:'Comms is built into the '+(nice||'inverter')+', so no separate comms pin.' };
+    return { steps:['msp','inverter'], note:'' };
+  };
   window.equipOpen = async function(id){
     var rec = (window._eqRecs||{})[id] || ((typeof adminCustomers!=='undefined' && adminCustomers) ? adminCustomers.find(function(x){ return x.id===id; }) : null);
     if (!rec) { alert('Could not find this lead. Reload and try again.'); return; }
@@ -35986,45 +36008,40 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var ov = document.createElement('div'); ov.id = 'eqOverlay';
     ov.style.cssText = 'position:fixed;inset:0;z-index:10001;background:#0b1220;display:flex;flex-direction:column;';
     ov.innerHTML =
-      '<div style="padding:10px 56px 8px 14px;color:#fff;"><div style="font-size:0.85rem;font-weight:800;">&#128205; Equipment Locations</div><div id="eqHint" style="font-size:0.7rem;color:#9ca3af;margin-top:2px;">Loading satellite view&hellip;</div></div>'+
+      '<div id="eqBanner" style="padding:10px 60px 10px 14px;color:#fff;background:#111827;border-bottom:1px solid rgba(255,255,255,0.1);"><div style="font-size:0.9rem;font-weight:800;">Loading satellite view&hellip;</div></div>'+
       '<button type="button" class="pv-close pv-pin" onclick="equipClose()" aria-label="Close">&times;</button>'+
       '<div id="eqMap" style="flex:1;min-height:0;"></div>'+
-      '<div style="padding:8px 10px;background:#111827;border-top:1px solid rgba(255,255,255,0.1);">'+
-        '<div id="eqTypeBar" style="display:grid;grid-template-columns:1fr 1fr;gap:6px;"></div>'+
-        '<div id="eqSel" style="display:none;margin-top:8px;gap:6px;align-items:center;"></div>'+
-        '<div style="display:flex;gap:8px;margin-top:8px;"><button type="button" onclick="equipClear()" style="flex:0 0 auto;width:auto;background:transparent;border:1px solid #4b5563;color:#d1d5db;border-radius:8px;padding:10px 14px;font-size:0.78rem;">Clear all</button>'+
-        '<button type="button" id="eqSave" onclick="equipSave()" style="flex:1;background:#8DC63F;color:#0b1220;border:0;border-radius:8px;padding:10px;font-size:0.85rem;font-weight:800;">Save pins</button></div>'+
-      '</div>';
+      '<div id="eqBar" style="padding:8px 10px;background:#111827;border-top:1px solid rgba(255,255,255,0.1);"></div>';
     document.body.appendChild(ov);
-    var S = window._eqS = { id:id, rec:rec, pins:[], armed:null, sel:null, map:null, home:null, markers:{} };
-    var bar = document.getElementById('eqTypeBar');
-    bar.innerHTML = _eqTypes.map(function(t){
-      return '<button type="button" data-eqt="'+t.id+'" onclick="equipArm(\''+t.id+'\')" style="width:auto;display:flex;align-items:center;gap:6px;background:#1f2937;border:2px solid transparent;color:#e5e7eb;border-radius:8px;padding:8px;font-size:0.7rem;text-align:left;"><span style="flex:0 0 22px;height:22px;border-radius:50%;background:'+t.color+';color:#fff;font-weight:800;font-size:0.7rem;display:inline-flex;align-items:center;justify-content:center;">'+t.short+'</span>'+_eqEsc(t.label)+'</button>';
-    }).join('');
-    if (!(await _eqWaitMaps())) { document.getElementById('eqHint').textContent = 'Google Maps did not load. Check your connection and reopen.'; return; }
-    // Resolve the home location: saved → record coordinates → geocode the address.
+    var S = window._eqS = { id:id, rec:rec, pins:[], queue:[], total:0, sel:null, map:null, home:null, markers:{}, plan:null, free:false };
+    if (!(await _eqWaitMaps())) { document.getElementById('eqBanner').innerHTML = '<div style="font-size:0.85rem;color:#fca5a5;">Google Maps did not load. Check your connection and reopen.</div>'; return; }
+    // One quick lookup: what inverter is it? (decides which pins we ask for)
+    var ev = null;
+    try { var cl0 = window._eqClient = window._eqClient || supabase.createClient(SUPA_URL, SUPA_KEY);
+      var er = await cl0.from('lead_evaluations').select('inverter_brand,inverter_model').eq('customer_id', id).limit(1); ev = er.data && er.data[0]; } catch(e) {}
+    S.plan = _eqPlan(rec, ev);
     var saved = _eqData(rec), home = (saved && saved.home) || null;
     if (!home && rec.lat && rec.lng) home = { lat: Number(rec.lat), lng: Number(rec.lng) };
     if (!home && rec.address) {
       try { var g = await (await fetch('https://maps.googleapis.com/maps/api/geocode/json?address='+encodeURIComponent(rec.address)+'&key='+GKEY)).json();
         if (g.status==='OK') home = g.results[0].geometry.location; } catch(e) {}
     }
-    if (!home) { document.getElementById('eqHint').textContent = 'Could not locate this address. Add a full street address to the lead first.'; return; }
+    if (!home) { document.getElementById('eqBanner').innerHTML = '<div style="font-size:0.85rem;color:#fca5a5;">Could not locate this address. Add a full street address to the lead first.</div>'; return; }
     S.home = { lat: home.lat, lng: home.lng };
     if (saved && saved.pins) S.pins = saved.pins.map(function(p){ return { id:p.id||('p'+Math.random().toString(36).slice(2,8)), type:p.type, lat:p.lat, lng:p.lng, note:p.note||'' }; });
+    S.queue = S.plan.steps.filter(function(t){ return !S.pins.some(function(p){ return p.type===t; }); });
+    S.total = S.queue.length; S.free = !S.queue.length;
     S.map = new google.maps.Map(document.getElementById('eqMap'), {
       center: S.home, zoom: 20, maxZoom: 21, mapTypeId: 'satellite', tilt: 0, disableDefaultUI: true, zoomControl: true,
       gestureHandling: 'greedy', clickableIcons: false, keyboardShortcuts: false
     });
-    // Small neutral dot for the house itself so the tech can orient (never saved as a pin).
     new google.maps.Marker({ position: S.home, map: S.map, clickable: false, zIndex: 1,
       icon: { path: google.maps.SymbolPath.CIRCLE, scale: 5, fillColor: '#ffffff', fillOpacity: 0.9, strokeColor: '#111827', strokeWeight: 2 } });
-    S.map.addListener('click', function(ev){
-      if (!S.armed) { equipHint(); return; }
-      equipAddPin(S.armed, ev.latLng.lat(), ev.latLng.lng());
+    S.map.addListener('click', function(ev2){
+      if (S.queue.length) equipAddPin(S.queue[0], ev2.latLng.lat(), ev2.latLng.lng(), true);
     });
     S.pins.forEach(function(p){ _eqMakeMarker(p); });
-    equipHint();
+    _eqRender();
   };
   function _eqMakeMarker(p){
     var S = window._eqS, t = _eqType(p.type);
@@ -36035,19 +36052,57 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     m.addListener('click', function(){ equipSelect(p.id); });
     S.markers[p.id] = m;
   }
-  window.equipHint = function(){
-    var S = window._eqS, h = document.getElementById('eqHint'); if (!h || !S) return;
-    h.textContent = S.armed ? ('Tap the map to drop: ' + _eqType(S.armed).label) : (S.pins.length ? 'Drag a pin to adjust, tap it to edit, or pick a type below to add another.' : 'Pick a type below, then tap the map exactly where it is. Zoom in for accuracy.');
-  };
-  window.equipArm = function(type){
+  // Banner (what to tap now) + bottom bar (Undo/Skip while guided; extras/save when free).
+  function _eqRender(){
     var S = window._eqS; if (!S) return;
-    S.armed = (S.armed===type) ? null : type;
-    document.querySelectorAll('#eqTypeBar button').forEach(function(b){ b.style.borderColor = (b.getAttribute('data-eqt')===S.armed) ? '#8DC63F' : 'transparent'; });
-    equipHint();
-  };
-  window.equipAddPin = function(type, lat, lng){
+    var b = document.getElementById('eqBanner'), bar = document.getElementById('eqBar');
+    var btn = 'width:auto;border-radius:8px;padding:10px 14px;font-size:0.8rem;';
+    if (S.queue.length) {
+      var t = _eqType(S.queue[0]), done = S.total - S.queue.length;
+      var dots = ''; for (var i=0;i<S.total;i++) dots += '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;background:'+(i<done?'#8DC63F':(i===done?t.color:'#374151'))+';"></span>';
+      b.innerHTML = '<div style="margin-bottom:4px;">'+dots+'</div>'+
+        '<div style="font-size:1rem;font-weight:800;display:flex;align-items:center;gap:8px;"><span style="flex:0 0 26px;height:26px;border-radius:50%;background:'+t.color+';color:#fff;font-size:0.8rem;display:inline-flex;align-items:center;justify-content:center;">'+t.short+'</span>'+_eqEsc(t.ask)+'</div>'+
+        '<div style="font-size:0.72rem;color:#9ca3af;margin-top:3px;">'+_eqEsc(t.hint)+'</div>'+
+        (S.plan && S.plan.note ? '<div style="font-size:0.68rem;color:#8DC63F;margin-top:4px;">&#10003; '+_eqEsc(S.plan.note)+'</div>' : '');
+      bar.innerHTML = '<div style="display:flex;gap:8px;">'+
+        '<button type="button" onclick="equipUndo()" '+(S.pins.length?'':'disabled ')+'style="'+btn+'flex:0 0 auto;background:transparent;border:1px solid #4b5563;color:#d1d5db;">&#8630; Undo</button>'+
+        '<button type="button" onclick="equipSkip()" style="'+btn+'flex:1;background:#1f2937;border:1px solid #4b5563;color:#e5e7eb;">Can&rsquo;t see it / skip</button></div>'+
+        '<div id="eqSel" style="display:none;margin-top:8px;gap:6px;align-items:center;"></div>';
+    } else {
+      b.innerHTML = '<div style="font-size:0.95rem;font-weight:800;">'+(S.pins.length?'Drag a pin to adjust, or tap one to add a note.':'No pins yet.')+'</div>'+
+        '<div style="font-size:0.72rem;color:#9ca3af;margin-top:3px;">Add anything else below.</div>';
+      bar.innerHTML = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">'+_eqTypes.map(function(t){
+        return '<button type="button" onclick="equipExtra(\''+t.id+'\')" style="width:auto;display:flex;align-items:center;gap:6px;background:#1f2937;border:1px solid #374151;color:#e5e7eb;border-radius:8px;padding:8px;font-size:0.68rem;text-align:left;"><span style="flex:0 0 20px;height:20px;border-radius:50%;background:'+t.color+';color:#fff;font-weight:800;font-size:0.65rem;display:inline-flex;align-items:center;justify-content:center;">'+t.short+'</span>+ '+_eqEsc(t.label)+'</button>';
+      }).join('')+'</div>'+
+        '<div id="eqSel" style="display:none;margin-top:8px;gap:6px;align-items:center;"></div>'+
+        '<div style="display:flex;gap:8px;margin-top:8px;"><button type="button" onclick="equipClear()" style="'+btn+'flex:0 0 auto;background:transparent;border:1px solid #4b5563;color:#d1d5db;">Clear all</button>'+
+        '<button type="button" id="eqSave" onclick="equipSave()" style="'+btn+'flex:1;background:#8DC63F;color:#0b1220;border:0;font-weight:800;">Save pins</button></div>';
+    }
+  }
+  // Add a pin. In guided mode this advances the queue and saves automatically after the last one.
+  window.equipAddPin = function(type, lat, lng, guided){
     var S = window._eqS, p = { id:'p'+Date.now().toString(36)+Math.random().toString(36).slice(2,5), type:type, lat:lat, lng:lng, note:'' };
-    S.pins.push(p); _eqMakeMarker(p); equipArm(type); equipSelect(p.id);
+    S.pins.push(p); _eqMakeMarker(p);
+    if (guided) {
+      S.queue.shift();
+      if (!S.queue.length) { equipSave(); return; }
+      _eqRender();
+    } else { _eqRender(); equipSelect(p.id); }
+  };
+  window.equipExtra = function(type){
+    var S = window._eqS; if (!S) return;
+    S.queue = [type]; S.total = 1; S.free = false; _eqRender();
+  };
+  window.equipSkip = function(){
+    var S = window._eqS; if (!S || !S.queue.length) return;
+    S.queue.shift();
+    if (!S.queue.length) { if (S.pins.length) equipSave(); else { S.free = true; _eqRender(); } return; }
+    _eqRender();
+  };
+  window.equipUndo = function(){
+    var S = window._eqS; if (!S || !S.pins.length) return;
+    var p = S.pins.pop(), m = S.markers[p.id]; if (m) m.setMap(null); delete S.markers[p.id];
+    S.queue.unshift(p.type); _eqRender();
   };
   window.equipSelect = function(pid){
     var S = window._eqS, p = S.pins.find(function(x){ return x.id===pid; }), el = document.getElementById('eqSel'); if (!p || !el) return;
@@ -36062,19 +36117,19 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var S = window._eqS; if (!S || !S.sel) return;
     var m = S.markers[S.sel]; if (m) m.setMap(null); delete S.markers[S.sel];
     S.pins = S.pins.filter(function(x){ return x.id!==S.sel; }); S.sel = null;
-    var el = document.getElementById('eqSel'); if (el) el.style.display = 'none'; equipHint();
+    var el = document.getElementById('eqSel'); if (el) el.style.display = 'none'; _eqRender();
   };
   window.equipClear = function(){
     var S = window._eqS; if (!S) return;
     if (S.pins.length && !confirm('Remove all pins for this home?')) return;
     Object.keys(S.markers).forEach(function(k){ S.markers[k].setMap(null); });
     S.markers = {}; S.pins = []; S.sel = null;
-    var el = document.getElementById('eqSel'); if (el) el.style.display = 'none'; equipHint();
+    S.free = true; _eqRender();
   };
   window.equipClose = function(){ var o = document.getElementById('eqOverlay'); if (o) o.remove(); window._eqS = null; };
   window.equipSave = async function(){
     var S = window._eqS; if (!S || !S.home) return;
-    var btn = document.getElementById('eqSave'); btn.disabled = true; btn.textContent = 'Saving…';
+    var btn = document.getElementById('eqSave'); if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; } var bn = document.getElementById('eqBanner'); if (bn) bn.innerHTML = '<div style="font-size:0.95rem;font-weight:800;">Saving&hellip;</div>';
     var by = ''; try { by = person.name; } catch(e) {} if (!by) { try { by = CURRENT_ROLE; } catch(e) {} }
     var data = S.pins.length ? { home:S.home, pins:S.pins.map(function(p){ return {id:p.id,type:p.type,lat:p.lat,lng:p.lng,note:(p.note||'').trim()}; }), saved_at:new Date().toISOString(), saved_by:by||'' } : null;
     try {
@@ -36087,7 +36142,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       try { if (typeof adminCustomers!=='undefined' && adminCustomers) { var ac = adminCustomers.find(function(x){ return x.id===S.id; }); if (ac) ac.equipment_pins = data; } } catch(e) {}
       var sid = S.id; equipClose(); equipRefresh(sid);
     } catch(e) {
-      btn.disabled = false; btn.textContent = 'Save pins';
+      if (btn) { btn.disabled = false; btn.textContent = 'Save pins'; } S.free = true; S.queue = []; _eqRender();
       alert('Could not save pins: ' + (e.message||e));
     }
   };
