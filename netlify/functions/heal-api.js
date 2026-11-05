@@ -14,10 +14,13 @@ exports.handler = async function (event) {
   let b = {}; try { b = JSON.parse(event.body || '{}'); } catch (e) { return J(400, { error: 'bad_json' }); }
   try {
     if (b.action === 'list') {
-      const r = await fetch(SB + '/heal_proposals?select=*&or=(status.in.(proposed,running,verifying),closed_at.gte.' + encodeURIComponent(new Date(Date.now() - 3 * 86400000).toISOString()) + ')&order=created_at.desc&limit=40', { headers: { apikey: k, Authorization: 'Bearer ' + k } });
-      return J(200, { ok: true, rows: await r.json() });
+      const r = await fetch(SB + '/heal_proposals?select=*&or=(status.in.(proposed,running,verifying,pr_open),closed_at.gte.' + encodeURIComponent(new Date(Date.now() - 3 * 86400000).toISOString()) + ')&order=created_at.desc&limit=40', { headers: { apikey: k, Authorization: 'Bearer ' + k } });
+      const rows = await r.json();
+      rows.forEach(x => { x.codefix_ok = !!heal.codefix.fileFor(x.system) && x.status === 'proposed'; });
+      return J(200, { ok: true, rows });
     }
     if (b.action === 'approve') return J(200, await heal.approve(k, b.id));
+    if (b.action === 'codefix') return J(200, await heal.codefixDraft(k, b.id));
     if (b.action === 'reject') return J(200, await heal.reject(k, b.id));
     if (b.action === 'scan') return J(200, Object.assign({ ok: true }, await heal.scan(k)));
     return J(400, { error: 'unknown_action' });

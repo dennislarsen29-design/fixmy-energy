@@ -6,6 +6,8 @@
 const SB = 'https://kbtobyoumvbcxfbugsid.supabase.co/rest/v1';
 const SITE = process.env.URL || 'https://fixmy.energy';
 const VERIFY_MIN = 20;
+const codefix = require('./heal-codefix');
+const OPEN = 'proposed,running,verifying,pr_open';
 // The ONLY things approval can run. Each is a function that is safe to call again.
 const ALLOW = {
   'seo-insights': 'Search Console + GA4 sync',
@@ -38,6 +40,20 @@ function detect(S, reports) {
   if (rg && rg.status === 'bad') add({ system: 'owner-lookup', signature: 'regrid_' + (rg.code || 'bad'), problem: 'Regrid owner lookup is rejected (HTTP ' + (rg.code || '?') + '). San Diego still fills from the county roll.', evidence: rg, fix_kind: 'manual', fix_label: 'Needs a new Regrid key', fix_detail: 'Only you can fix this: put a valid REGRID_KEY in Netlify (Site configuration > Environment variables) and redeploy, or leave it off and rely on the county roll.' });
   const sf = S.sms_last_failure;
   if (sf && sf.at && hrs(sf.at) < 48) add({ system: 'sms', signature: 'recent_failure', problem: 'A text message failed to send in the last 48 hours: ' + String(sf.reason || sf.error || 'unknown').slice(0, 120), evidence: sf, fix_kind: 'manual', fix_label: 'Check the contact in GHL', fix_detail: 'The reason is in the evidence. Usually a bad phone number or a missing GHL contact; fix the number on the lead and resend.' });
+  const sum = S.last_run_summary;
+  if (sum && typeof sum === 'object') {
+    if (/insufficient credits/i.test(String(sum.phase3_tracerfy || ''))) add({ system: 'skip-trace', signature: 'no_credits', problem: 'Tracerfy skip-trace is out of credits: ' + String(sum.phase3_tracerfy).slice(0, 120), evidence: { phase3: sum.phase3_tracerfy }, fix_kind: 'manual', fix_label: 'Add Tracerfy credits', fix_detail: 'Add credits in your Tracerfy account. Until then new leads get no phone/email and the dialer queue stops growing.' });
+    const po = String(sum.permit_pull_outcomes || '');
+    if (po && !/:ok/.test(po) && !/no permit queries ran/.test(po)) add({ system: 'permit-pull', signature: 'no_success', problem: 'Last night no permit request succeeded: ' + po.slice(0, 120), evidence: { permit_pull_outcomes: po }, fix_kind: 'rerun', fix_target: 'bb-auto-pipeline-background', fix_label: 'Run the pipeline now', fix_detail: 'Starts one pipeline run. If PermitStack is rejecting the key, the re-run fails again and you are told to check PERMITSTACK_KEY.' });
+  }
+  // Scheduled agents that went quiet (cadence from netlify.toml, with slack).
+  const CAD = { finance: 40, seo: 9 * 24, roadmap: 9 * 24, marketing: 9 * 24, bizdev: 9 * 24 };
+  Object.keys(CAD).forEach(a => {
+    const mine = (reports || []).filter(r => r.agent === a).sort((x, y) => new Date(y.created_at) - new Date(x.created_at))[0];
+    if (reports && reports.length && !mine) add({ system: 'agent:' + a, signature: 'silent', problem: 'The ' + a + ' agent has filed nothing in the last 30 days.', evidence: {}, fix_kind: 'rerun', fix_target: 'run-agent-background', fix_query: 'agent=' + a, fix_label: 'Run the ' + a + ' agent', fix_detail: 'Runs this agent once; it only writes a report.' });
+    else if (mine && hrs(mine.created_at) > CAD[a]) add({ system: 'agent:' + a, signature: 'silent', problem: 'The ' + a + ' agent has not reported in ' + Math.round(hrs(mine.created_at) / 24) + ' days (expected about every ' + (CAD[a] > 48 ? '1-2 weeks' : 'day') + ').', evidence: { last_report: mine.created_at }, fix_kind: 'rerun', fix_target: 'run-agent-background', fix_query: 'agent=' + a, fix_label: 'Run the ' + a + ' agent', fix_detail: 'Runs this agent once; it only writes a report.' });
+  });
+  if (Array.isArray(S._photos) && S._photos.length >= 200) add({ system: 'photo-sync', signature: 'backlog', problem: '200+ uploaded photos are still waiting to be categorized.', evidence: { pending_at_least: S._photos.length }, fix_kind: 'rerun', fix_target: 'quoya-sync-background', fix_label: 'Run the photo sweep now', fix_detail: 'Categorizes up to 60 pending photos (uses AI credit). Repeats nightly anyway.' });
   // Agents: the newest report for each agent that says it errored, with no later normal report.
   const byAgent = {};
   (reports || []).forEach(r => { (byAgent[r.agent] = byAgent[r.agent] || []).push(r); });
@@ -56,10 +72,11 @@ function detect(S, reports) {
 
 async function scan(k) {
   const S = await state(k);
-  const reports = await get('/agent_reports?select=agent,title,body,created_at&created_at=gte.' + encodeURIComponent(new Date(Date.now() - 4 * 86400000).toISOString()) + '&order=created_at.desc&limit=200', k);
+  try { S._photos = await get('/job_photos?select=id&quoya_status=eq.pending&limit=200', k); } catch (e) {}
+  const reports = await get('/agent_reports?select=agent,title,body,created_at&created_at=gte.' + encodeURIComponent(new Date(Date.now() - 30 * 86400000).toISOString()) + '&order=created_at.desc&limit=400', k);
   const found = detect(S, reports);
   const keyOf = (p) => p.system + '|' + p.signature;
-  const open = await get('/heal_proposals?select=*&status=in.(proposed,running,verifying)', k);
+  const open = await get('/heal_proposals?select=*&status=in.(' + OPEN + ')', k);
   const openKeys = {}; open.forEach(o => { openKeys[keyOf(o)] = o; });
   const foundKeys = {}; found.forEach(p => { foundKeys[keyOf(p)] = p; });
   let created = 0, healed = 0, failed = 0;
@@ -67,6 +84,15 @@ async function scan(k) {
     if (openKeys[keyOf(p)]) continue;
     const r = await fetch(SB + '/heal_proposals', { method: 'POST', headers: H(k, { Prefer: 'return=minimal' }), body: JSON.stringify(Object.assign({ evidence: {} }, p)) });
     if (r.ok) created++;
+  }
+  // Code-fix pull requests: merged -> verify after the deploy lands; closed unmerged -> rejected.
+  for (const o of open) {
+    if (o.status !== 'pr_open') continue;
+    const m = /\/pull\/(\d+)/.exec(o.pr_url || o.result || '');
+    if (!m) continue;
+    let st = null; try { st = await codefix.prState(m[1]); } catch (e) {}
+    if (st === 'merged') await fetch(SB + '/heal_proposals?id=eq.' + o.id, { method: 'PATCH', headers: H(k), body: JSON.stringify({ status: 'verifying', approved_at: new Date().toISOString(), verify_after: new Date(Date.now() + 60 * 60000).toISOString(), result: 'Fix merged. Checking again about an hour after the deploy.' }) });
+    else if (st === 'closed') await fetch(SB + '/heal_proposals?id=eq.' + o.id, { method: 'PATCH', headers: H(k), body: JSON.stringify({ status: 'rejected', closed_at: new Date().toISOString(), result: 'Pull request closed without merging.' }) });
   }
   // Verify what was already approved.
   for (const o of open) {
@@ -112,4 +138,17 @@ async function reject(k, id) {
   await fetch(SB + '/heal_proposals?id=eq.' + Number(id) + '&status=eq.proposed', { method: 'PATCH', headers: H(k), body: JSON.stringify({ status: 'rejected', closed_at: new Date().toISOString(), result: 'Rejected by owner.' }) });
   return { ok: true };
 }
-module.exports = { detect, scan, approve, reject, ALLOW };
+async function codefixDraft(k, id) {
+  const rows = await get('/heal_proposals?id=eq.' + Number(id) + '&select=*', k);
+  const p = rows[0];
+  if (!p) return { ok: false, error: 'not_found' };
+  if (p.status !== 'proposed') return { ok: false, error: 'not_open', status: p.status };
+  const claim = await fetch(SB + '/heal_proposals?id=eq.' + p.id + '&status=eq.proposed', { method: 'PATCH', headers: H(k, { Prefer: 'return=representation' }), body: JSON.stringify({ status: 'running', attempts: (p.attempts || 0) + 1 }) });
+  const got = await claim.json().catch(() => []);
+  if (!Array.isArray(got) || !got.length) return { ok: false, error: 'already_taken' };
+  let r; try { r = await codefix.draft(p); } catch (e) { r = { ok: false, error: e.message }; }
+  if (r.ok) await fetch(SB + '/heal_proposals?id=eq.' + p.id, { method: 'PATCH', headers: H(k), body: JSON.stringify({ status: 'pr_open', pr_url: r.pr_url, result: 'Code fix drafted: ' + r.explanation + ' Review and merge: ' + r.pr_url }) });
+  else await fetch(SB + '/heal_proposals?id=eq.' + p.id, { method: 'PATCH', headers: H(k), body: JSON.stringify({ status: 'proposed', result: 'Code fix not drafted: ' + r.error }) });
+  return r;
+}
+module.exports = { detect, scan, approve, reject, codefixDraft, codefix, ALLOW };

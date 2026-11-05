@@ -791,17 +791,38 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
         'Escondido','Poway','Oceanside','Carlsbad','Encinitas',
         'National City','Vista','San Marcos','Lemon Grove','Spring Valley','Lakeside'
       ];
+      // Region expansion (2026-11-05, per Dennis): all of California + ~50 miles around Utah ZIP 84009.
+      // These run through the SAME rotation as San Diego (one cursor, one deadline) but only for the
+      // top installers, so the extra ~560 units cycle in a few nights without starving San Diego.
+      // PermitStack's coverage of these cities is UNVERIFIED from the dev sandbox: every unit's
+      // ok/empty result is tallied per city in pipeline_state 'permit_region_coverage' so cities
+      // that never return anything can be seen (and dropped) instead of silently burning budget.
+      const CA_CITIES = [
+        'Los Angeles','Long Beach','Anaheim','Santa Ana','Irvine','Riverside','San Bernardino','Fontana','Moreno Valley','Corona',
+        'Temecula','Murrieta','Palmdale','Lancaster','Bakersfield','Fresno','Visalia','Modesto','Stockton','Sacramento',
+        'Roseville','Elk Grove','San Jose','Oakland','Fremont','Hayward','Santa Rosa','Concord','Antioch','Vallejo',
+        'Santa Clarita','Ontario','Rancho Cucamonga','Victorville','Hesperia','Oxnard','Ventura','Santa Barbara','San Luis Obispo','Salinas',
+        'Chico','Redding','Pasadena','Glendale','Torrance','Costa Mesa','Huntington Beach','Menifee','Hemet','Indio'
+      ];
+      const UT_CITIES = [
+        'South Jordan','Salt Lake City','West Jordan','Sandy','Draper','Riverton','Herriman','Bluffdale','Murray','Taylorsville',
+        'West Valley City','Midvale','Cottonwood Heights','Holladay','Millcreek','South Salt Lake','Lehi','American Fork','Pleasant Grove','Orem',
+        'Provo','Saratoga Springs','Eagle Mountain','Highland','Alpine','Lindon','Vineyard','Spanish Fork','Springville','Bountiful',
+        'Centerville','Farmington','Layton','Kaysville','Clearfield','Syracuse','Ogden','North Salt Lake','Woods Cross','Tooele',
+        'Grantsville','Park City','Heber City','Kamas','Magna','Kearns'
+      ];
+      const REGION_INSTALLERS = sortedInstallers.slice(0, 8);
       stamp(`=== Phase 1c: PermitStack SD cities (${SD_PS_CITIES.length} cities) ===`);
-      const PHASE1C_DEADLINE = Date.now() + (5 * 60 * 1000);
+      const PHASE1C_DEADLINE = Date.now() + (6 * 60 * 1000);
       const psHeaders = { 'X-API-Key': psKey, 'Accept': 'application/json' };
       const seenLocal1c = new Set();
 
-      const extractPSAddress1c = (p, defaultCity) => {
+      const extractPSAddress1c = (p, defaultCity, unitState) => {
         const street = String(
           p.address_street || p.street_address || p.address || p.site_address || ''
         ).split(',')[0].trim();
         const city  = String(p.city || defaultCity || '').trim();
-        const state = 'CA';
+        const state = unitState || 'CA';
         const zip   = String(p.zip || p.zip_code || p.postal_code || '').replace(/\D/g, '').slice(0, 5);
         const full  = [street, city, state, zip].filter(Boolean).join(', ');
         const rawDate = p.filed_date || p.permit_date || p.issue_date || p.issued_date || '';
@@ -816,8 +837,13 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
       // gets its turn across multiple nightly runs instead of the same handful forever.
       const phase1cUnits = [];
       for (const installer of sortedInstallers) {
-        for (const city of SD_PS_CITIES) phase1cUnits.push({ installer, city });
+        for (const city of SD_PS_CITIES) phase1cUnits.push({ installer, city, state: 'CA' });
       }
+      for (const installer of REGION_INSTALLERS) {
+        for (const city of CA_CITIES) phase1cUnits.push({ installer, city, state: 'CA' });
+        for (const city of UT_CITIES) phase1cUnits.push({ installer, city, state: 'UT' });
+      }
+      const regionCov = {};
       const startCursor = phase1cUnits.length ? (phase1cCursor % phase1cUnits.length) : 0;
       stamp(`Phase 1c: ${phase1cUnits.length} (installer×city) units, starting at cursor ${startCursor}`);
       let unitsCovered = 0;
@@ -825,13 +851,13 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
 
       outer1c: for (let u = 0; u < phase1cUnits.length; u++) {
         if (Date.now() > PHASE1C_DEADLINE || overGlobal()) break;
-        const { installer, city } = phase1cUnits[(startCursor + u) % phase1cUnits.length];
+        const { installer, city, state: unitState } = phase1cUnits[(startCursor + u) % phase1cUnits.length];
         for (const qname of installer.names) {
           if (Date.now() > PHASE1C_DEADLINE || overGlobal()) break outer1c;
           let page = 1;
           while (page <= 30) {
             if (Date.now() > PHASE1C_DEADLINE || overGlobal()) break;
-            const url = `${PS_BASE}/permits/search?city=${encodeURIComponent(city)}&keyword=${encodeURIComponent(qname)}&per_page=100&page=${page}`;
+            const url = `${PS_BASE}/permits/search?city=${encodeURIComponent(city)}${unitState === 'UT' ? '&state=UT' : ''}&keyword=${encodeURIComponent(qname)}&per_page=100&page=${page}`;
             let resp;
             try {
               resp = await fetchWithTimeout(url, { headers: psHeaders }, 10000);
@@ -856,13 +882,13 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
             catch(e) { tally('1c', 'bad_json'); stamp(`  1c ${city}/"${qname}" \u2192 unparseable response`); break; }
             const batch = body.permits || body.results || body.data || [];
             if (!Array.isArray(batch)) { tally('1c', 'unexpected_shape'); stamp(`  1c ${city}/"${qname}" \u2192 no permits/results/data array (keys: ${Object.keys(body || {}).join(',') || 'none'})`); break; }
-            if (!batch.length) { tally('1c', page === 1 ? 'empty' : 'end_of_pages'); break; }
-            tally('1c', 'ok');
+            if (!batch.length) { tally('1c', page === 1 ? 'empty' : 'end_of_pages'); if (page === 1) { const c = regionCov[unitState + ':' + city] = regionCov[unitState + ':' + city] || { ok: 0, empty: 0 }; c.empty++; } break; }
+            tally('1c', 'ok'); { const c = regionCov[unitState + ':' + city] = regionCov[unitState + ':' + city] || { ok: 0, empty: 0 }; c.ok++; }
 
             const batchRecs = [];
             for (const p of batch) {
               const { street, fullAddress, installYear, permitDate, systemSizeKw } =
-                extractPSAddress1c(p, city);
+                extractPSAddress1c(p, city, unitState);
               if (!street || !/^\d/.test(street)) continue;
               const key = normAddr(fullAddress);
               if (key && existingAddrs.has(key)) await queuePermit(key, permitDate);
@@ -915,6 +941,13 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
           body: JSON.stringify({ key: 'phase1c_cursor', value: String(nextCursor), updated_at: new Date().toISOString() })
         });
       } catch(e) { stamp('Phase 1c: cursor persist error — ' + e.message); }
+      // Per-city coverage (merged with earlier nights) so unsupported cities are visible, not silent.
+      try {
+        const cur = await fetch(SUPA_REST + '/pipeline_state?key=eq.permit_region_coverage&select=value', { headers: supaHeaders }).then(r => r.json()).catch(() => []);
+        let old = {}; try { old = cur && cur[0] ? (typeof cur[0].value === 'string' ? JSON.parse(cur[0].value) : cur[0].value) : {}; } catch (e) {}
+        Object.keys(regionCov).forEach(k => { const o = old[k] || { ok: 0, empty: 0 }; old[k] = { ok: o.ok + regionCov[k].ok, empty: o.empty + regionCov[k].empty }; });
+        await fetch(SUPA_REST + '/pipeline_state', { method: 'POST', headers: { ...supaHeaders, Prefer: 'resolution=merge-duplicates' }, body: JSON.stringify({ key: 'permit_region_coverage', value: JSON.stringify(old), updated_at: new Date().toISOString() }) });
+      } catch(e) { stamp('Phase 1c: coverage persist error — ' + e.message); }
     }
   }
 
