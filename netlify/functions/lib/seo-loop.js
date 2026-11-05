@@ -15,7 +15,8 @@ const MEASURE_DELAY_DAYS = 14;     // wait this long after the merge
 const WINDOW_DAYS = 9;             // seo-insights page snapshots cover the 9 days ending on `date`
 const MIN_IMPRESSIONS = 40;        // below this in either period a verdict would be noise
 // Pages whose title/meta come from JavaScript, not static HTML — the loop cannot edit them safely.
-const DYNAMIC_PAGES = ['/sunpower', '/titan', '/sunnova', '/sullivan', '/petersen-dean', '/sungevity', '/mosaic', '/freedom-forever'];
+const DYNAMIC_PAGES = [];   // installer pages are static since 2026-11-05 (installers/<id>.html, built by scripts/build-installer-pages.js)
+const INSTALLER_PAGES = ['/sunpower', '/titan', '/sunnova', '/sullivan', '/petersen-dean', '/sungevity', '/mosaic', '/freedom-forever'];
 
 function sbH(key, extra) { return Object.assign({ apikey: key, Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' }, extra || {}); }
 function ghH() { return { Authorization: 'Bearer ' + process.env.GITHUB_TOKEN, Accept: 'application/vnd.github+json', 'User-Agent': 'solar-review-seo-agent', 'Content-Type': 'application/json' }; }
@@ -31,6 +32,7 @@ function pagePath(url) {
 function fileFor(url) {
   const p = pagePath(url);
   if (p === '/' || DYNAMIC_PAGES.indexOf(p) > -1) return null;
+  if (INSTALLER_PAGES.indexOf(p) > -1) return 'installers/' + p.slice(1) + '.html';
   if (!/^\/[a-z0-9][a-z0-9\/-]*$/i.test(p)) return null;
   return p.slice(1) + '.html';
 }

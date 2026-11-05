@@ -12,6 +12,9 @@ const SUPA_URL  = 'https://kbtobyoumvbcxfbugsid.supabase.co';
 const SUPA_REST = SUPA_URL + '/rest/v1';
 
 const INSTALLERS = [
+  { name: 'Lumio',                 names: ['Lumio Inc', 'Lumio Solar', '1st Light Energy'] },   // Lehi/Orem UT; Ch.11 Sep 2024
+  { name: 'Legend Solar',          names: ['Legend Solar LLC', 'Legend Solar'] },          // Utah-based; 2018 license-revocation action (2026-11-05 research, unverified closure)
+  { name: 'Empire Solar',          names: ['Empire Solar Group', 'Empire Solar', 'Altaray'] },   // Utah HQ; ~2021 bankruptcy
   { name: 'Sullivan Solar',        names: ['Sullivan Solar Power', 'Sullivan Solar Power of California', 'Sullivan Solar'] },
   { name: 'SunPower',              names: ['Complete Solar Inc', 'BRS Field Ops', 'SunPower Corporation', 'SunPower', 'Sun Power', 'Sunpower Corp'] },
   { name: 'Titan Solar',           names: ['Titan Solar Power', 'Titan Solar'] },

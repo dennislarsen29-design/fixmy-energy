@@ -46,6 +46,13 @@ function detect(S, reports) {
     const po = String(sum.permit_pull_outcomes || '');
     if (po && !/:ok/.test(po) && !/no permit queries ran/.test(po)) add({ system: 'permit-pull', signature: 'no_success', problem: 'Last night no permit request succeeded: ' + po.slice(0, 120), evidence: { permit_pull_outcomes: po }, fix_kind: 'rerun', fix_target: 'bb-auto-pipeline-background', fix_label: 'Run the pipeline now', fix_detail: 'Starts one pipeline run. If PermitStack is rejecting the key, the re-run fails again and you are told to check PERMITSTACK_KEY.' });
   }
+  const pay = S._payments;
+  if (pay && pay.updated_at && hrs(pay.updated_at) > 40) add({ system: 'payments-sweep', signature: 'stale', problem: 'The GHL payments sweep has not recorded a run in ' + Math.round(hrs(pay.updated_at)) + ' hours.', evidence: { updated_at: pay.updated_at }, fix_kind: 'rerun', fix_target: 'ghl-payment-sync', fix_label: 'Run the payments sweep now', fix_detail: 'Pulls recent GHL transactions into the payments ledger. Duplicates are skipped; safe to repeat.' });
+  else if (pay && pay.value && Number(pay.value.errors) > 0) add({ system: 'payments-sweep', signature: 'errors', problem: 'The last payments sweep reported ' + pay.value.errors + ' error(s).', evidence: pay.value, fix_kind: 'rerun', fix_target: 'ghl-payment-sync', fix_label: 'Run the payments sweep again', fix_detail: 'Re-pulls recent GHL transactions; duplicates are skipped.' });
+  const pl = S._plaid;
+  if (Array.isArray(pl)) pl.forEach(it => { if (it && it.last_synced && hrs(it.last_synced) > 40) add({ system: 'bank-sync', signature: 'stale_' + String(it.institution || 'item').replace(/\W+/g, '_').slice(0, 24), problem: 'Bank sync for ' + (it.institution || 'a connected account') + ' has not run in ' + Math.round(hrs(it.last_synced)) + ' hours.', evidence: { institution: it.institution, last_synced: it.last_synced }, fix_kind: 'rerun', fix_target: 'plaid-sync', fix_label: 'Sync the bank now', fix_detail: 'Pulls new bank/card transactions. If the bank login expired you must reconnect it in Finance > Sync.' }); });
+  const nf = S._notifFails;
+  if (Array.isArray(nf) && nf.length) add({ system: 'notifications', signature: 'failed_sends', problem: nf.length + ' customer text/email' + (nf.length > 1 ? 's' : '') + ' failed in the last 24 hours (latest: ' + String(nf[0].reason || 'unknown').slice(0, 80) + ').', evidence: { latest: nf.slice(0, 3).map(x => ({ at: x.at, kind: x.kind, to: x.to_masked, reason: x.reason })) }, fix_kind: 'manual', fix_label: 'Resend by hand', fix_detail: 'Open the lead and resend from there; a bad phone number or a customer who replied STOP are the usual causes. This clears itself 24 hours after the last failure.' });
   // Scheduled agents that went quiet (cadence from netlify.toml, with slack).
   const CAD = { finance: 40, seo: 9 * 24, roadmap: 9 * 24, marketing: 9 * 24, bizdev: 9 * 24 };
   Object.keys(CAD).forEach(a => {
@@ -72,6 +79,9 @@ function detect(S, reports) {
 
 async function scan(k) {
   const S = await state(k);
+  try { const r = await get('/app_config?key=eq.payments_last_sync&select=value,updated_at', k); S._payments = r[0] || null; } catch (e) {}
+  try { const r = await get('/app_config?key=eq.plaid_items&select=value', k); let v = r[0] && r[0].value; if (typeof v === 'string') v = JSON.parse(v); S._plaid = Array.isArray(v) ? v : (v && Array.isArray(v.items) ? v.items : null); } catch (e) {}
+  try { S._notifFails = await get('/notification_log?select=at,kind,to_masked,reason&ok=eq.false&at=gte.' + encodeURIComponent(new Date(Date.now() - 86400000).toISOString()) + '&order=at.desc&limit=20', k); } catch (e) {}
   try { S._photos = await get('/job_photos?select=id&quoya_status=eq.pending&limit=200', k); } catch (e) {}
   const reports = await get('/agent_reports?select=agent,title,body,created_at&created_at=gte.' + encodeURIComponent(new Date(Date.now() - 30 * 86400000).toISOString()) + '&order=created_at.desc&limit=400', k);
   const found = detect(S, reports);

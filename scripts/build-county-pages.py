@@ -121,7 +121,8 @@ def page(title, desc, canonical, schemas, body):
 
 OTHERS_NOTE = 'Not sure which area you are in? <a href="/southern-california-solar-repair">See everywhere we serve in Southern California</a>.'
 CTA = ('<div class="cta-box"><h3>Get a free evaluation</h3><p>Tell us about your system and we will start with your photos and your bill. Where it makes sense, we will schedule a technician visit or a guided video evaluation. No obligation.</p>'
-       '<a href="/book" class="cta-btn">Book a Free Evaluation &rarr;</a> <a href="tel:6197776527" style="margin-left:12px;font-weight:600;">Call %s</a></div>') % PHONE
+       '<a href="/book" class="cta-btn">Start My Free Evaluation &rarr;</a> <a href="tel:6197776527" style="margin-left:12px;font-weight:600;">Call %s</a>'
+       '<p style="margin-top:12px;font-size:.9rem;">Too far for a visit? Enter your address on the booking page and, if we cannot send a technician, you will be offered a guided <strong>Virtual Evaluation</strong> by video instead.</p></div>') % PHONE
 
 import glob, re
 def city_links(c):
