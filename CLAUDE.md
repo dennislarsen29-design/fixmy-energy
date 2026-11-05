@@ -2951,3 +2951,6 @@ The weekly SEO agent used to give advice and forget it. Now every title/meta fix
 
 ### SEO loop → S.U.N. (2026-11-05, per Dennis)
 A proposed SEO PR also writes an `agent_reports` row ("SEO change waiting for your merge: <page>", priority high, `action_url` = PR). S.U.N.'s Founder mission queue turns it into an item with a **Review & merge** button, and a measured-results report into a "Mark read" item. When the PR is merged or closed, the next agent run (`syncExperiments`) marks the row reviewed so the item disappears. The same row also rides the daily digest email.
+
+### Tech stack: duplicate "Add to list" (2026-11-05)
+Hand-added tools (e.g. GRASSHOPPER GROUP) had no `SUN_STACK_PATTERNS` entry, so their card charges were never matched and the same merchant kept appearing under "Possible subscriptions not on your list"; tapping Add hit the `tech_stack_name_key` unique constraint. `_sunStackDetect` now matches a tool with no pattern by its own name (first two words), excludes suggestions already on the list, and `_sunStackAdd` says "already on the list" instead of the raw constraint error.
