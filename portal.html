@@ -2516,12 +2516,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       wrap('applicants', c.from('candidates').select('id,first_name,last_name,position,city,created_at').eq('status', 'applied').order('created_at', { ascending: false }).limit(50)),
       wrap('search queries', c.from('seo_queries').select('date,dimension,key,clicks,impressions,position').order('date', { ascending: false }).limit(150)),
       wrap('roadmap', c.from('roadmap_items').select('key,title,status,priority,effort,dennis_action,group_key,blocked_by,description').neq('group_key', 'history').limit(150)),
-      wrap('meta leads', c.from('customers').select('id,created_at,utm_source,utm_campaign,fbclid,arrival_window,diagnostic_date,sold_type,partial_capture,archived').or('fbclid.not.is.null,utm_source.ilike.%facebook%,utm_source.ilike.%instagram%,utm_source.ilike.%meta%').gte('created_at', new Date(now.getTime() - 30 * 86400000).toISOString()).order('created_at', { ascending: false }).limit(1000)),
+      wrap('meta leads', c.from('customers').select('id,created_at,utm_source,utm_campaign,utm_content,fbclid,arrival_window,diagnostic_date,sold_type,partial_capture,archived').or('fbclid.not.is.null,utm_source.ilike.%facebook%,utm_source.ilike.%instagram%,utm_source.ilike.%meta%,utm_source.eq.fb,utm_source.eq.ig').gte('created_at', new Date(now.getTime() - 30 * 86400000).toISOString()).order('created_at', { ascending: false }).limit(1000)),
       // Cosmic paying Solar Review its 50% on a sold job is CASH COLLECTED (not Sales revenue).
-      wrap('cosmic payments', c.from('commissions').select('amount,paid_at,sold_at,created_at').in('note', ['cosmic_sale', 'cosmic_done']).eq('status', 'paid').limit(1000))
+      wrap('cosmic payments', c.from('commissions').select('amount,paid_at,sold_at,created_at').in('note', ['cosmic_sale', 'cosmic_done']).eq('status', 'paid').limit(1000)),
+      // Bookings with no source at all: could be direct visits, or ad clicks that lost their tags (2026-11-05).
+      wrap('unattributed bookings', c.from('customers').select('id,created_at,lead_source,landing_page').is('utm_source', null).is('fbclid', null).is('gclid', null).not('arrival_window', 'is', null).eq('lead_source', 'inbound_web').gte('created_at', new Date(now.getTime() - 30 * 86400000).toISOString()).limit(500))
     ]);
     if (res[0].ok && res[10].ok) res[0].data = (res[0].data || []).concat((res[10].data || []).map(function(x){ return { amount: x.amount, created_at: x.paid_at || x.sold_at || x.created_at }; }).filter(function(x){ return new Date(x.created_at) >= prevStart; }));
-    var D = { now: now, pay: res[0], comm: res[1], shifts: res[2], agents: res[3], sys: res[4], seo: res[5], apps: res[6], seoq: res[7], road: res[8], meta: res[9], monthStart: monthStart, prevStart: prevStart, prevCut: prevCut, refreshed: new Date() };
+    var D = { now: now, pay: res[0], comm: res[1], shifts: res[2], agents: res[3], sys: res[4], seo: res[5], apps: res[6], seoq: res[7], road: res[8], meta: res[9], metaUnk: res[11], monthStart: monthStart, prevStart: prevStart, prevCut: prevCut, refreshed: new Date() };
     // Earned dates need the per-job commission caches (same ones payroll uses).
     var commIds = {}; (D.comm.data || []).forEach(function(x){ commIds[x.customer_id] = x.line; });
     var ptoIds = (adminCustomers || []).filter(function(x){ return x.lead_category === 'new_solar' && x.sold_type && x.install_completed_at && !x.ns_pto_at && x.solar_status !== 'ns_pto'; }).map(function(x){ return x.id; });
@@ -2709,6 +2711,30 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // Meta ads: counts leads our own database can attribute to Meta (fbclid or utm_source facebook/instagram/meta).
   // It cannot see ad spend or pixel health (those live only in Meta), so spend is typed in and stored per device.
   window._sunMetaSpend = function(v) { try { var n = parseFloat(String(v).replace(/[^0-9.]/g, '')); if (n > 0) localStorage.setItem('sunMetaSpend30', String(n)); else localStorage.removeItem('sunMetaSpend30'); } catch (e) {} if (typeof renderAdminHomeView === 'function') renderAdminHomeView(); };
+  window._sunMetaAdsFill = function(leadRows) {
+    var el = document.getElementById('sunMetaAds'); if (!el) return;
+    fetch('/.netlify/functions/meta-ads-insights').then(function(r){ return r.json(); }).then(function(j){
+      var el2 = document.getElementById('sunMetaAds'); if (!el2) return;
+      if (!j.ok) {
+        var why = j.reason === 'not_configured' ? 'Not connected. Add Netlify variable META_ADS_TOKEN (a Meta system-user token with ads_read) to see spend and bookings per ad here.'
+          : j.reason === 'auth' ? 'The Meta token was rejected or expired. Create a new system-user token and update META_ADS_TOKEN.'
+          : j.reason === 'permission' ? 'The Meta token lacks access to this ad account (needs ads_read).' : 'Meta could not be reached right now.';
+        el2.innerHTML = '<div class="sun-row"><span class="sun-dot sun-d-unk"></span><div class="b"><strong>Per-ad results: not available</strong><span>' + _sunEsc(why) + '</span></div></div>'; return;
+      }
+      var byAd = {}; (leadRows || []).forEach(function(r){ var k = r.utm_content || ''; if (!k) return; var o = byAd[k] = byAd[k] || { leads: 0, booked: 0 }; o.leads++; if (r.arrival_window) o.booked++; });
+      var rows = (j.rows || []).slice().sort(function(a, b){ return b.spend - a.spend; });
+      var tot = rows.reduce(function(t, r){ return t + r.spend; }, 0), sch = rows.reduce(function(t, r){ return t + r.schedules; }, 0);
+      try { localStorage.setItem('sunMetaSpend30', String(Math.round(tot))); } catch (e) {}
+      var h = '<div class="sun-ph" style="margin-top:10px"><h2>Per-ad results</h2><span class="sun-note">Meta, last 30 days &middot; $' + Math.round(tot).toLocaleString() + ' spent &middot; ' + sch + ' website schedules' + (sch ? ' &middot; $' + Math.round(tot / sch) + ' each' : '') + '</span></div>';
+      h += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:.8rem"><tr style="text-align:left;color:var(--mu)"><th style="padding:4px 6px">Ad</th><th>Spent</th><th>Clicks</th><th>Meta schedules</th><th>Cost each</th><th>Tied in portal</th></tr>';
+      rows.forEach(function(r){
+        var t = byAd[r.ad_id] || { leads: 0, booked: 0 };
+        h += '<tr style="border-top:1px solid var(--line,#ddd)"><td style="padding:5px 6px"><b>' + _sunEsc(r.ad_name || r.ad_id) + '</b><br><span style="color:var(--mu)">' + _sunEsc(r.campaign || '') + '</span></td><td>$' + r.spend.toFixed(2) + '</td><td>' + r.clicks + '</td><td>' + r.schedules + '</td><td>' + (r.schedules ? '$' + (r.spend / r.schedules).toFixed(0) : '&mdash;') + '</td><td>' + t.leads + ' lead' + (t.leads === 1 ? '' : 's') + ', ' + t.booked + ' booked</td></tr>';
+      });
+      h += '</table></div><div class="sun-why" style="margin-top:6px">Meta counts website Schedule events from the pixel. &ldquo;Tied in portal&rdquo; counts leads whose ad id in the link tag (utm_content) matches that ad, so a gap between the two columns means some bookings lost their tag.' + (j.truncated ? ' Showing the first 200 ads.' : '') + '</div>';
+      el2.innerHTML = h;
+    }).catch(function(){ var e3 = document.getElementById('sunMetaAds'); if (e3) e3.innerHTML = '<div class="sun-row"><span class="sun-dot sun-d-unk"></span><div class="b"><strong>Per-ad results: not available</strong><span>Could not reach the Meta function.</span></div></div>'; });
+  };
   function _sunMetaHtml(D) {
     var head = '<section class="sun-panel" aria-label="Meta ads"><div class="sun-ph"><h2>' + _sunIco('spark') + 'Meta ads</h2><span class="sun-note">leads tied to Facebook / Instagram clicks</span></div>';
     if (!D.meta || !D.meta.ok) return head + '<div class="sun-empty">Unknown: Meta-attributed leads could not be loaded.</div></section>';
@@ -2726,6 +2752,10 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       + '</div>';
     h += '<div class="sun-row"><span class="sun-dot ' + (last ? 'sun-d-ok' : 'sun-d-unk') + '"></span><div class="b"><strong>' + (last ? 'Latest Meta lead ' + last.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : 'No Meta-attributed leads yet') + '</strong><span>' + (last ? 'Counts update as leads arrive.' : 'Expected until the first ad is approved and people click. Check back after a few days of spend.') + '</span></div></div>';
     h += '<div class="sun-row"><span class="sun-dot sun-d-unk"></span><div class="b"><strong>Pixel health: not visible here</strong><span>S.U.N. cannot read Meta. Check that events are arriving in Events Manager (dataset fixmy.energy), and ad spend in Ads Manager.</span></div></div>';
+    var unk = (D.metaUnk && D.metaUnk.ok) ? (D.metaUnk.data || []).length : null;
+    h += '<div class="sun-row"><span class="sun-dot ' + (unk ? 'sun-d-amb' : 'sun-d-unk') + '"></span><div class="b"><strong>' + (unk == null ? 'Untagged bookings: unknown' : unk + ' website booking' + (unk === 1 ? '' : 's') + ' with no traffic source (30 days)') + '</strong><span>These came from the website with no ad tag. Some are direct or organic; some may be Meta clicks whose tags were lost. Tags are now recovered from Facebook/Instagram in-app browsers going forward. For exact counts, connect Meta below.</span></div></div>';
+    h += '<div id="sunMetaAds"><div class="sun-row"><span class="sun-dot sun-d-unk"></span><div class="b"><strong>Per-ad results: loading&hellip;</strong></div></div></div>';
+    setTimeout(function(){ window._sunMetaAdsFill && window._sunMetaAdsFill(rows); }, 80);
     h += '<div class="sun-acts" style="margin-top:8px"><label style="font-size:.78rem;color:var(--mu)">Spend, last 30 days $ <input type="number" min="0" step="1" value="' + (spend || '') + '" onchange="window._sunMetaSpend(this.value)" style="width:90px;padding:4px 6px;margin-left:4px"></label> <button class="sun-btn sm" onclick="window.open(\'https://business.facebook.com/events_manager2/list/dataset/955546210177969\',\'_blank\')">Open Events Manager</button> <button class="sun-btn sm" onclick="window.open(\'https://adsmanager.facebook.com/adsmanager/manage/campaigns?act=2741612295961694\',\'_blank\')">Open Ads Manager</button></div></section>';
     return h;
   }

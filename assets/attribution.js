@@ -25,6 +25,16 @@
       else inf = [host, 'referral'];
       if (!hasTag && inf) { cur.utm_source = inf[0]; cur.utm_medium = inf[1]; cur.inferred = '1'; }
     }
+    // Facebook/Instagram in-app browsers often hide the referrer and sometimes strip tags (2026-11-05, per Dennis:
+    // Meta reported bookings S.U.N. could not tie to an ad). Fall back to the browser's own signature and to Meta's
+    // _fbc cookie. Both are marked inferred and never override tags that are on the URL.
+    if (!hasTag && !cur.utm_source) {
+      var ua = navigator.userAgent || '';
+      var fbc = (document.cookie.match(/(?:^|; )_fbc=([^;]*)/) || [])[1] || '';
+      if (fbc) { var m = decodeURIComponent(fbc).match(/^fb\.\d+\.\d+\.(.+)$/); if (m && !cur.fbclid) { cur.fbclid = m[1]; cur.utm_source = 'facebook'; cur.utm_medium = 'paid'; cur.inferred = '1'; } }
+      else if (/FBAN|FBAV|FB_IAB|FBIOS/.test(ua)) { cur.utm_source = 'facebook'; cur.utm_medium = 'social'; cur.inferred = '1'; }
+      else if (/Instagram/i.test(ua)) { cur.utm_source = 'instagram'; cur.utm_medium = 'social'; cur.inferred = '1'; }
+    }
     var first = null;
     try { first = JSON.parse(localStorage.getItem('fmFirstTouch') || 'null'); } catch (e) {}
     if (first && now - (first.t || 0) > TTL) first = null;
