@@ -2764,6 +2764,43 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '<div class="sun-acts" style="margin-top:8px"><button class="sun-btn sm" onclick="renderMarketingView()">Open full SEO Pulse</button></div></section>';
     return h;
   }
+  // ── Self-healing approvals (2026-11-05, per Dennis) ──
+  // Proposals come from heal-scan (server). Nothing runs until Dennis taps Approve; the fix is an allowlisted re-run, then verified.
+  window._healRows = window._healRows || null;
+  window._healBannerHtml = function() {
+    var rows = (window._healRows || []).filter(function(r){ return r.status === 'proposed' || r.status === 'running' || r.status === 'verifying'; });
+    if (!rows.length) return '';
+    var waiting = rows.filter(function(r){ return r.status === 'proposed'; });
+    var h = '<section class="sun-panel" role="alert" style="border:2px solid #e5484d;background:rgba(229,72,77,.10)"><div class="sun-ph"><h2 style="color:#e5484d">&#128736; ' + (waiting.length ? waiting.length + ' fix' + (waiting.length > 1 ? 'es' : '') + ' waiting for your approval' : 'Fixes in progress') + '</h2><span class="sun-note">nothing runs until you tap Approve</span></div>';
+    rows.forEach(function(r){
+      var st = r.status === 'proposed' ? '' : '<span class="sun-note" style="margin-left:8px">' + (r.status === 'running' ? 'starting…' : 'running — I will check it worked in ~20 min') + '</span>';
+      h += '<div class="sun-row"><span class="sun-dot sun-d-red"></span><div class="b"><strong>' + _sunEsc(r.problem) + '</strong>' + st
+        + '<span>' + _sunEsc(r.fix_detail || '') + '</span>';
+      if (r.status === 'proposed') {
+        if (r.fix_kind === 'rerun') h += '<div class="sun-acts" style="margin-top:8px"><button class="sun-btn" style="background:#2e9d5b;color:#fff;font-weight:700" onclick="window._healAct(' + r.id + ',\'approve\',this)">&#10003; Approve: ' + _sunEsc(r.fix_label || 'Run fix') + '</button><button class="sun-btn gh sm" onclick="window._healAct(' + r.id + ',\'reject\',this)">Dismiss</button></div>';
+        else h += '<div class="sun-acts" style="margin-top:8px"><strong style="color:#e5484d">' + _sunEsc(r.fix_label || 'Needs you') + '</strong><button class="sun-btn gh sm" onclick="window._healAct(' + r.id + ',\'reject\',this)">Got it</button></div>';
+      }
+      h += '</div></div>';
+    });
+    return h + '</section>';
+  };
+  window._healLoad = async function() {
+    try {
+      var r = await fetch('/.netlify/functions/heal-api', { method: 'POST', body: JSON.stringify({ action: 'list' }) });
+      var d = await r.json(); if (!d || !d.ok) return;
+      window._healRows = d.rows || [];
+      var el = document.getElementById('healBanner'); if (el) el.innerHTML = window._healBannerHtml();
+    } catch (e) { /* never blocks S.U.N. */ }
+  };
+  window._healAct = async function(id, action, btn) {
+    if (btn) { btn.disabled = true; btn.textContent = action === 'approve' ? 'Running…' : '…'; }
+    try {
+      var r = await fetch('/.netlify/functions/heal-api', { method: 'POST', body: JSON.stringify({ action: action, id: id }) });
+      var d = await r.json();
+      if (action === 'approve' && !d.ok) alert('Could not start the fix: ' + (d.error || ('HTTP ' + d.http)) + '. It will be re-checked on the next scan.');
+    } catch (e) { alert('Could not reach the fix service: ' + e.message); }
+    window._healLoad();
+  };
   function _sunAdminHtml(D, O, ctx, portalNav) {
     var greet = (function(){ var h = new Date().getHours(); return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening'; })();
     var rng = D.monthStart.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' – ' + new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
@@ -2771,6 +2808,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     window._sunBriefText = greet + ' Dennis. ' + O.changed + ' ' + O.today + ' Best next move: ' + O.next + ' ' + O.win;
     var h = '<div class="sun"><div class="sun-bar"><div class="sun-brand"><span class="sun-logo">' + _sunIco('sun') + '</span><div>S.U.N.<small>SOLAR UNIFIED NETWORK · POWERED BY QUOYA</small></div></div>'
       + '<span class="sun-note">Live data · refreshed ' + ref + ' · <a href="#" style="color:var(--mint)" onclick="localStorage.setItem(\'sunClassic\',\'1\');renderAdminHomeView();return false;">use classic view</a></span></div><div class="sun-stack">';
+    h += '<div id="healBanner">' + window._healBannerHtml() + '</div>';
     h += '<section class="sun-panel sun-brief" aria-label="Quoya briefing">' + _sunQHead('Quoya&rsquo;s briefing', 'Built from live records · ' + ref + ' · every figure traceable')
       + '<h1>' + greet + ', Dennis</h1><p class="sun-sub">Here is what matters right now.</p><div class="sun-bgrid">'
       + '<div class="sun-bcell"><div class="k">What changed</div><p>' + _sunEsc(O.changed) + '</p></div>'
@@ -2977,6 +3015,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var O = _sunAdminCompute(D, ctx); window._sunO = O; window._sunCommOk = O.commOk;
     if (adminView !== 'home') return;   // admin navigated away while loading
     body.innerHTML = portalNav + _sunAdminHtml(D, O, ctx, portalNav);
+    window._healLoad();
     try { window._sunStackLoad(); } catch (e) {}
   }
 
