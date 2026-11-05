@@ -4485,12 +4485,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     try {
       await window.bbLoadSetterCompPlans();
       var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
-      var [costsRes, paysRes, commRes] = await Promise.all([
+      var [costsRes, paysRes, commRes, cosmicRes] = await Promise.all([
         pc.from('job_costs').select('customer_id,amount').in('customer_id', need),
         pc.from('payments').select('customer_id,amount,category,method,source').in('customer_id', need),
-        pc.from('commissions').select('customer_id,kind,amount,status').in('customer_id', need).in('kind', ['rep_commission','setter_commission'])
+        pc.from('commissions').select('customer_id,kind,amount,status').in('customer_id', need).in('kind', ['rep_commission','setter_commission']),
+        pc.from('commissions').select('customer_id,note,status,paid_at').in('customer_id', need).in('note', ['cosmic_done'])
       ]);
-      var costsByC = {}, paysByC = {}, commByC = {}, surchByC = {};
+      var costsByC = {}, paysByC = {}, commByC = {}, surchByC = {}, cosmicDoneByC = {};
+      // Battery Retrofit: Cosmic's FINAL 50% received = job fully funded (2026-11-05, per Dennis).
+      (cosmicRes.data||[]).forEach(function(x){ if (x.status==='paid') cosmicDoneByC[x.customer_id] = x.paid_at || true; });
       (costsRes.data||[]).forEach(function(x){ costsByC[x.customer_id] = (costsByC[x.customer_id]||0) + (parseFloat(x.amount)||0); });
       (paysRes.data||[]).forEach(function(x){ if ((x.category||'revenue')==='revenue') { paysByC[x.customer_id] = (paysByC[x.customer_id]||0) + (parseFloat(x.amount)||0); surchByC[x.customer_id] = (surchByC[x.customer_id]||0) + _paySurcharge(x); } });
       (commRes.data||[]).forEach(function(x){ (commByC[x.customer_id] = commByC[x.customer_id]||[]).push(x); });
@@ -4541,9 +4544,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           closerNm: closerNm,
           setterName: setterName, hasSetter: hasSetter, repId: c.rep_id||'',
           setterCompPlan: (!setterRow && _setterPlanApplied) ? _setterPlanApplied : null,
-          earned: (c.step||1) >= 9, net: net,
+          // Battery Retrofit commission is only payable once Cosmic's final 50% has been received
+          // (David Witthoft, 2026-11-05: installed but not fully funded must not show as a payday).
+          earned: (c.sold_type === 'battery_retrofit') ? ((c.step||1) >= 9 && !!cosmicDoneByC[id]) : (c.step||1) >= 9,
+          awaitingCosmic: (c.sold_type === 'battery_retrofit') && (c.step||1) >= 9 && !cosmicDoneByC[id],
+          net: net,
           revenue: collected, costs: costSum,
-          soldAt: c.sold_at||null, earnedAt: c.installed_at || ((c.step||1) >= 9 ? (c.install_date||null) : null), durationKey: c.sold_type||'diagnostic'
+          soldAt: c.sold_at||null, earnedAt: (c.sold_type === 'battery_retrofit') ? (cosmicDoneByC[id] && cosmicDoneByC[id] !== true ? cosmicDoneByC[id] : (cosmicDoneByC[id] ? (c.installed_at || c.install_date || null) : null)) : (c.installed_at || ((c.step||1) >= 9 ? (c.install_date||null) : null)), durationKey: c.sold_type||'diagnostic'
         };
       });
       _loadInstallDurationStats(); // fire-and-forget — refreshes the seed-vs-live cache, never blocks the card
@@ -23151,6 +23158,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var rows = pendByCust[cid], x0 = rows[0];
         var need = x0.note==='dc_bonus' ? 'Waiting for <b>PTO</b> (Permission to Operate)'
                  : x0.line==='new_solar' ? ((_axiaCommCache[cid] && _axiaCommCache[cid].awaitingAudit) ? 'Waiting for the <b>Install Audit</b> to be signed off' : 'Waiting for <b>Install Completed</b> to be marked')
+                 : (_fixmyCommCache[cid] && _fixmyCommCache[cid].awaitingCosmic) ? 'Installed, waiting on <b>Cosmic&rsquo;s final 50%</b> to be received'
                  : 'Waiting for the job to be marked <b>Installed</b>';
         h += '<div class="fin-card">';
         h += '<div style="font-size:0.85rem;font-weight:800;color:#ddd;">'+_payJobLink(cid, esc(finCustName(cid)))+' <span style="color:#666;font-weight:500;">&middot; '+(lineLbl[x0.line]||x0.line)+'</span></div>';
@@ -23471,6 +23479,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         amount:amt, status:'paid', sold_at:when.toISOString(), paid_at:when.toISOString(), note:'cosmic_'+which }).select('id');
       if (r.error) throw r.error;
       if (!r.data || !r.data.length) throw new Error('nothing was saved');
+      try { delete _fixmyCommCache[cid]; } catch(e) {}
       renderTeamView('payroll');
     } catch(e) { alert('Could not save: '+(e.message||e)); }
   };
@@ -37324,7 +37333,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           if (!d) { haveAll = false; return; }
           var mine = _myShareOf(d, person); if (!mine) return;
           var st = mine.paid ? 'paid' : (d.earned && mine.locked) ? 'payable' : d.earned ? 'earned' : 'est';
-          var block = st === 'est' ? (d.awaitingAudit ? 'Waiting on the install audit' : (j.lead_category === 'new_solar' ? 'Waiting on install completed' : 'Waiting on the job being installed')) : st === 'earned' ? 'Earned; waiting for payroll to lock it in' : '';
+          var block = st === 'est' ? (d.awaitingAudit ? 'Waiting on the install audit' : d.awaitingCosmic ? 'Waiting on Cosmic\'s final payment' : (j.lead_category === 'new_solar' ? 'Waiting on install completed' : 'Waiting on the job being installed')) : st === 'earned' ? 'Earned; waiting for payroll to lock it in' : '';
           var info = (st === 'payable' || st === 'est') ? _payDateInfoFor(d) : null;
           rows.push({ j: j, amt: mine.amount || 0, st: st, block: block, date: (info && !info.tentative) ? _payDateShort(info.date) : '', reason: mine.reason });
         });
