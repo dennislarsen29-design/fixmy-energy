@@ -2954,3 +2954,8 @@ A proposed SEO PR also writes an `agent_reports` row ("SEO change waiting for yo
 
 ### Tech stack: duplicate "Add to list" (2026-11-05)
 Hand-added tools (e.g. GRASSHOPPER GROUP) had no `SUN_STACK_PATTERNS` entry, so their card charges were never matched and the same merchant kept appearing under "Possible subscriptions not on your list"; tapping Add hit the `tech_stack_name_key` unique constraint. `_sunStackDetect` now matches a tool with no pattern by its own name (first two words), excludes suggestions already on the list, and `_sunStackAdd` says "already on the list" instead of the raw constraint error.
+
+## System Health false alarms fixed (2026-11-05, per Dennis)
+- "Nightly lead pipeline: not checked" was a display bug: `pipeline_state.last_run_at` is a plain ISO string, and S.U.N.'s `sv()` threw on `JSON.parse` and returned null (the run itself was complete 2026-11-05 09:14). `sv()` now falls back to the raw string.
+- "Lead permit pulls failing" counted only `outcomes.ok` for the Sunrun/Vivint pull, ignoring `c_ok` (229 ok vs 19 HTTP 429), so it read "mostly failing". `okN` now adds `c_ok`. The 429s are real PermitStack rate limiting, minor.
+- "Owner lookup unavailable" is REAL: Regrid returns HTTP 401 (trial token rejected/expired 2026-11-01). Only Dennis can fix it (new `REGRID_KEY` in Netlify, or leave it off: San Diego fills from the county roll). Nightly permit pull itself works (1b/1c ok) but found 0 new permits; Tracerfy is out of credits (needs 504).
