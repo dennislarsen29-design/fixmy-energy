@@ -54,7 +54,10 @@ exports.handler = async function (event) {
     const G = { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' };
     // find the calendar
     const isMain = MAIN_TYPES.indexOf(a.event_type) >= 0;
-    let calId = (isMain ? process.env.GOOGLE_MAIN_CALENDAR_ID : process.env.GOOGLE_DIAG_CALENDAR_ID) || '';
+    // A calendar shared with a service account does NOT appear in its calendar list, so the calendars are
+    // addressed by ID directly (the Ops ID is from its Integrate-calendar settings; the main one is the account address).
+    let calId = (isMain ? process.env.GOOGLE_MAIN_CALENDAR_ID : process.env.GOOGLE_DIAG_CALENDAR_ID)
+      || (isMain ? 'info@fixmy.energy' : 'c_9b2e3af563db480729d3e52f05c9cd64092a7a1f8f84510808a750ce8271dca2@group.calendar.google.com');
     if (!calId) {
       const cl = await fetch('https://www.googleapis.com/calendar/v3/users/me/calendarList?minAccessRole=writer', { headers: G });
       const cj = await cl.json();
@@ -84,6 +87,7 @@ exports.handler = async function (event) {
     let r = evId ? await fetch(base + '/' + evId, { method: 'PUT', headers: G, body: JSON.stringify(ev) }) : null;
     if (!r || r.status === 404 || r.status === 410) r = await fetch(base, { method: 'POST', headers: G, body: JSON.stringify(ev) });
     const j = await r.json().catch(() => ({}));
+    if (r.status === 404) return out(200, { ok: false, reason: isMain ? 'no_main_calendar' : 'no_calendar', service_account: sa.client_email });
     if (!r.ok || !j.id) return out(200, { ok: false, reason: 'google_' + r.status, detail: (j.error && j.error.message) || '' });
     if (j.id !== evId) {
       const nn = (notes.replace(/\s*gcal=[A-Za-z0-9_-]+/, '') + ' gcal=' + j.id).trim();
