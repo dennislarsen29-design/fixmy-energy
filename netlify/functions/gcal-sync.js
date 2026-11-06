@@ -4,7 +4,7 @@
 // kept in appointments.notes as "gcal=<id>" (no migration).
 // Credential: the same Google service account the Search Console sync uses (app_config key
 // 'gsc_service_account'). One-time setup: in Google Calendar (info@fixmy.energy) create a calendar
-// named "Diagnostics", then Settings and sharing -> Share with specific people -> add the service
+// named "Ops" (or "Diagnostics"), then Settings and sharing -> Share with specific people -> add the service
 // account's email with "Make changes to events". The calendar is found by name, or set
 // GOOGLE_DIAG_CALENDAR_ID. ENV: SUPA_SERVICE_KEY.
 const crypto = require('crypto');
@@ -58,7 +58,7 @@ exports.handler = async function (event) {
     if (!calId) {
       const cl = await fetch('https://www.googleapis.com/calendar/v3/users/me/calendarList?minAccessRole=writer', { headers: G });
       const cj = await cl.json();
-      const hit = (cj.items || []).find(x => isMain ? (x.id === 'info@fixmy.energy' || /^info@fixmy\.energy$/i.test(x.summary || '')) : /diagnos/i.test(x.summary || ''));
+      const hit = (cj.items || []).find(x => isMain ? (x.id === 'info@fixmy.energy' || /^info@fixmy\.energy$/i.test(x.summary || '')) : /^ops\b|diagnos/i.test((x.summary || '').trim()));
       if (!hit) return out(200, { ok: false, reason: isMain ? 'no_main_calendar' : 'no_calendar', service_account: sa.client_email });
       calId = hit.id;
     }
