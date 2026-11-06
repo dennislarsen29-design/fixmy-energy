@@ -17038,6 +17038,26 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     [adminCustomers, (typeof bbDialQueue !== 'undefined' ? bbDialQueue : [])].forEach(function(arr){ var x = (arr || []).find(function(y){ return y.id === id; }); if (x) x.lead_locker = meta; });
     if (!auto) alert('Flagged for refund. It is on the Black Box tab under Lead Locker refunds.');
   };
+  // One-tap "Request refund" on a Lead Locker lead: asks why, records it, copies the details,
+  // and opens Lead Locker's leads page in a new tab to file it there (Dennis, 2026-11-06).
+  window.llRequestRefund = async function(id) {
+    var reason = prompt('Why is this lead refundable? (wrong number, not the homeowner, DQ, ...)'); if (!reason) return;
+    var win = window.open('https://getleads.leadlockerroom.com/agent/leads', '_blank');
+    try {
+      var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var r = await c.from('customers').select('first_name,last_name,phone,email,address,lead_locker,lead_source').eq('id', id).single();
+      var x = r.data; if (!x || x.lead_source !== 'lead_locker') { alert('This is not a Lead Locker lead.'); return; }
+      var m = x.lead_locker || {};
+      var meta = Object.assign({}, m, { refund: { status: 'requested', reason: reason, flagged_at: new Date().toISOString(), updated_at: new Date().toISOString() } });
+      var u = await c.from('customers').update({ lead_locker: meta }).eq('id', id).select('id');
+      if (u.error || !u.data || !u.data.length) throw new Error(u.error ? u.error.message : 'No record was updated.');
+      [adminCustomers, (typeof bbDialQueue !== 'undefined' ? bbDialQueue : [])].forEach(function(arr){ var y = (arr || []).find(function(z){ return z.id === id; }); if (y) y.lead_locker = meta; });
+      var t = 'Refund request — Lead #' + (m.lead_id || '?') + '\nName: ' + ((x.first_name || '') + ' ' + (x.last_name || '')).trim() + '\nPhone: ' + (x.phone || '') + '\nEmail: ' + (x.email || '') + '\nAddress: ' + (x.address || '')
+        + '\nDelivered: ' + (m.received_at ? new Date(m.received_at).toLocaleString() : '') + (m.amount_paid != null ? '\nAmount paid: $' + m.amount_paid : '') + '\nReason: ' + reason;
+      try { await navigator.clipboard.writeText(t); alert('Marked "refund requested" and copied the details. Paste them into Lead Locker (opened in a new tab).' + (win ? '' : ' If the tab did not open, go to getleads.leadlockerroom.com/agent/leads.')); }
+      catch (e) { prompt('Copy this, then paste it into Lead Locker:', t); }
+    } catch (e) { alert('Could not record the refund request: ' + e.message); }
+  };
   window.llRefundLoad = async function() {
     var el = document.getElementById('llRefundCard'); if (!el) return;
     var c = supabase.createClient(SUPA_URL, SUPA_KEY);
@@ -17826,7 +17846,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     h += '</div>';
     var st = m.sms_status;
     var rf = m.refund && m.refund.status;
-    h += '<div style="font-size:0.68rem;color:#999;margin-bottom:6px;">' + (rf ? '&#128722; Refund: ' + esc(rf) + ' &middot; ' : '') + (st === 'sent' ? '&#9989; Roof-confirm text sent' : st === 'queued' ? '&#9203; Text queued &mdash; sends 8am&ndash;8pm Pacific' : st === 'failed' ? '&#9888; Text did not send &mdash; text them yourself' : st === 'skipped' ? 'No automatic text' : '') + (!rf ? ' <a href="#" onclick="llFlagRefund(\''+lead.id+'\');return false;" style="color:#8a8578;margin-left:6px;">flag for refund</a>' : '') + '</div>';
+    h += '<div style="font-size:0.68rem;color:#999;margin-bottom:6px;">' + (rf ? '&#128722; Refund: ' + esc(rf) + ' &middot; ' : '') + (st === 'sent' ? '&#9989; Roof-confirm text sent' : st === 'queued' ? '&#9203; Text queued &mdash; sends 8am&ndash;8pm Pacific' : st === 'failed' ? '&#9888; Text did not send &mdash; text them yourself' : st === 'skipped' ? 'No automatic text' : '') + (!rf || rf === 'eligible' ? ' <button type="button" onclick="llRequestRefund(\''+lead.id+'\')" style="width:auto;padding:3px 9px;margin-left:6px;background:rgba(232,121,58,0.15);border:1px solid rgba(232,121,58,0.5);border-radius:100px;color:#E8793A;font-size:0.68rem;font-weight:700;cursor:pointer;">Request refund</button>' : '') + '</div>';
     return h;
   }
   function _bbAbsenteeNote(lead) {
