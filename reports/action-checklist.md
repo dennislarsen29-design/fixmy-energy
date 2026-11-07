@@ -47,7 +47,7 @@ Status: [ ] open · [x] done · [-] dismissed
 ## I. Added 2026-11-02 (deploy went live today)
 - [x] I1. (done 2026-11-02) Search Console: the hub, LA, Orange and Riverside pages were already indexed; San Bernardino County indexing requested.
 - [x] I2. (Dennis added it 2026-11-02; takes effect after the next deploy) Netlify env var VIRTUAL_MEET_URL = a meet.google.com link (Site configuration → Environment variables), then trigger a deploy.
-- [ ] I3. Tell Claude: Axia paid on 11/6 (mark $2,438.10 DC share received); Vijay Ranu $300 keep/delete; "go" to delete the two stale job costs (Sandberg $15,272, Dennis Test $300).
+- [ ] I3. 2026-11-07: Axia has NOT paid yet (they initiate Fridays, funds land next business day, likely Mon 11/9): tell Claude when it arrives and it marks the $2,438.10 DC share received. Dennis said DELETE Vijay Ranu $300, Sandberg $15,272 and Dennis Test $300: the delete did not run (Supabase approval timed out), retry and approve.
 - [ ] I4. Utah compliance questions (HB 57 registration/bond, W-2 vs 1099 reps, contractor license) → counsel or Utah Division of Consumer Protection. Parked in S.U.N., not blocking.
 - [ ] H1b. 2026-11-02: the 5 new guides are requested. Still to request (5/day): /utah-solar-repair, then the Utah and California city pages from sitemap.xml.
 
@@ -55,5 +55,5 @@ Status: [ ] open · [x] done · [-] dismissed
 - [ ] J1. SDG&E: get listed in the Trade Professional directory / Trade Professional Alliance (needs the CSLB license, so confirm with Cosmic first). Parked: Dennis can't do the TPA now.
 - [ ] J2. SDG&E: call the solar contractor support center and ask whether there is a referral path for independent solar repair contractors when a customer calls about a high bill.
 - [ ] J3. San Diego Community Power: ask about a partner or referral path (they get the same high-bill calls and already run battery programs).
-- [ ] J4. Referral program built 2026-11-03 (feature branch). To finish: (a) run supabase/migrations/20261103_referrals.sql in the Supabase SQL editor, (b) legal review of multi-level payouts, (c) say "Deploy".
+- [ ] J4. Referral program: (a) DONE 2026-11-07, migration ran in the Supabase SQL editor; (b) legal review of multi-level payouts still open; (c) code already on main.
 - [ ] J5. Referral: on the New Lead form pick Lead Source = Referral to see the live lookup; after an install/PTO, use Next step → "Send their share link". Decide if the PTO text should send automatically.
