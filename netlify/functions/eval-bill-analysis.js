@@ -150,6 +150,7 @@ SOURCE PRIORITY for kWh (2026-10-02, per Dennis — Mohan Krishnan): ALWAYS use 
 2b. COMPLETE THE YEAR (2026-10-28, per Dennis): after the NEM Summary rows (exact, estimated:false), ALSO read the Electric Usage History bar chart/table and add EVERY month it shows (usually 12-13 months) that is not already covered by an exact NEM Summary row, as estimated:true when read off the chart. Do not stop at the NEM Summary rows: the final monthly_breakdown should cover the whole history shown on the bill, exact rows first and chart-read months filling the gaps. In notes, say which months are exact and which were read from the chart.
 2c. PAGE-1 CHART IS MANDATORY WHEN THE NEM TABLE IS SHORT (2026-11-04, per Dennis): the "Electric Usage History" chart on page 1 shows about 13 months. If the NEM Summary table (or any exact table) covers fewer than 12 months, you MUST still read the chart and return a monthly_breakdown entry (estimated:true) for EVERY month on it that has no exact row — an early-true-up bill with only 2 NEM rows must still come back with ~13 months. Never return just the exact rows and stop. Chart rules: (a) label months by the x-axis (e.g. "OCT 25" = Oct 2025; the rightmost bar is the statement month; the same month name can appear twice 12 months apart — give each its own year). (b) NET-METERED / solar homes: the y-axis runs NEGATIVE (e.g. -650 to 390). Bars hanging below 0 are net EXPORT and their totals are NEGATIVE; a month with segments on both sides of 0 is the signed sum of its segments. Read negative bars exactly like positive ones — a negative axis is not a reason to skip. (c) Calibrate against the printed "kWh used" beside the chart: the rightmost bar must equal it. (d) If the chart is genuinely unreadable for some months, skip only those and name them in notes.
 2d. HISTORY CHECK: in notes, state in one sentence how many of the latest 12 months are exact (table) vs chart-read, and — if fewer than 12 are exact — which month range an OLDER bill would be needed to make exact.
+3a. CCA CUSTOMERS PAY TWO LINES FOR ELECTRICITY (2026-11-09, Connie Kohne): when generation comes from a community choice provider (San Diego Community Power or Clean Energy Alliance), the bill lists "Electric Delivery" (SDG&E, which already nets out a generation credit) AND a separate "CCA Electric Generation" line. The electric total for the period is BOTH lines added together (e.g. 116.22 + 40.20 = 156.42), never just the delivery detail total (115.28). Use that sum for monthly_amount_paid and for the blended average rate (divide by the period's kWh); exclude gas. annual_amount_paid must be a full year of electric dollars (annual_kwh x that blended rate, or monthly x 12), NEVER the single-month amount.
 3. The "Summary of Current Charges" line (e.g. "Electric … 288 kWh") is also exact.
 4. ONLY months with no printed number anywhere get eyeballed from the bar chart (estimated:true). Never overwrite an exact printed figure with a chart estimate, and anchor chart estimates to the exact months you do have (the chart's printed-month bar must match its printed number — use that to calibrate the rest).
 NEM CAUTION: for solar/NEM customers these printed kWh are NET (usage minus solar export) and can be negative (e.g. -197 kWh in a month = net exporter). Report them exactly as printed, but a net figure is NOT gross household consumption — say so in notes, do not present a sum of net months as annual consumption, and never let a net/negative total silently become annual_kwh. Dollar amounts: use the printed "Total Charges this Month" / current charges for monthly_amount_paid, not the credit balance or total account balance.
@@ -250,9 +251,12 @@ exports.handler = async function (event) {
     const monthlyBreakdown = Array.isArray(out.monthly_breakdown)
       ? out.monthly_breakdown.slice(0, 24).map(function (m) {
           m = m || {};
+          // A chart month can come back with the on/off/super-off split but no total: rebuild the total from the split
+          // rather than dropping the month (dropping months is how a 13-month chart collapsed to one month).
+          var _seg = [m.on_peak_kwh, m.off_peak_kwh, m.super_off_peak_kwh].filter(function (x) { return typeof x === 'number'; });
           return {
             month: typeof m.month === 'string' ? m.month.slice(0, 20) : '',
-            total_kwh: typeof m.total_kwh === 'number' ? m.total_kwh : null,
+            total_kwh: typeof m.total_kwh === 'number' ? m.total_kwh : (_seg.length === 3 ? _seg.reduce(function (t, x) { return t + x; }, 0) : null),
             on_peak_kwh: typeof m.on_peak_kwh === 'number' ? m.on_peak_kwh : null,
             off_peak_kwh: typeof m.off_peak_kwh === 'number' ? m.off_peak_kwh : null,
             super_off_peak_kwh: typeof m.super_off_peak_kwh === 'number' ? m.super_off_peak_kwh : null,
@@ -279,14 +283,37 @@ exports.handler = async function (event) {
         if (hit) Object.assign(hit, row); else monthlyBreakdown.push(row);
       });
     }
+    // Sanity-check the annual figure against the months we actually have (2026-11-09, Connie Kohne: a 13-month
+    // chart came back as "351 kWh a year" = one month). Never leave a single-month figure standing as the annual.
+    let annualOut = typeof out.annual_kwh === 'number' ? out.annual_kwh : null;
+    let annualAmt = typeof out.annual_amount_paid === 'number' ? out.annual_amount_paid : null;
+    let annualNote = '';
+    {
+      const vals = monthlyBreakdown.map(function (m) { return m.total_kwh; }).filter(function (x) { return typeof x === 'number'; });
+      if (vals.length >= 12) {
+        const sum12 = Math.round(vals.slice(-12).reduce(function (t, x) { return t + x; }, 0));
+        if (annualOut == null || Math.abs(annualOut - sum12) > Math.max(150, sum12 * 0.2)) { annualOut = sum12; annualNote = ' Annual total = sum of the latest 12 months read (' + sum12.toLocaleString() + ' kWh).'; }
+      } else if (vals.length >= 4) {
+        const est = Math.round(vals.reduce(function (t, x) { return t + x; }, 0) / vals.length * 12);
+        if (annualOut == null || annualOut < est * 0.6) { annualOut = est; annualNote = ' Annual is extrapolated from ' + vals.length + ' months read.'; }
+      }
+    }
+    // A single month's dollars must never stand as the annual amount (it made the monthly average read $9.61).
+    if (out.source !== 'true_up' && typeof out.monthly_amount_paid === 'number' && out.monthly_amount_paid > 0 && annualOut) {
+      if (annualAmt == null || annualAmt < out.monthly_amount_paid * 3) {
+        const rate = typeof out.avg_rate_per_kwh === 'number' && out.avg_rate_per_kwh > 0 ? out.avg_rate_per_kwh : null;
+        annualAmt = Math.round(rate ? annualOut * rate : out.monthly_amount_paid * 12);
+        annualNote += ' Annual dollars estimated from the annual kWh at the blended rate.';
+      }
+    }
     return reply(200, {
       readable: out.readable !== false,
       nem_rows_read: nemRows,
       utility_detected: ['sdge', 'sce', 'ladwp', 'other', 'unknown'].indexOf(out.utility_detected) >= 0 ? out.utility_detected : 'unknown',
-      annual_kwh: typeof out.annual_kwh === 'number' ? out.annual_kwh : null,
+      annual_kwh: annualOut,
       avg_rate_per_kwh: typeof out.avg_rate_per_kwh === 'number' ? out.avg_rate_per_kwh : null,
       monthly_amount_paid: typeof out.monthly_amount_paid === 'number' ? out.monthly_amount_paid : null,
-      annual_amount_paid: typeof out.annual_amount_paid === 'number' ? out.annual_amount_paid : null,
+      annual_amount_paid: annualAmt,
       annual_nem_charges: typeof out.annual_nem_charges === 'number' ? out.annual_nem_charges : null,
       annual_credits_applied: typeof out.annual_credits_applied === 'number' ? Math.abs(out.annual_credits_applied) : null,
       annual_non_bypassable: typeof out.annual_non_bypassable === 'number' ? out.annual_non_bypassable : null,
@@ -299,7 +326,7 @@ exports.handler = async function (event) {
       nem_start_date: (typeof out.nem_start_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(out.nem_start_date)) ? out.nem_start_date : null,
       statement_period_end: (typeof out.statement_period_end === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(out.statement_period_end)) ? out.statement_period_end : null,
       confidence: ['high', 'medium', 'low'].indexOf(out.confidence) >= 0 ? out.confidence : 'low',
-      notes: typeof out.notes === 'string' ? out.notes.slice(0, 700) : '',
+      notes: ((typeof out.notes === 'string' ? out.notes.slice(0, 700) : '') + annualNote).trim(),
       reading_method: ['table_exact', 'chart_estimated', 'single_month_only', 'none'].indexOf(out.reading_method) >= 0 ? out.reading_method : (monthlyBreakdown.length ? 'chart_estimated' : 'none'),
       monthly_breakdown: monthlyBreakdown
     });
