@@ -4,7 +4,9 @@
 // Everything is recomputed from the database on each call and is idempotent, so it is safe to call after every save.
 const SUPA_URL = process.env.SUPABASE_URL || 'https://kbtobyoumvbcxfbugsid.supabase.co';
 const EXCLUDED = ['ops3'];
-const BASE = 250, BONUS = 50, COSMIC_FLAT = 300;
+const BASE = 250, BASE_UT = 200, BONUS = 50, COSMIC_FLAT = 300; // Utah diagnostics start $50 lower (2026-11-09, per Dennis); CA unchanged
+// Last 5-digit run is the ZIP (a street number can itself be 5 digits); 84xxx or a UT state tag = Utah.
+const isUtah = (addr) => { addr = String(addr || ''); if (/,\s*UT\b|\bUtah\b/i.test(addr)) return true; const z = addr.match(/\b\d{5}\b/g); return !!(z && /^84/.test(z[z.length - 1])); };
 const TRAVEL = [{ upTo: 25, add: 0 }, { upTo: 50, add: 50 }, { upTo: 100, add: 100 }]; // beyond 100 mi: +100 and flagged
 const LABEL_BASE = 'Diagnostic — COGS', LABEL_BONUS = 'Professional bonus — COGS';
 const PT = 'America/Los_Angeles';
@@ -62,7 +64,8 @@ async function reconcile(customerId, doFetch) {
     if (!isFinite(lat) || !isFinite(lng)) noLoc = true;
     else { mi = Math.round(Math.min.apply(null, bases.map(b => miles(lat, lng, b.lat, b.lng))) * 10) / 10; const t = travelAdder(mi); add = t.add; over = t.over; }
   }
-  const want = [{ label: LABEL_BASE, amount: BASE }];
+  const base = isUtah(c.address) ? BASE_UT : BASE;
+  const want = [{ label: LABEL_BASE, amount: base }];
   if (add > 0) want.push({ label: 'Travel adder (' + Math.round(mi) + ' mi) — COGS', amount: add });
   const mine = costs.filter(x => x.status === 'pending' && isOwnLine(x, c.assigned_ops) && /^(Diagnostic|Travel adder)/.test(x.label || ''));
   const same = mine.length === want.length && want.every(w => mine.some(m => m.label === w.label && Number(m.amount) === w.amount)) && !pendingAuto.length;
@@ -76,4 +79,4 @@ async function reconcile(customerId, doFetch) {
 // The $50 Professional Bonus was removed 2026-11-04 (per Dennis). These stay as no-ops so older callers don't break.
 async function bonus() { return { ok: true, skipped: 'removed' }; }
 async function approveBonus() { return { ok: true, skipped: 'removed' }; }
-module.exports = { reconcile, bonus, approveBonus, travelAdder, miles, EXCLUDED, BASE, BONUS };
+module.exports = { reconcile, bonus, approveBonus, travelAdder, miles, isUtah, EXCLUDED, BASE, BASE_UT, BONUS };
