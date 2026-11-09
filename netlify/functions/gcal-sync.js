@@ -16,7 +16,8 @@ const out = (code, obj) => ({ statusCode: code, headers: cors, body: JSON.string
 // info@fixmy.energy calendar (Solar Evaluation is NOT here: the GHL booking already puts it there).
 const DIAG_TYPES = ['Diagnostic Visit', 'Repair Service Visit', 'Battery Install', 'Install', 'Inspection'];
 const MAIN_TYPES = ['Welcome Call', 'Site Survey', 'Results Review'];
-const TYPES = DIAG_TYPES.concat(MAIN_TYPES);
+const TYPES = DIAG_TYPES.concat(MAIN_TYPES, ['Solar Evaluation', 'Virtual Solar Evaluation']); // evaluations only matter here for Utah leads (San Diego ones are on GHL)
+const isUtah = (addr) => { addr = String(addr || ''); if (/,\s*UT\b|\bUtah\b/i.test(addr)) return true; const z = addr.match(/\b\d{5}\b/g); return !!(z && /^84/.test(z[z.length - 1])); }; // last 5-digit run = ZIP (a street number can be 5 digits)
 
 async function googleToken(sa, scopes, sub) {
   const now = Math.floor(Date.now() / 1000);
@@ -42,7 +43,11 @@ exports.handler = async function (event) {
   try {
     const ar = await (await fetch(SUPA + '/appointments?id=eq.' + aid + '&select=*&limit=1', { headers: H })).json();
     const a = ar && ar[0]; if (!a) return out(404, { ok: false, reason: 'no_appointment' });
-    if (TYPES.indexOf(a.event_type) < 0) return out(200, { ok: false, reason: 'not_on_calendar' });
+    const cu = await (await fetch(SUPA + '/customers?id=eq.' + a.customer_id + '&select=first_name,last_name,phone,address,email&limit=1', { headers: H })).json();
+    const c = (cu && cu[0]) || {};
+    const utah = isUtah(c.address);
+    const EVALS = ['Solar Evaluation', 'Virtual Solar Evaluation'];
+    if (TYPES.indexOf(a.event_type) < 0 || (EVALS.indexOf(a.event_type) >= 0 && !utah)) return out(200, { ok: false, reason: 'not_on_calendar' });
     const notes = String(a.notes || '');
     const m = notes.match(/gcal=([A-Za-z0-9_-]+)/); const evId = m ? m[1] : null;
     if (!evId && a.status === 'canceled') return out(200, { ok: true, action: 'nothing' });
@@ -61,7 +66,19 @@ exports.handler = async function (event) {
     const isMain = MAIN_TYPES.indexOf(a.event_type) >= 0;
     // A calendar shared with a service account does NOT appear in its calendar list, so the calendars are
     // addressed by ID directly (the Ops ID is from its Integrate-calendar settings; the main one is the account address).
-    let calId = (isMain ? process.env.GOOGLE_MAIN_CALENDAR_ID : process.env.GOOGLE_DIAG_CALENDAR_ID)
+    // Salt Lake / Utah leads: every visit goes to the "SLC" calendar (create it in info@fixmy.energy; found by name).
+    let slcId = '';
+    if (utah) {
+      slcId = process.env.GOOGLE_SLC_CALENDAR_ID || '';
+      if (!slcId) {
+        const cl2 = await fetch('https://www.googleapis.com/calendar/v3/users/me/calendarList?minAccessRole=writer', { headers: G });
+        const cj2 = await cl2.json();
+        const hit2 = (cj2.items || []).find(x => /^slc\b|salt lake/i.test((x.summary || '').trim()));
+        if (!hit2) return out(200, { ok: false, reason: 'no_slc_calendar', service_account: sa.client_email });
+        slcId = hit2.id;
+      }
+    }
+    let calId = slcId || (isMain ? process.env.GOOGLE_MAIN_CALENDAR_ID : process.env.GOOGLE_DIAG_CALENDAR_ID)
       || (isMain ? (delegated ? 'primary' : 'info@fixmy.energy') : 'c_9b2e3af563db480729d3e52f05c9cd64092a7a1f8f84510808a750ce8271dca2@group.calendar.google.com');
     if (!calId) {
       const cl = await fetch('https://www.googleapis.com/calendar/v3/users/me/calendarList?minAccessRole=writer', { headers: G });
@@ -75,8 +92,6 @@ exports.handler = async function (event) {
       const d = await fetch(base + '/' + evId, { method: 'DELETE', headers: G });
       return out(200, { ok: d.ok || d.status === 404 || d.status === 410, action: 'deleted' });
     }
-    const cu = await (await fetch(SUPA + '/customers?id=eq.' + a.customer_id + '&select=first_name,last_name,phone,address,email&limit=1', { headers: H })).json();
-    const c = (cu && cu[0]) || {};
     const name = ((c.first_name || '') + ' ' + (c.last_name || '')).trim() || 'Customer';
     const start = new Date(a.starts_at);
     const dateOnly = /date_only/.test(notes);
