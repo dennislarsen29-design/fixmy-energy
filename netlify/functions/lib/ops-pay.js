@@ -49,6 +49,8 @@ async function reconcile(customerId, doFetch) {
   const del = async (ids) => { for (const id of ids) await doFetch(SUPA_URL + '/rest/v1/job_costs?id=eq.' + id, { method: 'DELETE', headers: heads() }); };
   const ins = async (row) => doFetch(SUPA_URL + '/rest/v1/job_costs', { method: 'POST', headers: Object.assign({}, heads(), { Prefer: 'return=minimal' }), body: JSON.stringify(Object.assign({ customer_id: customerId, status: 'pending' }, row)) });
   if (isLegacy(c, costs)) return { ok: true, skipped: 'legacy_pricing' };
+  // An admin set this job's diagnostic cost by hand (e.g. an electrical service priced below a solar diagnostic): never recompute it.
+  if (costs.some(x => x.created_by === 'admin-set' && /^Diagnostic/.test(x.label || ''))) return { ok: true, skipped: 'admin_set' };
   const pendingAuto = costs.filter(x => x.status === 'pending' && x.created_by === 'auto-diag-convert');
 
   if (EXCLUDED.indexOf(c.assigned_ops) > -1) {
