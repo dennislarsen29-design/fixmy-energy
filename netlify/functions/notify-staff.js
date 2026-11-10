@@ -66,10 +66,14 @@ async function repairQuote(id, doFetch, H) {
   if (ids.indexOf(DEFAULT_REP) === -1) ids.push(DEFAULT_REP);
   const results = [];
   for (const tid of ids) {
-    const tm = ((await get('/team_members?id=eq.' + encodeURIComponent(tid) + '&select=name,phone&limit=1')) || [])[0];
-    if (!tm || !tm.phone) { results.push({ to: tid, ok: false, reason: 'no_phone' }); continue; }
-    const r = await notify.sendSms({ phone: tm.phone, first_name: tm.name }, msg, doFetch);
-    results.push({ to: tid, ok: r.ok, reason: r.reason });
+    const tm = ((await get('/team_members?id=eq.' + encodeURIComponent(tid) + '&select=name,phone,email&limit=1')) || [])[0];
+    if (!tm || (!tm.phone && !tm.email)) { results.push({ to: tid, ok: false, reason: 'no_phone' }); continue; }
+    let r = { ok: false, reason: 'no_phone' };
+    if (tm.phone) r = await notify.sendSms({ phone: tm.phone, first_name: tm.name }, msg, doFetch);
+    // Email copy: a text can be accepted by GHL and still never reach the phone (carrier filtering).
+    let em = { ok: false };
+    if (tm.email) em = await notify.sendEmail({ email: tm.email }, (ev === 'document_opened' ? 'Opened: ' : 'Signed: ') + name + ' \u2014 ' + docLabel, 'Document update', [msg], { url: notify.SITE + '/portal', label: 'Open the portal' }, doFetch).catch(function () { return { ok: false }; });
+    results.push({ to: tid, ok: r.ok || em.ok, reason: r.reason });
   }
   if (results.some(r => r.ok)) {
     await doFetch(SUPA_URL + '/rest/v1/pipeline_state', { method: 'POST', headers: Object.assign({}, H, { Prefer: 'resolution=merge-duplicates,return=minimal' }), body: JSON.stringify({ key: rlKey, value: { at: new Date().toISOString() } }) });
@@ -161,10 +165,14 @@ exports.handler = async function (event, context, deps) {
   if (ids.indexOf(DEFAULT_REP) === -1) ids.push(DEFAULT_REP);
   const results = [];
   for (const tid of ids) {
-    const tm = ((await get('/team_members?id=eq.' + encodeURIComponent(tid) + '&select=name,phone&limit=1')) || [])[0];
-    if (!tm || !tm.phone) { results.push({ to: tid, ok: false, reason: 'no_phone' }); continue; }
-    const r = await notify.sendSms({ phone: tm.phone, first_name: tm.name }, msg, doFetch);
-    results.push({ to: tid, ok: r.ok, reason: r.reason });
+    const tm = ((await get('/team_members?id=eq.' + encodeURIComponent(tid) + '&select=name,phone,email&limit=1')) || [])[0];
+    if (!tm || (!tm.phone && !tm.email)) { results.push({ to: tid, ok: false, reason: 'no_phone' }); continue; }
+    let r = { ok: false, reason: 'no_phone' };
+    if (tm.phone) r = await notify.sendSms({ phone: tm.phone, first_name: tm.name }, msg, doFetch);
+    // Email copy: a text can be accepted by GHL and still never reach the phone (carrier filtering).
+    let em = { ok: false };
+    if (tm.email) em = await notify.sendEmail({ email: tm.email }, (ev === 'document_opened' ? 'Opened: ' : 'Signed: ') + name + ' \u2014 ' + docLabel, 'Document update', [msg], { url: notify.SITE + '/portal', label: 'Open the portal' }, doFetch).catch(function () { return { ok: false }; });
+    results.push({ to: tid, ok: r.ok || em.ok, reason: r.reason });
   }
   if (results.some(r => r.ok)) {
     await doFetch(SUPA_URL + '/rest/v1/pipeline_state', { method: 'POST', headers: Object.assign({}, H, { Prefer: 'resolution=merge-duplicates,return=minimal' }), body: JSON.stringify({ key: rlKey, value: JSON.stringify({ ts: Date.now() }), updated_at: new Date().toISOString() }) }).catch(() => {});

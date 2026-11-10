@@ -88,7 +88,7 @@ exports.handler = async function (event, context, deps) {
   const msg = '✅ ' + name + ' approved ' + label + '. The customer can sign first or after you \u2014 sign the CPUC guide here: ' + link + (batteryConverted && batteryConverted.revenue ? '\nSet up as a Battery Retrofit: Revenue $' + batteryConverted.revenue.toLocaleString() + ', Redline $' + batteryConverted.redline.toLocaleString() + ' (from the proposal).' : (batteryConverted && batteryConverted.skipped ? '\nBattery sale, but the proposal has no dealer cost \u2014 use Convert to Battery Retrofit on the lead.' : ''));
   const ctx = { doFetch, H, SUPA_URL };
   let texted = 0;
-  try { for (const t of await chain.ownerPhones(ctx, c)) { const s = await notify.sendSms({ phone: t.phone, first_name: t.name }, msg, doFetch); if (s.ok) texted++; } } catch (e) {}
+  try { for (const t of await chain.ownerPhones(ctx, c)) { if (t.phone) { const s = await notify.sendSms({ phone: t.phone, first_name: t.name }, msg, doFetch); if (s.ok) texted++; } if (t.email) { await notify.sendEmail({ email: t.email }, 'Proposal approved: ' + name, 'Proposal approved', [msg.replace(/\n/g, ' ')], { url: link, label: 'Open to sign' }, doFetch).catch(function () {}); } } } catch (e) {}
   // Tell the customer too: they can sign now or wait for the Tech — either order works.
   let customerNotified = false;
   try {

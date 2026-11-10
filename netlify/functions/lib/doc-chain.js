@@ -79,9 +79,9 @@ async function issueNext(ctx, customer) {
 async function ownerPhones(ctx, customer) {
   const { doFetch, H, SUPA_URL } = ctx;
   const ids = ['tech4'].concat(customer && customer.rep_id && customer.rep_id !== 'tech4' ? [customer.rep_id] : []);
-  const r = await doFetch(SUPA_URL + '/rest/v1/team_members?id=in.(' + ids.map(encodeURIComponent).join(',') + ')&select=id,name,phone', { headers: H });
+  const r = await doFetch(SUPA_URL + '/rest/v1/team_members?id=in.(' + ids.map(encodeURIComponent).join(',') + ')&select=id,name,phone,email', { headers: H });
   const j = await r.json().catch(function () { return []; });
-  return Array.isArray(j) ? j.filter(function (t) { return t.phone; }) : [];
+  return Array.isArray(j) ? j.filter(function (t) { return t.phone || t.email; }) : [];
 }
 
 async function alertOwner(ctx, customer, skipped) {
@@ -94,7 +94,7 @@ async function alertOwner(ctx, customer, skipped) {
     const name = ((customer.first_name || '') + ' ' + (customer.last_name || '')).trim() || 'A customer';
     const msg = name + ' finished the CPUC guide. Still manual (field placement not confirmed): ' + skipped.map(function (d) { return LABEL[d] || d; }).join(', ') + '. Confirm them in Administration → Document Signer to automate.';
     const t = (await ownerPhones(ctx, { id: customer.id }))[0];
-    if (t) await notify.sendSms({ phone: t.phone, first_name: t.name }, msg, doFetch);
+    if (t && t.phone) await notify.sendSms({ phone: t.phone, first_name: t.name }, msg, doFetch);
     await doFetch(SUPA_URL + '/rest/v1/pipeline_state', { method: 'POST', headers: Object.assign({}, H, { Prefer: 'resolution=merge-duplicates,return=minimal' }), body: JSON.stringify({ key: key, value: JSON.stringify({ skipped: skipped, ts: Date.now() }), updated_at: new Date().toISOString() }) });
   } catch (e) { /* ignore */ }
 }
