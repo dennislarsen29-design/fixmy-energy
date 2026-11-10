@@ -33326,6 +33326,21 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var isNSSave = leadCatVal === 'new_solar';
     var isFixMySave = !isNSSave;
     var cRec = adminCustomers.find(function(x){return x.id===id;})||{};
+    // STALE-RECORD GUARD (2026-11-10, Cynthia Castillo): this form is built from the in-memory record, so a payment/signature that
+    // landed after the lead was loaded (Sign & Pay, GHL sweep) was silently overwritten back to "sent / none / not sold" by the next
+    // save or auto-save. Re-read the payment-critical fields from the database; any that changed behind the form's back replace the
+    // stale values, but only where the admin has not edited that field by hand.
+    try {
+      var _fc = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var _fr = await _fc.from('customers').select('invoice_status,agreement_status,sold_type,sold_at,agreement_signed_at').eq('id', id).limit(1);
+      var _f = _fr.data && _fr.data[0];
+      if (_f && cRec) {
+        var _selSync = function(elId, staleVal, freshVal) { var el = document.getElementById(elId); if (el && String(el.value || '') === String(staleVal || '') && freshVal != null) el.value = freshVal; };
+        if ((_f.invoice_status || 'none') !== (cRec.invoice_status || 'none')) { _selSync('edInvSt', cRec.invoice_status || 'none', _f.invoice_status); cRec.invoice_status = _f.invoice_status; }
+        if ((_f.agreement_status || 'none') !== (cRec.agreement_status || 'none')) { _selSync('edAgSt', cRec.agreement_status || 'none', _f.agreement_status); cRec.agreement_status = _f.agreement_status; }
+        ['sold_type', 'sold_at', 'agreement_signed_at'].forEach(function(k) { if (_f[k] && !cRec[k]) cRec[k] = _f[k]; });
+      }
+    } catch (_e) { /* offline: save as before */ }
     // Dates are no longer typed into this form — the Schedule control (window._schedSave) writes
     // appointments + the legacy date columns directly and updates the in-memory record, so a plain
     // field save just carries the current values forward.
