@@ -169,14 +169,19 @@ exports.handler = async function(event) {
   if (first_name)            parts.push(`Customer first name: ${first_name} (use once, naturally)`);
   if (installer)             parts.push(`Original installer: ${installer}`);
   if (system_size)           parts.push(`Current system size: ${system_size} kW DC`);
-  if (nem_status)            parts.push(`NEM status: ${nem_status.toUpperCase()} — full retail rate credit grandfathered`);
+  // (bigExpansion is computed just below; the NEM line is added after it is known)
+  const _sk = parseFloat(system_size) || 0;
+  const _add = Math.max(parseFloat(panel_kw_added) || 0,
+    (parseFloat(new_system_size_kw) || 0) > 0 && _sk > 0 ? (parseFloat(new_system_size_kw) - _sk) : 0);
+  if (nem_status && _add > 1) parts.push(`Existing NEM status on file: ${nem_status.toUpperCase()} — but this proposal adds ~${_add.toFixed(1)} kW of panels, so do NOT promise that status carries to the expansion (see EXPANSION OVERRIDE)`);
+  else if (nem_status)       parts.push(`NEM status: ${nem_status.toUpperCase()} — full retail rate credit grandfathered`);
   // Real bill from the uploaded statement (2026-10-06): this is the ONLY bill figure to quote. The intake
   // "monthly_bill" can be a setter's stand-in, and "annual true-up" dollar amounts in notes are not to be used.
   if (real_bill && real_bill.monthly > 0) parts.push(`REAL BILL (from the customer's uploaded SDG&E statement — the only bill figure you may quote): about $${real_bill.monthly}/month, ~$${(real_bill.annual||real_bill.monthly*12).toLocaleString()}/year (${real_bill.basis}). State it ONCE as a monthly figure; never present a separate "annual true-up" amount as an additional cost, and never use any dollar bill figure from the tech notes.`);
   else if (monthly_bill)     parts.push(`Current monthly SDG&E bill: $${monthly_bill} (while system is underperforming or without storage)`);
   if (inverter_output_pct)   parts.push(`Inverter currently running at: ~${inverter_output_pct}% of rated capacity`);
   if (monthly_loss_est)      parts.push(`Estimated monthly generation loss: ~$${Math.round(monthly_loss_est)}/month the customer is paying SDG&E that their solar should cover`);
-  if (expected_bill_with_fix)parts.push(`Expected monthly bill after full fix: ~$${Math.round(expected_bill_with_fix)} (near the $24 base services charge minimum under NEM 1.0)`);
+  if (expected_bill_with_fix)parts.push(`Expected monthly bill after full fix: ~$${Math.round(expected_bill_with_fix)}${_add > 1 ? '' : ' (near the $24 base services charge minimum under NEM 1.0)'}`);
   if (new_system_size_kw)    parts.push(`New system size after adding panels: ${new_system_size_kw} kW`);
   if (annual_kwh_with_bundle)parts.push(`Expected annual production with full bundle: ~${Math.round(annual_kwh_with_bundle).toLocaleString()} kWh/yr`);
   if (panel_kw_added)        parts.push(`Additional panel capacity being added: ${panel_kw_added} kW DC`);
@@ -222,8 +227,24 @@ PHOTO ANALYSIS (Quoya Insight) — when equipment photos are attached, BEFORE th
 - Suggest what the tech should verify or bring to the diagnostic appointment.
 Keep it factual and only claim what the photos or search support. After that block, add a line "---" and then the customer-facing paragraph per the rules below.`;
 
-  const buildSystem = (withPhotos) => `You are Quoya, Solar Review's solar assessment + sales AI.${withPhotos ? photoSystemAddon : ''}
+  // 2026-11-10, per Dennis (homeowner called out the Situation text on a 22- and 31-panel proposal):
+  // adding more than ~1 kW of panels generally moves the system onto current Net Billing (NEM 3.0)
+  // rules, so NOTHING may promise NEM 1.0/2.0 protection, retail-rate netting or a lock-in for
+  // that expansion. A battery alone (or <=1 kW / ~3 panels) keeps the grandfathered status.
+  const sysKw = parseFloat(system_size) || 0;
+  const addedKw = Math.max(parseFloat(panel_kw_added) || 0,
+    (parseFloat(new_system_size_kw) || 0) > 0 && sysKw > 0 ? (parseFloat(new_system_size_kw) - sysKw) : 0);
+  const bigExpansion = addedKw > 1;
+  const expansionOverride = bigExpansion ? `
+EXPANSION OVERRIDE (applies to this proposal — it adds about ${addedKw.toFixed(1)} kW of panels, more than the 1 kW a system can add and keep its grandfathered NEM status):
+- Adding more than ~1 kW (roughly 3 panels) generally moves the system onto the CURRENT rules (Net Billing / "NEM 3.0"). This proposal must NOT say or imply that the customer keeps NEM 1.0/2.0, a grandfathered rate, a 20-year lock-in, or full retail-rate credits for exports.
+- Do NOT use the "no-downside / does not affect your NEM" framing, and do NOT mention the NEM VALUE IS NOT FROZEN mechanism. Ignore every instruction above that tells you to reference grandfathering, NEM 1.0/2.0, retail-rate credits, or the 20-year lock — they do not apply here.
+- Do NOT value the new production at $0.453/kWh "under NEM credit", and do not say the bill drops to the ~$24 base charge because of NEM. Savings come from using the power at home (and from storage if included); exported power earns a much smaller export credit. Use the provided calculated savings figures as given.
+- Where relevant say plainly, once and without alarm, that an expansion of this size is interconnected under the utility's current rules, and the evaluation confirms the exact structure.
+` : '';
 
+  const buildSystem = (withPhotos) => `You are Quoya, Solar Review's solar assessment + sales AI.${withPhotos ? photoSystemAddon : ''}
+${expansionOverride}
 CUSTOMER PARAGRAPH RULES:
 ${focusInstructions}
 - Use ONLY the data provided. Never invent numbers. If diagnostic findings are given, reference them directly and specifically — the tech saw this with their own eyes, making it credible and personal to this homeowner.
