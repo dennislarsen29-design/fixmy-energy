@@ -38,7 +38,7 @@ exports.handler = async function (event, context, deps) {
     if (await seen(key)) continue;
     const name = ((c.first_name || '') + ' ' + (c.last_name || '')).trim();
     const when = fmt(c.diagnostic_date, { weekday: 'short', month: 'short', day: 'numeric' }) + (c.arrival_window ? ', ' + c.arrival_window : ' ' + fmt(c.diagnostic_date, { hour: 'numeric', minute: '2-digit' }));
-    const ics = notify.SITE + '/.netlify/functions/ops-ics?id=' + c.id + '&t=' + token('ics|' + c.id);
+    const ics = notify.SITE + '/ics/' + String(c.id).replace(/-/g, '') + '/' + token('ics|' + c.id).slice(0, 12);
     const wantCal = p.notify_prefs.calendar_link !== false;
     const sms = 'New job: ' + name + ', ' + (c.address || '') + '. ' + when + '.' + (wantCal ? ' Add to calendar: ' + ics : '') + ' Post findings in the portal when done.';
     const mail = { subject: 'New diagnostic job — ' + name, heading: 'New diagnostic job', lines: [name + ' — ' + (c.address || ''), when, 'Please post your findings in the Ops portal when the visit is done.'], cta: wantCal ? { text: 'Add to calendar', url: ics, label: 'Add to calendar' } : null };
