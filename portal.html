@@ -11750,6 +11750,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           system_size:                 rec.system_size  || null,
           monthly_bill:                rec.monthly_bill || null,
           nem_status:                  rec.nem_status   || '',
+          region:                      (window._isUtahLead && window._isUtahLead(rec)) ? 'UT' : 'CA',
           installer:                   rec.installer    || '',
           option_totals:               optionTotals,
           issue:                       issueContext,
@@ -11850,8 +11851,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
   };
 
+  // 2026-11-11, per Dennis (Salt Lake appointment): the wizard was California-only. Region is read from the
+  // lead's address; Utah swaps the utility, the net-metering card and the fallback rate.
+  var UT_RATE_EST = 0.12; // ESTIMATE of Rocky Mountain Power's blended residential rate ($/kWh). Used ONLY when no bill has been read; the bill's own rate always wins. Replace once verified.
+  window._evRegion = function(){ return (window._isUtahLead && window._isUtahLead(_evRec || {})) ? 'UT' : 'CA'; };
   // Getting a real bill is the step reps most often fumble. Written out per utility.
   var UTILITY_HELP = {
+    rmp: {
+      label: 'Rocky Mountain Power',
+      steps: [
+        'Go to <b>rockymountainpower.net</b> (or the RMP app) and sign in as the homeowner.',
+        'Open <b>My Account</b> &rarr; <b>Billing &amp; Payment</b> &rarr; <b>View Bill / Bill History</b>.',
+        'Download the most recent statement as a <b>PDF</b> &mdash; it carries the usage history; a screenshot of the summary does not.',
+        'If they have solar, also open the bill that shows <b>exported / credit kWh</b> so Quoya can see how the system is credited.'
+      ],
+      tip: 'No login? The paper bill works &mdash; photograph the page with total kWh and the monthly usage graph.'
+    },
     sdge: {
       label: 'SDG&E',
       steps: [
@@ -14106,6 +14121,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var inferred = false;
     if (!ver && d) { ver = d >= '2023-04-14' ? '3' : d < '2016-06-01' ? '1' : '2'; src = 'inferred from the ' + (est ? 'install year' : 'date') + ' (confirm on the bill)'; inferred = true; }
     var out = { ver: ver, date: d, est: est, src: src, dsrc: dsrc, inferred: inferred, text: '', tone: 'info' };
+    if (window._evRegion() === 'UT') {
+      // Utah is not NEM 1/2/3. Rocky Mountain Power: Schedule 137 net billing (applied after ~Oct 30 2020), a transition
+      // schedule for ~2017-2020, and legacy net metering (Schedule 135). Figures are from the Jan 2026 PSC filing and
+      // secondary sources; the Schedule 136 rate and the 2035/2036 end date are NOT confirmed. Always verify on the tariff.
+      var up = a.ut_plan || '';
+      var UT = {
+        '137': { tone: 'info', ver: '3', label: 'Schedule 137 net billing', text: 'Net billing: exports are credited at a low export rate, about 4&ndash;5&cent;/kWh (4.855&cent; Jun&ndash;Sep, 4.033&cent; Oct&ndash;May in RMP&rsquo;s Jan 2026 filing; it resets every year), not the retail rate. There is no 20-year lock. The value is in power used at home, so a battery and load-shifting matter more than exports.' },
+        '136': { tone: 'warn', ver: '3', label: 'Schedule 136 transition', text: 'Transition program (roughly late 2017 to Oct 2020 interconnections). Reported flat export credit of about 9&cent;/kWh. That rate comes from one secondary source: confirm on the customer&rsquo;s RMP letter before quoting.' },
+        '135': { tone: 'warn', ver: '2', label: 'Schedule 135 legacy net metering', text: 'Legacy net metering (interconnected before Nov 2017), closed to new customers and reported to run to about 2035&ndash;2036 (sources differ). Do not promise it carries over if panels are added: ask RMP before quoting an expansion.' }
+      };
+      var uu = UT[up];
+      out.ver = uu ? uu.ver : ''; out.label = uu ? uu.label : ''; out.src = up ? 'entered by you' : ''; out.utah = true;
+      out.tone = uu ? uu.tone : 'info';
+      out.text = uu ? uu.text : 'Utah: pick the customer&rsquo;s Rocky Mountain Power plan. Most solar customers interconnected since late 2020 are on Schedule 137 net billing (a low export credit, no lock-in); the plan is on their RMP interconnection approval or bill.';
+      return out;
+    }
     if (!ver) { out.text = 'Pick the NEM version (it is printed on the bill, or ask the homeowner).'; return out; }
     if (ver === '3') { out.text = 'NEM 3.0 / Net Billing: different credit structure, no 20-year lock. Does not show as a version on the bill.'; return out; }
     if (!d) { out.text = 'Enter the interconnection application date to get the 20-year end date.'; return out; }
@@ -14143,6 +14174,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var a = _evLocal.answers || {}, nem = _evNemInfo(), col = { good: '#8DC63F', warn: '#ffaa00', bad: '#f87171', info: '#9fb3c8' };
     var lbl = 'display:block;font-size:0.68rem;font-weight:700;color:#bbb;margin:0 0 4px;';
     var inp = 'width:100%;box-sizing:border-box;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:9px;color:#fff;padding:9px;font-size:0.8rem;';
+    if (nem.utah) {
+      return '<div style="margin-bottom:8px;"><label style="' + lbl + '">Rocky Mountain Power solar plan</label><select onchange="evNemSet(\'ut_plan\',this.value)" style="' + inp + '">'
+        + [['', 'Choose…'], ['137', 'Schedule 137 — net billing (after ~Oct 2020)'], ['136', 'Schedule 136 — transition (~2017–2020)'], ['135', 'Schedule 135 — legacy net metering (before Nov 2017)']].map(function(o){ return '<option value="' + o[0] + '"' + ((a.ut_plan || '') === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('')
+        + '</select></div><div style="font-size:0.74rem;line-height:1.5;color:' + col[nem.tone] + ';margin-bottom:8px;">' + (nem.label ? '<b>' + nem.label + '</b><br>' : '') + nem.text + '</div>';
+    }
     var h = '<div style="display:flex;gap:10px;margin-bottom:8px;flex-wrap:wrap;">'
       + '<div style="flex:1;min-width:150px;"><label style="' + lbl + '">NEM version (printed on the bill)</label><select onchange="evNemSet(\'nem_version\',this.value)" style="' + inp + '">'
       + [['', 'Choose…'], ['1', 'NEM 1.0'], ['2', 'NEM 2.0'], ['3', 'NEM 3.0 / Net Billing']].map(function(o){ return '<option value="' + o[0] + '"' + (String(nem.ver) === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('')
@@ -14186,7 +14222,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var h = '<div style="background:rgba(255,255,255,0.035);border:1px solid rgba(255,255,255,0.1);border-radius:14px;padding:13px;margin:0 0 11px;">';
     h += '<div style="font-size:0.66rem;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;color:#888;margin-bottom:6px;">Usage vs. solar, by month</div>' + svg;
     h += '<div style="display:flex;gap:12px;flex-wrap:wrap;font-size:0.66rem;color:#aaa;margin-top:4px;"><span><b style="color:#9b6de8;">&#9632;</b> Usage (bill)</span>' + (kw0 ? '<span><b style="color:#8DC63F;">&#9472;</b> Solar now (' + kw0.toFixed(1) + ' kW est.)</span>' : '') + (kw1 > kw0 ? '<span><b style="color:#4a9eff;">- -</b> With ' + (kw1 - kw0).toFixed(1) + ' kW more panels</span>' : '') + '</div>';
-    h += '<div style="font-size:0.66rem;color:#777;line-height:1.5;margin-top:6px;">Solar is an estimate (1 kW &asymp; 1,600 kWh/yr, typical California seasons), not measured output. A battery doesn&rsquo;t add production; it moves daytime solar into the 4&ndash;9pm hours' + (s.pw3 ? ' (about ' + s.pw3 + ' Powerwall' + (s.pw3 > 1 ? 's' : '') + ' for this usage).' : '.') + ' A new inverter restores output a failed one is losing.</div></div>';
+    h += '<div style="font-size:0.66rem;color:#777;line-height:1.5;margin-top:6px;">Solar is an estimate (1 kW &asymp; 1,600 kWh/yr, typical ' + (window._evRegion() === 'UT' ? 'Utah' : 'California') + ' seasons' + (window._evRegion() === 'UT' ? '; winter output is lower with snow and short days' : '') + '), not measured output. A battery doesn&rsquo;t add production; it moves daytime solar into the 4&ndash;9pm hours' + (s.pw3 ? ' (about ' + s.pw3 + ' Powerwall' + (s.pw3 > 1 ? 's' : '') + ' for this usage).' : '.') + ' A new inverter restores output a failed one is losing.</div></div>';
     return h;
   }
   // ── Quoya's Analysis (2026-10-22, per Dennis) ─────────────────────────────────────────────
@@ -14228,7 +14264,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (a.system_issue === 'yes' && a.pc_outcome) checked.push({ tone: a.pc_outcome === 'restored' ? 'good' : 'warn', t: 'Restart attempt', d: a.pc_outcome === 'restored' ? 'system came back online' : a.pc_outcome === 'partial' ? 'came back only partly' : 'did not come back' });
     checked.push({ tone: series.list.length ? 'good' : 'info', t: 'Electricity usage', d: series.list.length ? series.list.length + ' months read from the ' + (series.source || 'bill') : 'no utility bill read yet' });
     checked.push({ tone: g ? 'good' : 'info', t: 'Meter data (Green Button)', d: g ? (g.days || '?') + ' days of 15-minute readings' : 'not provided' });
-    var nem = _evNemInfo(); if (nem && nem.ver) checked.push({ tone: nem.tone === 'bad' ? 'warn' : 'good', t: 'Net metering plan', d: 'NEM ' + (nem.ver === '3' ? '3.0' : nem.ver + '.0') + (nem.src ? ' (' + nem.src + ')' : '') });
+    var nem = _evNemInfo(); if (nem && nem.ver) checked.push({ tone: nem.tone === 'bad' ? 'warn' : 'good', t: 'Net metering plan', d: (nem.label || ('NEM ' + (nem.ver === '3' ? '3.0' : nem.ver + '.0'))) + (nem.src ? ' (' + nem.src + ')' : '') });
     var yr = parseInt(rec.install_year, 10); if (yr) checked.push({ tone: (new Date().getFullYear() - yr) >= 10 ? 'warn' : 'good', t: 'System age', d: 'about ' + (new Date().getFullYear() - yr) + ' years' });
     if (a.has_ev || a.has_ac) checked.push({ tone: 'info', t: 'Household', d: (a.has_ev === 'yes' ? 'electric vehicle' + (a.ev_recent === 'yes' ? ' (new)' : '') : a.has_ev === 'no' ? 'no EV' : '') + (a.has_ev && a.has_ac ? ' &middot; ' : '') + (a.has_ac === 'yes' ? 'air conditioning' : a.has_ac === 'no' ? 'no A/C' : '') });
     var diag = false;
@@ -14301,6 +14337,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   function _evEvAudit() {
     var a = (_evLocal.answers || {}), g = a.gbd || null, ba = (_evLocal.billAnalysis && !_evLocal.billAnalysis._err) ? _evLocal.billAnalysis : null;
     if (a.has_ev !== 'yes') return null;
+    if (window._evRegion() === 'UT') return null; // SDG&E EV-TOU rate comparison; no Utah equivalent built
     var out = { need: [] };
     if (!g || g.night_kwh_per_day == null) { out.need.push('Green Button meter data (to see when the car charges)'); }
     if (!ba || !(ba.avg_rate_per_kwh > 0)) out.need.push('a utility bill (to know the rate they pay now)');
@@ -14691,7 +14728,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var ba = (_evLocal.billAnalysis && !_evLocal.billAnalysis._err) ? _evLocal.billAnalysis : null;
     var billMo = (ba && ba.monthly_source === 'monthly_bill' && ba.monthly_amount_paid > 0) ? ba.monthly_amount_paid : (parseFloat(_evRec && _evRec.monthly_bill) || (ba && ba.monthly_amount_paid) || 0);
     var fromBill = !!(ba && ba.annual_kwh > 0); // a NET-negative figure (solar > usage) can't size an upgrade — fall back to the estimate
-    var annualKwh = fromBill ? ba.annual_kwh : (billMo ? Math.round(billMo * 12 / 0.453) : 0);
+    var annualKwh = fromBill ? ba.annual_kwh : (billMo ? Math.round(billMo * 12 / (window._evRegion() === 'UT' ? UT_RATE_EST : 0.453)) : 0);
     var evAdd = window._evEvKwh(_evLocal.answers);   // new-EV charging not yet in the usage history
     if (annualKwh && evAdd) annualKwh += evAdd;
     var daily = annualKwh ? annualKwh / 365 : 0;
@@ -14824,8 +14861,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // utility reads as one line ("SDG&E — read from the bill") with a Change button that opens the pills.
   function _evUtilityPillsHtml() {
     var h = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0;">';
-    Object.keys(UTILITY_HELP).forEach(function(k){
-      var on = _evLocal.utility === k;
+    var _ut = window._evRegion() === 'UT';
+    Object.keys(UTILITY_HELP).filter(function(k){ return _ut ? (k === 'rmp' || k === 'other') : k !== 'rmp'; }).forEach(function(k){
+      var on = (_evLocal.utility || (_ut ? 'rmp' : '')) === k;
       h += '<button onclick="_evLocal._utilEdit=false;evSetField(\'utility\',\'' + k + '\')" style="width:auto;margin:0;padding:9px 14px;border-radius:100px;font-size:0.76rem;font-weight:700;cursor:pointer;'
         + (on ? 'background:rgba(255,170,0,0.18);border:1px solid rgba(255,170,0,0.5);color:#ffaa00;'
               : 'background:transparent;border:1px solid rgba(255,255,255,0.14);color:#888;') + '">'
@@ -14834,7 +14872,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return h + '</div>';
   }
   function _evUtilityStepsHtml() {
-    var u = UTILITY_HELP[_evLocal.utility], h = '';
+    var u = UTILITY_HELP[_evLocal.utility || (window._evRegion() === 'UT' ? 'rmp' : '')], h = '';
     if (u) {
       h += '<div style="background:rgba(255,170,0,0.05);border:1px solid rgba(255,170,0,0.22);border-radius:14px;padding:13px;">';
       h += '<div style="font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#ffaa00;margin-bottom:8px;">How to pull the bill &mdash; ' + u.label + '</div>';
@@ -15784,6 +15822,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // editable was precisely so a human correction becomes the trusted number, not just
   // Quoya's first guess.
   function _propUsageFromBill(bill, fallbackRate) {
+    if (window._propIsUT && fallbackRate === 0.453) fallbackRate = 0.12; // Utah estimate, only when no bill is read (bill's own rate wins)
     var ba = _propBillAnalysis;
     // A NEM true-up statement reports NET usage after solar offset (Becky Phan: 109 kWh on a
     // home paying ~$490/mo) — it is not household consumption, so never use it as usage/rate.
@@ -29899,6 +29938,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // ⚠️ Always reset first — opening the builder for a different customer must never
     // carry over the previous lead's bill_analysis into this one's savings math.
     _propBillAnalysis = null;
+    try { var _pc0 = (typeof adminCustomers !== 'undefined' ? adminCustomers : []).find(function(x){ return x.id === id; }); window._propIsUT = !!(_pc0 && window._isUtahLead(_pc0)); } catch(e) { window._propIsUT = false; }
     _propEvKwh = 0;
     var _propEvalRowId = null; // captured here so the job_photos fallback below can update the SAME row instead of guessing insert-vs-update
     try {

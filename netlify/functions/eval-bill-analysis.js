@@ -82,7 +82,7 @@ const TOOL = {
     type: 'object',
     properties: {
       readable: { type: 'boolean', description: 'False ONLY if the document could not be read at all — wrong file type, blank page, totally illegible. A bill that is readable but missing some figures is still readable=true; just leave those fields null.' },
-      utility_detected: { type: 'string', enum: ['sdge', 'sce', 'ladwp', 'other', 'unknown'], description: 'Which utility issued this bill, read from the logo/header/company name printed on the document itself (e.g. "San Diego Gas & Electric" / "SDG&E" -> sdge, "Southern California Edison" -> sce, "Los Angeles Department of Water and Power" / "LADWP" -> ladwp). "other" if it is clearly a different CA utility (PG&E, SMUD, etc.) by name. "unknown" ONLY if the issuing utility genuinely cannot be identified from the document — never guess from a hint the rep may have typed elsewhere.' },
+      utility_detected: { type: 'string', enum: ['sdge', 'sce', 'ladwp', 'rmp', 'other', 'unknown'], description: 'Which utility issued this bill, read from the logo/header/company name printed on the document itself (e.g. "San Diego Gas & Electric" / "SDG&E" -> sdge, "Southern California Edison" -> sce, "Los Angeles Department of Water and Power" / "LADWP" -> ladwp). "other" if it is clearly a different CA utility (PG&E, SMUD, etc.) by name. "unknown" ONLY if the issuing utility genuinely cannot be identified from the document — never guess from a hint the rep may have typed elsewhere.' },
       annual_kwh: { type: 'number', description: 'Total annual electricity consumption in kWh. If monthly_breakdown covers 12 real months, this should be their sum. If monthly_breakdown covers fewer months (e.g. the homeowner recently moved in and only 6-8 months of real usage exist), still produce a best-effort full-year estimate by extrapolating the available months\' seasonal pattern, and say in notes that it is extrapolated from partial-year data. If no usage-history chart or table exists at all, estimate from the single month shown and say so in notes.' },
       avg_rate_per_kwh: { type: 'number', description: 'On a NEM True-Up statement (net kWh) return null — do not guess a rate. Otherwise: blended average price paid per kWh in dollars for the billing period shown (total electric charges divided by total kWh), e.g. 0.42. Not the highest tier rate — the effective blended average.' },
       monthly_amount_paid: { type: 'number', description: 'The dollar amount owed/charged on the most recent single billing period shown (before any true-up credit is applied).' },
@@ -135,7 +135,7 @@ const TOOL = {
   }
 };
 
-const SYSTEM = `You are Quoya, reading a California residential utility bill (SDG&E, SCE, LADWP, or another CA utility) uploaded by a Solar Review sales rep during a field evaluation. Extract exactly what report_bill_analysis asks for — nothing more.
+const SYSTEM = `You are Quoya, reading a residential utility bill (California: SDG&E, SCE, LADWP or another CA utility; Utah: Rocky Mountain Power, return utility_detected 'rmp'). A Utah bill has no NEM version: do not return nem_version 1/2/3 for it (return 'unknown', or 'none' when the bill shows no solar) uploaded by a Solar Review sales rep during a field evaluation. Extract exactly what report_bill_analysis asks for — nothing more.
 
 What to look for:
 - Which utility issued the bill — the company name/logo printed in the header. Read it off the document; do not assume it matches whatever utility hint (if any) is passed in context, since that hint may be wrong or unset.
@@ -309,7 +309,7 @@ exports.handler = async function (event) {
     return reply(200, {
       readable: out.readable !== false,
       nem_rows_read: nemRows,
-      utility_detected: ['sdge', 'sce', 'ladwp', 'other', 'unknown'].indexOf(out.utility_detected) >= 0 ? out.utility_detected : 'unknown',
+      utility_detected: ['sdge', 'sce', 'ladwp', 'rmp', 'other', 'unknown'].indexOf(out.utility_detected) >= 0 ? out.utility_detected : 'unknown',
       annual_kwh: annualOut,
       avg_rate_per_kwh: typeof out.avg_rate_per_kwh === 'number' ? out.avg_rate_per_kwh : null,
       monthly_amount_paid: typeof out.monthly_amount_paid === 'number' ? out.monthly_amount_paid : null,

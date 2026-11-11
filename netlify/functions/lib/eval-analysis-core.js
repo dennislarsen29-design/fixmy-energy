@@ -252,6 +252,7 @@ async function runEvalAnalysis(anthropicKey, body) {
 
     const ctx = [];
     if (lead.address)            ctx.push(`Property: ${lead.address}`);
+    if (/\bUtah\b|,\s*UT\b|\bUT\s+84\d{3}\b/i.test(String(lead.address || ''))) ctx.push('REGION: UTAH (Rocky Mountain Power service area, not California). Ignore every California-specific rule above: there is no NEM 1.0/2.0/3.0, no SDG&E/SDCP, no CPUC. Rocky Mountain Power customers are on Schedule 137 net billing (low export credit, about 4-5 cents/kWh, no lock-in), a transition schedule, or legacy Schedule 135 net metering. Say so plainly, do not invent a plan, and do not quote California rates. Note snow load / winter production, and that the utility is Rocky Mountain Power.');
     if (lead.original_installer) ctx.push(`Original installer: ${lead.original_installer}${lead.install_year ? ` (installed ${lead.install_year})` : ''}`);
     if (lead.system_size)        ctx.push(`System size on file: ${lead.system_size} kW`);
     if (lead.monthly_bill)       ctx.push(`Monthly electric bill: $${lead.monthly_bill}`);

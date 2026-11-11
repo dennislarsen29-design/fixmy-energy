@@ -156,7 +156,7 @@ exports.handler = async function(event) {
     annual_kwh_solar_api, calculated_monthly_savings, calculated_annual_savings,
     savings_source, panel_kw_added, has_battery,
     storage_kwh, annual_usage_kwh, surplus_kwh_trueup,
-    photo_urls, real_bill
+    photo_urls, real_bill, region
   } = body;
   // Quoya reads the uploaded equipment photos (issues/recalls/warranty). Cap to bound cost.
   const photos = Array.isArray(photo_urls) ? photo_urls.filter(p => p && p.url).slice(0, 10) : [];
@@ -243,8 +243,14 @@ EXPANSION OVERRIDE (applies to this proposal — it adds about ${addedKw.toFixed
 - Where relevant say plainly, once and without alarm, that an expansion of this size is interconnected under the utility's current rules, and the evaluation confirms the exact structure.
 ` : '';
 
+  const utahOverride = region === 'UT' ? `
+UTAH OVERRIDE (this home is in Utah, served by Rocky Mountain Power — NOT San Diego):
+- Ignore every SDG&E, NEM 1.0/2.0/3.0, SDCP, CPUC, time-of-use and San Diego statement above, including the $0.453/kWh, $0.749/kWh and $0.36/kWh figures and the "$24 base services charge".
+- Do not name SDG&E. The utility is Rocky Mountain Power. Solar customers there are on net billing (exports credited at a low rate, roughly 4-5 cents per kWh) or an older plan; never promise a retail-rate credit or a lock-in.
+- Use ONLY the dollar figures given in the customer profile. If none are given, describe the benefit without inventing numbers. Do not mention outage-window or peak-rate arbitrage numbers that are specific to California.
+` : '';
   const buildSystem = (withPhotos) => `You are Quoya, Solar Review's solar assessment + sales AI.${withPhotos ? photoSystemAddon : ''}
-${expansionOverride}
+${utahOverride}${expansionOverride}
 CUSTOMER PARAGRAPH RULES:
 ${focusInstructions}
 - Use ONLY the data provided. Never invent numbers. If diagnostic findings are given, reference them directly and specifically — the tech saw this with their own eyes, making it credible and personal to this homeowner.
