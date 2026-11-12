@@ -46,6 +46,21 @@ exports.handler = async function (event, context, deps) {
     if (r.ok) { out.assigned++; await mark(key); }
   }
 
+  // 1b. battery install assigned (2026-11-12): the battery partner (customers.battery_ops) is told about the install date.
+  // Separate from the diagnostic notice above, so a partner who only does batteries never gets diagnostic texts.
+  const bjobs = await get('/customers?select=id,first_name,last_name,address,battery_ops,install_date&battery_ops=not.is.null&sold_type=eq.battery_retrofit&install_date=gt.' + nowIso + '&archived=not.eq.true&limit=300');
+  for (const c of bjobs) {
+    const p = partners[c.battery_ops]; if (!p || !p.notify_prefs) continue;
+    const key = 'opsnotify_battery_' + c.id + '_' + c.battery_ops + '_' + String(c.install_date).slice(0, 16);
+    if (await seen(key)) continue;
+    const name = ((c.first_name || '') + ' ' + (c.last_name || '')).trim();
+    const when = fmt(c.install_date, { weekday: 'short', month: 'short', day: 'numeric' });
+    const sms = 'New battery install: ' + name + ', ' + (c.address || '') + '. ' + when + '. Details are in the Ops portal.';
+    const mail = { subject: 'New battery install — ' + name, heading: 'New battery install', lines: [name + ' — ' + (c.address || ''), when, 'Details are in the Ops portal.'], cta: { text: 'Open the Ops portal', url: notify.SITE + '/portal', label: 'Open the Ops portal' } };
+    const r = await send(p, sms, mail, 'job_assigned');
+    if (r.ok) { out.assigned++; await mark(key); }
+  }
+
   // 2. end-of-day findings reminder: only between 4:30pm and 8pm PT
   const pt = ptParts(now), mins = (+pt.hour % 24) * 60 + (+pt.minute);
   if (mins >= 16 * 60 + 30 && mins < 20 * 60) {
