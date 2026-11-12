@@ -16,6 +16,10 @@ const out = (code, obj) => ({ statusCode: code, headers: cors, body: JSON.string
 // info@fixmy.energy calendar (Solar Evaluation is NOT here: the GHL booking already puts it there).
 const DIAG_TYPES = ['Diagnostic Visit', 'Repair Service Visit', 'Battery Install', 'Install', 'Inspection'];
 const MAIN_TYPES = ['Welcome Call', 'Site Survey', 'Results Review'];
+// Per-Tech calendars (2026-11-12, per Dennis): a Tech who has team_members.calendar_email (a mailbox on the fixmy.energy
+// Workspace) gets the sales-side events on THEIR OWN calendar (written as them via domain-wide delegation, calendar 'primary').
+// Field/ops visits stay on the shared Ops calendar. A Tech with no calendar_email keeps the old routing, so nothing changes for them.
+const TECH_TYPES = ['Solar Evaluation', 'Virtual Solar Evaluation', 'Welcome Call', 'Site Survey', 'Results Review'];
 const TYPES = DIAG_TYPES.concat(MAIN_TYPES, ['Solar Evaluation', 'Virtual Solar Evaluation']); // evaluations only matter here for Utah leads (San Diego ones are on GHL)
 const isUtah = (addr) => { addr = String(addr || ''); if (/,\s*UT\b|\bUtah\b/i.test(addr)) return true; const z = addr.match(/\b\d{5}\b/g); return !!(z && /^84/.test(z[z.length - 1])); }; // last 5-digit run = ZIP (a street number can be 5 digits)
 
@@ -43,13 +47,20 @@ exports.handler = async function (event) {
   try {
     const ar = await (await fetch(SUPA + '/appointments?id=eq.' + aid + '&select=*&limit=1', { headers: H })).json();
     const a = ar && ar[0]; if (!a) return out(404, { ok: false, reason: 'no_appointment' });
-    const cu = await (await fetch(SUPA + '/customers?id=eq.' + a.customer_id + '&select=first_name,last_name,phone,address,email&limit=1', { headers: H })).json();
+    const cu = await (await fetch(SUPA + '/customers?id=eq.' + a.customer_id + '&select=first_name,last_name,phone,address,email,rep_id&limit=1', { headers: H })).json();
     const c = (cu && cu[0]) || {};
     const utah = isUtah(c.address);
     const EVALS = ['Solar Evaluation', 'Virtual Solar Evaluation'];
-    if (TYPES.indexOf(a.event_type) < 0 || (EVALS.indexOf(a.event_type) >= 0 && !utah)) return out(200, { ok: false, reason: 'not_on_calendar' });
+    // The assigned Tech's own calendar, if they have one (looked up fresh so a reassignment moves the event).
+    let techCal = '';
+    if (c.rep_id && TECH_TYPES.indexOf(a.event_type) >= 0) {
+      const tm = await (await fetch(SUPA + '/team_members?id=eq.' + encodeURIComponent(c.rep_id) + '&select=calendar_email&limit=1', { headers: H })).json().catch(() => []);
+      techCal = String((tm && tm[0] && tm[0].calendar_email) || '').trim().toLowerCase();
+    }
+    if (TYPES.indexOf(a.event_type) < 0 || (EVALS.indexOf(a.event_type) >= 0 && !utah && !techCal)) return out(200, { ok: false, reason: 'not_on_calendar' });
     const notes = String(a.notes || '');
-    const m = notes.match(/gcal=([A-Za-z0-9_-]+)/); const evId = m ? m[1] : null;
+    const m = notes.match(/gcal=([A-Za-z0-9_-]+)/); let evId = m ? m[1] : null;
+    const om = notes.match(/gcalowner=(\S+)/); const prevOwner = om ? om[1] : '';
     if (!evId && a.status === 'canceled') return out(200, { ok: true, action: 'nothing' });
     // credential
     const cr = await (await fetch(SUPA + '/app_config?key=eq.gsc_service_account&select=value', { headers: H })).json();
@@ -58,9 +69,21 @@ exports.handler = async function (event) {
     // Preferred: act AS info@fixmy.energy (Workspace domain-wide delegation, no calendar sharing needed).
     // Falls back to the plain service account if delegation isn't authorized yet (then calendars must be shared with it).
     const OWNER = process.env.GOOGLE_CALENDAR_OWNER || 'info@fixmy.energy';
-    let token, delegated = false;
-    try { token = await googleToken(sa, ['https://www.googleapis.com/auth/calendar'], OWNER); delegated = true; }
-    catch (e) { token = await googleToken(sa, ['https://www.googleapis.com/auth/calendar']); }
+    let token, delegated = false, ownerEmail = '', fallbackWhy = '';
+    const SC = ['https://www.googleapis.com/auth/calendar'];
+    // If the event used to live on a different Tech's calendar (reassigned), remove it there first and create it fresh.
+    if (evId && prevOwner && prevOwner !== (techCal || '')) {
+      try { const ot = await googleToken(sa, SC, prevOwner); await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events/' + evId, { method: 'DELETE', headers: { Authorization: 'Bearer ' + ot } }); } catch (e) {}
+      evId = null;
+    }
+    if (techCal) {
+      try { token = await googleToken(sa, SC, techCal); delegated = true; ownerEmail = techCal; }
+      catch (e) { fallbackWhy = 'Could not write to ' + techCal + ' (' + String(e.message || e).slice(0, 80) + '); used the shared calendar instead.'; }
+    }
+    if (!token) {
+      try { token = await googleToken(sa, SC, OWNER); delegated = true; }
+      catch (e) { token = await googleToken(sa, SC); }
+    }
     const G = { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' };
     // find the calendar
     const isMain = MAIN_TYPES.indexOf(a.event_type) >= 0;
@@ -68,7 +91,7 @@ exports.handler = async function (event) {
     // addressed by ID directly (the Ops ID is from its Integrate-calendar settings; the main one is the account address).
     // Salt Lake / Utah leads: every visit goes to the "SLC" calendar (create it in info@fixmy.energy; found by name).
     let slcId = '';
-    if (utah) {
+    if (utah && !ownerEmail) {
       slcId = process.env.GOOGLE_SLC_CALENDAR_ID || '';
       if (!slcId) {
         const cl2 = await fetch('https://www.googleapis.com/calendar/v3/users/me/calendarList?minAccessRole=writer', { headers: G });
@@ -78,7 +101,7 @@ exports.handler = async function (event) {
         slcId = hit2.id;
       }
     }
-    let calId = slcId || (isMain ? process.env.GOOGLE_MAIN_CALENDAR_ID : process.env.GOOGLE_DIAG_CALENDAR_ID)
+    let calId = ownerEmail ? 'primary' : slcId || (isMain ? process.env.GOOGLE_MAIN_CALENDAR_ID : process.env.GOOGLE_DIAG_CALENDAR_ID)
       || (isMain ? (delegated ? 'primary' : 'info@fixmy.energy') : 'c_9b2e3af563db480729d3e52f05c9cd64092a7a1f8f84510808a750ce8271dca2@group.calendar.google.com');
     if (!calId) {
       const cl = await fetch('https://www.googleapis.com/calendar/v3/users/me/calendarList?minAccessRole=writer', { headers: G });
@@ -110,9 +133,9 @@ exports.handler = async function (event) {
     if (r.status === 404) return out(200, { ok: false, reason: isMain ? 'no_main_calendar' : 'no_calendar', service_account: sa.client_email, client_id: sa.client_id });
     if (!r.ok || !j.id) return out(200, { ok: false, reason: 'google_' + r.status, detail: (j.error && j.error.message) || '' });
     if (j.id !== evId) {
-      const nn = (notes.replace(/\s*gcal=[A-Za-z0-9_-]+/, '') + ' gcal=' + j.id).trim();
+      const nn = (notes.replace(/\s*gcal=[A-Za-z0-9_-]+/, '').replace(/\s*gcalowner=\S+/, '') + ' gcal=' + j.id + (ownerEmail ? ' gcalowner=' + ownerEmail : '')).trim();
       await fetch(SUPA + '/appointments?id=eq.' + aid, { method: 'PATCH', headers: H, body: JSON.stringify({ notes: nn }) });
     }
-    return out(200, { ok: true, action: evId ? 'updated' : 'created' });
+    return out(200, Object.assign({ ok: true, action: evId ? 'updated' : 'created', calendar: ownerEmail || 'shared' }, fallbackWhy ? { fallback: fallbackWhy } : {}));
   } catch (e) { return out(200, { ok: false, reason: 'error', detail: String(e.message || e).slice(0, 200) }); }
 };
