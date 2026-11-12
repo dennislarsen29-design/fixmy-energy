@@ -3,6 +3,7 @@
 // ALWAYS the lead's current rep_id read from our records, and the wording is built here. Skips when the
 // person assigning is the assignee, and rate-limits per (lead, rep) so a re-save can't spam.
 const notify = require('./lib/notify');
+const { token } = require('./lib/newsletter');
 const SUPA_URL = 'https://kbtobyoumvbcxfbugsid.supabase.co';
 const cors = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' };
 const out = (code, obj) => ({ statusCode: code, headers: cors, body: JSON.stringify(obj) });
@@ -39,11 +40,12 @@ exports.handler = async function (event, context, deps) {
       when = ' Appointment: ' + d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'America/Los_Angeles' }) + (c.arrival_window ? ', ' + c.arrival_window : '') + '.';
     } catch (e) {}
   }
-  const msg = 'New lead assigned to you: ' + name + (c.address ? ', ' + c.address : '') + '.' + when + (c.phone ? ' Phone: ' + c.phone + '.' : '') + ' Open it: ' + notify.SITE + '/portal';
+  const ics = c.diagnostic_date ? notify.SITE + '/ics/' + id.replace(/-/g, '') + '/' + token('ics|' + id).slice(0, 12) + '?v=tech' : '';
+  const msg = 'New lead assigned to you: ' + name + (c.address ? ', ' + c.address : '') + '.' + when + (c.phone ? ' Phone: ' + c.phone + '.' : '') + (ics ? ' Add to calendar: ' + ics : '') + ' Open it: ' + notify.SITE + '/portal';
   const results = {};
   if (tm.phone) { const r = await notify.sendSms({ phone: tm.phone, first_name: tm.name }, msg, doFetch); results.sms = { ok: r.ok, reason: r.reason }; }
   if (tm.email) {
-    const r = await notify.sendEmail({ email: tm.email }, 'New lead assigned: ' + name, 'New lead assigned to you', [msg.replace(' Open it: ' + notify.SITE + '/portal', '')], { url: notify.SITE + '/portal', label: 'Open the portal' }, doFetch).catch(() => ({ ok: false }));
+    const r = await notify.sendEmail({ email: tm.email }, 'New lead assigned: ' + name, 'New lead assigned to you', [msg.replace(' Open it: ' + notify.SITE + '/portal', '').replace(' Add to calendar: ' + ics, '')], ics ? { url: ics, label: 'Add to my calendar' } : { url: notify.SITE + '/portal', label: 'Open the portal' }, doFetch).catch(() => ({ ok: false }));
     results.email = { ok: r.ok };
   }
   const ok = !!((results.sms && results.sms.ok) || (results.email && results.email.ok));
