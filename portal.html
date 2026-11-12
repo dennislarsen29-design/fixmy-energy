@@ -712,6 +712,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return fetch('/.netlify/functions/notify-staff', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ event: ev, customerId: customerId, docType: docType }) }).catch(function(){});
   }
+  // Tell a Tech/rep a lead was assigned or handed to them (server skips self-assignment and repeats).
+  window._notifyAssign = function(customerId, byId) {
+    try { return fetch('/.netlify/functions/notify-assign', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ customerId: customerId, byId: byId || '' }) }).catch(function(){}); } catch (e) {}
+  };
   function _notifySummary(r) {
     if (!r) return 'No result from the notification service.';
     var parts = [];
@@ -20245,6 +20250,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       await client.from('customers').update(act).eq('id', lead.id);
       lead.black_box = false;
       if (act.rep_id) lead.rep_id = act.rep_id;
+      if (act.rep_id && act.rep_id !== window._bbDialerPersonId) window._notifyAssign(lead.id, window._bbDialerPersonId);
       if (!adminCustomers.find(function(x){ return x.id === lead.id; })) adminCustomers.unshift(lead);
       // Dialer view has no #editorSlot — switch to a view that has one before opening the editor
       if (CURRENT_ROLE === 'admin') {
@@ -29438,6 +29444,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var {error} = await sc.from('customers').update({rep_id: repId || null}).eq('id', id);
       if (error) throw error;
       rec.rep_id = repId || null;
+      if (repId && repId !== prev) window._notifyAssign(id, (typeof person !== 'undefined' && person && person.id) || '');
       var el = document.getElementById('lead-'+id);
       if (el) { var wrap = document.createElement('div'); wrap.innerHTML = buildLeadCard(rec); if (wrap.firstElementChild) el.replaceWith(wrap.firstElementChild); }
       if (typeof _propToast === 'function') {
@@ -33542,11 +33549,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // Step-5 "Proposal Sent" no longer auto-opens the proposal builder — the Proposal
     // Tools cluster in the editor is the entry point now. Step 5 saves like any other step.
     if (isFixMySave && stepVal === 7 && (cRec.step||1) !== 7) updates.archived = true;
-    var _oldStepLog = cRec.step, _oldSolarLog = cRec.solar_status;
+    var _oldStepLog = cRec.step, _oldSolarLog = cRec.solar_status, _prevRepAssign = cRec.rep_id || null;
     try {
       var client=supabase.createClient(SUPA_URL,SUPA_KEY);
       var { error }=await client.from('customers').update(updates).eq('id',id);
       if (error) throw error;
+      if (updates.rep_id && updates.rep_id !== _prevRepAssign) window._notifyAssign(id, (typeof person !== 'undefined' && person && person.id) || '');
       var idx=adminCustomers.findIndex(function(x){return x.id===id;});
       if (idx>-1) adminCustomers[idx]=Object.assign(adminCustomers[idx],updates);
       window._logStatusChange(id, idx>-1 ? adminCustomers[idx] : null, _oldStepLog, _oldSolarLog, ('step' in updates) ? updates.step : null, (updates.lead_category==='new_solar' || cRec.lead_category==='new_solar') ? updates.solar_status : null);
@@ -40082,6 +40090,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         }
         return;
       }
+      if (_bkCloserId && _bkCloserId !== person.id) window._notifyAssign(lead.id, person.id);
       Object.assign(lead, { knock_status: 'booked', diagnostic_date: startISO, rep_id: _bkCloserId,
                             setter_name: (person.name || person.id), step: 1, black_box: false });
       _cvSaveLeadsCache();   // without this a reload restores the PRE-booking cache — see the note on _cvSaveLeadsCache
