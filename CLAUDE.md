@@ -3020,3 +3020,9 @@ David Witthoft's setter commission showed as an overdue payday (Ronda, $72.50) b
 
 ## Second Ops partner: `customers.battery_ops` (2026-11-12, per Dennis — Merlin Loch)
 `assigned_ops` = diagnostic/service partner (e.g. Wolf); `battery_ops` = battery install partner (e.g. Cosmic), set in the admin editor's Assignment block (shown only for Battery Retrofit; blank = same partner). The Ops portal now lists a job for either partner (`assigned_ops` OR `battery_ops`). Not yet changed: `ops-notify.js` and `ops-pay.js` still key on `assigned_ops` only, and the partner sees the whole job (diagnostic included). Merlin Loch: Option 1 recorded as accepted (rep_recorded), Battery Retrofit, br_revenue $43,553 / br_redline $31,652, Participate price $30,487.10, Cosmic = battery_ops, Wolf stays assigned_ops.
+
+## Ops battery notices, surcharge, referral W-9 (2026-11-12, per Dennis)
+- `ops-notify.js` now also texts/emails the battery partner (`customers.battery_ops`) about a future `install_date` on Battery Retrofit jobs (kind `job_assigned`, deduped per partner + date). `ops-pay.js` stays on `assigned_ops` on purpose: it prices diagnostic visits only.
+- Card/ACH surcharge is already kept out of the rep pool: `_paySurcharge(payment)` derives it from method (3.9% card, 1% ACH, manual payments 0) at all three commission sites, so it lands in Solar Review's margin; refunds/chargebacks are the company's, not the rep's. No `surcharge_amount` column needed.
+- Axia quarterly +5% bonus: on hold until partners exist (Dennis).
+- Referral W-9 is required at $600+ in one CALENDAR YEAR (was lifetime): `lib/referrals.js mapFor` (`year_total`) and the admin Payroll referral card now count only the current year's `earned_at`.

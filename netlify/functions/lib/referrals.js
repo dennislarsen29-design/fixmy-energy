@@ -17,7 +17,7 @@ const RATES = {
   3: { service: 5,   battery: 25,  system: 100 }
 };
 const TIERS = ['service', 'battery', 'system'];
-const W9_THRESHOLD = 600; // lifetime owed+paid at which a W-9 is required before paying
+const W9_THRESHOLD = 600; // owed+paid IN ONE CALENDAR YEAR at which a W-9 is required before paying
 
 const digits10 = p => String(p || '').replace(/\D/g, '').slice(-10);
 const CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
@@ -206,11 +206,14 @@ async function mapFor(db, customerId) {
       levels[lvl].push(r.id);
     }
   }
-  const all = await db.get('/referral_payouts?beneficiary_customer_id=eq.' + esc(customerId) + '&status=neq.void&select=amount,status,level');
+  const all = await db.get('/referral_payouts?beneficiary_customer_id=eq.' + esc(customerId) + '&status=neq.void&select=amount,status,level,earned_at');
   const owed = all.filter(p => p.status === 'owed').reduce((s, p) => s + Number(p.amount), 0);
   const paid = all.filter(p => p.status === 'paid').reduce((s, p) => s + Number(p.amount), 0);
+  // W-9 rule is per calendar year ($600+ paid or owed in the same year), per Dennis 2026-11-12.
+  const yr = String(new Date().getUTCFullYear());
+  const yearTotal = all.filter(p => String(p.earned_at || '').slice(0, 4) === yr).reduce((s, p) => s + Number(p.amount), 0);
   const w9 = (await db.get('/w9_forms?member_id=eq.' + esc(customerId) + '&select=signed_at&limit=1')).length > 0;
-  return { code, link: SITE + '/book?ref=' + code, rates: RATES, levels: { 1: people[1], 2: people[2], 3: people[3] }, owed, paid, w9, w9_needed: !w9 && (owed + paid) >= W9_THRESHOLD, w9_threshold: W9_THRESHOLD };
+  return { code, link: SITE + '/book?ref=' + code, rates: RATES, levels: { 1: people[1], 2: people[2], 3: people[3] }, owed, paid, w9, w9_needed: !w9 && yearTotal >= W9_THRESHOLD, year_total: yearTotal, w9_threshold: W9_THRESHOLD };
 }
 
 module.exports = { RATES, TIERS, W9_THRESHOLD, genCode, digits10, client, ensureCode, findReferrer, linkReferral, ancestors, tierReached, settleCustomer, settleAll, mapFor };
