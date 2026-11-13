@@ -4,7 +4,7 @@ const GHL_LOCATION_ID = 'gXWwbOVymY0iRfj7c1It';
 const CORS = {
   'Content-Type': 'application/json',
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'Content-Type'
+  'Access-Control-Allow-Headers': 'Content-Type, x-admin-key'
 };
 
 function randomCode(len) {
@@ -98,10 +98,25 @@ exports.handler = async function(event) {
   // direct referral) will 403 with the message below — ask Claude to insert
   // a hired candidates row for them directly, a one-line SQL fix, same as
   // every other rare admin edge case handled this way throughout this file.
-  const candResp = await fetch(SUPA_URL + '/rest/v1/candidates?email=eq.' + encodeURIComponent(email.toLowerCase()) + '&status=eq.hired&select=id&limit=1', { headers: supaHeaders });
-  const candData = candResp.ok ? await candResp.json() : [];
-  if (!Array.isArray(candData) || candData.length === 0) {
-    return { statusCode: 403, headers: CORS, body: JSON.stringify({ error: 'No approved application on file for this email. If you applied, we\'ll reach out once you\'re cleared to set up your portal login. If an admin is onboarding a direct referral, mark them hired in the candidates table first.' }) };
+  // Admin override (2026-11-13, per Dennis): an admin typing a hire's info into
+  // the Onboard New Hire panel may skip the application check. Verified with a
+  // secret (Netlify env ADMIN_ONBOARD_KEY) sent as x-admin-key — NOT with the
+  // source field or Origin, which anyone can spoof. The public /onboarding page
+  // never has the key, so self-onboarding still needs a 'hired' application.
+  const adminKey = process.env.ADMIN_ONBOARD_KEY || '';
+  const sentKey = (event.headers && (event.headers['x-admin-key'] || event.headers['X-Admin-Key'])) || '';
+  let adminOverride = false;
+  if (adminKey && sentKey) {
+    const a = Buffer.from(adminKey), b = Buffer.from(String(sentKey));
+    adminOverride = a.length === b.length && require('crypto').timingSafeEqual(a, b);
+  }
+  if (sentKey && !adminOverride) {
+    return { statusCode: 401, headers: CORS, body: JSON.stringify({ error: 'Admin key not accepted.', code: 'bad_admin_key' }) };
+  }
+  const candResp = adminOverride ? null : await fetch(SUPA_URL + '/rest/v1/candidates?email=eq.' + encodeURIComponent(email.toLowerCase()) + '&status=eq.hired&select=id&limit=1', { headers: supaHeaders });
+  const candData = candResp && candResp.ok ? await candResp.json() : [];
+  if (!adminOverride && (!Array.isArray(candData) || candData.length === 0)) {
+    return { statusCode: 403, headers: CORS, body: JSON.stringify({ code: 'needs_approval', error: 'No approved application on file for this email. If you applied, we\'ll reach out once you\'re cleared to set up your portal login.' }) };
   }
 
   // Generate credentials

@@ -7561,16 +7561,26 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (btn) { btn.disabled = true; btn.textContent = 'Creating…'; }
       if (st) { st.style.color = '#888'; st.textContent = 'Creating login and sending welcome email…'; }
       try {
-        var resp = await fetch('/.netlify/functions/rep-onboard', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+        var _obKey = ''; try { _obKey = localStorage.getItem('adminOnboardKey') || ''; } catch(e) {}
+        var _obBody = JSON.stringify({
             full_name: name, email: email, phone: phone, market: market,
             role: role, role_type: role === 'setter' ? 'Setter' : (role === 'ops' ? 'Ops Partner' : 'Sales Rep'),
             home_zip: (role === 'tech' && zip) ? zip : undefined, home_lat: homeLat, home_lng: homeLng, notify_prefs: prefs || undefined,
             source: 'admin-onboard', start_date: start || undefined
-          })
-        });
+          });
+        var _obSend = function(k) { return fetch('/.netlify/functions/rep-onboard', { method: 'POST', headers: k ? { 'Content-Type': 'application/json', 'x-admin-key': k } : { 'Content-Type': 'application/json' }, body: _obBody }); };
+        var resp = await _obSend(_obKey);
         var data = await resp.json();
+        // No application on file (or a stale key): ask for the admin key once, remember it on this device, retry.
+        if (!resp.ok && (data.code === 'needs_approval' || data.code === 'bad_admin_key')) {
+          var _k = prompt('Admin onboarding key (lets you onboard someone with no application on file):');
+          if (_k) {
+            _obKey = _k.trim();
+            resp = await _obSend(_obKey); data = await resp.json();
+            if (resp.ok && !data.error) { try { localStorage.setItem('adminOnboardKey', _obKey); } catch(e) {} }
+            else if (data.code === 'bad_admin_key') { try { localStorage.removeItem('adminOnboardKey'); } catch(e) {} }
+          }
+        }
         if (!resp.ok || data.error) throw new Error(data.error || ('HTTP ' + resp.status));
         if (st) { st.style.color = '#8DC63F'; st.innerHTML = '&#10003; Created — access code <strong>' + (data.code||'') + '</strong>. Welcome email sent to ' + email + '.'; }
         if (btn) btn.textContent = 'Done';
