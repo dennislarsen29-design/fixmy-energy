@@ -1,6 +1,6 @@
 // Independent-electrician pay (2026-10-31, per Dennis): every Ops partner EXCEPT Cosmic is paid on the electrician plan
 // shown on /electricians: $250 per completed diagnostic, a travel adder by distance from the partner's base ZIP to the job,
-// and a $50 Professional Bonus when the visit meets its conditions. Cosmic (ops3) stays on its own flat $300 model.
+// and a $50 Professional Bonus when the visit meets its conditions. Cosmic (ops3) stays on its own flat $300 model, plus the $50 bonus added automatically (they don't use our CRM).
 // Everything is recomputed from the database on each call and is idempotent, so it is safe to call after every save.
 const SUPA_URL = process.env.SUPABASE_URL || 'https://kbtobyoumvbcxfbugsid.supabase.co';
 const EXCLUDED = ['ops3'];
@@ -59,7 +59,9 @@ async function reconcile(customerId, doFetch) {
     if (own.length) await del(own.map(x => x.id));
     const left = costs.length - own.length;
     if (!left) await ins({ label: LABEL_BASE, amount: COSMIC_FLAT, created_by: 'auto-diag-convert' });
-    return { ok: true, model: 'cosmic' };
+    // Cosmic doesn't use our CRM (no check-in, notes or photos to verify), so the $50 Professional Bonus is added automatically (2026-11-13, per Dennis).
+    if (!costs.some(x => /^Professional bonus/.test(x.label || ''))) await ins({ label: LABEL_BONUS, amount: BONUS, created_by: 'auto-cosmic-bonus' });
+    return { ok: true, model: 'cosmic', bonus: 'auto' };
   }
   // A diagnostic line already PAID (to anyone) means the pay was settled: never recompute it.
   if (costs.some(x => x.status === 'paid' && /^Diagnostic/.test(x.label || ''))) return { ok: true, skipped: 'already_paid' };
