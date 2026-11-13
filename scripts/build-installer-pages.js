@@ -13,6 +13,7 @@ function grab(name) {
 }
 const map = grab('map'), facts = grab('statusFacts');
 const extraData = {}; JSON.parse(fs.readFileSync(path.join(__dirname, 'installer-data.json'), 'utf8')).forEach(r => { extraData[r[0]] = { imp: r[5] }; });
+const guides = (()=>{ try { return JSON.parse(fs.readFileSync(path.join(__dirname, 'installer-guides.json'), 'utf8')); } catch (e) { return {}; } })();
 const esc = s => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 fs.mkdirSync(path.join(root, 'installers'), { recursive: true });
 Object.keys(map).forEach(id => {
@@ -31,9 +32,10 @@ Object.keys(map).forEach(id => {
     ['What should I do about my ' + ins.label + ' system?', extra || ('Start with a free evaluation. We compare what your system should produce with what it actually produces, read any inverter error codes, and tell you plainly what is wrong and what the manufacturer warranties still cover.')],
     ['How much does an evaluation cost?', 'The first evaluation is free. We start with your photos and your utility bill, then schedule a technician visit or a guided video evaluation, and we explain any repair cost before work begins.']
   ];
+  ((guides[id] || {}).extraQa || []).forEach(x => qa.push(x));
   const faq = { '@context': 'https://schema.org', '@type': 'FAQPage', mainEntity: qa.map(x => ({ '@type': 'Question', name: x[0], acceptedAnswer: { '@type': 'Answer', text: x[1] } })) };
   const url = 'https://fixmy.energy/' + id;
-  const page = { '@context': 'https://schema.org', '@type': 'WebPage', name: ins.title, url: url, description: ins.desc, dateModified: '2026-11-05', inLanguage: 'en-US',
+  const page = { '@context': 'https://schema.org', '@type': 'WebPage', name: ins.title, url: url, description: ins.desc, dateModified: '2026-11-13', inLanguage: 'en-US',
     about: { '@type': 'Thing', name: ins.label + ' solar systems' }, publisher: { '@type': 'Organization', name: 'Solar Review', url: 'https://fixmy.energy', telephone: '+1-619-777-6527' } };
   const svc = { '@context': 'https://schema.org', '@type': 'Service', name: 'Independent service for ' + ins.label + ' solar systems', serviceType: 'Solar system diagnostics, repair and battery retrofit', url: url,
     provider: { '@type': 'Organization', name: 'Solar Review', url: 'https://fixmy.energy', telephone: '+1-619-777-6527' },
@@ -49,7 +51,7 @@ Object.keys(map).forEach(id => {
     qa.map(x => '<h3 style="font-size:1.02rem;margin:18px 0 4px;">' + esc(x[0]) + '</h3><p style="margin:0;line-height:1.6;">' + esc(x[1]) + '</p>').join('\n') +
     '\n<p style="margin-top:22px;"><strong>Related:</strong> <a href="/defunct-solar-installers">All closed solar installers</a> ' + rel.map(k => '&middot; <a href="/' + k + '">' + esc(map[k].label) + '</a>').join(' ') + '</p>\n</section>\n';
   rep('</head>', [faq, page, svc, bc].map(o => '<script type="application/ld+json">' + JSON.stringify(o) + '</script>').join('\n') + '\n<script>window.__INSTALLER=' + JSON.stringify(id) + ';</script>\n</head>');
-  rep('<div class="form-wrap" id="book">', visFaq + '<div class="form-wrap" id="book">');
+  rep('<div class="form-wrap" id="book">', visFaq + ((guides[id] || {}).html || '') + '<div class="form-wrap" id="book">');
   // The page script still reads ?installer= for the form, badges and tracking: fall back to the baked id,
   // and stop it adding a second (duplicate) FAQPage block.
   h = h.split("new URLSearchParams(window.location.search).get('installer')").join("(new URLSearchParams(window.location.search).get('installer') || window.__INSTALLER || '')");
