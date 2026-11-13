@@ -3032,3 +3032,6 @@ David Witthoft's setter commission showed as an overdue payday (Ronda, $72.50) b
 
 ### Tesla Expansion Pack redline $7,000 → $7,850 per unit (2026-11-13, per Dennis)
 Sub Sheet row, `OPS_RATE_ITEMS.expansion_pack` default, and the proposal builder's expansion-pack stepper (`_expCount * 7850`, line item price `count * 7850`) all updated; `SUB_SHEET_VERSION` bumped to `2026-11-13` so reps re-acknowledge. Already-sent proposals keep their saved price. The "Expansion / Add-On" limits table (max $7,000) was left as is. No agreement figure for this (checked), so no agreement bump.
+
+### Correction (2026-11-13): stamped signed PDFs already exist
+The "Not built yet: stamped final PDF of the portal documents" notes above are stale. `_buildSignedDocPdf` / `downloadSignedDoc` (portal.html, commit 1e033ab, 2026-10-28) rebuild the original template PDF with every captured value (typed or drawn signature, initials, checkboxes, company/CSLB data) at the confirmed field positions plus a one-page signing record, in the browser with the vendored pdf-lib. Download buttons: admin/tech document status line, customer portal "Your Documents", and Ops job cards. Only documents with a confirmed `document_templates` row can be stamped.
