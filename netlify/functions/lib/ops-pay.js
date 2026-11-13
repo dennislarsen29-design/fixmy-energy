@@ -87,7 +87,47 @@ async function reconcile(customerId, doFetch) {
   return { ok: true, model: 'electrician', partner: p.name || c.assigned_ops, miles: mi, adder: add, over100: over, noBase, noLoc, changed: !same };
 }
 
-// The $50 Professional Bonus was removed 2026-11-04 (per Dennis). These stay as no-ops so older callers don't break.
-async function bonus() { return { ok: true, skipped: 'removed' }; }
-async function approveBonus() { return { ok: true, skipped: 'removed' }; }
+// Add the $50 Professional Bonus when the visit earned it. Conditions: an on-time check-in, same-day notes, and the
+// manufacturer warranty contact uploaded with the findings. Anything missing is recorded for the admin to see.
+async function bonus(customerId, doFetch) {
+  doFetch = doFetch || fetch;
+  const c = ((await get('/customers?id=eq.' + customerId + '&select=id,assigned_ops,sold_type,sold_at,diagnostic_date,notes,assessment_notes,diag_findings&limit=1', doFetch)) || [])[0];
+  if (!c || !c.assigned_ops || EXCLUDED.indexOf(c.assigned_ops) > -1 || c.sold_type !== 'diagnostic') return { ok: true, skipped: 'not_applicable' };
+  const f = c.diag_findings;
+  if (!f || !f.submitted_at) return { ok: true, skipped: 'no_findings' };
+  const costs = (await get('/job_costs?customer_id=eq.' + customerId + '&select=id,label,created_at&limit=50', doFetch)) || [];
+  if (costs.some(x => /^Professional bonus/.test(x.label || ''))) return { ok: true, skipped: 'exists' };
+  if (isLegacy(c, costs)) return { ok: true, skipped: 'legacy_pricing' };
+  const parse = s => { try { const a = JSON.parse(s || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } };
+  const notes = parse(c.notes), anotes = parse(c.assessment_notes);
+  const visitDay = c.diagnostic_date ? ptDay(c.diagnostic_date) : '';
+  const missing = [];
+  const ci = notes.filter(n => n && String(n.by || '').indexOf('📍 Check-in') === 0 && (!visitDay || ptDay(n.ts) === visitDay));
+  if (!ci.length) missing.push('on-time check-in');
+  else if (ci.every(n => /LATE check-in|NOT at the address yet/.test(String(n.text || '')))) missing.push('on-time check-in (it was late or off-site)');
+  const sameDayNotes = visitDay && (ptDay(f.submitted_at) === visitDay || anotes.some(n => n && ptDay(n.ts) === visitDay));
+  if (!sameDayNotes) missing.push('same-day notes');
+  // Proof of the manufacturer warranty call: a screenshot of the call, uploaded to the job as a 'Warranty Contact' photo.
+  const ph = (await get('/job_photos?or=(customer_id.eq.' + customerId + ',job_id.eq.' + customerId + ')&select=label,expected_label&limit=200', doFetch)) || [];
+  if (!ph.some(x => x && (x.label === 'Warranty Contact' || x.expected_label === 'Warranty Contact'))) missing.push('screenshot of the manufacturer warranty call');
+  const patch = async (b) => doFetch(SUPA_URL + '/rest/v1/customers?id=eq.' + customerId, { method: 'PATCH', headers: Object.assign({}, heads(), { Prefer: 'return=minimal' }), body: JSON.stringify({ diag_findings: Object.assign({}, f, { bonus: b }) }) });
+  // Missing anything = held for the admin's approval (nothing is added until approved).
+  if (missing.length) { await patch({ earned: false, missing, at: new Date().toISOString() }); return { ok: true, earned: false, missing, held_for_approval: true }; }
+  await doFetch(SUPA_URL + '/rest/v1/job_costs', { method: 'POST', headers: Object.assign({}, heads(), { Prefer: 'return=minimal' }), body: JSON.stringify({ customer_id: customerId, label: LABEL_BONUS, amount: BONUS, status: 'pending', created_by: tag(c.assigned_ops) }) });
+  await patch({ earned: true, at: new Date().toISOString() });
+  return { ok: true, earned: true };
+}
+// Admin approves a held bonus anyway: adds the $50 line and records who/when.
+async function approveBonus(customerId, doFetch) {
+  doFetch = doFetch || fetch;
+  const c = ((await get('/customers?id=eq.' + customerId + '&select=id,assigned_ops,sold_type,diag_findings&limit=1', doFetch)) || [])[0];
+  if (!c || !c.assigned_ops || EXCLUDED.indexOf(c.assigned_ops) > -1 || c.sold_type !== 'diagnostic') return { ok: true, skipped: 'not_applicable' };
+  const f = c.diag_findings;
+  if (!f || !f.bonus || f.bonus.earned !== false) return { ok: true, skipped: 'nothing_held' };
+  const costs = (await get('/job_costs?customer_id=eq.' + customerId + '&select=id,label&limit=50', doFetch)) || [];
+  if (costs.some(x => /^Professional bonus/.test(x.label || ''))) return { ok: true, skipped: 'exists' };
+  await doFetch(SUPA_URL + '/rest/v1/job_costs', { method: 'POST', headers: Object.assign({}, heads(), { Prefer: 'return=minimal' }), body: JSON.stringify({ customer_id: customerId, label: LABEL_BONUS, amount: BONUS, status: 'pending', created_by: tag(c.assigned_ops) }) });
+  await doFetch(SUPA_URL + '/rest/v1/customers?id=eq.' + customerId, { method: 'PATCH', headers: Object.assign({}, heads(), { Prefer: 'return=minimal' }), body: JSON.stringify({ diag_findings: Object.assign({}, f, { bonus: { earned: true, approved: true, was_missing: f.bonus.missing || [], at: new Date().toISOString() } }) }) });
+  return { ok: true, approved: true };
+}
 module.exports = { reconcile, bonus, approveBonus, travelAdder, miles, isNonCA, isUtah, EXCLUDED, BASE, BASE_UT, BONUS };
