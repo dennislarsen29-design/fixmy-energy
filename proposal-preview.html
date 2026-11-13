@@ -780,7 +780,7 @@ button.component-chip.open{border-color:var(--dark);}
     var billToday = PROP && PROP.hide_bill ? 0 : (parseFloat(CUST.monthly_bill) || 0);
     var sav = monthlySavingsFor(opt);
     var rows = '';
-    var estGrid = billToday > 0 ? Math.max(sav > 0 ? minCharge() : 0, Math.round(billToday - sav)) : null;
+    var estGrid = billToday > 0 ? Math.max(sav > 0 ? minCharge(opt) : 0, Math.round(billToday - sav)) : null;
     var PT = savingsPartsFor(opt);
     if (billToday > 0) rows += '<div class="compare-row"><div class="lbl">Your bill today<span class="sub">before any upgrade</span></div><div class="amt">'+moneyRound(billToday)+'/mo</div></div>';
     var DET = {}; try { DET = impDetailMap(opt); } catch(e) {}
@@ -789,8 +789,8 @@ button.component-chip.open{border-color:var(--dark);}
     // The rows below show each part's full estimate; the bill itself can only fall to the minimum charge.
     // Whatever the parts add up to beyond that is the buffer (sav is already capped, so use the parts' sum).
     var partsSum = (PT.tou||0) + (PT.panels||0) + (PT.inverter||0) + (PT.other||0);
-    var cappedNow = billToday > 0 && partsSum > billToday - minCharge();
-    var buffer = cappedNow ? Math.round(partsSum - (billToday - minCharge())) : 0;
+    var cappedNow = billToday > 0 && partsSum > billToday - minCharge(opt);
+    var buffer = cappedNow ? Math.round(partsSum - (billToday - minCharge(opt))) : 0;
     if (billToday > 0 && sav > 0) {
       [['tou','Battery shifts your power use off peak',PT.tou],['panels','Added solar panels',PT.panels],['inverter','Restored solar production',PT.inverter],['other','Solar production',PT.other]].forEach(function(x){
         if (x[2] > 0) rows += row(x[1], '', '&minus;'+moneyRound(x[2])+'/mo', 'neg', DET[x[0]]);
@@ -798,14 +798,14 @@ button.component-chip.open{border-color:var(--dark);}
     }
     if (buffer > 0) {
       rows += row('Future consumption buffer', 'extra savings beyond your bill today &middot; not counted in your total', moneyRound(buffer)+'/mo', 'buf',
-        '<b>What this is.</b> Together the battery and panels are estimated to save about '+moneyRound(partsSum)+'/mo, but your bill today is only '+moneyRound(billToday)+'/mo and can never fall below about '+moneyRound(minCharge())+'/mo.<br>'+
-        '<b>The math.</b> '+moneyRound(billToday)+' &minus; '+moneyRound(partsSum)+' = '+(billToday-partsSum<0?'&minus;':'')+moneyRound(Math.abs(billToday-partsSum))+', which stops at the '+moneyRound(minCharge())+' minimum &rarr; '+moneyRound(partsSum)+' &minus; '+moneyRound(billToday-minCharge())+' = '+moneyRound(buffer)+'/mo left over.<br>'+
+        '<b>What this is.</b> Together the battery and panels are estimated to save about '+moneyRound(partsSum)+'/mo, but your bill today is only '+moneyRound(billToday)+'/mo and can never fall below about '+moneyRound(minCharge(opt))+'/mo.<br>'+
+        '<b>The math.</b> '+moneyRound(billToday)+' &minus; '+moneyRound(partsSum)+' = '+(billToday-partsSum<0?'&minus;':'')+moneyRound(Math.abs(billToday-partsSum))+', which stops at the '+moneyRound(minCharge(opt))+' minimum &rarr; '+moneyRound(partsSum)+' &minus; '+moneyRound(billToday-minCharge(opt))+' = '+moneyRound(buffer)+'/mo left over.<br>'+
         'That leftover is real production capacity. If your usage grows (an EV, new A/C, a pool) your system covers it before it shows up on your bill. We don&rsquo;t count it as savings today, so your total stays conservative.');
     }
     if (estGrid !== null) {
       var capped = cappedNow;
-      rows += row('Utility bill after the upgrade', (capped ? 'estimated &middot; stops at the '+moneyRound(minCharge())+' minimum charge' : 'estimated'), moneyRound(estGrid)+'/mo', '',
-        'Your bill today ('+moneyRound(billToday)+') minus the estimated savings above'+(capped ? ', limited to what a bill can actually drop by. A utility always charges a base amount of about '+moneyRound(minCharge())+'/mo, and extra solar beyond what you use is credited at a low wholesale rate, not the full retail rate.' : '.'));
+      rows += row('Utility bill after the upgrade', (capped ? 'estimated &middot; stops at the '+moneyRound(minCharge(opt))+' minimum charge' : 'estimated'), moneyRound(estGrid)+'/mo', '',
+        'Your bill today ('+moneyRound(billToday)+') minus the estimated savings above'+(capped ? ', limited to what a bill can actually drop by. A utility always charges a base amount of about '+moneyRound(minCharge(opt))+'/mo, and extra solar beyond what you use is credited at a low wholesale rate, not the full retail rate.' : '.'));
     }
     if (fin) {
       var _fp = cashPriceFor(opt, true).price;
@@ -926,7 +926,14 @@ button.component-chip.open{border-color:var(--dark);}
   var BATTERY_TOU_RATE_DEFAULT = 0.31;
   var MIN_MONTHLY_CHARGE = 10; // SDG&E base services charge — a bill never reaches $0
   // Lowest a bill can fall to (per Dennis, 2026-10-15): about $10 on NEM 1.0/2.0, about $24 on NEM 3.0 / Net Billing.
-  function minCharge(){ return nemVersion() === 3 ? 24 : MIN_MONTHLY_CHARGE; }
+  // NEM 3.0 / Net Billing: base charge plus small non-bypassable charges puts a realistic bill near $25 (Dennis, 2026-11-13).
+  // An option that adds ~1 kW+ of panels (3+) moves the customer to Net Billing, so it uses the NEM 3 floor too.
+  function addsNem3Panels(opt){
+    var l = ((opt && opt.line_items) || []).filter(function(li){ return li && li.id === 'panel_addon_420w'; })[0];
+    var m = l && /[\u00d7x]\s*(\d+)/i.exec(l.name || '');
+    return !!(m && parseInt(m[1], 10) >= 3);
+  }
+  function minCharge(opt){ return (nemVersion() === 3 || addsNem3Panels(opt)) ? 25 : MIN_MONTHLY_CHARGE; }
   var touRate = BATTERY_TOU_RATE_DEFAULT;
   function touSavingsAnnualFor(opt, rate){
     var kwh = annualBatteryKwhFor(opt);
@@ -1072,7 +1079,7 @@ button.component-chip.open{border-color:var(--dark);}
       // The saved post-fix bill ($9-21 from her true-up history) is the bill with the FULL system running,
       // battery shifting included. Without a battery (Option 2) she still buys the evening-peak energy a
       // Powerwall would have shifted, so that option's remaining bill = anchor + the shift value.
-      var anchor = Math.max(minCharge(), postfixBillFor());
+      var anchor = Math.max(minCharge(opt), postfixBillFor());
       var useYr = PROP && PROP.usage_kwh > 0 ? PROP.usage_kwh : 0;
       var shiftKwh = out.touKwh;
       if (!(shiftKwh > 0) && useYr > 0) shiftKwh = Math.round(Math.min(1 * 13.5 * 1.5 * 365, 0.6 * Math.max(0, useYr - sk)));
@@ -1083,11 +1090,11 @@ button.component-chip.open{border-color:var(--dark);}
       else { out.touMonthly = 0; out.touKwh = 0; }
       out.remaining = hasPowerwall(opt) ? anchor : noBattRemaining;
       out.batteryCapped = false;
-      out.totalMonthly = Math.min(out.solarMonthly + out.touMonthly + out.panelMonthly, Math.max(0, Math.round(billMo - minCharge())));   // never more than the bill
+      out.totalMonthly = Math.min(out.solarMonthly + out.touMonthly + out.panelMonthly, Math.max(0, Math.round(billMo - minCharge(opt))));   // never more than the bill
       return out;
     }
     // The upgrade can't remove more than the customer pays today.
-    if (billMo > 0 && out.totalMonthly > billMo - minCharge()) out.totalMonthly = Math.max(0, Math.round(billMo - minCharge()));
+    if (billMo > 0 && out.totalMonthly > billMo - minCharge(opt)) out.totalMonthly = Math.max(0, Math.round(billMo - minCharge(opt)));
     return out;
   }
   function improvementsHtml(opt){
