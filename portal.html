@@ -2331,13 +2331,37 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var _cosmicPaid = com.ok ? com.data.filter(function(x){ return _isCosmicPay(x) && x.status === 'paid'; }) : [];
     if (com.ok) com = { ok: true, data: com.data.filter(function(x){ return !_isCosmicPay(x); }) };
     var sold = com.ok ? _sunBucket(com.data, function(x){ return x.sold_at || x.created_at; }, money, months) : null;
+    // Admin "Sales revenue" = jobs OFFICIALLY SOLD (2026-11-14, per Dennis): counted by the date the job was sold, at the amount that stays in
+    // Solar Review's bank (company margin + Dennis's own share), no matter whether commissions are locked in yet. Team shares are shown separately.
+    var _soldCo = null, _soldTm = 0, _soldOk = false;
+    if (pov === 'admin') {
+      try {
+        var _since = new Date(since).getTime();
+        var _jobs = (adminCustomers || []).filter(function(j){ return j && j.sold_type && !j.archived && !j.disposition_exit && new Date(j.sold_at || j.created_at || 0).getTime() >= _since; });
+        var _fx = _jobs.filter(function(j){ return j.lead_category !== 'new_solar'; }).map(function(j){ return j.id; });
+        var _ax = _jobs.filter(function(j){ return j.lead_category === 'new_solar'; }).map(function(j){ return j.id; });
+        await Promise.all([_loadFixmyJobCommissions(_fx), _loadAxiaJobCommissions(_ax)]);
+        var _isDen = function(d){ return d && (d.repId === DEFAULT_CLOSER_ID || /^dennis/i.test(String(_repCanonical(d.closerNm || '') || ''))); };
+        var _rows = [], _okAll = true;
+        _jobs.forEach(function(j){
+          var d = (j.lead_category === 'new_solar' ? _axiaCommCache : _fixmyCommCache)[j.id];
+          if (!d) { _okAll = false; return; }
+          var _co = (d.companyAmt || 0) + (_isDen(d) ? (d.closerAmt || 0) : 0), _tm = (_isDen(d) ? 0 : (d.closerAmt || 0)) + (d.setterAmt || 0);
+          _rows.push({ amount: _co, sold_at: j.sold_at || j.created_at, _tm: _tm });
+        });
+        _soldCo = _sunBucket(_rows, function(x){ return x.sold_at; }, function(r){ return r.amount; }, months);
+        var _mk2 = months[months.length - 1].key;
+        _rows.forEach(function(x){ var dt = new Date(x.sold_at), k = dt.getFullYear() + '-' + (dt.getMonth() + 1); if (k === _mk2) _soldTm += x._tm; });
+        _soldOk = _okAll;
+      } catch (e) { _soldCo = null; }
+    }
     if (pov === 'admin') {
       // Company = Solar Review's margin + Dennis's own commission (same bank account) — one category until Partners join the Partner Pool.
       var _coNow = 0, _tmNow = 0, _mk = months[months.length - 1].key;
-      if (com.ok) com.data.forEach(function(x){ var d = x.sold_at || x.created_at; if (!d) return; var dt = new Date(d), k = dt.getFullYear() + '-' + (dt.getMonth() + 1); if (k !== _mk) return; if (x.payee === DEFAULT_CLOSER_ID || x.payee === 'solar_review_corp') _coNow += money(x); else _tmNow += money(x); });
-      tiles.push(_sunTrendTile({ id: 'tr_sales', label: 'Sales revenue', series: sold, months: months, pov: pov, key: 'sales', unknown: com.ok ? null : 'Commissions could not be loaded.',
-        extra: com.ok ? 'This month: <b>Company ' + _sunMoney(_coNow) + '</b> (Solar Review + Dennis, one bank account) &middot; Team ' + _sunMoney(_tmNow) : '',
-        info: '<b>Definition:</b> commissions sold by month (every split: Tech, Setter and Solar Review) — new jobs sold. Cosmic paying its 50% on an already-sold job is Cash collected, not here.<br><b>Source:</b> commissions table, by the date each was locked in as sold.<br><b>Goal:</b> your best earlier month unless you set one.' }));
+      if (_soldCo) { _coNow = _soldCo[_soldCo.length - 1]; _tmNow = _soldTm; } else if (com.ok) com.data.forEach(function(x){ var d = x.sold_at || x.created_at; if (!d) return; var dt = new Date(d), k = dt.getFullYear() + '-' + (dt.getMonth() + 1); if (k !== _mk) return; if (x.payee === DEFAULT_CLOSER_ID || x.payee === 'solar_review_corp') _coNow += money(x); else _tmNow += money(x); });
+      tiles.push(_sunTrendTile({ id: 'tr_sales', label: 'Sales revenue', series: (_soldCo || sold), months: months, pov: pov, key: 'sales', unknown: (_soldCo || com.ok) ? null : 'Sold jobs could not be loaded.',
+        extra: (_soldCo || com.ok) ? 'This month: <b>Company ' + _sunMoney(_coNow) + '</b> (Solar Review + Dennis, one bank account) &middot; Team ' + _sunMoney(_tmNow) : '',
+        info: '<b>Definition:</b> jobs officially sold, by the month sold, at the amount that stays in Solar Review\'s bank (company margin plus Dennis\'s own commission). Tech and Setter shares are shown as Team and not counted. Locking commissions in is a separate step (earned, payable) and does not move this. Cosmic paying its 50% is Cash collected, not here.<br><b>Source:</b> each sold job\'s Gross Commission split, by sold date.<br><b>Goal:</b> your best earlier month unless you set one.' }));
       var cash = pay.ok ? _sunBucket(pay.data.concat(_cosmicPaid.map(function(x){ return { amount: x.amount, created_at: x.paid_at || x.sold_at || x.created_at }; })), function(x){ return x.created_at; }, money, months) : null;
       tiles.push(_sunTrendTile({ id: 'tr_cash', label: 'Cash collected', series: cash, months: months, pov: pov, key: 'cash', unknown: pay.ok ? null : 'Payments could not be loaded.',
         info: '<b>Definition:</b> money actually received, by month: customer payments plus Cosmic paying Solar Review its 50% on sold jobs.<br><b>Source:</b> payments ledger + Cosmic payments recorded in Payroll.<br><b>Goal:</b> your best earlier month unless you set one.' }));
