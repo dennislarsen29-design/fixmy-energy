@@ -42,11 +42,13 @@ dict(slug='solar-monitoring-offline', h1='Solar Monitoring Offline? How to Recon
  ('Try these first', '<ol><li>Check your home internet and Wi-Fi. A new router, a changed Wi-Fi password or a power outage is the most common cause.</li><li>Look at the inverter or gateway light. Many units show a Wi-Fi or network status light.</li><li>Restart your router, then wait about 15 to 30 minutes for the equipment to reconnect.</li><li>Check your utility bill or meter to see if power is still being produced and exported.</li></ol>'),
  ('Offline versus not producing', '<p>Many homeowners learn their system was down only after the app stops updating. If the app has been offline for weeks and your bill has gone up, assume the system may not be producing until a technician confirms it. If the app is offline but your bill looks normal, it is usually only the data link.</p>'),
  ('Why installers closing matters', '<p>Some monitoring portals are tied to the installer account. If your installer closed, you may need the account moved to you, or a new gateway set up. We help with that, and we can read your production from your utility bill data meanwhile.</p>'),
+ ('Cellular monitoring units that stop reporting', '<p>Some systems report through a built-in cellular modem instead of your home Wi-Fi, and those modems can stop connecting when the carrier network they were built on is retired or the unit simply wears out. If your app shows offline and changing your router does nothing, ask your installer or the equipment maker whether your system uses a cellular unit, and what replacing it involves. A system in this state is often still producing power; only the reporting stopped. Compare your latest utility bill to the same month last year to see which it is. Whether a replacement unit is covered by a warranty depends on the equipment maker and the age of the system, so confirm that with them before assuming it is or is not.</p>'),
  ('When to call', '<p>If your system has been offline for more than a few days and the steps above did not help, send us photos of the inverter and gateway and your last bill. We will tell you what we think is happening.</p>'),
  ],
  faqs=[('Why did my solar app go offline?','Most often a changed router, Wi-Fi password or internet outage. It can also mean the inverter or gateway has a fault.'),
        ('Is my solar still working if the app is offline?','Sometimes yes. The app may only have lost its connection. Check your bill and the inverter light to tell the difference.'),
-       ('My installer closed. Can I still get monitoring?','Often yes. The account can usually be moved to you or reset. We can help.')]),
+       ('My installer closed. Can I still get monitoring?','Often yes. The account can usually be moved to you or reset. We can help.'),
+       ('My app is offline and changing my Wi-Fi did not help. What now?','Your system may report through a cellular unit instead of Wi-Fi. Those units can stop connecting while the panels keep producing. Check your bill against last year, then send us photos of the inverter and its label and we can tell you what to ask the equipment maker.')]),
 dict(slug='add-powerwall-to-existing-solar', h1='Add a Tesla Powerwall to Existing Solar',
  title='Add a Powerwall to Existing Solar in Southern California | Solar Review',
  desc='Already have solar panels? Learn how a Tesla Powerwall 3 works with existing panels, how net metering affects it, and how we check whether it makes sense for your bill.',
@@ -81,9 +83,9 @@ def html_for(d):
     secs = ''.join('<h2>%s</h2>\n%s\n' % (esc(h), body) for h, body in d['sections'])
     faq = ''.join('<div class="faq-q">%s</div><p>%s</p>' % (esc(q), esc(a)) for q, a in d['faqs'])
     others = ''.join('<a href="/%s">%s</a>' % (o['slug'], o['h1'].split(':')[0].split('?')[0]) for o in PAGES if o is not d)
-    body = ('<article class="wrap">\n<div class="eyebrow">Southern California</div>\n<h1>%s</h1>\n<p class="lede">%s</p>\n<p class="meta">Solar Review &middot; Updated October 2026</p>\n%s%s\n'
+    body = ('<article class="wrap">\n<div class="eyebrow">Southern California</div>\n<h1>%s</h1>\n<p class="lede">%s</p>\n<p class="meta">Solar Review &middot; Updated %s</p>\n%s%s\n'
             '<h2>Common questions</h2>\n%s\n<div class="related"><h3>Related</h3>%s<a href="/southern-california-solar-repair">All of Southern California</a></div>\n</article>') % (
-            esc(d['h1']), esc(d['lede']), secs, CTA, faq, others)
+            esc(d['h1']), esc(d['lede']), {'solar-monitoring-offline':'November 2026'}.get(s,'October 2026'), secs, CTA, faq, others)
     svc = json.dumps({"@context":"https://schema.org","@type":"Service","name":d['h1'],"provider":{"@type":"Organization","name":"Solar Review","url":SITE,"telephone":"+1-619-777-6527"},
         "areaServed":[{"@type":"AdministrativeArea","name":n+", California"} for n in ["San Diego County","Los Angeles County","Orange County","Riverside County","San Bernardino County"]],"url":SITE+"/"+s})
     faqld = json.dumps({"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":q,"acceptedAnswer":{"@type":"Answer","text":a}} for q,a in d['faqs']]})

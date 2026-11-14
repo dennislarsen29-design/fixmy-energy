@@ -65,6 +65,7 @@ def city_html(c):
     desc = 'Solar not producing in %s? Free evaluation, inverter and panel diagnostics, and Powerwall battery retrofits, even if your installer closed. Call (619) 777-6527.' % name
     faqs = [(fq, fa), ('Does it matter who installed my system?', 'No. We work on systems from any installer, including companies that have closed.'),
             ('Is the first evaluation free?', 'Yes. We start with your photos and utility bill, then a technician visit or a guided video evaluation. No obligation.')]
+    faqs = faqs + [('What should I send first?', 'A photo of your inverter (including its label), a photo of any error or fault light, and your most recent utility bill. With those we can usually tell you what we think is happening before anyone visits.')]
     near_links = ''.join('<a href="/solar-repair-%s">%s</a>' % (n, names[n]) for n in near if n in names)
     cty_link = ('<a href="/solar-repair-%s">%s</a>' % (cty_slug, cty_name)) if cty_slug else '<a href="/">San Diego County</a>'
     body = ('<article class="wrap">\n<div class="eyebrow">%s, California</div>\n<h1>Solar Panel Repair and Inverter Diagnostics in %s</h1>\n'

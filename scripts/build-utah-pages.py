@@ -35,7 +35,7 @@ def city_html(c):
     slug, name, util, near = c; s = 'solar-repair-%s-ut' % slug
     title = 'Solar Panel Repair & Inverter Diagnostics in %s, UT | Solar Review' % name
     desc = 'Solar not producing in %s, Utah? Free evaluation, inverter and panel diagnostics and Powerwall battery retrofits, even if your installer closed. Call (619) 777-6527.' % name
-    faqs = UT_FAQ(name)
+    faqs = UT_FAQ(name) + [('What should I send first?', 'A photo of your inverter (including its label), a photo of any error or fault light, and your most recent utility bill. With those we can usually tell you what we think is happening before anyone visits.')]
     near_links = ''.join('<a href="/solar-repair-%s-ut">%s</a>' % (n, names[n]) for n in near if n in names)
     body = ('<article class="wrap">\n<div class="eyebrow">%s, Utah</div>\n<h1>Solar Panel Repair and Inverter Diagnostics in %s, Utah</h1>\n'
       '<p class="lede">If your solar system in %s has stopped producing, shows an inverter error, or was installed by a company that is gone, we diagnose it and tell you plainly what is wrong. The first evaluation is free.</p>\n'

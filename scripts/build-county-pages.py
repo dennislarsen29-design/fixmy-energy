@@ -103,7 +103,7 @@ def jsonld_service(c):
       "areaServed":{"@type":"AdministrativeArea","name":c['name']+", California"},"url":SITE+"/"+c['slug']})
 
 def jsonld_faq(c):
-    return json.dumps({"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":q,"acceptedAnswer":{"@type":"Answer","text":re.sub('<[^>]+>','',a)}} for q,a in c['faqs']]})
+    return json.dumps({"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":q,"acceptedAnswer":{"@type":"Answer","text":re.sub('<[^>]+>','',a)}} for q,a in c['faqs'] + [('What should I send first?', 'A photo of your inverter (including its label), a photo of any error or fault light, and your most recent utility bill. With those we can usually tell you what we think is happening before anyone visits.')]]})
 
 def jsonld_bc(c):
     return json.dumps({"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[
@@ -140,7 +140,7 @@ def city_links(c):
 
 def county_html(c):
     others = ''.join('<a href="/%s">%s</a>' % (o['slug'], o['name']) for o in COUNTIES if o is not c)
-    faq = ''.join('<div class="faq-q">%s</div><p>%s</p>' % (esc(q), esc(a)) for q, a in c['faqs'])
+    faq = ''.join('<div class="faq-q">%s</div><p>%s</p>' % (esc(q), esc(a)) for q, a in c['faqs'] + [('What should I send first?', 'A photo of your inverter (including its label), a photo of any error or fault light, and your most recent utility bill. With those we can usually tell you what we think is happening before anyone visits.')])
     body = ('<article class="wrap">\n<div class="eyebrow">%s</div>\n<h1>%s</h1>\n<p class="lede">%s</p>\n<p class="meta">Solar Review &middot; Serving all of Southern California &middot; Updated October 2026</p>\n'
       '<h2>What we do</h2>\n<p>We diagnose and repair existing solar systems: inverters, panels, optimizers, wiring and monitoring. We also add Tesla Powerwall batteries to existing systems. The first evaluation is free, and you do not need to have bought your system from us.</p>\n'
       '<p><strong>Areas we serve in %s:</strong> %s.</p>\n'
