@@ -814,6 +814,11 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
         'Centerville','Farmington','Layton','Kaysville','Clearfield','Syracuse','Ogden','North Salt Lake','Woods Cross','Tooele',
         'Grantsville','Park City','Heber City','Kamas','Magna','Kearns'
       ];
+      // Austin, TX metro (2026-11-15, per Dennis — "pull data on SLC and Austin"). Same caveat: PermitStack coverage unverified; per-city ok/empty is tallied in permit_region_coverage.
+      const TX_CITIES = [
+        'Austin','Round Rock','Cedar Park','Pflugerville','Georgetown','Leander','Kyle','Buda','San Marcos','Lakeway',
+        'Bee Cave','Dripping Springs','Hutto','Manor','Liberty Hill','Bastrop','Elgin','Taylor'
+      ];
       const REGION_INSTALLERS = sortedInstallers.slice(0, 8);
       stamp(`=== Phase 1c: PermitStack SD cities (${SD_PS_CITIES.length} cities) ===`);
       const PHASE1C_DEADLINE = Date.now() + (6 * 60 * 1000);
@@ -845,6 +850,7 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
       for (const installer of REGION_INSTALLERS) {
         for (const city of CA_CITIES) phase1cUnits.push({ installer, city, state: 'CA' });
         for (const city of UT_CITIES) phase1cUnits.push({ installer, city, state: 'UT' });
+        for (const city of TX_CITIES) phase1cUnits.push({ installer, city, state: 'TX' });
       }
       const regionCov = {};
       const startCursor = phase1cUnits.length ? (phase1cCursor % phase1cUnits.length) : 0;
@@ -860,7 +866,7 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
           let page = 1;
           while (page <= 30) {
             if (Date.now() > PHASE1C_DEADLINE || overGlobal()) break;
-            const url = `${PS_BASE}/permits/search?city=${encodeURIComponent(city)}${unitState === 'UT' ? '&state=UT' : ''}&keyword=${encodeURIComponent(qname)}&per_page=100&page=${page}`;
+            const url = `${PS_BASE}/permits/search?city=${encodeURIComponent(city)}${unitState !== 'CA' ? '&state=' + unitState : ''}&keyword=${encodeURIComponent(qname)}&per_page=100&page=${page}`;
             let resp;
             try {
               resp = await fetchWithTimeout(url, { headers: psHeaders }, 10000);
