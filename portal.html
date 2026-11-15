@@ -2331,50 +2331,83 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var _cosmicPaid = com.ok ? com.data.filter(function(x){ return _isCosmicPay(x) && x.status === 'paid'; }) : [];
     if (com.ok) com = { ok: true, data: com.data.filter(function(x){ return !_isCosmicPay(x); }) };
     var sold = com.ok ? _sunBucket(com.data, function(x){ return x.sold_at || x.created_at; }, money, months) : null;
-    // Admin "Incoming sales" (2026-11-15, per Dennis): the ENTIRE company volume of jobs that are sold but not yet installed (incoming commissions) —
-    // Battery, Axia/QCells and other non-diagnostic jobs. Company = Solar Review margin + Dennis's own share (one bank account). Cosmic's first/second 50%
-    // that already arrived is subtracted. Team (Tech/Setter) shares are shown separately and not counted. Diagnostics are not part of this backlog.
-    var _inc = null;
+    // Finance cards for S.U.N. (2026-11-15, per Dennis — AUTHORITATIVE). Current month resets each month; every card tracks pace and last month.
+    //  SALES: commissions on SOLD jobs that would reach Solar Review's bank if installed (Tech/Setter shares removed; Dennis's own stays — same account).
+    //         All verticals. Sale date: Diagnostic/Service = fee paid, Battery = documents signed and sent to the Ops partner (docs_sent_at), Axia = Welcome Call Closed.
+    //  CASH:  deposits into the business account (Plaid); transfers between our own accounts excluded.
+    //  AR:    due but not yet received — Cosmic's 50% at sale and 50% at completion; Axia Payment 1 after install, Domestic Content after PTO.
+    var _fin = null;
     if (pov === 'admin') {
       try {
-        var _jobs = (adminCustomers || []).filter(function(j){
-          if (!j || !j.sold_type || j.sold_type === 'diagnostic' || j.archived || j.disposition_exit) return false;
-          if (j.lead_category === 'new_solar') return !(j.install_completed_at || j.solar_status === 'ns_pto');
-          return (parseInt(j.step, 10) || 1) < 9;
+        var _sinceT = new Date(since).getTime();
+        var _saleDate = function(j){ return j.sold_type === 'battery_retrofit' ? (j.docs_sent_at || null) : (j.sold_at || null); };
+        var _allSold = (adminCustomers || []).filter(function(j){ return j && j.sold_type && !j.archived && !j.disposition_exit; });
+        var _fxIds = _allSold.filter(function(j){ return j.lead_category !== 'new_solar'; }).map(function(j){ return j.id; });
+        var _axIds = _allSold.filter(function(j){ return j.lead_category === 'new_solar'; }).map(function(j){ return j.id; });
+        var _sinceD = new Date(since).toISOString().slice(0, 10);
+        var _rs = await Promise.all([
+          _loadFixmyJobCommissions(_fxIds), _loadAxiaJobCommissions(_axIds),
+          c.from('commissions').select('customer_id,kind,status,note,line').eq('status', 'paid').or('note.in.(cosmic_sale,cosmic_done),and(line.eq.new_solar,kind.eq.override)').limit(5000),
+          c.from('plaid_deposits_review').select('txn_date,amount,status,classification,description').gte('txn_date', _sinceD).limit(5000)
+        ]);
+        var _rcv = {}, _axPaid = {};
+        ((_rs[2] && _rs[2].data) || []).forEach(function(x){
+          if (x.note === 'cosmic_sale' || x.note === 'cosmic_done') _rcv[x.customer_id + '|' + x.note] = true;
+          else if (x.line === 'new_solar' && x.kind === 'override') _axPaid[x.customer_id + '|' + (x.note === 'dc_bonus' ? 'dc' : 'p1')] = true;
         });
-        var _fx = _jobs.filter(function(j){ return j.lead_category !== 'new_solar'; }).map(function(j){ return j.id; });
-        var _ax = _jobs.filter(function(j){ return j.lead_category === 'new_solar'; }).map(function(j){ return j.id; });
-        await Promise.all([_loadFixmyJobCommissions(_fx), _loadAxiaJobCommissions(_ax)]);
-        var _rcv = {}; var _rr = await c.from('commissions').select('customer_id,amount,note,status').in('note', ['cosmic_sale', 'cosmic_done']).eq('status', 'paid').limit(2000);
-        (_rr.data || []).forEach(function(x){ _rcv[x.customer_id] = (_rcv[x.customer_id] || 0) + money(x); });
         var _isDen = function(d){ return d && (d.repId === DEFAULT_CLOSER_ID || /^dennis/i.test(String(_repCanonical(d.closerNm || '') || ''))); };
-        var _co = 0, _tm = 0, _got = 0, _n = 0, _miss = 0;
-        _jobs.forEach(function(j){
+        // SALES
+        var _sRows = [], _tmNow = 0, _mkey = months[months.length - 1].key, _miss = 0;
+        _allSold.forEach(function(j){
+          var t = _saleDate(j); if (!t || new Date(t).getTime() < _sinceT) return;
           var d = (j.lead_category === 'new_solar' ? _axiaCommCache : _fixmyCommCache)[j.id];
           if (!d) { _miss++; return; }
-          var dcAdd = (j.lead_category === 'new_solar' && !d.ptoDone) ? 1 : 0;   // Axia: Domestic Content pays at PTO — part of the total volume
+          var dcAdd = (j.lead_category === 'new_solar' && !d.ptoDone) ? 1 : 0;   // Axia: the Domestic Content paid at PTO is part of the sale
           var closer = (d.closerAmt || 0) + dcAdd * (d.dcCloserAmt || 0), setter = (d.setterAmt || 0) + dcAdd * (d.dcSetterAmt || 0), comp = (d.companyAmt || 0) + dcAdd * (d.dcCompanyAmt || 0);
-          var bank = comp + (_isDen(d) ? closer : 0), team = (_isDen(d) ? 0 : closer) + setter, got = Math.min(bank, _rcv[j.id] || 0);
-          _co += bank - got; _tm += team; _got += got; _n++;
+          var team = (_isDen(d) ? 0 : closer) + setter;
+          _sRows.push({ amount: comp + (_isDen(d) ? closer : 0), at: t });
+          var dt = new Date(t); if (dt.getFullYear() + '-' + (dt.getMonth() + 1) === _mkey) _tmNow += team;
         });
-        _inc = { co: _co, tm: _tm, got: _got, n: _n, miss: _miss };
-      } catch (e) { _inc = null; }
+        var _sales = _sunBucket(_sRows, function(r){ return r.at; }, function(r){ return r.amount; }, months);
+        // CASH
+        var _dep = ((_rs[3] && _rs[3].data) || []).filter(function(x){
+          if (x.status === 'ignored' || x.classification === 'owner_transfer') return false;
+          if (/online transfer (from|to) chk|transfer from (chk|sav)/i.test(x.description || '')) return false;   // our own accounts (personal / old company)
+          return true;
+        });
+        var _cash = _sunBucket(_dep, function(x){ return x.txn_date ? x.txn_date + 'T12:00:00' : null; }, function(x){ return parseFloat(x.amount) || 0; }, months);
+        var _unrev = _dep.filter(function(x){ return x.status === 'needs_review'; }).length;
+        // ACCOUNTS RECEIVABLE
+        var _ar = 0, _arN = 0, _arParts = { cosmic: 0, axia: 0 };
+        _allSold.forEach(function(j){
+          var amt = 0;
+          if (j.sold_type === 'battery_retrofit' && j.docs_sent_at) {
+            var half = Math.round(((parseFloat(j.br_revenue) || 0) - (parseFloat(j.br_redline) || 0)) * 50) / 100;
+            if (half > 0) { if (!_rcv[j.id + '|cosmic_sale']) { amt += half; _arParts.cosmic += half; } if ((parseInt(j.step, 10) || 1) >= 9 && !_rcv[j.id + '|cosmic_done']) { amt += half; _arParts.cosmic += half; } }
+          } else if (j.lead_category === 'new_solar') {
+            var d = _axiaCommCache[j.id]; if (!d) return;
+            if (j.install_completed_at && !_axPaid[j.id + '|p1']) { amt += d.grossAmt1 || 0; _arParts.axia += d.grossAmt1 || 0; }
+            if (j.solar_status === 'ns_pto' && !_axPaid[j.id + '|dc']) { var dcg = (d.dcCloserAmt || 0) + (d.dcSetterAmt || 0) + (d.dcCompanyAmt || 0); amt += dcg; _arParts.axia += dcg; }
+          }
+          if (amt > 0) { _ar += amt; _arN++; }
+        });
+        _fin = { sales: _sales, tm: _tmNow, miss: _miss, cash: _cash, unrev: _unrev, depOk: !!(_rs[3] && !_rs[3].error), ar: Math.round(_ar * 100) / 100, arN: _arN, parts: _arParts };
+      } catch (e) { _fin = null; }
     }
     if (pov === 'admin') {
-      var _incSeries = _inc ? _sunOwedHist('admin_incoming', months, Math.round(_inc.co * 100) / 100) : null;
-      tiles.push(_sunTrendTile({ id: 'tr_sales', label: 'Incoming sales', series: _incSeries || months.map(function(){ return 0; }), months: months, pov: pov, key: 'incoming', noGoal: true, unknown: _inc ? null : 'Sold jobs could not be loaded.',
-        subOverride: _inc ? _inc.n + ' job' + (_inc.n === 1 ? '' : 's') + ' sold, not yet installed' + (_inc.miss ? ' (' + _inc.miss + ' could not be priced)' : '') : '',
-        ringPct: _inc && (_inc.co + _inc.got) > 0 ? _inc.got / (_inc.co + _inc.got) : 0, ringLabel: 'Share already received from Cosmic',
-        goalText: 'Ring = share of this volume Cosmic has already paid.',
-        extra: _inc ? 'Company <b>' + _sunMoney(_inc.co) + '</b> (Solar Review + Dennis, one bank account) still to come &middot; Team ' + _sunMoney(_inc.tm) + ' &middot; already received ' + _sunMoney(_inc.got) : '',
-        info: '<b>Definition:</b> the whole company volume of jobs that are sold but not yet installed (Battery, Axia/QCells, other non-diagnostic jobs). Company = Solar Review margin plus Dennis\'s own commission. Cosmic payments already received are subtracted. Team (Tech and Setter) shares are shown separately. Axia includes the Domestic Content paid at PTO.<br><b>Leaves this tile</b> when the job is installed (Battery step 9, Axia install completed or PTO).<br><b>Trend:</b> there is no history of this number, so the line builds from a snapshot saved each time you open S.U.N. on this device.<br><b>Source:</b> each job\'s Gross Commission split, from the same math as the Jobs cards.' }));
-      var cash = pay.ok ? _sunBucket(pay.data.concat(_cosmicPaid.map(function(x){ return { amount: x.amount, created_at: x.paid_at || x.sold_at || x.created_at }; })), function(x){ return x.created_at; }, money, months) : null;
-      tiles.push(_sunTrendTile({ id: 'tr_cash', label: 'Cash collected', series: cash, months: months, pov: pov, key: 'cash', unknown: pay.ok ? null : 'Payments could not be loaded.',
-        info: '<b>Definition:</b> money actually received, by month: customer payments plus Cosmic paying Solar Review its 50% on sold jobs.<br><b>Source:</b> payments ledger + Cosmic payments recorded in Payroll.<br><b>Goal:</b> your best earlier month unless you set one.' }));
-      var owed = opts.owed || 0, cashNow = cash ? cash[cash.length - 1] : 0, rate = (cashNow + owed) > 0 ? cashNow / (cashNow + owed) : null;
-      tiles.push(_sunTrendTile({ id: 'tr_owed', label: 'Cash owed', series: _sunOwedHist('admin', months, owed), months: months, pov: pov, key: 'owed', lowerBetter: true, noGoal: true, ringPct: rate, ringLabel: 'Share of billed money already collected this month',
-        subOverride: (opts.owedN != null ? opts.owedN + ' invoice' + (opts.owedN === 1 ? '' : 's') + ' unpaid' : ''), goalText: 'Ring = collected &divide; (collected + owed) this month. Lower owed is better.',
-        info: '<b>Definition:</b> invoice amounts on leads marked sent, pending or overdue.<br><b>Trend:</b> there is no invoice-date history, so the line builds from a snapshot saved each time you open S.U.N. on this device.<br><b>Ring:</b> cash collected this month &divide; (collected + owed).' }));
+      var _ph = months.map(function(){ return 0; });
+      var _co = _fin ? _fin.sales[_fin.sales.length - 1] : 0;
+      tiles.push(_sunTrendTile({ id: 'tr_sales', label: 'Sales', series: _fin ? _fin.sales : _ph, months: months, pov: pov, key: 'sales', unknown: _fin ? null : 'Sold jobs could not be loaded.',
+        extra: _fin ? 'This month: <b>Company ' + _sunMoney(_co) + '</b> (Solar Review + Dennis, one bank account) &middot; Team ' + _sunMoney(_fin.tm) + (_fin.miss ? ' &middot; ' + _fin.miss + ' job(s) could not be priced' : '') : '',
+        info: '<b>Definition:</b> commissions on jobs sold in the month that would go to Solar Review\'s bank account once installed. Tech and Setter shares are removed; your own commission stays in (same account). Every vertical.<br><b>Sold date:</b> Diagnostic and service = fee paid. Battery = documents signed and sent to the Ops partner (Next step on the job). Axia = Welcome Call Closed.<br><b>Goal:</b> your best earlier month unless you set one.' }));
+      tiles.push(_sunTrendTile({ id: 'tr_cash', label: 'Cash', series: _fin ? _fin.cash : _ph, months: months, pov: pov, key: 'cash', unknown: (_fin && _fin.depOk) ? null : 'Bank deposits could not be loaded.',
+        extra: _fin && _fin.unrev ? _fin.unrev + ' deposit' + (_fin.unrev === 1 ? '' : 's') + ' not yet reviewed in Finance (counted)' : '',
+        info: '<b>Definition:</b> cash deposited into Solar Review\'s business bank account, by month.<br><b>Source:</b> bank deposits (Plaid). Transfers between your own accounts and anything marked owner transfer or ignored are left out. Deposits still waiting for review are counted.<br><b>Goal:</b> your best earlier month unless you set one.' }));
+      var _cashNow = _fin ? _fin.cash[_fin.cash.length - 1] : 0, _arNow = _fin ? _fin.ar : 0;
+      tiles.push(_sunTrendTile({ id: 'tr_owed', label: 'Accounts receivable', series: _fin ? _sunOwedHist('admin_ar', months, _arNow) : _ph, months: months, pov: pov, key: 'ar', lowerBetter: true, noGoal: true, unknown: _fin ? null : 'Receivables could not be loaded.',
+        subOverride: _fin ? _fin.arN + ' job' + (_fin.arN === 1 ? '' : 's') + ' with money due' : '', ringPct: (_cashNow + _arNow) > 0 ? _cashNow / (_cashNow + _arNow) : 0, ringLabel: 'Cash this month ÷ (cash + receivable)',
+        goalText: _fin ? 'Cosmic ' + _sunMoney(_fin.parts.cosmic) + ' &middot; Axia ' + _sunMoney(_fin.parts.axia) : '',
+        info: '<b>Definition:</b> money due to Solar Review but not yet received.<br><b>Counts:</b> Cosmic\'s 50% at sale once the documents are sent, Cosmic\'s 50% at completion once installed, Axia Payment 1 after the install is completed, and the Domestic Content payment after PTO. Amounts are what the partner owes Solar Review (before Tech and Setter pay comes out of it).<br><b>Trend:</b> there is no history of this balance, so the line builds from a snapshot saved each time you open S.U.N. on this device.' }));
     } else {
       var paid = com.ok ? _sunBucket(com.data.filter(function(x){ return x.status === 'paid'; }), function(x){ return x.paid_at || x.sold_at || x.created_at; }, money, months) : null;
       var owedNow = com.ok ? com.data.filter(function(x){ return x.status === 'sold'; }).reduce(function(a, x){ return a + money(x); }, 0) : 0;
@@ -3477,6 +3510,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (c.sold_type && (!c.assigned_ops || c.assigned_ops === 'none') && step < 9) todos.push({ key: 'ops', label: 'No install partner assigned' });
     // Electrician's findings are in but no upgrade path / proposal exists yet → the Tech's next move (2026-11-03).
     if (c.sold_type === 'diagnostic' && c.diag_findings && c.diag_findings.submitted_at && c.diag_findings.fix !== 'nothing' && step < 6 && !(c.proposal && c.proposal.options && c.proposal.options.length)) todos.push({ key: 'review', label: 'Review findings, build upgrade path' });
+    // Battery sale date (2026-11-15, per Dennis): counts in Sales once every document is signed and sent to the Ops partner.
+    if (c.sold_type === 'battery_retrofit' && !c.docs_sent_at) todos.unshift({ key: 'docssent', label: 'Documents not marked signed and sent to the Ops partner' });
     if (c.sold_type && c.sold_type !== 'diagnostic' && step === 6) todos.push({ key: 'fxbook', label: 'Install not booked yet' });
     if (!workDone) {
       if (c.sold_type !== 'diagnostic' && step >= 7 && step < 9) todos.push({ key: 'install', label: 'Install not marked finished' });
@@ -3612,6 +3647,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (t.key === 'axbutton') { q = 'Is the button-up (final design and paperwork package) done?'; detail = 'Moves the job to Button Up.'; yes = 'Yes, button-up done'; }
     else if (t.key === 'axpermit') { q = 'Has the permit been submitted?'; detail = 'Moves the job to Permit Submitted.'; yes = 'Yes, submitted'; }
     else if (t.key === 'axsched') { q = 'Is the install scheduled?'; detail = 'Moves the job to Install Scheduled. Set the date in the lead\'s Schedule box.'; yes = 'Yes, it is scheduled'; }
+    else if (t.key === 'docssent') { q = 'Are all documents signed and sent to the Ops partner?'; detail = 'This is the date the sale counts in S.U.N. Sales. It stamps today; you can change it on the job.'; yes = 'Yes, sent today'; }
     else if (t.key === 'fxbook') { q = 'Is the install booked?'; detail = 'Moves the job to Install Booked. Set the date in the lead\'s Schedule box.'; yes = 'Yes, it is booked'; }
     else if (t.key === 'axinstall') { q = 'Was the install completed?'; detail = 'Saying yes records today as the completion date. Payment 1 follows once the audit is signed off.'; yes = 'Yes, it is completed'; }
     else if (t.key === 'audit') { q = 'Is the install audit signed off?'; detail = 'Compare the sold design with the installed one. Payment 1 waits on this.'; yes = 'Yes, signed off'; }
@@ -3668,6 +3704,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var okw = await _leadWrite(id, { solar_status: _ns }, 'Status: ' + (NS_STATUSES[_ns] ? NS_STATUSES[_ns].label : _ns));
         if (!okw) { jobNextClose(); return; }
       }
+      else if (key === 'docssent') { var okd = await _leadWrite(id, { docs_sent_at: ts }, 'Documents signed and sent to the Ops partner. Sale counted.'); if (!okd) { jobNextClose(); return; } }
       else if (key === 'fxbook') { var okb = await _leadWrite(id, { step: 8 }, 'Install booked. Moved to Install Booked.'); if (!okb) { jobNextClose(); return; } }
       else if (key === 'axinstall' || key === 'audit' || key === 'pto' || key === 'ops') {
         var upd = key === 'axinstall' ? { install_completed_at: c.install_completed_at || ts }
