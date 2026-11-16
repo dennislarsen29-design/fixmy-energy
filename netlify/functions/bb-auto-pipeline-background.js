@@ -853,6 +853,7 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
         for (const city of TX_CITIES) phase1cUnits.push({ installer, city, state: 'TX' });
       }
       const regionCov = {};
+      const regionSamples = [];
       const startCursor = phase1cUnits.length ? (phase1cCursor % phase1cUnits.length) : 0;
       stamp(`Phase 1c: ${phase1cUnits.length} (installer×city) units, starting at cursor ${startCursor}`);
       let unitsCovered = 0;
@@ -896,6 +897,14 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
 
             const batchRecs = [];
             for (const p of batch) {
+              // Out-of-state units: PermitStack may ignore &state= and return California permits for a
+              // same-named query. Never relabel those as UT/TX. Keep a sample of what it really returns.
+              if (unitState !== 'CA') {
+                const rs = String(p.state || p.address_state || p.state_code || '').trim().toUpperCase();
+                const rc = String(p.city || p.address_city || '').trim().toLowerCase();
+                regionSamples.push({ unit: unitState + ':' + city, state: rs || null, city: rc || null, zip: p.zip || p.zip_code || p.address_zip || null });
+                if ((rs && rs !== unitState) || (rc && rc !== city.toLowerCase())) { tally('1c', 'wrong_region'); continue; }
+              }
               const { street, fullAddress, installYear, permitDate, systemSizeKw } =
                 extractPSAddress1c(p, city, unitState);
               if (!street || !/^\d/.test(street)) continue;
@@ -957,6 +966,12 @@ Installer names to use: SunPower, Titan Solar, Sullivan Solar, Sunnova, Freedom 
         Object.keys(regionCov).forEach(k => { const o = old[k] || { ok: 0, empty: 0 }; old[k] = { ok: o.ok + regionCov[k].ok, empty: o.empty + regionCov[k].empty }; });
         await fetch(SUPA_REST + '/pipeline_state', { method: 'POST', headers: { ...supaHeaders, Prefer: 'resolution=merge-duplicates' }, body: JSON.stringify({ key: 'permit_region_coverage', value: JSON.stringify(old), updated_at: new Date().toISOString() }) });
       } catch(e) { stamp('Phase 1c: coverage persist error — ' + e.message); }
+      // What PermitStack really returned for out-of-state cities (first 25) — lets us see if it covers UT/TX at all.
+      if (regionSamples.length) {
+        try {
+          await fetch(SUPA_REST + '/pipeline_state', { method: 'POST', headers: { ...supaHeaders, Prefer: 'resolution=merge-duplicates' }, body: JSON.stringify({ key: 'permit_region_probe', value: JSON.stringify({ at: new Date().toISOString(), samples: regionSamples.slice(0, 25) }), updated_at: new Date().toISOString() }) });
+        } catch(e) { stamp('Phase 1c: region probe persist error — ' + e.message); }
+      }
     }
   }
 
