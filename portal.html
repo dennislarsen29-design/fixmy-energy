@@ -28177,8 +28177,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   function _dealDocsStatusLineHtml(c) {
     if (!c || !c.id) return '';
     var applicable = DEAL_DOC_TYPES.filter(function(d){ return d.appliesWhen(c); });
-    if (!applicable.length) return '<div id="docsStatusLine_'+c.id+'" style="font-size:0.72rem;color:#666;">No documents apply to this lead.</div>';
     var cache = _dealDocsCache[c.id] || {};
+    var _noneApply = !applicable.length;
     var rows = applicable.map(function(d){
       var row = cache[d.id];
       var status = row ? row.status : 'pending';
@@ -28208,8 +28208,45 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '<span style="display:flex;align-items:center;gap:8px;"><span style="font-size:0.72rem;font-weight:700;color:'+meta.color+';">'+meta.label+'</span>'+dl+'</span>'+
       '</div>';
     }).join('');
-    return '<div id="docsStatusLine_'+c.id+'">'+rows+'</div>';
+    // Internal documents (staff only): uploaded files such as the SolarGraf proposal Participate requests. They are never
+    // shown to the customer or to Ops partners (those lists only read documents whose type is in DEAL_DOC_TYPES).
+    var internalRows = Object.keys(cache).filter(function(k){ return k.indexOf('internal_') === 0; }).map(function(k){ return cache[k]; })
+      .sort(function(a, b){ return String(b.created_at || '').localeCompare(String(a.created_at || '')); });
+    var internalHtml = '<div style="margin-top:10px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.1);"><div style="display:flex;align-items:center;justify-content:space-between;gap:8px;"><span style="font-size:0.7rem;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:0.06em;">&#128274; Internal documents (staff only)</span>' +
+      '<button onclick="dealDocUploadInternal(\''+c.id+'\')" style="width:auto;margin:0;padding:5px 12px;font-size:0.72rem;font-weight:800;border-radius:100px;border:1px solid rgba(255,255,255,0.25);background:rgba(255,255,255,0.08);color:#F3EDE3;cursor:pointer;">&#11014; Upload</button></div>' +
+      internalRows.map(function(r){ var dd = r.data || {};
+        return '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 0;"><span style="font-size:0.75rem;color:#F3EDE3;">&#128196; '+esc(dd.label || 'Document')+' <span style="color:#888;font-size:0.68rem;">'+(r.created_at ? new Date(r.created_at).toLocaleDateString('en-US') : '')+'</span></span>' +
+          (dd.file_url ? '<a href="'+esc(dd.file_url)+'" target="_blank" rel="noopener" style="font-size:0.72rem;font-weight:800;color:#4a9eff;text-decoration:none;">Open &#8599;</a>' : '') + '</div>'; }).join('') + '</div>';
+    if (_noneApply) rows = '<div style="font-size:0.72rem;color:#666;">No documents apply to this lead.</div>';
+    return '<div id="docsStatusLine_'+c.id+'">'+rows+internalHtml+'</div>';
   }
+
+  // Staff upload of an internal (never customer-visible) document. Stored in the document-templates bucket under internal/<customer>/,
+  // recorded as a deal_documents row with status 'internal' (not counted as signed, not listed to customers or Ops).
+  window.dealDocUploadInternal = function(custId) {
+    var inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'application/pdf,image/*';
+    inp.onchange = async function() {
+      var f = inp.files && inp.files[0]; if (!f) return;
+      var label = (window.prompt ? window.prompt('Name for this document (staff only):', f.name.replace(/\.[^.]+$/, '')) : f.name) || '';
+      label = label.trim(); if (!label) return;
+      try {
+        var client = supabase.createClient(SUPA_URL, SUPA_KEY);
+        var ts = Date.now();
+        var path = 'internal/' + custId + '/' + ts + '-' + f.name.replace(/[^a-zA-Z0-9._-]+/g, '_');
+        var up = await client.storage.from('document-templates').upload(path, f, { contentType: f.type || 'application/octet-stream', upsert: false });
+        if (up.error) { alert('Upload failed: ' + up.error.message); return; }
+        var url = client.storage.from('document-templates').getPublicUrl(path).data.publicUrl;
+        var who = (typeof person !== 'undefined' && person && person.name) ? person.name : (CURRENT_ROLE || 'staff');
+        var ins = await client.from('deal_documents').insert({ customer_id: custId, doc_type: 'internal_' + ts, status: 'internal', data: { internal: true, label: label, file_url: url, uploaded_by: who } });
+        if (ins.error) { alert('Saved the file but could not record it: ' + ins.error.message); return; }
+        await _dealDocsLoad(custId);
+        var c = (typeof adminCustomers !== 'undefined' ? adminCustomers : []).find(function(x){ return x.id === custId; });
+        var slot = document.getElementById('docsStatusLine_' + custId);
+        if (slot && c) slot.outerHTML = _dealDocsStatusLineHtml(c);
+      } catch (e) { alert('Upload failed: ' + e.message); }
+    };
+    inp.click();
+  };
 
   // ── Live signature capture (2026-09-06, per Dennis — "I want live signatures /
   // customer choosing signature field to duplicate a DocuSign feature") ─────────────
