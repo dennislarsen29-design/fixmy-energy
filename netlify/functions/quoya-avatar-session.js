@@ -48,7 +48,7 @@ async function sget(path) { try { return await (await fetch(SUPA_URL + '/rest/v1
 
 async function loadFacts(b) {
   if (!process.env.SUPA_SERVICE_KEY) return null;
-  const cols = 'id,first_name,address,phone,access_code,diagnostic_date,eval_mode,utility';
+  const cols = 'id,first_name,address,phone,access_code,diagnostic_date,eval_mode,utility,sold_type,pstatus:proposal->>status';
   let c = null;
   if (/^[0-9a-f-]{36}$/i.test(String(b.customerId || ''))) {
     c = ((await sget('/customers?id=eq.' + b.customerId + '&select=' + cols)) || [])[0];
@@ -65,7 +65,7 @@ async function loadFacts(b) {
   if (c.diagnostic_date) { const d = new Date(c.diagnostic_date); if (!isNaN(d) && d.getTime() > Date.now() - 45 * 60000) appt = d.toLocaleString('en-US', { timeZone: 'America/Los_Angeles', weekday: 'long', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' }) + ' Pacific'; }
   const first = String(c.first_name || '').trim().split(/\s+/)[0];
   const diag = !!(a.quoya_report && a.quoya_report.diag);
-  return { id: c.id, first: first, hi: first ? ' ' + first : '', address: c.address, appt: appt, utility: c.utility, answers: a, photos: labels, billRead: !!(ev.bill_analysis && Object.keys(ev.bill_analysis).length), diag: diag, restored: a.pc_outcome === 'restored' && !diag };
+  return { sold: !!(c.sold_type || c.pstatus === 'accepted'), id: c.id, first: first, hi: first ? ' ' + first : '', address: c.address, appt: appt, utility: c.utility, answers: a, photos: labels, billRead: !!(ev.bill_analysis && Object.keys(ev.bill_analysis).length), diag: diag, restored: a.pc_outcome === 'restored' && !diag };
 }
 
 // One LiveAvatar context per customer, rewritten for the current checkpoint. Returns the context id or null.
@@ -98,6 +98,9 @@ exports.handler = async (event) => {
   if (!avatarId) return out(200, { ok: false, reason: 'no_avatar_id' });
   let b = {}; try { b = JSON.parse(event.body || '{}'); } catch (e) {}
   const action = b.action === 'start' ? 'start' : 'check';
+  // Sold / accepted customers get no AI (cost, and it must never coach them on objections). Only identified customers
+  // can be checked; anonymous pre-sale visitors are unaffected.
+  try { const f0 = await loadFacts(b); if (f0 && f0.sold) return out(200, { ok: false, reason: 'not_available' }); } catch (e) {}
   if (action === 'start' && tooMany((event.headers && (event.headers['x-nf-client-connection-ip'] || event.headers['client-ip'])) || 'unknown')) return out(200, { ok: false, reason: 'rate_limited' });
   const persona = { language: process.env.LIVEAVATAR_LANGUAGE || 'en' };
   if (process.env.LIVEAVATAR_VOICE_ID) persona.voice_id = process.env.LIVEAVATAR_VOICE_ID;
