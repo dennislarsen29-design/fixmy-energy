@@ -21,6 +21,8 @@ exports.handler = async function (event) {
     }
     if (b.action === 'approve') return J(200, await heal.approve(k, b.id));
     if (b.action === 'codefix') return J(200, await heal.codefixDraft(k, b.id));
+    if (b.action === 'auditfix') return J(200, await heal.auditFix(k, b.id));
+    if (b.action === 'pagedraft') return J(200, await heal.pageDraftApprove(k, b.id));
     if (b.action === 'reject') return J(200, await heal.reject(k, b.id));
     if (b.action === 'scan') return J(200, Object.assign({ ok: true }, await heal.scan(k)));
     return J(400, { error: 'unknown_action' });

@@ -7,6 +7,7 @@ const SB = 'https://kbtobyoumvbcxfbugsid.supabase.co/rest/v1';
 const SITE = process.env.URL || 'https://fixmy.energy';
 const VERIFY_MIN = 20;
 const codefix = require('./heal-codefix');
+const healSeo = require('./heal-seo');
 const OPEN = 'proposed,running,verifying,pr_open';
 // The ONLY things approval can run. Each is a function that is safe to call again.
 const ALLOW = {
@@ -16,8 +17,12 @@ const ALLOW = {
   'ghl-payment-sync': 'GHL payments sweep',
   'plaid-sync': 'Bank/card sync',
   'quoya-sync-background': 'Photo categorization sweep',
-  'run-agent-background': 'AI agent run'
+  'run-agent-background': 'AI agent run',
+  'market-report-background': 'Market opportunity report',
+  'seo-audit-scan': 'Site SEO audit'
 };
+// Cities the market loop keeps a fresh report on. Override with pipeline_state key market_watchlist ([{city,state}]).
+const MARKETS = [{ city: 'Salt Lake City', state: 'UT' }, { city: 'Austin', state: 'TX' }];
 const AGENT_FN = { seo: 'seo', finance: 'finance', marketing: 'marketing', socials: 'socials', bizdev: 'bizdev', 'crm-dev': 'crm-dev', roadmap: 'roadmap', coaching: 'coaching' };
 function H(k, x) { return Object.assign({ apikey: k, Authorization: 'Bearer ' + k, 'Content-Type': 'application/json' }, x || {}); }
 async function get(path, k) { const r = await fetch(SB + path, { headers: H(k) }); if (!r.ok) throw new Error('GET ' + path + ' ' + r.status); return r.json(); }
@@ -74,6 +79,28 @@ function detect(S, reports) {
       else add({ system: 'agent:' + a, signature: 'errored', problem: 'The ' + a + ' agent reported an error: ' + String(last.title).slice(0, 120), evidence: { title: last.title, at: last.created_at }, fix_kind: 'manual', fix_label: 'Open the report', fix_detail: 'This agent cannot be re-run from here; open its report in Agents for the cause.' });
     }
   });
+  // ── SEO: site audit + market reports (2026-11-16) ──
+  const au = S.seo_audit, skip = S._skip || {};
+  if (!au || !au.at || hrs(au.at) > 24 * 10) add({ system: 'site-audit', signature: 'stale', problem: au && au.at ? 'The site SEO audit has not run in ' + Math.round(hrs(au.at) / 24) + ' days.' : 'The site SEO audit has never run.', evidence: { at: au && au.at }, fix_kind: 'rerun', fix_target: 'seo-audit-scan', fix_label: 'Run the site audit now', fix_detail: 'Reads every public page on fixmy.energy once and records title, description and heading problems. Changes nothing.' });
+  else {
+    const fx = Array.isArray(au.fixable_pages) ? au.fixable_pages : [];
+    const sigFix = 'meta_fixes_' + fx.length;
+    if (fx.length && !skip['site-audit|' + sigFix]) add({ system: 'site-audit', signature: sigFix, problem: fx.length + ' page' + (fx.length > 1 ? 's have' : ' has') + ' a title or description that is too long or missing (Google cuts it off).', evidence: { pages: fx.slice(0, 12), audited: au.pages }, fix_kind: 'audit_fix', fix_label: 'Draft fixes for up to 3 pages', fix_detail: 'Rewrites the title and description on up to 3 pages and opens one pull request per page. Nothing goes live until you merge, and the result is measured afterward.' });
+    const hi = Array.isArray(au.high_items) ? au.high_items : [];
+    if (hi.length) add({ system: 'site-audit', signature: 'high_' + hi.length, problem: hi.length + ' serious page problem' + (hi.length > 1 ? 's' : '') + ' found (missing description or heading, broken markup): ' + hi.slice(0, 3).map(x => x.url + ' - ' + x.msg).join('; ') + '.', evidence: { items: hi }, fix_kind: 'manual', fix_label: 'Fix in Claude Code', fix_detail: 'These need a page edit (a missing H1 or description). Ask Claude Code to fix the pages listed in the evidence.' });
+  }
+  const wl = Array.isArray(S.market_watchlist) && S.market_watchlist.length ? S.market_watchlist : MARKETS;
+  wl.forEach(m => {
+    if (!m || !m.city || !/^[A-Z]{2}$/.test(m.state || '')) return;
+    const mkey = (m.city + '-' + m.state).toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    const want = ('Market report: ' + m.city + ', ' + m.state).toLowerCase();
+    const rep = (reports || []).filter(r => String(r.title || '').toLowerCase() === want).sort((x, y) => new Date(y.created_at) - new Date(x.created_at))[0];
+    if (!rep) { add({ system: 'market:' + mkey, signature: 'no_report', problem: 'No market report for ' + m.city + ', ' + m.state + ' in the last 30 days.', evidence: m, fix_kind: 'rerun', fix_target: 'market-report-background', fix_query: 'city=' + encodeURIComponent(m.city) + '&state=' + m.state, fix_label: 'Research ' + m.city, fix_detail: 'Searches the web for who ranks, local utility rules, defunct installers and demand, then files a report. Uses AI credit; changes nothing on the site.' }); return; }
+    const v = (/VERDICT[^\n]*?(Build now|Build small test|Wait)/i.exec(rep.body || '') || [])[1];
+    const slug = 'solar-repair-' + m.city.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') + '-' + m.state.toLowerCase();
+    const have = au && Array.isArray(au.urls) && au.urls.some(u => u === '/' + slug);
+    if (v && /^build/i.test(v) && !have && !skip['market:' + mkey + '|draft_page']) add({ system: 'market:' + mkey, signature: 'draft_page', problem: 'The ' + m.city + ' market report says "' + v + '" but there is no ' + m.city + ' page yet.', evidence: { city: m.city, state: m.state, verdict: v, report: String(rep.body || '').slice(0, 7000) }, fix_kind: 'page_draft', fix_label: 'Draft the ' + m.city + ' page', fix_detail: 'Adapts the Salt Lake page for ' + m.city + ' using only facts from the report, and opens a pull request. Nothing goes live until you merge.' });
+  });
   return out;
 }
 
@@ -84,6 +111,10 @@ async function scan(k) {
   try { S._notifFails = await get('/notification_log?select=at,kind,to_masked,reason&ok=eq.false&at=gte.' + encodeURIComponent(new Date(Date.now() - 86400000).toISOString()) + '&order=at.desc&limit=20', k); } catch (e) {}
   try { S._photos = await get('/job_photos?select=id&quoya_status=eq.pending&limit=200', k); } catch (e) {}
   const reports = await get('/agent_reports?select=agent,title,body,created_at&created_at=gte.' + encodeURIComponent(new Date(Date.now() - 30 * 86400000).toISOString()) + '&order=created_at.desc&limit=400', k);
+  try {
+    const live = await get('/heal_proposals?select=system,signature,status,closed_at&or=(status.in.(pr_open,verifying),and(status.eq.rejected,closed_at.gte.' + encodeURIComponent(new Date(Date.now() - 30 * 86400000).toISOString()) + '))', k);
+    S._skip = {}; live.forEach(x => { S._skip[x.system + '|' + x.signature] = 1; });
+  } catch (e) { S._skip = {}; }
   const found = detect(S, reports);
   const keyOf = (p) => p.system + '|' + p.signature;
   const open = await get('/heal_proposals?select=*&status=in.(' + OPEN + ')', k);
@@ -130,7 +161,7 @@ async function approve(k, id) {
   if (!p) return { ok: false, error: 'not_found' };
   if (p.status !== 'proposed') return { ok: false, error: 'not_open', status: p.status };
   if (p.fix_kind !== 'rerun' || !ALLOW[p.fix_target]) return { ok: false, error: 'not_runnable' };
-  if (p.fix_query && !/^agent=[a-z-]+$/.test(p.fix_query)) return { ok: false, error: 'bad_query' };
+  if (p.fix_query && !/^(agent=[a-z-]+|city=[A-Za-z%0-9.]+&state=[A-Z]{2})$/.test(p.fix_query)) return { ok: false, error: 'bad_query' };
   // Claim it first (conditional) so a double tap cannot run it twice.
   const claim = await fetch(SB + '/heal_proposals?id=eq.' + p.id + '&status=eq.proposed', { method: 'PATCH', headers: H(k, { Prefer: 'return=representation' }), body: JSON.stringify({ status: 'running', approved_at: new Date().toISOString(), attempts: (p.attempts || 0) + 1 }) });
   const claimed = await claim.json().catch(() => []);
@@ -161,4 +192,28 @@ async function codefixDraft(k, id) {
   else await fetch(SB + '/heal_proposals?id=eq.' + p.id, { method: 'PATCH', headers: H(k), body: JSON.stringify({ status: 'proposed', result: 'Code fix not drafted: ' + r.error }) });
   return r;
 }
-module.exports = { detect, scan, approve, reject, codefixDraft, codefix, ALLOW };
+async function claimProposed(k, id, kind) {
+  const rows = await get('/heal_proposals?id=eq.' + Number(id) + '&select=*', k);
+  const p = rows[0];
+  if (!p) return { err: { ok: false, error: 'not_found' } };
+  if (p.status !== 'proposed' || p.fix_kind !== kind) return { err: { ok: false, error: 'not_open', status: p.status } };
+  const claim = await fetch(SB + '/heal_proposals?id=eq.' + p.id + '&status=eq.proposed', { method: 'PATCH', headers: H(k, { Prefer: 'return=representation' }), body: JSON.stringify({ status: 'running', approved_at: new Date().toISOString(), attempts: (p.attempts || 0) + 1 }) });
+  const got = await claim.json().catch(() => []);
+  if (!Array.isArray(got) || !got.length) return { err: { ok: false, error: 'already_taken' } };
+  return { p };
+}
+async function auditFix(k, id) {
+  const c = await claimProposed(k, id, 'audit_fix'); if (c.err) return c.err;
+  let r; try { r = await healSeo.auditDraft(c.p, k); } catch (e) { r = { ok: false, error: e.message }; }
+  if (r.ok) await fetch(SB + '/heal_proposals?id=eq.' + c.p.id, { method: 'PATCH', headers: H(k), body: JSON.stringify({ status: 'verifying', verify_after: new Date(Date.now() + 7 * 86400000).toISOString(), result: 'Drafted ' + r.prs.length + ' pull request(s): ' + r.prs.map(x => x.page + ' ' + x.pr).join(' | ') + '. Merge them; the next weekly audit confirms the fix.' }) });
+  else await fetch(SB + '/heal_proposals?id=eq.' + c.p.id, { method: 'PATCH', headers: H(k), body: JSON.stringify({ status: 'proposed', result: 'Not drafted: ' + r.error }) });
+  return r;
+}
+async function pageDraftApprove(k, id) {
+  const c = await claimProposed(k, id, 'page_draft'); if (c.err) return c.err;
+  let r; try { r = await healSeo.pageDraft(c.p, k); } catch (e) { r = { ok: false, error: e.message }; }
+  if (r.ok) await fetch(SB + '/heal_proposals?id=eq.' + c.p.id, { method: 'PATCH', headers: H(k), body: JSON.stringify({ status: 'pr_open', pr_url: r.pr_url, result: 'Page drafted: ' + r.explanation + ' Review and merge: ' + r.pr_url }) });
+  else await fetch(SB + '/heal_proposals?id=eq.' + c.p.id, { method: 'PATCH', headers: H(k), body: JSON.stringify({ status: 'proposed', result: 'Page not drafted: ' + r.error }) });
+  return r;
+}
+module.exports = { detect, scan, approve, reject, codefixDraft, auditFix, pageDraftApprove, codefix, ALLOW };
