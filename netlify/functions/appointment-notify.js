@@ -45,7 +45,14 @@ exports.handler = async function (event, context, deps) {
   if (!copy) return out(200, { ok: false, reason: 'not_customer_facing' });
 
   const stateKey = a.status + '|' + a.event_type + '|' + new Date(a.starts_at).toISOString();
-  if (a.notified_for === stateKey) return out(200, { ok: false, reason: 'already_notified' });
+  // Channels: the caller can ask for text only, email only, or both (default both). notified_for records
+  // which channels already went for this exact state ("KEY" = both, "KEY|sms", "KEY|email").
+  const wantSms = body.sms !== false, wantEmail = body.email !== false;
+  if (!wantSms && !wantEmail) return out(200, { ok: false, reason: 'no_channel_selected' });
+  const nf = String(a.notified_for || '');
+  const sentCh = nf === stateKey ? { sms: true, email: true } : nf.indexOf(stateKey + '|') === 0 ? { sms: nf.indexOf('sms') > -1, email: nf.indexOf('email') > -1 } : { sms: false, email: false };
+  const doSms = wantSms && !sentCh.sms, doEmail = wantEmail && !sentCh.email;
+  if (!doSms && !doEmail) return out(200, { ok: false, reason: 'already_notified' });
   if (a.status === 'completed') return out(200, { ok: false, reason: 'completed' });
 
   const cr = await doFetch(SUPA_URL + '/rest/v1/customers?id=eq.' + a.customer_id + '&select=id,first_name,last_name,email,phone,access_code,address&limit=1', { headers: H });
@@ -74,16 +81,23 @@ exports.handler = async function (event, context, deps) {
     const changed = !!prev;
     const lead = changed ? 'has been rescheduled to' : 'is scheduled for';
     const gUrl = ics.googleUrl(a, copy.noun, copy.note, meet || (a.event_type === 'Virtual Solar Evaluation' ? 'Google Meet' : (c.address || '')), link), iUrl = ics.icsUrl(id);
-    sms = 'Hi ' + first + '! Your Solar Review ' + copy.noun + ' ' + lead + ' ' + when + '. ' + copy.note + ' Details: ' + link + ' Add to your calendar: ' + iUrl;
+    sms = 'Hi ' + first + '! Your Solar Review ' + copy.noun + ' ' + lead + ' ' + when + '. ' + copy.note + '\n\nDetails: ' + link + '\n\nAdd to your calendar: ' + iUrl;
     mail = { subject: 'Your ' + copy.noun + (changed ? ' was rescheduled' : ' is scheduled') + ' — ' + fmtDate(a.starts_at), heading: changed ? 'Your ' + copy.noun + ' was rescheduled' : 'Your ' + copy.noun + ' is scheduled',
       lines: ['Hi ' + first + ', your ' + copy.noun + ' ' + lead + ':', '<b>' + when + '</b>', copy.note, '<b>Put it on your calendar:</b> <a href="' + gUrl + '">Google Calendar</a> &nbsp;|&nbsp; <a href="' + iUrl + '">Apple / Outlook (.ics)</a>'], cta: { url: link, label: 'View in my portal' } };
   }
 
   if (meet && mail && mail.lines) mail.lines.splice(2, 0, '<b>Join:</b> <a href="' + meet + '">' + meet + '</a>');
-  const result = await notify.sendBoth(c, sms, mail, doFetch);
+  const skipped = { ok: false, reason: 'not_selected' };
+  const [rs, re_] = await Promise.all([
+    doSms ? notify.sendSms(c, sms, doFetch) : skipped,
+    doEmail ? notify.sendEmail(c, mail.subject, mail.heading, mail.lines, mail.cta, doFetch) : skipped
+  ]);
+  const result = { ok: !!(rs.ok || re_.ok), sms: rs, email: re_, sent_to: { phone: notify.maskPhone(c.phone), email: notify.validEmail(c.email) ? notify.maskEmail(c.email) : '' } };
   if (result.ok) {
     try {
-      await doFetch(SUPA_URL + '/rest/v1/appointments?id=eq.' + id, { method: 'PATCH', headers: Object.assign({}, H, { Prefer: 'return=minimal' }), body: JSON.stringify({ notified_at: new Date().toISOString(), notified_for: stateKey }) });
+      const nowSms = sentCh.sms || rs.ok, nowEmail = sentCh.email || re_.ok;
+      const mark = nowSms && nowEmail ? stateKey : stateKey + '|' + (nowSms ? 'sms' : 'email');
+      await doFetch(SUPA_URL + '/rest/v1/appointments?id=eq.' + id, { method: 'PATCH', headers: Object.assign({}, H, { Prefer: 'return=minimal' }), body: JSON.stringify({ notified_at: new Date().toISOString(), notified_for: mark }) });
     } catch (e) { /* best effort */ }
   }
   console.log('appointment-notify', a.event_type, a.status, id, 'sms', result.sms.ok ? 'ok' : result.sms.reason, 'email', result.email.ok ? 'ok' : result.email.reason);

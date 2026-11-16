@@ -19,7 +19,7 @@ function googleUrl(a, noun, note, location, link) {
   return 'https://calendar.google.com/calendar/render?action=TEMPLATE&text=' + encodeURIComponent(title(noun)) + '&dates=' + sp.s + '/' + sp.e +
     '&details=' + encodeURIComponent(details(note, link)) + (location ? '&location=' + encodeURIComponent(location) : '');
 }
-function icsUrl(id) { return SITE + '/.netlify/functions/calendar-event?id=' + id; }
+function icsUrl(id) { return SITE + '/cal/' + id; }
 function buildIcs(a, noun, note, location, link) {
   const sp = span(a);
   const L = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Solar Review//Appointments//EN', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', 'BEGIN:VEVENT',
