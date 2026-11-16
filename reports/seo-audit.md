@@ -1,0 +1,233 @@
+# SEO audit
+
+Generated 2026-11-16 · 113 public pages checked
+
+**2 high · 181 medium · 35 low**
+
+## High (fix first)
+
+- `/careers` — Missing meta description
+- `/meet` — 0 <h1> tags (want exactly 1)
+
+## Medium
+
+- `/add-powerwall-to-existing-solar` — Title 71 chars (over 65, Google truncates)
+- `/add-powerwall-to-existing-solar` — Meta description 168 chars (over 160)
+- `/blog/battery-storage-sgip-rebate` — Title 92 chars (over 65, Google truncates)
+- `/blog/enphase-microinverter-troubleshooting` — Title 101 chars (over 65, Google truncates)
+- `/blog/enphase-microinverter-troubleshooting` — Meta description 186 chars (over 160)
+- `/blog/freedom-forever-bankruptcy` — Title 101 chars (over 65, Google truncates)
+- `/blog/nem-3-solar-export-credits` — Title 77 chars (over 65, Google truncates)
+- `/blog/sdge-electric-rates-2026` — Title 68 chars (over 65, Google truncates)
+- `/blog/solar-installer-out-of-business` — Title 82 chars (over 65, Google truncates)
+- `/blog/solaredge-inverter-error-codes` — Title 88 chars (over 65, Google truncates)
+- `/blog/solaredge-inverter-error-codes` — Meta description 190 chars (over 160)
+- `/blog/sunnova-bankruptcy` — Title 81 chars (over 65, Google truncates)
+- `/blog/sunpower-out-of-business` — Title 89 chars (over 65, Google truncates)
+- `/blog/sunrun-vivint-evening-bills-battery` — Title 95 chars (over 65, Google truncates)
+- `/blog/sunrun-vivint-evening-bills-battery` — Meta description 168 chars (over 160)
+- `/blog/titan-solar-out-of-business` — Title 73 chars (over 65, Google truncates)
+- `/blog/vitl-power` — Title 80 chars (over 65, Google truncates)
+- `/careers` — 1 image(s) missing alt text
+- `/contact` — 1 image(s) missing alt text
+- `/defunct-solar-installers` — Title 84 chars (over 65, Google truncates)
+- `/electricians` — Meta description 245 chars (over 160)
+- `/installers/adt-solar` — Meta description 212 chars (over 160)
+- `/installers/american-solar-direct` — Title 70 chars (over 65, Google truncates)
+- `/installers/american-solar-direct` — Meta description 215 chars (over 160)
+- `/installers/freedom-forever` — Title 76 chars (over 65, Google truncates)
+- `/installers/freedom-forever` — Meta description 172 chars (over 160)
+- `/installers/harness-power` — Meta description 251 chars (over 160)
+- `/installers/infinity-energy` — Meta description 287 chars (over 160)
+- `/installers/kota-energy` — Meta description 231 chars (over 160)
+- `/installers/lumio` — Meta description 174 chars (over 160)
+- `/installers/mosaic` — Title 78 chars (over 65, Google truncates)
+- `/installers/oneroof-energy` — Meta description 208 chars (over 160)
+- `/installers/petersen-dean` — Title 77 chars (over 65, Google truncates)
+- `/installers/pink-energy` — Meta description 216 chars (over 160)
+- `/installers/rgs-energy` — Title 78 chars (over 65, Google truncates)
+- `/installers/rgs-energy` — Meta description 270 chars (over 160)
+- `/installers/simply-solar` — Title 69 chars (over 65, Google truncates)
+- `/installers/sullivan` — Title 67 chars (over 65, Google truncates)
+- `/installers/sungevity` — Title 68 chars (over 65, Google truncates)
+- `/installers/sunnova` — Title 71 chars (over 65, Google truncates)
+- `/installers/sunpower` — Title 75 chars (over 65, Google truncates)
+- `/installers/suntuity` — Title 68 chars (over 65, Google truncates)
+- `/installers/suntuity` — Meta description 243 chars (over 160)
+- `/installers/titan` — Title 91 chars (over 65, Google truncates)
+- `/installers/titan` — Meta description 179 chars (over 160)
+- `/installers/verengo` — Meta description 226 chars (over 160)
+- `/installers/vision-solar` — Meta description 207 chars (over 160)
+- `/meet` — No canonical link
+- `/meet` — 1 image(s) missing alt text
+- `/meet` — Thin page: about 50 words
+- `/solar-inverter-replacement` — Title 77 chars (over 65, Google truncates)
+- `/solar-inverter-replacement` — Meta description 168 chars (over 160)
+- `/solar-panels-not-producing` — Title 67 chars (over 65, Google truncates)
+- `/solar-panels-not-producing` — Meta description 182 chars (over 160)
+- `/solar-repair-alpine` — Title 74 chars (over 65, Google truncates)
+- `/solar-repair-alpine` — Meta description 164 chars (over 160)
+- `/solar-repair-anaheim` — Title 75 chars (over 65, Google truncates)
+- `/solar-repair-anaheim` — Meta description 165 chars (over 160)
+- `/solar-repair-bluffdale-ut` — Title 77 chars (over 65, Google truncates)
+- `/solar-repair-bluffdale-ut` — Meta description 172 chars (over 160)
+- `/solar-repair-burbank` — Title 75 chars (over 65, Google truncates)
+- `/solar-repair-burbank` — Meta description 165 chars (over 160)
+- `/solar-repair-carlsbad` — Title 76 chars (over 65, Google truncates)
+- `/solar-repair-carlsbad` — Meta description 166 chars (over 160)
+- `/solar-repair-chula-vista` — Title 79 chars (over 65, Google truncates)
+- `/solar-repair-chula-vista` — Meta description 169 chars (over 160)
+- `/solar-repair-corona` — Title 74 chars (over 65, Google truncates)
+- `/solar-repair-corona` — Meta description 164 chars (over 160)
+- `/solar-repair-cottonwood-heights-ut` — Title 86 chars (over 65, Google truncates)
+- `/solar-repair-cottonwood-heights-ut` — Meta description 181 chars (over 160)
+- `/solar-repair-draper-ut` — Title 74 chars (over 65, Google truncates)
+- `/solar-repair-draper-ut` — Meta description 169 chars (over 160)
+- `/solar-repair-el-cajon` — Title 76 chars (over 65, Google truncates)
+- `/solar-repair-el-cajon` — Meta description 166 chars (over 160)
+- `/solar-repair-encinitas` — Title 77 chars (over 65, Google truncates)
+- `/solar-repair-encinitas` — Meta description 167 chars (over 160)
+- `/solar-repair-escondido` — Title 77 chars (over 65, Google truncates)
+- `/solar-repair-escondido` — Meta description 167 chars (over 160)
+- `/solar-repair-fallbrook` — Title 77 chars (over 65, Google truncates)
+- `/solar-repair-fallbrook` — Meta description 167 chars (over 160)
+- `/solar-repair-fontana` — Title 75 chars (over 65, Google truncates)
+- `/solar-repair-fontana` — Meta description 165 chars (over 160)
+- `/solar-repair-glendale` — Title 76 chars (over 65, Google truncates)
+- `/solar-repair-glendale` — Meta description 166 chars (over 160)
+- `/solar-repair-hemet` — Title 73 chars (over 65, Google truncates)
+- `/solar-repair-hemet` — Meta description 163 chars (over 160)
+- `/solar-repair-herriman-ut` — Title 76 chars (over 65, Google truncates)
+- `/solar-repair-herriman-ut` — Meta description 171 chars (over 160)
+- `/solar-repair-holladay-ut` — Title 76 chars (over 65, Google truncates)
+- `/solar-repair-holladay-ut` — Meta description 171 chars (over 160)
+- `/solar-repair-huntington-beach` — Title 84 chars (over 65, Google truncates)
+- `/solar-repair-huntington-beach` — Meta description 174 chars (over 160)
+- `/solar-repair-imperial-county` — Title 83 chars (over 65, Google truncates)
+- `/solar-repair-imperial-county` — Meta description 175 chars (over 160)
+- `/solar-repair-irvine` — Title 74 chars (over 65, Google truncates)
+- `/solar-repair-irvine` — Meta description 164 chars (over 160)
+- `/solar-repair-la-mesa` — Title 75 chars (over 65, Google truncates)
+- `/solar-repair-la-mesa` — Meta description 165 chars (over 160)
+- `/solar-repair-lake-elsinore` — Title 81 chars (over 65, Google truncates)
+- `/solar-repair-lake-elsinore` — Meta description 171 chars (over 160)
+- `/solar-repair-lakeside` — Title 76 chars (over 65, Google truncates)
+- `/solar-repair-lakeside` — Meta description 166 chars (over 160)
+- `/solar-repair-lehi-ut` — Title 72 chars (over 65, Google truncates)
+- `/solar-repair-lehi-ut` — Meta description 167 chars (over 160)
+- `/solar-repair-lemon-grove` — Title 79 chars (over 65, Google truncates)
+- `/solar-repair-lemon-grove` — Meta description 169 chars (over 160)
+- `/solar-repair-long-beach` — Title 78 chars (over 65, Google truncates)
+- `/solar-repair-long-beach` — Meta description 168 chars (over 160)
+- `/solar-repair-los-angeles-county` — Title 82 chars (over 65, Google truncates)
+- `/solar-repair-los-angeles-county` — Meta description 179 chars (over 160)
+- `/solar-repair-menifee` — Title 75 chars (over 65, Google truncates)
+- `/solar-repair-menifee` — Meta description 165 chars (over 160)
+- `/solar-repair-midvale-ut` — Title 75 chars (over 65, Google truncates)
+- `/solar-repair-midvale-ut` — Meta description 170 chars (over 160)
+- `/solar-repair-millcreek-ut` — Title 77 chars (over 65, Google truncates)
+- `/solar-repair-millcreek-ut` — Meta description 172 chars (over 160)
+- `/solar-repair-mission-viejo` — Title 81 chars (over 65, Google truncates)
+- `/solar-repair-mission-viejo` — Meta description 171 chars (over 160)
+- `/solar-repair-moreno-valley` — Title 81 chars (over 65, Google truncates)
+- `/solar-repair-moreno-valley` — Meta description 171 chars (over 160)
+- `/solar-repair-murray-ut` — Title 74 chars (over 65, Google truncates)
+- `/solar-repair-murray-ut` — Meta description 169 chars (over 160)
+- `/solar-repair-murrieta` — Title 76 chars (over 65, Google truncates)
+- `/solar-repair-murrieta` — Meta description 166 chars (over 160)
+- `/solar-repair-national-city` — Title 81 chars (over 65, Google truncates)
+- `/solar-repair-national-city` — Meta description 171 chars (over 160)
+- `/solar-repair-oceanside` — Title 77 chars (over 65, Google truncates)
+- `/solar-repair-oceanside` — Meta description 167 chars (over 160)
+- `/solar-repair-orange-county` — Title 81 chars (over 65, Google truncates)
+- `/solar-repair-orange-county` — Meta description 161 chars (over 160)
+- `/solar-repair-pasadena` — Title 76 chars (over 65, Google truncates)
+- `/solar-repair-pasadena` — Meta description 166 chars (over 160)
+- `/solar-repair-poway` — Title 73 chars (over 65, Google truncates)
+- `/solar-repair-poway` — Meta description 163 chars (over 160)
+- `/solar-repair-ramona` — Title 74 chars (over 65, Google truncates)
+- `/solar-repair-ramona` — Meta description 164 chars (over 160)
+- `/solar-repair-rancho-cucamonga` — Title 84 chars (over 65, Google truncates)
+- `/solar-repair-rancho-cucamonga` — Meta description 174 chars (over 160)
+- `/solar-repair-rancho-santa-fe` — Title 83 chars (over 65, Google truncates)
+- `/solar-repair-rancho-santa-fe` — Meta description 173 chars (over 160)
+- `/solar-repair-riverside-county` — Title 84 chars (over 65, Google truncates)
+- `/solar-repair-riverside-county` — Meta description 200 chars (over 160)
+- `/solar-repair-riverside` — Title 77 chars (over 65, Google truncates)
+- `/solar-repair-riverside` — Meta description 167 chars (over 160)
+- `/solar-repair-riverton-ut` — Title 76 chars (over 65, Google truncates)
+- `/solar-repair-riverton-ut` — Meta description 171 chars (over 160)
+- `/solar-repair-salt-lake-city-ut` — Title 82 chars (over 65, Google truncates)
+- `/solar-repair-salt-lake-city-ut` — Meta description 177 chars (over 160)
+- `/solar-repair-san-bernardino-county` — Title 89 chars (over 65, Google truncates)
+- `/solar-repair-san-bernardino-county` — Meta description 187 chars (over 160)
+- `/solar-repair-san-diego` — Title 77 chars (over 65, Google truncates)
+- `/solar-repair-san-diego` — Meta description 167 chars (over 160)
+- `/solar-repair-san-marcos` — Title 78 chars (over 65, Google truncates)
+- `/solar-repair-san-marcos` — Meta description 168 chars (over 160)
+- `/solar-repair-sandy-ut` — Title 73 chars (over 65, Google truncates)
+- `/solar-repair-sandy-ut` — Meta description 168 chars (over 160)
+- `/solar-repair-santa-ana` — Title 77 chars (over 65, Google truncates)
+- `/solar-repair-santa-ana` — Meta description 167 chars (over 160)
+- `/solar-repair-santee` — Title 74 chars (over 65, Google truncates)
+- `/solar-repair-santee` — Meta description 164 chars (over 160)
+- `/solar-repair-south-jordan-ut` — Title 80 chars (over 65, Google truncates)
+- `/solar-repair-south-jordan-ut` — Meta description 175 chars (over 160)
+- `/solar-repair-spring-valley` — Title 81 chars (over 65, Google truncates)
+- `/solar-repair-spring-valley` — Meta description 171 chars (over 160)
+- `/solar-repair-taylorsville-ut` — Title 80 chars (over 65, Google truncates)
+- `/solar-repair-taylorsville-ut` — Meta description 175 chars (over 160)
+- `/solar-repair-temecula` — Title 76 chars (over 65, Google truncates)
+- `/solar-repair-temecula` — Meta description 166 chars (over 160)
+- `/solar-repair-vista` — Title 73 chars (over 65, Google truncates)
+- `/solar-repair-vista` — Meta description 163 chars (over 160)
+- `/solar-repair-west-jordan-ut` — Title 79 chars (over 65, Google truncates)
+- `/solar-repair-west-jordan-ut` — Meta description 174 chars (over 160)
+- `/solar-repair-west-valley-city-ut` — Title 84 chars (over 65, Google truncates)
+- `/solar-repair-west-valley-city-ut` — Meta description 179 chars (over 160)
+- `/solar-system-health-check` — Meta description 161 chars (over 160)
+- `/southern-california-solar-repair` — Title 81 chars (over 65, Google truncates)
+- `/southern-california-solar-repair` — Meta description 170 chars (over 160)
+- `/sunrun` — Title 72 chars (over 65, Google truncates)
+- `/utah-solar-repair` — Title 82 chars (over 65, Google truncates)
+- `/utah-solar-repair` — Meta description 166 chars (over 160)
+- `/solar-repair-salt-lake-city-ut, /utah-solar-repair` — Duplicate title: "Solar Panel Repair &amp; Inverter Diagnostics in Salt Lake C"
+
+## Low
+
+- `/blog/battery-storage-sgip-rebate` — Meta description only 58 chars
+- `/blog/nem-3-solar-export-credits` — Meta description only 53 chars
+- `/blog/sdge-electric-rates-2026` — Meta description only 67 chars
+- `/blog/solar-installer-out-of-business` — Meta description only 69 chars
+- `/blog/sunnova-bankruptcy` — Meta description only 43 chars
+- `/blog` — No JSON-LD structured data
+- `/installers/adt-solar` — Not in sitemap.xml
+- `/installers/american-solar-direct` — Not in sitemap.xml
+- `/installers/freedom-forever` — Not in sitemap.xml
+- `/installers/harness-power` — Not in sitemap.xml
+- `/installers/infinity-energy` — Not in sitemap.xml
+- `/installers/kota-energy` — Not in sitemap.xml
+- `/installers/lumio` — Not in sitemap.xml
+- `/installers/mosaic` — Not in sitemap.xml
+- `/installers/oneroof-energy` — Not in sitemap.xml
+- `/installers/petersen-dean` — Not in sitemap.xml
+- `/installers/pink-energy` — Not in sitemap.xml
+- `/installers/posigen` — Not in sitemap.xml
+- `/installers/rgs-energy` — Not in sitemap.xml
+- `/installers/simply-solar` — Not in sitemap.xml
+- `/installers/solare-energy` — Not in sitemap.xml
+- `/installers/sullivan` — Not in sitemap.xml
+- `/installers/sungevity` — Not in sitemap.xml
+- `/installers/sunnova` — Not in sitemap.xml
+- `/installers/sunpower` — Not in sitemap.xml
+- `/installers/suntuity` — Not in sitemap.xml
+- `/installers/sunworks` — Not in sitemap.xml
+- `/installers/titan` — Not in sitemap.xml
+- `/installers/verengo` — Not in sitemap.xml
+- `/installers/vision-solar` — Not in sitemap.xml
+- `/meet` — Meta description only 67 chars
+- `/meet` — No JSON-LD structured data
+- `/meet` — Not in sitemap.xml
+- `/privacy` — No JSON-LD structured data
+- `/terms` — No JSON-LD structured data
+
