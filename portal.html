@@ -28162,12 +28162,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   window.dealDocsListInto = async function(elId, custId) {
     try {
       var el = document.getElementById(elId); if (!el) return;
+      await _loadCustomDealDocTypes(); // record-only / customer-specific documents live in document_templates
       var client = supabase.createClient(SUPA_URL, SUPA_KEY);
-      var r = await client.from('deal_documents').select('doc_type,status,signed_at').eq('customer_id', custId).in('status', ['signed', 'customer_signed']);
-      var rows = (r.data || []).filter(function(x){ return DEAL_DOC_TYPES.some(function(d){ return d.id === x.doc_type && d.hasPdfTemplate; }); });
+      var r = await client.from('deal_documents').select('doc_type,status,signed_at,data').eq('customer_id', custId).in('status', ['signed', 'customer_signed']);
+      // Solar + battery documents only. The Diagnostic Service Agreement (billing) is never listed on an Ops portal.
+      var rows = (r.data || []).filter(function(x){ return DEAL_DOC_TYPES.some(function(d){ return d.id === x.doc_type && !d.virtual && d.id !== 'diagnostic_agreement' && (d.hasPdfTemplate || (x.data && x.data.external_url)); }); });
       if (!rows.length) { el.innerHTML = ''; return; }
       el.innerHTML = '<div style="background:rgba(255,255,255,0.7);border:1px solid rgba(0,0,0,0.1);border-radius:10px;padding:12px 14px;margin-bottom:12px;"><div style="font-size:0.65rem;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px;">&#128196; Signed Documents</div>' +
-        rows.map(function(x){ var d = DEAL_DOC_TYPES.filter(function(t){ return t.id === x.doc_type; })[0]; return '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:5px 0;"><span style="font-size:0.8rem;color:#333;">' + d.icon + ' ' + esc(d.label) + (x.signed_at ? ' <span style="color:#888;font-size:0.7rem;">' + new Date(x.signed_at).toLocaleDateString('en-US') + '</span>' : '') + '</span>' + _dealDocPdfBtnHtml(custId, x.doc_type, x.status) + '</div>'; }).join('') + '</div>';
+        rows.map(function(x){ var d = DEAL_DOC_TYPES.filter(function(t){ return t.id === x.doc_type; })[0];
+          var act = d.hasPdfTemplate ? _dealDocPdfBtnHtml(custId, x.doc_type, x.status) : '<a href="' + esc(x.data.external_url) + '" target="_blank" rel="noopener" style="font-size:0.72rem;font-weight:800;color:#2a6fd6;text-decoration:none;">Open &#8599;</a>';
+          return '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:5px 0;"><span style="font-size:0.8rem;color:#333;">' + d.icon + ' ' + esc(d.label) + (x.signed_at ? ' <span style="color:#888;font-size:0.7rem;">' + new Date(x.signed_at).toLocaleDateString('en-US') + '</span>' : '') + '</span>' + act + '</div>'; }).join('') + '</div>';
     } catch (e) {}
   };
   function _dealDocsStatusLineHtml(c) {
@@ -28878,6 +28882,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         if (meta.key === 'signed') dlBtn = _diagDownloadBtnHtml(c, false);
         else if (meta.key === 'pending') meta = { color:'#ffaa00', label:'&#9203; Awaiting your signature \u2014 use the Sign &amp; Pay link we sent' };
       } else if (d.hasPdfTemplate) dlBtn = _dealDocPdfBtnHtml(c.id, d.id, status);
+      else if (row && row.data && /^https:\/\/sendlink\.co\//.test(row.data.external_url || '')) dlBtn = '<a href="' + esc(row.data.external_url) + '" target="_blank" rel="noopener" style="font-size:0.72rem;font-weight:800;color:#4a9eff;text-decoration:none;">Open &#8599;</a>';
       return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 0;border-bottom:1px solid rgba(255,255,255,0.08);">'+
         '<div><div style="font-weight:700;font-size:0.85rem;">'+d.icon+' '+esc(d.label)+'</div>'+
           '<div style="font-size:0.72rem;color:'+meta.color+';margin-top:2px;">'+meta.label+'</div></div>'+
@@ -41528,7 +41533,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           }());
 
           // Signed documents (PDF links) for this job
-          h += '<div id="opsDocs_' + job.id + '"></div>'; setTimeout(function(){ if (window.dealDocsListInto) window.dealDocsListInto('opsDocs_' + job.id, job.id); }, 400);
+          // Only the installing partner sees the solar/battery documents: the battery partner when one is set, else the assigned partner.
+          // A partner assigned only for the diagnostic (and any diagnostic/service job) sees none.
+          if (job.sold_type !== 'diagnostic' && (job.battery_ops ? job.battery_ops === ops.id : job.assigned_ops === ops.id)) {
+            h += '<div id="opsDocs_' + job.id + '"></div>'; setTimeout(function(){ if (window.dealDocsListInto) window.dealDocsListInto('opsDocs_' + job.id, job.id); }, 400);
+          }
 
           // Flagged photos warning
           h += flaggedHtml;
