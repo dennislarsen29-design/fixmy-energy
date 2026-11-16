@@ -3692,7 +3692,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   function _jnShell(inner) {
     var ov = document.getElementById('jobNextOv');
     if (!ov) { ov = document.createElement('div'); ov.id = 'jobNextOv'; ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.78);z-index:99990;display:flex;align-items:center;justify-content:center;padding:18px;'; document.body.appendChild(ov); }
-    ov.innerHTML = '<div style="background:#1a1c17;border:1px solid rgba(255,255,255,0.12);border-radius:18px;padding:24px;max-width:460px;width:100%;position:relative;">' +
+    ov.innerHTML = '<div style="background:#1a1c17;border:1px solid rgba(255,255,255,0.12);border-radius:18px;padding:24px;max-width:480px;width:100%;position:relative;max-height:94vh;overflow-y:auto;box-sizing:border-box;">' +
       '<button class="pv-close pv-abs" onclick="jobNextClose()" aria-label="Close" title="Close">&#10005;</button>' + inner + '</div>';
   }
   window.jobNextClose = function() { var ov = document.getElementById('jobNextOv'); if (ov) ov.remove(); if (CURRENT_ROLE !== 'admin') { if (typeof window.salesRerender === 'function') window.salesRerender(); return; } if (adminView === 'jobs') renderJobsView(); else if (adminView === 'pipeline') renderPipelineView(); };
@@ -3817,14 +3817,72 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // what the old Progress Step / Pipeline Status dropdown did for that move (step/solar_status, sold_type +
   // sold_at on a sale, a status-change log, a note). Buttons that need a form (fee, proposal, schedule,
   // commission details, set aside) open the existing screen instead of re-implementing it.
+  // Schedule step inside the Next-step popup (2026-11-16): auto-pulled open times for Tech-related events,
+  // the shared 30-minute picker for manual / ops-partner events, and the phone-call text, all in one place.
+  var JN_TECH_EVENTS = ['Solar Evaluation','Welcome Call','Results Review','Site Survey'];
+  window._jnSchedule = function(id, type) {
+    var c = adminCustomers.find(function(x) { return x.id === id; }); if (!c) return;
+    var name = ((c.first_name || '') + ' ' + (c.last_name || '')).trim(), tech = JN_TECH_EVENTS.indexOf(type) > -1;
+    window._jnSchedState = { id: id, type: type };
+    _jnShell('<div style="max-height:78vh;overflow-y:auto;padding-right:2px;">' +
+      '<div style="font-size:0.62rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#8DC63F;margin-bottom:4px;">' + esc(name) + '</div>' +
+      '<div style="font-size:1.1rem;font-weight:800;color:#fff;margin:6px 0 10px;">Book the ' + esc(type.toLowerCase()) + '</div>' +
+      (tech && type === 'Solar Evaluation' && c.lead_category !== 'new_solar' ? '<div id="jnsSlots" style="margin-bottom:10px;font-size:0.76rem;color:#888;">Loading open times&hellip;</div>' : (tech ? '' : '<div style="font-size:0.74rem;color:#f5a623;margin-bottom:8px;">Partner visit: pick the time you agreed with them (their availability is manual for now).</div>')) +
+      window.tpHtml('jns', { dateId: 'jnsDate', startId: 'jnsStart', endId: 'jnsEnd' }) +
+      '<label style="display:flex;gap:8px;align-items:center;margin:12px 0;font-size:0.78rem;color:#bbb;"><input type="checkbox" id="jnsNotify" checked style="width:auto;"/> Text &amp; email the customer</label>' +
+      '<div id="jnsStatus" style="font-size:0.74rem;color:#888;margin-bottom:8px;"></div>' +
+      '<button id="jnsSave" onclick="_jnSchedSave()" style="' + _jnBtn + 'background:#8DC63F;color:#1A1A1A;margin-bottom:8px;">Save &amp; continue</button>' +
+      '<button onclick="window.tpOptionsPanel(\'jnsCopy\',\'' + id + '\',\'' + type.toLowerCase().replace(/'/g, '') + '\',120)" style="' + _jnBtn + 'background:rgba(74,158,255,0.12);color:#4a9eff;border:1px solid rgba(74,158,255,0.35);margin-bottom:6px;">&#128241; On the phone? Copy next open times</button>' +
+      '<div id="jnsCopy"></div>' +
+      '<button onclick="_leadNext(\'' + id + '\')" style="' + _jnBtn + 'background:none;color:#888;margin-top:6px;">&larr; Back</button></div>');
+    if (tech && type === 'Solar Evaluation' && c.lead_category !== 'new_solar') {
+      fetch('/.netlify/functions/ghl-slots').then(function(r) { return r.json(); }).then(function(data) {
+        var el = document.getElementById('jnsSlots'); if (!el) return;
+        var slots = (data && data.slots) || [];
+        if (!slots.length) { el.innerHTML = 'No open calendar times found. Pick one below.'; return; }
+        var chip = 'width:auto;margin:0 6px 6px 0;padding:8px 12px;border-radius:9px;font-size:0.74rem;font-weight:700;cursor:pointer;border:1px solid rgba(141,198,63,0.4);background:rgba(141,198,63,0.1);color:#8DC63F;';
+        el.innerHTML = '<div style="font-size:0.66rem;color:#888;margin-bottom:5px;text-transform:uppercase;letter-spacing:0.05em;">Open on the calendar (tap one)</div>' +
+          slots.slice(0, 8).map(function(s) {
+            var a = new Date(s.startISO), b = new Date(s.endISO);
+            var lab = a.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) + ' ' + a.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) + '–' + b.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+            return '<button type="button" onclick="_jnPickSlot(\'' + s.startISO + '\',\'' + s.endISO + '\')" style="' + chip + '">' + lab + '</button>';
+          }).join('');
+      }).catch(function() { var el = document.getElementById('jnsSlots'); if (el) el.innerHTML = 'Could not load calendar times. Pick one below.'; });
+    }
+  };
+  window._jnPickSlot = function(sISO, eISO) {
+    var a = new Date(sISO), b = new Date(eISO), pad = function(n) { return (n < 10 ? '0' : '') + n; };
+    var set = function(i, v) { var e = document.getElementById(i); if (e) e.value = v; };
+    set('jnsDate', a.getFullYear() + '-' + pad(a.getMonth() + 1) + '-' + pad(a.getDate()));
+    set('jnsStart', pad(a.getHours()) + ':' + pad(a.getMinutes())); set('jnsEnd', pad(b.getHours()) + ':' + pad(b.getMinutes()));
+    window.tpRefresh('jns');
+  };
+  window._jnSchedSave = async function() {
+    var S = window._jnSchedState || {}, st = document.getElementById('jnsStatus'), btn = document.getElementById('jnsSave');
+    var d = (document.getElementById('jnsDate') || {}).value, s = (document.getElementById('jnsStart') || {}).value, e = (document.getElementById('jnsEnd') || {}).value;
+    if (!d || !s) { if (st) st.innerHTML = '<span style="color:#e06060;">Pick a day and a start time.</span>'; return; }
+    var sISO = new Date(d + 'T' + s).toISOString(), eISO = e ? new Date(d + 'T' + e).toISOString() : null;
+    if (new Date(sISO) < new Date()) { if (st) st.innerHTML = '<span style="color:#e06060;">That time has already passed.</span>'; return; }
+    if (eISO && eISO <= sISO) { if (st) st.innerHTML = '<span style="color:#e06060;">The end must be after the start.</span>'; return; }
+    if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+    try {
+      var note = await window.schedSaveFull(S.id, S.type, sISO, eISO, !!(document.getElementById('jnsNotify') || {}).checked);
+      if (note && /did not|NOT|could not|Not on/i.test(note)) alert(note.replace(/<[^>]+>/g, '').replace(/&#9888;/g, '⚠'));
+      if (typeof _schedRows !== 'undefined') { /* editor cache is refreshed on next open */ }
+      _jnRefresh(S.id); _leadNext(S.id);
+    } catch (err) {
+      if (st) st.innerHTML = '<span style="color:#e06060;">Could not save: ' + esc(err.message || err) + '</span>';
+      if (btn) { btn.disabled = false; btn.textContent = 'Save & continue'; }
+    }
+  };
   window._leadOpts = function(c) {
     var now = Date.now(), isNS = c.lead_category === 'new_solar';
     var appt = c.diagnostic_date ? new Date(c.diagnostic_date).getTime() : 0, when = appt ? _plWhen(c.diagnostic_date) : '';
     var aside = { k: 'aside', l: 'Set aside (paused, not interested, dead)', ghost: 1 }, edit = { k: 'editor', l: 'Open the lead to schedule', ghost: 1 };
     var evalQ = function(onHeld) {
-      if (appt && appt > now) return { q: 'The evaluation is booked for ' + when + '.', d: 'Nothing to do until then. Check-in opens 30 minutes before.', o: [{ k: 'close', l: 'Got it' }, { k: 'editor', l: 'Change the time', ghost: 1 }] };
-      if (appt) return { q: 'What happened with the evaluation?', d: 'It was set for ' + when + '.', o: onHeld.concat([{ k: 'editor', l: 'It needs a new time', ghost: 1 }, aside]) };
-      return { q: 'Is the evaluation booked?', d: 'No appointment is on this lead yet.', o: [{ k: 'editor', l: 'Book it now' }, aside] };
+      if (appt && appt > now) return { q: 'The evaluation is booked for ' + when + '.', d: 'Nothing to do until then. Check-in opens 30 minutes before.', o: [{ k: 'close', l: 'Got it' }, { k: 'sched', l: 'Change the time', ghost: 1 }] };
+      if (appt) return { q: 'What happened with the evaluation?', d: 'It was set for ' + when + '.', o: onHeld.concat([{ k: 'sched', l: 'It needs a new time', ghost: 1 }, aside]) };
+      return { q: 'Is the evaluation booked?', d: 'No appointment is on this lead yet.', o: [{ k: 'sched', l: 'Book it now' }, aside] };
     };
     if (isNS) {
       var s = c.solar_status || 'ns_eval_booked';
@@ -3870,6 +3928,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (key === 'close') return done();
     if (key === 'aside') { jobNextClose(); return openExitModal(id); }
     if (key === 'editor') { jobNextClose(); return openLeadEditor(id); }
+    if (key === 'sched') return _jnSchedule(id, 'Solar Evaluation');
     if (key === 'fee') { jobNextClose(); return openDiagFeeModal(id, { step: 3 }); }
     if (key === 'proposal') { jobNextClose(); return openProposalBuilder(id); }
     if (key === 'reopen') { jobNextClose(); return reopenLead(id); }
@@ -7989,16 +8048,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     modal.id='qrModal';
     modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;';
     modal.innerHTML=
-      '<div style="background:#141714;border:1px solid rgba(141,198,63,0.3);border-radius:16px;padding:24px;width:100%;max-width:340px;">'+
+      '<div style="background:#141714;border:1px solid rgba(141,198,63,0.3);border-radius:16px;padding:24px;width:100%;max-width:460px;max-height:92vh;overflow-y:auto;box-sizing:border-box;">'+
       '<div style="font-size:0.82rem;font-weight:700;color:#8DC63F;margin-bottom:4px;">&#128197; Reschedule</div>'+
       '<div style="font-size:0.92rem;font-weight:700;color:#ccc;margin-bottom:16px;">'+name+'</div>'+
-      '<label style="font-size:0.7rem;color:#888;display:block;margin-bottom:4px;">Date</label>'+
-      '<input type="date" id="qrDate" value="'+dv+'" style="width:100%;box-sizing:border-box;padding:9px 12px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:#fff;font-size:0.85rem;margin-bottom:12px;"/>'+
-      '<label style="font-size:0.7rem;color:#888;display:block;margin-bottom:4px;">Start Time</label>'+
-      '<input type="time" id="qrTime" value="'+tv+'" style="width:100%;box-sizing:border-box;padding:9px 12px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:#fff;font-size:0.85rem;margin-bottom:12px;"/>'+
-      (showEnd
-        ? '<label style="font-size:0.7rem;color:#888;display:block;margin-bottom:4px;">End Time (window)</label><input type="time" id="qrEnd" value="'+ev+'" style="width:100%;box-sizing:border-box;padding:9px 12px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:#fff;font-size:0.85rem;margin-bottom:16px;"/>'
-        : '<input type="hidden" id="qrEnd" value=""/>')+
+      window.tpHtml('qr',{dateId:'qrDate',startId:'qrTime',endId:'qrEnd',noEnd:!showEnd})+
+      '<div style="height:12px;"></div>'+
       '<div style="display:flex;gap:8px;">'+
       '<button onclick="saveReschedule(\''+id+'\',\''+dateField+'\')" style="flex:1;padding:11px;background:#8DC63F;color:#1A1A1A;border:none;border-radius:10px;font-size:0.82rem;font-weight:700;cursor:pointer;">Save</button>'+
       '<button onclick="document.getElementById(\'qrModal\').remove()" style="flex:1;padding:11px;background:rgba(255,255,255,0.07);color:#888;border:none;border-radius:10px;font-size:0.82rem;font-weight:700;cursor:pointer;">Cancel</button>'+
@@ -8011,9 +8065,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<div style="display:flex;gap:8px;">'+
       '<button onclick="qrBuildTextOptions(\''+id+'\',\''+name.replace(/'/g,"\\'")+'\')" style="flex:1;padding:9px;background:rgba(74,158,255,0.12);border:1px solid rgba(74,158,255,0.35);color:#4a9eff;border-radius:8px;font-size:0.78rem;font-weight:700;cursor:pointer;">Generate</button>'+
       '</div>'+
-      '<div id="qrTextResult" style="margin-top:10px;"></div>'+
+      '<div style="margin-top:8px;"><button onclick="window.tpOptionsPanel(\'qrTextResult\',\''+id+'\',\'solar evaluation\',120)" style="width:100%;padding:9px;background:rgba(74,158,255,0.12);border:1px solid rgba(74,158,255,0.35);color:#4a9eff;border-radius:8px;font-size:0.78rem;font-weight:700;cursor:pointer;">&#9889; Auto-fill my next open times</button></div>'+
+            '<div id="qrTextResult" style="margin-top:10px;"></div>'+
       '</div></div></div>';
     document.body.appendChild(modal);
+    (function(){ var dE=document.getElementById('qrDate'), tE=document.getElementById('qrTime'), eE=document.getElementById('qrEnd'); if (dE) dE.value=dv; if (currentISO && tE) tE.value=tv; if (eE && ev) eE.value=String(ev).slice(0,5); window.tpRefresh('qr'); })();
   };
 
   // Builds a numbered, reply-with-a-number text message from freeform availability
@@ -28905,6 +28961,18 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var applicable = DEAL_DOC_TYPES.filter(function(d){ return d.appliesWhen(c); });
     if (!applicable.length) return;
     var docsCache = await _dealDocsLoad(c.id);
+    // Only documents that have actually been pushed to this customer show (a row in a live status);
+    // nothing renders as "not ready yet", and the whole section disappears when nothing is pushed.
+    applicable = applicable.filter(function(d){
+      if (d.virtual) return true;
+      var r = docsCache[d.id];
+      return !!r && ['pending','reviewed','customer_signed','signed'].indexOf(r.status) > -1;
+    });
+    if (!applicable.length) {
+      var lab = wrap.previousElementSibling; if (lab && /sect-label/.test(lab.className||'')) lab.style.display = 'none';
+      wrap.style.display = 'none';
+      return;
+    }
     wrap.innerHTML = applicable.map(function(d) {
       var row = docsCache[d.id];
       var status = row ? row.status : 'pending';
@@ -34188,11 +34256,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             '<div id="nlSlotList" style="display:flex;flex-direction:column;gap:8px;margin-bottom:10px;"><div style="font-size:0.75rem;color:#666;padding:10px;">Loading available times&#8230;</div></div>'+
             '<div style="margin-bottom:12px;"><button type="button" onclick="nlToggleManualAppt(event)" style="width:auto;margin:0;padding:8px 14px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.4);border-radius:8px;color:#4a9eff;font-size:0.76rem;font-weight:700;cursor:pointer;">&#9998; Manual override &mdash; enter date/time myself</button></div>'+
             '<div id="nlManualApptWrap" style="display:none;">'+
-              '<div class="ed-grid" style="margin-bottom:16px;">'+
-                '<div><label class="ed-label">Appt Date</label><input type="date" id="nlApptDateManual" class="ed-input"/></div>'+
-                '<div><label class="ed-label">Start Time</label><input type="time" id="nlApptTimeManual" class="ed-input"/></div>'+
-                '<div><label class="ed-label">End Time</label><input type="time" id="nlApptEndManual" class="ed-input"/></div>'+
-              '</div>'+
+              '<div style="margin-bottom:16px;">'+window.tpHtml('nlm',{dateId:'nlApptDateManual',startId:'nlApptTimeManual',endId:'nlApptEndManual'})+'</div>'+
             '</div>'+
             '<input type="hidden" id="nlSlotStartISO" value=""/>'+
             '<input type="hidden" id="nlSlotEndISO" value=""/>'+
@@ -35039,6 +35103,121 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var end = new Date(start.getTime() + 2*3600*1000);
     edCommitEvalBooking(start.toISOString(), end.toISOString());
   };
+  // ══ Shared time picker (2026-11-16, per Dennis) ═══════════════════════════════════════════════
+  // One component for every manual scheduling box: day chips + 30-minute start buttons (7 AM-8 PM)
+  // + window chips (default 2 hr). It writes into plain inputs with the ids the old fields used
+  // (date / start / end), so every existing save path keeps working unchanged.
+  //   tpHtml(prefix, {dateId, startId, endId, noEnd, defLen}) -> HTML (hidden inputs included)
+  //   tpRefresh(prefix) -> redraw after code sets the input values
+  var _tp = {};
+  var TP_LENS = [[60,'1 hr'],[90,'1½ hr'],[120,'2 hr'],[180,'3 hr']];
+  function _tpPad(n){ return (n<10?'0':'')+n; }
+  function _tpYmd(d){ return d.getFullYear()+'-'+_tpPad(d.getMonth()+1)+'-'+_tpPad(d.getDate()); }
+  function _tpHm12(h, m){ var ap = h>=12?'PM':'AM'; var hh = h%12||12; return hh+':'+_tpPad(m)+' '+ap; }
+  window.tpHtml = function(p, o){
+    o = o || {};
+    _tp[p] = { dateId:o.dateId, startId:o.startId, endId:o.endId, noEnd:!!o.noEnd, len:o.defLen||120, dateOnly:false };
+    return '<input type="hidden" id="'+o.dateId+'"/><input type="hidden" id="'+o.startId+'"/><input type="hidden" id="'+o.endId+'"/>'+
+      '<div id="tp_'+p+'" class="tp-wrap">'+_tpInner(p)+'</div>';
+  };
+  function _tpVal(id){ var e = document.getElementById(id); return e ? e.value : ''; }
+  function _tpLenFrom(s, en){
+    if (!s || !en) return null;
+    var a = s.split(':'), b = en.split(':');
+    return (parseInt(b[0],10)*60+parseInt(b[1],10)) - (parseInt(a[0],10)*60+parseInt(a[1],10));
+  }
+  function _tpInner(p){
+    var st = _tp[p]; if (!st) return '';
+    var d = _tpVal(st.dateId), s = _tpVal(st.startId), en = _tpVal(st.endId);
+    var now = new Date(), todayYmd = _tpYmd(now);
+    var chip = 'width:auto;margin:0;padding:7px 11px;border-radius:9px;font-size:0.74rem;font-weight:700;cursor:pointer;border:1px solid rgba(255,255,255,0.16);background:rgba(255,255,255,0.05);color:#ddd;white-space:nowrap;';
+    var on = 'background:#8DC63F;border-color:#8DC63F;color:#1A1A1A;';
+    var off = 'opacity:0.3;cursor:not-allowed;';
+    var days = '';
+    var dnames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    for (var i=0; i<14; i++){
+      var dd = new Date(now.getFullYear(), now.getMonth(), now.getDate()+i), y = _tpYmd(dd);
+      var lab = i===0 ? 'Today' : i===1 ? 'Tomorrow' : dnames[dd.getDay()]+' '+(dd.getMonth()+1)+'/'+dd.getDate();
+      days += '<button type="button" onclick="tpPickDate(\''+p+'\',\''+y+'\')" style="'+chip+(y===d?on:'')+'">'+lab+'</button>';
+    }
+    var inList = d && (function(){ var t = new Date(d+'T12:00:00'), diff = Math.round((t - new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12))/86400000); return diff>=0 && diff<14; })();
+    var more = '<label style="display:inline-flex;align-items:center;gap:6px;font-size:0.7rem;color:#888;">Other date <input type="date" value="'+(d && !inList ? d : '')+'" onchange="tpPickDate(\''+p+'\',this.value)" style="width:auto;padding:6px 8px;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;font-size:0.74rem;"/></label>';
+    var times = '';
+    for (var m = 7*60; m <= 20*60; m += 30){
+      var h = Math.floor(m/60), mm = m%60, v = _tpPad(h)+':'+_tpPad(mm);
+      var past = d === todayYmd && (h*60+mm) <= (now.getHours()*60+now.getMinutes());
+      times += '<button type="button" '+(past?'disabled ':'')+'onclick="tpPickStart(\''+p+'\',\''+v+'\')" style="'+chip+'padding:8px 4px;text-align:center;'+(v===s?on:'')+(past?off:'')+'">'+_tpHm12(h,mm)+'</button>';
+    }
+    var lens = '';
+    if (!st.noEnd){
+      var curLen = en ? _tpLenFrom(s, en) : null;
+      lens = '<div style="font-size:0.66rem;color:#888;margin:10px 0 5px;text-transform:uppercase;letter-spacing:0.05em;">Window</div><div style="display:flex;gap:6px;flex-wrap:wrap;">';
+      TP_LENS.forEach(function(L){ lens += '<button type="button" onclick="tpPickLen(\''+p+'\','+L[0]+')" style="'+chip+(curLen===L[0]?on:'')+'">'+L[1]+'</button>'; });
+      lens += '<button type="button" onclick="tpPickLen(\''+p+'\',0)" style="'+chip+(s && !en?on:'')+'">No end</button></div>';
+    }
+    var sum = '';
+    if (d && s){
+      var sd = new Date(d+'T'+s), txt = sd.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'})+' · '+_tpHm12(sd.getHours(), sd.getMinutes());
+      if (en){ var ed = new Date(d+'T'+en); txt += ' – '+_tpHm12(ed.getHours(), ed.getMinutes()); }
+      sum = '<div style="margin-top:10px;padding:8px 12px;border-radius:9px;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.3);color:#8DC63F;font-size:0.8rem;font-weight:700;">&#10003; '+txt+'</div>';
+    } else sum = '<div style="margin-top:10px;font-size:0.72rem;color:#888;">Pick a day, then a start time.</div>';
+    return '<div class="tp-date"><div style="font-size:0.66rem;color:#888;margin-bottom:5px;text-transform:uppercase;letter-spacing:0.05em;">Day</div>'+
+        '<div style="display:flex;gap:6px;flex-wrap:nowrap;overflow-x:auto;padding-bottom:6px;-webkit-overflow-scrolling:touch;">'+days+'</div>'+more+'</div>'+
+      '<div class="tp-time" style="'+(st.dateOnly?'display:none;':'')+'"><div style="font-size:0.66rem;color:#888;margin:10px 0 5px;text-transform:uppercase;letter-spacing:0.05em;">Start (7 AM – 8 PM)</div>'+
+        '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(78px,1fr));gap:6px;">'+times+'</div>'+lens+'</div>'+
+      (st.dateOnly ? '' : sum);
+  }
+  window.tpRefresh = function(p){ var st=_tp[p]; var el=document.getElementById('tp_'+p); if (st && el) el.innerHTML=_tpInner(p); };
+  window.tpDateOnly = function(p, yes){ var st=_tp[p]; if (!st) return; st.dateOnly=!!yes; window.tpRefresh(p); };
+  function _tpSet(id, v){ var e=document.getElementById(id); if (e) e.value=v; }
+  function _tpFire(p){ var st=_tp[p]; if (st && st.onchange) { try { st.onchange(p); } catch(e){} } }
+  window.tpPickDate = function(p, ymd){
+    var st=_tp[p]; if (!st || !ymd) return; _tpSet(st.dateId, ymd);
+    // a start already picked may now be in the past (switching to today): drop it
+    if (ymd === _tpYmd(new Date())){ var s=_tpVal(st.startId), n=new Date(); if (s){ var a=s.split(':'); if (parseInt(a[0],10)*60+parseInt(a[1],10) <= n.getHours()*60+n.getMinutes()){ _tpSet(st.startId,''); _tpSet(st.endId,''); } } }
+    window.tpRefresh(p); _tpFire(p);
+  };
+  window.tpPickStart = function(p, hm){
+    var st=_tp[p]; if (!st) return; var prevS=_tpVal(st.startId), prevE=_tpVal(st.endId);
+    var len = prevS && prevE ? _tpLenFrom(prevS, prevE) : st.len; if (!len || len<=0) len = st.len;
+    if (prevS && !prevE) len = 0; // "No end" stays chosen
+    _tpSet(st.startId, hm);
+    if (st.noEnd || !len) _tpSet(st.endId,''); else { var a=hm.split(':'), t=parseInt(a[0],10)*60+parseInt(a[1],10)+len; _tpSet(st.endId, _tpPad(Math.floor(t/60)%24)+':'+_tpPad(t%60)); }
+    if (!_tpVal(st.dateId)) _tpSet(st.dateId, _tpYmd(new Date()));
+    window.tpRefresh(p); _tpFire(p);
+  };
+  window.tpPickLen = function(p, mins){
+    var st=_tp[p]; if (!st) return; var s=_tpVal(st.startId);
+    if (mins) st.len = mins;
+    if (!s){ window.tpRefresh(p); return; }
+    if (!mins) _tpSet(st.endId,''); else { var a=s.split(':'), t=parseInt(a[0],10)*60+parseInt(a[1],10)+mins; _tpSet(st.endId, _tpPad(Math.floor(t/60)%24)+':'+_tpPad(t%60)); }
+    window.tpRefresh(p); _tpFire(p);
+  };
+  // Next open starts from now, on :00/:30, inside 7 AM–8 PM (Pacific-agnostic: uses the device clock).
+  // Used for the numbered phone text. Skips times that overlap this customer's own scheduled events.
+  window.tpNextOpen = function(n, lenMin, busy){
+    var out = [], now = new Date(), step = 30; lenMin = lenMin || 120; busy = busy || [];
+    var t = new Date(now.getTime() + 60*60000); t.setSeconds(0,0); t.setMinutes(t.getMinutes() < 30 ? 30 : 60);
+    var guard = 0;
+    while (out.length < n && guard++ < 800){
+      var h = t.getHours(), m = h*60+t.getMinutes(), wd = t.getDay();
+      if (m < 7*60){ t.setHours(7,0,0,0); continue; }
+      if (m + lenMin > 20*60 + 60 || (m > 20*60)){ t = new Date(t.getFullYear(), t.getMonth(), t.getDate()+1, 7, 0, 0, 0); continue; }
+      if (wd === 0){ t = new Date(t.getFullYear(), t.getMonth(), t.getDate()+1, 7, 0, 0, 0); continue; } // skip Sundays
+      var s = t.getTime(), e = s + lenMin*60000, clash = busy.some(function(b){ return s < b.e && e > b.s; });
+      if (!clash){
+        // spread suggestions: at most 2 per day, at least 2 hours apart
+        var sameDay = out.filter(function(x){ return x.start.toDateString() === t.toDateString(); });
+        if (sameDay.length < 2 && sameDay.every(function(x){ return Math.abs(x.start - t) >= 3*3600000; })) out.push({ start:new Date(s), end:new Date(e) });
+      }
+      t = new Date(t.getTime() + step*60000);
+    }
+    return out;
+  };
+  window.tpFmtOption = function(o){
+    var d = o.start.toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+    return d+', '+_tpHm12(o.start.getHours(), o.start.getMinutes())+' – '+_tpHm12(o.end.getHours(), o.end.getMinutes());
+  };
   // ══ Unified Schedule control (2026-10-13, per Dennis) ═════════════════════════════════════════
   // ONE place + one save path for every dated event, same on FixMy and Axia/QCells. Each save writes an
   // `appointments` row, keeps the legacy date columns in step (so payroll / install timeline / Schedule tab
@@ -35069,12 +35248,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var inp = 'background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;padding:9px;font-size:0.82rem;box-sizing:border-box;width:100%;min-width:0;max-width:100%;';
     return '<div id="schedBox" style="margin:2px 0 16px;padding:14px;background:rgba(74,158,255,0.05);border:1px solid rgba(74,158,255,0.25);border-radius:12px;">'+
       '<div style="font-size:0.78rem;font-weight:700;color:#4a9eff;margin-bottom:10px;">&#128197; Schedule an event <span id="schedEditTag" style="color:#f5a623;font-weight:600;"></span></div>'+
-      '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(130px,100%),1fr));gap:10px;">'+
-        '<div><label class="ed-label">Event</label><select id="schedType" onchange="schedTypeChanged()" style="'+inp+'">'+opts+'</select></div>'+
-        '<div style="min-width:0"><label class="ed-label">Date</label><input type="date" id="schedDate" style="'+inp+'"/></div>'+
-        '<div style="min-width:0"><label class="ed-label">Start</label><input type="time" id="schedStart" style="'+inp+'"/></div>'+
-        '<div style="min-width:0"><label class="ed-label">End (optional)</label><input type="time" id="schedEnd" style="'+inp+'"/></div>'+
-      '</div>'+
+      '<div style="margin-bottom:10px;"><label class="ed-label">Event</label><select id="schedType" onchange="schedTypeChanged()" style="'+inp+'">'+opts+'</select></div>'+
+      window.tpHtml('sched',{dateId:'schedDate',startId:'schedStart',endId:'schedEnd'})+
+      '<div style="margin-top:10px;"><button type="button" onclick="schedCopyOptions()" style="width:auto;margin:0;padding:8px 14px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.4);border-radius:9px;color:#4a9eff;font-size:0.74rem;font-weight:700;cursor:pointer;">&#128241; Copy next open times (for a phone call)</button><div id="schedCopyOut"></div></div>'+
       '<label style="display:flex;gap:8px;align-items:center;margin:10px 0;font-size:0.76rem;color:#bbb;"><input type="checkbox" id="schedNotify" checked style="width:auto;"/> Text &amp; email the customer</label>'+
       '<div style="display:flex;gap:8px;flex-wrap:wrap;">'+
         '<button type="button" id="schedSaveBtn" onclick="schedSubmit()" style="width:auto;padding:9px 20px;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.45);color:#8DC63F;border-radius:100px;font-size:0.78rem;font-weight:700;cursor:pointer;">Save &amp; notify</button>'+
@@ -35084,9 +35260,38 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '<div id="schedList" style="margin-top:10px;font-size:0.8rem;color:#888;">Loading events…</div>'+
     '</div>';
   };
+
+  // Phone-call helper: builds the numbered "reply with a number" text from this customer's next open
+  // times (device clock, 30-min starts, 7 AM-8 PM, skips Sundays, avoids their own booked events).
+  // Draft only: the rep edits the wording, then copies it or opens Messages.
+  window.tpOptionsPanel = function(outId, cid, label, lenMin){
+    var out = document.getElementById(outId); if (!out) return;
+    var rec = (typeof adminCustomers !== 'undefined' ? adminCustomers : []).find(function(x){ return x.id === cid; }) || {};
+    var busy = ((window._schedRowsFor && window._schedRowsFor(cid)) || []).filter(function(a){ return a.status === 'scheduled'; }).map(function(a){
+      return { s:new Date(a.starts_at).getTime(), e: a.ends_at ? new Date(a.ends_at).getTime() : new Date(a.starts_at).getTime() + 7200000 };
+    });
+    var opts = window.tpNextOpen(5, lenMin || 120, busy);
+    var first = (rec.first_name || 'there');
+    var msg = 'Hi ' + first + ', this is ' + (typeof bbRepName === 'function' ? bbRepName() : 'your Solar Review team') + ' with Solar Review. I have these times open for your ' + (label || 'appointment') + ':\n\n' +
+      opts.map(function(o,i){ return (i+1) + ') ' + window.tpFmtOption(o); }).join('\n') +
+      '\n\nJust reply with the number that works and I\'ll lock it in. If none work, tell me what does.';
+    var phone = (rec.phone || '').replace(/\D/g,'');
+    var tid = outId + '_msg';
+    out.innerHTML = '<div style="margin-top:8px;"><textarea id="'+tid+'" rows="9" style="width:100%;box-sizing:border-box;padding:9px 12px;background:rgba(255,255,255,0.04);border:1px solid rgba(141,198,63,0.3);border-radius:9px;color:#ddd;font-size:0.78rem;">'+_schedEsc(msg)+'</textarea>'+
+      '<div style="font-size:0.66rem;color:#888;margin:4px 0 6px;">Draft: edit the wording, then copy it. Times are your next open slots; check them against your own calendar.</div>'+
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;"><button type="button" onclick="(function(b){var t=document.getElementById(\''+tid+'\');if(navigator.clipboard)navigator.clipboard.writeText(t.value);else{t.select();document.execCommand(\'copy\');}b.textContent=\'&#10003; Copied\';setTimeout(function(){b.innerHTML=\'&#128203; Copy\';},1800);})(this)" style="width:auto;margin:0;padding:8px 16px;background:rgba(74,158,255,0.12);border:1px solid rgba(74,158,255,0.4);border-radius:9px;color:#4a9eff;font-size:0.76rem;font-weight:700;cursor:pointer;">&#128203; Copy</button>'+
+      (phone ? '<a href="sms:'+phone+'" onclick="this.href=\'sms:'+phone+'?body=\'+encodeURIComponent(document.getElementById(\''+tid+'\').value)" style="padding:8px 16px;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.3);border-radius:9px;color:#8DC63F;font-size:0.76rem;font-weight:700;text-decoration:none;">&#128172; Open in Messages</a>' : '')+
+      '</div></div>';
+  };
+  window.schedCopyOptions = function(){
+    var cid = (document.getElementById('edId')||{}).value;
+    var t = (document.getElementById('schedType')||{}).value || 'appointment';
+    window.tpOptionsPanel('schedCopyOut', cid, t.toLowerCase(), 120);
+  };
+  window._schedRowsFor = function(cid){ return _schedRows[cid] || []; };
   window.schedTypeChanged = function(){
     var t = (document.getElementById('schedType')||{}).value, ms = !!SCHED_MILESTONES[t];
-    ['schedStart','schedEnd'].forEach(function(i){ var e=document.getElementById(i); if (e && e.parentNode) e.parentNode.style.display = ms ? 'none' : ''; });
+    if (window.tpDateOnly) window.tpDateOnly('sched', ms);
     var n = document.getElementById('schedNotify'); if (n && n.parentNode) n.parentNode.style.display = ms ? 'none' : 'flex';
     var b = document.getElementById('schedSaveBtn'); if (b && !_schedEditing) b.textContent = ms ? 'Save milestone' : 'Save & notify';
   };
@@ -35113,6 +35318,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   window.schedResetForm = function(){
     _schedEditing = null;
     ['schedDate','schedStart','schedEnd'].forEach(function(i){ var e=document.getElementById(i); if(e) e.value=''; });
+    if (window.tpRefresh) window.tpRefresh('sched');
     var t=document.getElementById('schedEditTag'); if(t) t.textContent='';
     var b=document.getElementById('schedCancelEdit'); if(b) b.style.display='none';
     var s=document.getElementById('schedSaveBtn'); if(s) s.textContent='Save & notify';
@@ -35157,6 +35363,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     document.getElementById('schedStart').value = pad(s.getHours())+':'+pad(s.getMinutes());
     var e = a.ends_at ? new Date(a.ends_at) : null;
     document.getElementById('schedEnd').value = e ? pad(e.getHours())+':'+pad(e.getMinutes()) : '';
+    if (window.tpRefresh) window.tpRefresh('sched');
     document.getElementById('schedEditTag').textContent = '— rescheduling';
     document.getElementById('schedCancelEdit').style.display = '';
     document.getElementById('schedSaveBtn').textContent = 'Save change & notify';
@@ -35259,6 +35466,28 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var note = await window.schedSaveQuiet(cid, type, startISO, endISO, Object.assign({}, opts, { notify: notify }));
     if (note && /NOT notified|did not|could not/i.test(note)) alert(note.replace(/<[^>]+>/g, '').replace(/&#9888;/g, '⚠'));
     else if (notify && note) alert(note.replace(/<[^>]+>/g, ''));
+  };
+  // Save a scheduled event from anywhere (Next-step popups etc.): same effects as the Schedule box.
+  window.schedSaveFull = async function(cid, type, startISO, endISO, notify){
+    var c = adminCustomers.find(function(x){ return x.id === cid; });
+    if (!c) throw new Error('Lead not loaded');
+    var msg = '';
+    if (type === 'Solar Evaluation' && c.lead_category !== 'new_solar') {
+      try {
+        var gr = await fetch('/.netlify/functions/ghl-book', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ firstName:c.first_name||'', lastName:c.last_name||'', phone:c.phone||'', email:c.email||null, address:c.address||null, startISO:startISO, endISO:endISO||new Date(new Date(startISO).getTime()+2*3600*1000).toISOString(), customerId:c.id, notify:false }) });
+        var gj = await gr.json();
+        if (!gr.ok || !gj.ok || !gj.appointmentId || gj.apptError) throw new Error(gj.error || 'the calendar rejected it');
+      } catch (ge) { msg += ' Not on the GHL calendar (' + (ge.message||ge) + ').'; }
+    }
+    var note = await window.schedSaveQuiet(cid, type, startISO, endISO, { notify: !!notify });
+    var patch = _schedLegacyPatch(type, startISO, endISO, c);
+    if (Object.keys(patch).length) {
+      var cl = supabase.createClient(SUPA_URL, SUPA_KEY), up = await cl.from('customers').update(patch).eq('id', cid);
+      if (up.error) throw up.error;
+      _schedMirror(cid, patch);
+    }
+    try { if (typeof bbLogActivity === 'function') { var _p = bbLogActivity(cid, 'schedule', null, '📅 ' + type + ' scheduled: ' + new Date(startISO).toLocaleString('en-US',{timeZone:'America/Los_Angeles',weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})); if (_p && _p.catch) _p.catch(function(){}); } } catch (e) {}
+    return (note || '') + msg;
   };
   window.schedSubmit = async function(){
     var cid = (document.getElementById('edId')||{}).value;
