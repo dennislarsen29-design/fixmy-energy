@@ -34316,6 +34316,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '</div>'+
           '<div id="nlFixmySlotWrap">'+
             '<div class="editor-section-title">Book Appointment</div>'+
+            '<div id="nlEvalModeWrap"></div>'+
             '<div id="nlSlotList" style="display:flex;flex-direction:column;gap:8px;margin-bottom:10px;"><div style="font-size:0.75rem;color:#666;padding:10px;">Loading available times&#8230;</div></div>'+
             '<div style="margin-bottom:12px;"><button type="button" onclick="nlToggleManualAppt(event)" style="width:auto;margin:0;padding:8px 14px;background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.4);border-radius:8px;color:#4a9eff;font-size:0.76rem;font-weight:700;cursor:pointer;">&#9998; Manual override &mdash; enter date/time myself</button></div>'+
             '<div id="nlManualApptWrap" style="display:none;">'+
@@ -34332,8 +34333,110 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '</div>'+
       '</div>';
     slot.scrollIntoView({behavior:'smooth',block:'start'});
-    setTimeout(function(){ initNlPlaces(); if (typeof adminLeadCat !== 'undefined' && adminLeadCat !== 'fixmy') nlSetCat(adminLeadCat); else if (document.getElementById('nlFixmySlotWrap')) nlLoadFixmySlots(); }, 400);
+    setTimeout(function(){ initNlPlaces(); if (window.nlEvmStart) window.nlEvmStart(); if (typeof adminLeadCat !== 'undefined' && adminLeadCat !== 'fixmy') nlSetCat(adminLeadCat); else if (document.getElementById('nlFixmySlotWrap')) nlLoadFixmySlots(); }, 400);
   }
+
+  // ── Virtual Evaluation in EVERY capture form (2026-11-17, per Dennis — a phone lead could only book a local visit) ──
+  // A lead 50+ miles from every Tech home base gets a 45-minute Google Meet evaluation instead of a Tech visit. The rule
+  // lives on the server (virtual-check); these helpers only ask it, show the answer, and let a person override it
+  // (a phone customer can say "just do it by video"). Auto vs. set-by-hand is remembered so a later automatic check
+  // never undoes a person's choice. Used by the New Lead form, the Dialer "Booked!" panel and the Doors booking.
+  window._evmCache = {};
+  window._evmCheck = async function(inp) {
+    try {
+      var body = {}, lat = parseFloat(inp && inp.lat), lng = parseFloat(inp && inp.lng);
+      if (isFinite(lat) && isFinite(lng)) { body.lat = lat; body.lng = lng; }
+      else if (inp && inp.address && String(inp.address).length >= 8) body.address = String(inp.address).slice(0, 200);
+      else return { virtual: null };
+      var key = JSON.stringify(body);
+      if (window._evmCache[key]) return window._evmCache[key];
+      var r = await fetch('/.netlify/functions/virtual-check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      var j = await r.json();
+      var out = { virtual: (j && typeof j.virtual === 'boolean') ? j.virtual : null, miles: j && j.miles };
+      if (out.virtual !== null) window._evmCache[key] = out;
+      return out;
+    } catch (e) { return { virtual: null }; }
+  };
+  window._evmNew = function() { return { auto: null, miles: null, mode: 'local', manual: false }; };
+  window._evmApply = function(st, r) {
+    st.auto = r.virtual; st.miles = r.miles;
+    if (!st.manual) st.mode = (r.virtual === true) ? 'virtual' : 'local';
+    return st;
+  };
+  window._evmPick = function(st, m) {
+    if (m === 'auto') { st.manual = false; st.mode = (st.auto === true) ? 'virtual' : 'local'; }
+    else { st.manual = true; st.mode = m; }
+    return st;
+  };
+  // pickFn is the name of a global function taking 'local' | 'virtual' | 'auto'
+  window._evmToggleHtml = function(st, pickFn) {
+    var v = st.mode === 'virtual';
+    var note = st.auto === true ? ('Automatic: about ' + (st.miles || '50+') + ' miles from the nearest Tech &mdash; virtual.')
+             : st.auto === false ? ('Automatic: within reach of a Tech' + (st.miles ? ' (about ' + st.miles + ' mi)' : '') + ' &mdash; local visit.')
+             : 'Distance not known yet &mdash; local visit unless you switch it.';
+    var btn = function(m, label, on) {
+      return '<button type="button" onclick="' + pickFn + '(\'' + m + '\')" style="width:auto;margin:0;padding:9px 12px;border-radius:100px;font-size:0.76rem;font-weight:800;cursor:pointer;'
+        + (on ? 'background:' + (m === 'virtual' ? '#a789d9;color:#fff;border:none;' : '#8DC63F;color:#1a1a1a;border:none;') : 'background:rgba(255,255,255,0.06);color:#aaa;border:1px solid rgba(255,255,255,0.15);') + '">' + label + '</button>';
+    };
+    return '<div style="margin:0 0 10px;padding:10px 12px;border-radius:10px;background:' + (v ? 'rgba(167,137,217,0.10)' : 'rgba(255,255,255,0.03)') + ';border:1px solid ' + (v ? 'rgba(167,137,217,0.4)' : 'rgba(255,255,255,0.1)') + ';">'
+      + '<div style="font-size:0.66rem;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:' + (v ? '#a789d9' : '#888') + ';margin-bottom:6px;">Evaluation type</div>'
+      + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;">' + btn('local', '&#128663; Local visit', !v) + btn('virtual', '&#127909; Virtual (Google Meet, 45 min)', v) + '</div>'
+      + '<div style="font-size:0.72rem;color:#999;line-height:1.5;">' + note
+      + (st.manual ? ' <strong style="color:#f59e0b;">Set by hand.</strong> <a href="#" onclick="' + pickFn + '(\'auto\');return false;" style="color:#4a9eff;">Back to automatic</a>' : '') + '</div>'
+      + (v ? '<div style="font-size:0.72rem;color:#a789d9;margin-top:6px;line-height:1.5;">The customer gets a text and email with the Meet link. Times below are 45-minute video slots.</div>' : '')
+      + '</div>';
+  };
+  // Only a hand-set choice is written; an automatic one is recomputed by the server and agrees with it.
+  window._evmPersist = async function(customerId, st) {
+    if (!customerId || !st || !st.manual) return;
+    try { await supabase.createClient(SUPA_URL, SUPA_KEY).from('customers').update({ eval_mode: st.mode, eval_mode_manual: true }).eq('id', customerId); } catch (e) {}
+  };
+  window._evmNoticeHtml = function(res) {
+    var n = res && res.virtualNotice;
+    if (!res || !res.virtual) return '';
+    var ok = n && n.ok, sms = n && n.sms && n.sms.ok, em = n && n.email && n.email.ok;
+    var txt = ok ? ('&#9993; Google Meet link sent' + (sms && em ? ' by text and email' : sms ? ' by text (email did not send)' : ' by email (text did not send)') + (n.sent_to ? ' to ' + esc([n.sent_to.phone, n.sent_to.email].filter(Boolean).join(' / ')) : '') + '.')
+      : ('&#9888; The video-call link was NOT sent' + (n && n.reason ? ' (' + esc(n.reason) + ')' : '') + '. Send it from the lead&rsquo;s Schedule box so the customer has it.');
+    return '<div style="text-align:left;margin-top:14px;padding:10px 14px;border-radius:10px;font-size:0.76rem;line-height:1.5;background:' + (ok ? 'rgba(167,137,217,0.1)' : 'rgba(239,68,68,0.1)') + ';border:1px solid ' + (ok ? 'rgba(167,137,217,0.4)' : 'rgba(239,68,68,0.35)') + ';color:' + (ok ? '#a789d9' : '#ef4444') + ';">' + txt + '</div>';
+  };
+  window._evmSlotsUrl = function(st) { return '/.netlify/functions/ghl-slots' + (st && st.mode === 'virtual' ? '?virtual=1' : ''); };
+
+  // New Lead form state + live distance check (re-checks whenever the address changes, however it was filled in —
+  // typing, Google's picker or Quoya Assist — by watching the field instead of hooking each path).
+  window._nlEvm = window._evmNew();
+  window.nlEvmRender = function() {
+    var w = document.getElementById('nlEvalModeWrap');
+    if (w) w.innerHTML = window._evmToggleHtml(window._nlEvm, 'nlEvmPick');
+  };
+  window.nlEvmPick = function(m) {
+    window._evmPick(window._nlEvm, m);
+    var a = document.getElementById('nlSlotStartISO'), b = document.getElementById('nlSlotEndISO'); if (a) a.value = ''; if (b) b.value = '';
+    window.nlEvmRender();
+    if (typeof nlLoadFixmySlots === 'function') nlLoadFixmySlots();
+  };
+  window._nlEvmLast = '';
+  window.nlEvmCheck = async function() {
+    var el = document.getElementById('nlAddr');
+    if (!el) { clearInterval(window._nlEvmTimer); return; }
+    var a = (el.value || '').trim();
+    if (a.length < 8 || a.indexOf(',') < 0 || a === window._nlEvmLast) return;
+    window._nlEvmLast = a;
+    var before = window._nlEvm.mode;
+    var r = await window._evmCheck({ address: a });
+    if ((document.getElementById('nlAddr') || {}).value && (document.getElementById('nlAddr').value || '').trim() !== a) return; // changed while we asked
+    window._evmApply(window._nlEvm, r);
+    window.nlEvmRender();
+    if (window._nlEvm.mode !== before && typeof nlLoadFixmySlots === 'function') {
+      var x = document.getElementById('nlSlotStartISO'), y = document.getElementById('nlSlotEndISO'); if (x) x.value = ''; if (y) y.value = '';
+      nlLoadFixmySlots();
+    }
+  };
+  window.nlEvmStart = function() {
+    window._nlEvm = window._evmNew(); window._nlEvmLast = '';
+    clearInterval(window._nlEvmTimer);
+    window.nlEvmRender();
+    window._nlEvmTimer = setInterval(window.nlEvmCheck, 1500);
+  };
 
   function nlSetCat(cat) {
     document.getElementById('nlLeadCat').value = cat;
@@ -34365,7 +34468,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var list = document.getElementById('nlSlotList');
     if (!list) return;
     list.innerHTML = '<div style="font-size:0.75rem;color:#666;padding:10px;">Loading available times&#8230;</div>';
-    fetch('/.netlify/functions/ghl-slots').then(function(r){ return r.json(); }).then(function(data){
+    fetch(window._evmSlotsUrl(window._nlEvm)).then(function(r){ return r.json(); }).then(function(data){
       var slots = (data && data.slots) || [];
       if (!slots.length) {
         list.innerHTML = '<div style="font-size:0.75rem;color:#c77;padding:10px;">No open times found &mdash; enter the date/time below instead.</div>';
@@ -35755,6 +35858,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // ⚠️ Previously saved as the RAW "HH:MM" input value, never combined with the date
     // into a real timestamp (e.g. arrival_end = "15:00" instead of a real ISO datetime).
     var apptEndISO=(nlApptDate&&nlApptEnd)?new Date(nlApptDate+'T'+nlApptEnd).toISOString():null;
+    // Virtual evaluation (2026-11-17): a typed-in time with no end is a 45-minute video call.
+    var _nlVirtual = (leadCat === 'fixmy') && window._nlEvm && window._nlEvm.mode === 'virtual' && (document.getElementById('nlLeadSource')||{}).value !== 'kin';
+    if (_nlVirtual && apptISO && !apptEndISO) apptEndISO = new Date(new Date(apptISO).getTime() + 45*60000).toISOString();
     var nlLeadSrcEl=document.getElementById('nlLeadSource');
     // ⚠️ "Enter date/time manually instead" used to be a silent dead end (2026-08-24 —
     // Jim Leste report: landed in the portal, never on the GHL calendar). nlSlotStartISO/
@@ -35800,6 +35906,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // the calendar booking above, so the appointment lands on the calendar exactly as before.
     var _noSolarToAxia = (leadCat === 'fixmy' && hasSolar === 'no');
     var newLead={first_name:first,last_name:(document.getElementById('nlLast').value||null),email:email,phone:phone,address:addr,monthly_bill:bill||null,access_code:digits,step:1,notes:initialNotes,rep_id:repId||DEFAULT_CLOSER_ID,setter_name:setterLabel,lead_category:_noSolarToAxia?'new_solar':leadCat,solar_status:_noSolarToAxia?'ns_eval_booked':initSolarStatus,diagnostic_date:apptISO,arrival_window:null,arrival_end:apptEndISO,lead_source:nlLeadSrcEl?nlLeadSrcEl.value||null:null,title_owner:titleOwnerVal,apn:titleApnVal,title_confirmed:titleConfVal};
+    // Evaluation type goes onto the row up front; only a hand-set choice is locked against the automatic check.
+    if (leadCat === 'fixmy' && window._nlEvm && (window._nlEvm.auto !== null || window._nlEvm.manual)) { newLead.eval_mode = window._nlEvm.mode; if (window._nlEvm.manual) newLead.eval_mode_manual = true; }
+
     var btn=document.querySelector('#newLeadPanel .lead-btn.lime');
     if(btn){btn.textContent='Creating...';btn.disabled=true;}
     try{
@@ -35871,7 +35980,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             // here, leaving THIS lead's arrival_window forever null even though the
             // booking call itself ran (found 2026-08-26 — "TestRondaSetter"'s real
             // row stayed unconfirmed while a March test row absorbed the write).
-            body: JSON.stringify({ firstName: first, lastName: newLead.last_name||'', phone: phone, email: email, address: addr, startISO: fixmySlotStart, endISO: fixmySlotEnd, notify: (_isKinLead ? false : !_isSetterType), customerId: data && data.id })
+            body: JSON.stringify({ firstName: first, lastName: newLead.last_name||'', phone: phone, email: email, address: addr, startISO: fixmySlotStart, endISO: fixmySlotEnd, notify: (_isKinLead ? false : !_isSetterType), virtual: _nlVirtual ? true : undefined, customerId: data && data.id })
           });
           var _bookResult = await _bookResp.json();
           // Matches the same real-booking truth test used on Doors/Dialer commits —
@@ -35914,7 +36023,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var _autoStatusHtml =
         '<div style="text-align:left;margin-top:14px;padding:10px 14px;border-radius:10px;font-size:0.74rem;'+
         (_isSetterType ? 'background:rgba(255,170,0,0.08);border:1px solid rgba(255,170,0,0.25);color:#ffaa00;' : 'background:rgba(141,198,63,0.08);border:1px solid rgba(141,198,63,0.25);color:#8DC63F;')+
-        '">'+(_isSetterType ? '&#128222; <strong>No Automations</strong> &mdash; no confirmation SMS/email was sent to the customer.' : '&#127760; <strong>Automations ON</strong> &mdash; a confirmation SMS/email was sent to the customer.')+
+        '">'+(_isSetterType ? ((_nlVirtual && typeof _bookResult !== 'undefined' && _bookResult && _bookResult.virtualNotice && _bookResult.virtualNotice.ok) ? '&#128222; <strong>No Automations</strong> &mdash; the usual confirmation was held back, but the video-call message above still went out because the customer needs the Meet link.' : '&#128222; <strong>No Automations</strong> &mdash; no confirmation SMS/email was sent to the customer.') : '&#127760; <strong>Automations ON</strong> &mdash; a confirmation SMS/email was sent to the customer.')+
         '</div>';
       var _setterDiagHtml = '';
       if (typeof _isSetterType !== 'undefined' && _isSetterType && typeof _bookResult !== 'undefined' && _bookResult) {
@@ -35941,8 +36050,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '<div style="font-size:2rem;margin-bottom:8px;">✅</div>'+
           '<div style="font-size:1.05rem;font-weight:800;color:#8DC63F;margin-bottom:4px;">Lead Created!</div>'+
           '<div style="font-size:0.82rem;color:#aaa;margin-bottom:24px;">'+custName+'</div>'+
-          (_ghlBookOk === true && fixmySlotStart ? '<div style="margin:6px 0 0;padding:10px 14px;border-radius:10px;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.3);color:#8DC63F;font-size:0.84rem;font-weight:700;">&#128197; Booked on the calendar: '+esc(new Date(fixmySlotStart).toLocaleString([], {weekday:'short', month:'short', day:'numeric', hour:'numeric', minute:'2-digit'}))+'</div>' : '')+
+          (_ghlBookOk === true && fixmySlotStart ? '<div style="margin:6px 0 0;padding:10px 14px;border-radius:10px;background:rgba(141,198,63,0.1);border:1px solid rgba(141,198,63,0.3);color:#8DC63F;font-size:0.84rem;font-weight:700;">&#128197; '+(_nlVirtual?'Virtual evaluation booked (Google Meet): ':'Booked on the calendar: ')+esc(new Date(fixmySlotStart).toLocaleString([], {weekday:'short', month:'short', day:'numeric', hour:'numeric', minute:'2-digit'}))+'</div>' : '')+
           _calBookWarningHtml+
+          (typeof _bookResult !== 'undefined' && _bookResult ? window._evmNoticeHtml(_bookResult) : '')+
           _autoStatusHtml+
           _setterDiagHtml+
           '<div style="display:flex;flex-direction:column;gap:10px;margin-top:14px;">'+

@@ -325,6 +325,6 @@ exports.handler = async function(event) {
   return {
     statusCode: 200,
     headers: cors,
-    body: JSON.stringify({ ok: true, contactId, appointmentId, apptError, notifySuppressed: !shouldNotify, tagResult }),
+    body: JSON.stringify({ ok: true, contactId, appointmentId, apptError, notifySuppressed: !shouldNotify, tagResult, virtual: isVirtual, virtualNotice }),
   };
 };
