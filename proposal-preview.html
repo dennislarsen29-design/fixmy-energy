@@ -530,7 +530,7 @@ button.component-chip.open{border-color:var(--dark);}
     return null;
   }
   function paybackFor(opt, priceOverride){
-    var mod = opt.savings && opt.savings.moderate;
+    var mod = adjSaved(opt);
     var price = priceOverride != null ? priceOverride : opt.price;
     var yrs = (mod && mod.annual > 0) ? paybackYearsFor(price, mod.annual) : null;
     return yrs ? (yrs + '-yr payback') : null;
@@ -560,8 +560,29 @@ button.component-chip.open{border-color:var(--dark);}
     if (!(PROP && PROP.inverter_down) || !(kw > 0) || !(use > 0) || !/inverter/.test(componentText(opt))) return 0;
     return Math.round(kw * yieldKwhPerKw() * (opt.non_export ? 0.75 : 1));   // total savings are capped at bill - minimum below, not here
   }
+  // Time-of-use battery savings are a California (SDG&E) thing. Utah, Colorado, Wyoming, Texas etc. don't bill on TOU, so a battery
+  // there is backup only -- no load-shifting dollars anywhere on the page or in its totals (2026-11-17, per Dennis).
+  function isNonCA(){
+    var a = String((CUST && CUST.address) || '');
+    if (!a) return false;
+    if (/\b(Utah|Texas|Colorado|Wyoming)\b/i.test(a) || /,\s*(UT|TX|CO|WY)\b/.test(a)) return true;
+    var m = a.match(/,\s*([A-Za-z]{2})\.?\s*,?\s*\d{5}/);
+    return !!(m && m[1].toUpperCase() !== 'CA');
+  }
+  // The saved savings figure (set by the builder) can still include California time-of-use battery dollars on proposals built
+  // before that was switched off. Outside California strip that part out wherever the saved figure is read.
+  function adjSaved(opt){
+    var mod = opt && opt.savings && opt.savings.moderate;
+    if (!mod) return mod;
+    if (!isNonCA() || !hasPowerwall(opt)) return mod;
+    var k = opt.prod_data && opt.prod_data.batteryArbitrageKwh;
+    if (!(k > 0)) return mod;
+    var annualTou = k * BATTERY_TOU_RATE_DEFAULT;
+    return Object.assign({}, mod, { monthly: Math.max(0, Math.round((mod.monthly || 0) - annualTou / 12)), annual: Math.max(0, Math.round((mod.annual || 0) - annualTou)) });
+  }
   function annualBatteryKwhFor(opt){
-    if (!hasPowerwall(opt)) return null;   // no battery in this option: never use stale saved battery numbers
+    if (!hasPowerwall(opt)) return null;
+    if (isNonCA()) return null;   // no TOU load-shifting outside California   // no battery in this option: never use stale saved battery numbers
     var pd = opt.prod_data;
     var base = null;
     // A rep-entered / bill-derived annual usage is the live driver. The saved prod_data figure can be stale
@@ -719,7 +740,7 @@ button.component-chip.open{border-color:var(--dark);}
     // saved figure is only a fallback when the model has no usage/rate to work with, and is then capped at bill - minimum.
     var m = 0; try { m = improvementsFor(opt).totalMonthly; } catch(e) { m = 0; }
     if (!(m > 0)) {
-      var mod = opt.savings && opt.savings.moderate, bill = parseFloat(CUST && CUST.monthly_bill) || 0;
+      var mod = adjSaved(opt), bill = parseFloat(CUST && CUST.monthly_bill) || 0;
       m = (mod && mod.monthly > 0) ? mod.monthly : 0;
       if (bill > 0) m = Math.min(m, Math.max(0, Math.round(bill - minCharge())));
     }
@@ -734,7 +755,7 @@ button.component-chip.open{border-color:var(--dark);}
     var mod = opt.savings && opt.savings.moderate;
     var P = { tou:0, panels:0, inverter:0, other:0, total: total };
     if (!(im && im.totalMonthly > 0) && mod && mod.monthly > 0) {
-      var tkwh = (pd.batteryArbitrageKwh > 0) ? pd.batteryArbitrageKwh : (annualBatteryKwhFor(opt) || 0);
+      var tkwh = isNonCA() ? 0 : ((pd.batteryArbitrageKwh > 0) ? pd.batteryArbitrageKwh : (annualBatteryKwhFor(opt) || 0));
       P.tou = hasPowerwall(opt) ? Math.min(total, Math.round(tkwh * BATTERY_TOU_RATE_DEFAULT / 12)) : 0;
       var rem = Math.max(0, total - P.tou), pk = pd.panelKwh || 0, ik = pd.inverterKwh || 0;
       if (pk + ik > 0) { P.panels = Math.round(rem * pk / (pk + ik)); P.inverter = rem - P.panels; }
@@ -951,7 +972,7 @@ button.component-chip.open{border-color:var(--dark);}
   // power; the Performance Value section is a separate, periodic grid-participation PAYMENT.
   // Conflating the two into one number would misrepresent where the dollars actually come from.
   function touSavingsHtml(opt){
-    if (!hasPowerwall(opt)) return '';
+    if (!hasPowerwall(opt) || isNonCA()) return '';
     var kwh = annualBatteryKwhFor(opt);
     var annual = touSavingsAnnualFor(opt, touRate);
     var amtHtml = annual != null
@@ -1082,7 +1103,7 @@ button.component-chip.open{border-color:var(--dark);}
       var anchor = Math.max(minCharge(opt), postfixBillFor());
       var useYr = PROP && PROP.usage_kwh > 0 ? PROP.usage_kwh : 0;
       var shiftKwh = out.touKwh;
-      if (!(shiftKwh > 0) && useYr > 0) shiftKwh = Math.round(Math.min(1 * 13.5 * 1.5 * 365, 0.6 * Math.max(0, useYr - sk)));
+      if (!(shiftKwh > 0) && useYr > 0 && !isNonCA()) shiftKwh = Math.round(Math.min(1 * 13.5 * 1.5 * 365, 0.6 * Math.max(0, useYr - sk)));
       var shiftMo = Math.round((shiftKwh || 0) * BATTERY_TOU_RATE_DEFAULT / 12);
       var noBattRemaining = Math.min(Math.max(billMo - 1, anchor), anchor + shiftMo);
       out.solarMonthly = Math.max(0, Math.round(billMo - noBattRemaining));
@@ -1511,10 +1532,10 @@ button.component-chip.open{border-color:var(--dark);}
           first_name: CUST.first_name || '',
           monthly_bill: CUST.monthly_bill || 0,
           nem_status: CUST.nem_status || '',
-          region: /\bUtah\b|,\s*UT\b|\bUT\s+84\d{3}\b/i.test(CUST.address || '') ? 'UT' : 'CA',
+          region: /\bUtah\b|,\s*UT\b|\bUT\s+84\d{3}\b/i.test(CUST.address || '') ? 'UT' : (isNonCA() ? 'OTHER' : 'CA'),
           system_size: CUST.system_size || '',
-          calculated_monthly_savings: (topOpt.savings && topOpt.savings.moderate && topOpt.savings.moderate.monthly) || null,
-          calculated_annual_savings: (topOpt.savings && topOpt.savings.moderate && topOpt.savings.moderate.annual) || null,
+          calculated_monthly_savings: (adjSaved(topOpt) && adjSaved(topOpt).monthly) || null,
+          calculated_annual_savings: (adjSaved(topOpt) && adjSaved(topOpt).annual) || null,
           has_battery: hasPowerwall(topOpt)
         })
       });

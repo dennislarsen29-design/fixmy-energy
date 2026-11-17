@@ -16,5 +16,8 @@ const srv=http.createServer((q,r)=>{let p=q.url.split('?')[0];if(p==='/')p='/por
   if(r.err){T(false,name+': page threw '+r.err);continue}
   T(hide?(!r.mount&&!r.title):(r.mount&&r.title),name+' Analysis page -> '+(hide?'no "A day on your roof"':'keeps "A day on your roof"'));
  }
+ const bp=await page.evaluate(()=>{const b={lineItems:[{id:'pw3_retrofit',name:'Tesla Powerwall 3 (Retrofit)',price:1}]};const f=nc=>{window._propNonCA=nc;const r=_propCalcBaseProduction(b,null,'',9000);return {arb:r.batteryArbitrageKwh,has:r.hasData,units:r.batteryUnits}};return {ut:f(true),ca:f(false)};});
+ T(bp.ca.arb>0,'builder, California Powerwall: TOU arbitrage kWh still computed ('+bp.ca.arb+')');
+ T(bp.ut.arb===0&&bp.ut.has&&bp.ut.units===1,'builder, non-CA Powerwall: arbitrage is 0, battery still counted, no false "missing data"');
  T(!errs.length,'no page errors'+(errs.length?': '+errs[0]:''));console.log(`\n${pass} passed, ${fail} failed`);await b.close();srv.close();process.exit(fail?1:0);
 })();
