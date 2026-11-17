@@ -45,6 +45,14 @@
   function blobUrl(bytes) { return URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' })); }
   // ── status ──
   function has(id) { return post({ action: 'status', member_id: id }).then(function (j) { return j._status === 200 ? !!j.submitted : true; }).catch(function () { return true; }); }
+  // Same check, but says WHY when it cannot answer (has() treats an error as "fine" so nobody is ever locked out,
+  // which also means a broken W-9 service looks identical to "everyone already filed" -- 2026-11-17: zero W-9s
+  // had ever been saved). {ok:true, submitted} or {ok:false, error}.
+  function check(id) {
+    return post({ action: 'status', member_id: id }).then(function (j) {
+      return j._status === 200 ? { ok: true, submitted: !!j.submitted } : { ok: false, error: (j && j.error) || ('HTTP ' + j._status) };
+    }).catch(function (e) { return { ok: false, error: (e && e.message) || 'network error' }; });
+  }
   // ── form UI ──
   function tinFmt(v, type) { var d = String(v).replace(/\D/g, '').slice(0, 9); return type === 'ein' ? (d.length > 2 ? d.slice(0, 2) + '-' + d.slice(2) : d) : (d.length > 5 ? d.slice(0, 3) + '-' + d.slice(3, 5) + '-' + d.slice(5) : d.length > 3 ? d.slice(0, 3) + '-' + d.slice(3) : d); }
   function inp(id, label, val, extra) { return '<label style="display:block;margin:12px 0 4px;font-size:.8rem;font-weight:700;color:#444;">' + label + '</label><input id="w9_' + id + '" value="' + esc(val) + '" ' + (extra || '') + ' style="width:100%;padding:13px;font-size:1rem;border:1.5px solid #cfd6c4;border-radius:10px;box-sizing:border-box;background:#fff;color:#111;">'; }
@@ -81,7 +89,7 @@
     if (!f.certify) return 'Please tick the certification box.'; if (!st.sig) return 'Tap the box to sign.'; if (!st.code) return 'Enter your access code.'; return '';
   }
   var W9 = root.W9 = {
-    has: has, buildPdf: buildPdf,
+    has: has, check: check, buildPdf: buildPdf,
     open: function (o) {
       var p = o.person || {};
       st = { person: p, required: o.required !== false, onDone: o.onDone, sig: null, code: '', err: '', previewUrl: '', f: { name: p.name || '', business: '', cls: 'individual', llc_class: '', other_text: '', address: '', city_state_zip: '', tin_type: 'ssn', tin: '', certify: false } };

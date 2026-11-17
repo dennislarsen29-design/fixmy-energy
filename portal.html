@@ -1446,6 +1446,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   }
 
   // ── ADMIN ──────────────────────────────────────────────────────────────────
+  // Red, dismissible, admin-only: the W-9 service cannot answer, so nobody is being asked for a W-9 at all.
+  window._w9BrokenBanner = function(err) {
+    if (document.getElementById('w9BrokenBar')) return;
+    var d = document.createElement('div'); d.id = 'w9BrokenBar';
+    d.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99998;background:#b42318;color:#fff;padding:12px 16px;font-size:0.82rem;line-height:1.5;display:flex;gap:12px;align-items:flex-start;box-shadow:0 2px 12px rgba(0,0,0,.4);';
+    d.innerHTML = '<div style="flex:1;"><strong>W-9 collection is not working.</strong> The service answered: &ldquo;' + esc(String(err || 'no answer')) + '&rdquo;. Until this is fixed nobody is being asked for a W-9. Usual cause: <code>W9_ENC_KEY</code> is not set in Netlify (Site configuration &rarr; Environment variables), then redeploy.</div>'
+      + '<button onclick="this.parentNode.remove()" style="width:auto;margin:0;padding:6px 12px;background:rgba(255,255,255,.2);border:none;border-radius:8px;color:#fff;font-weight:700;cursor:pointer;">Dismiss</button>';
+    document.body.appendChild(d);
+  };
+
   async function loadAdminDashboard() {
     document.getElementById('loginBox').style.display = 'none';
     document.getElementById('dashboard').style.display = 'block';
@@ -1489,11 +1499,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // W-9 for the owner's own seat (2026-11-17, per Dennis — his isn't on file). The Tech/Sales login already
     // requires it, but he signs in as admin, which skipped the check. Shown once per session until it is on file;
     // never required, so a failed lookup or a forgotten access code can't lock him out of the admin portal.
+    // If the W-9 service itself is broken (missing key etc.) say so loudly instead of silently skipping.
     try {
       if (window.W9 && !sessionStorage.getItem('w9Asked_admin')) {
         sessionStorage.setItem('w9Asked_admin', '1');
-        window.W9.has(DEFAULT_CLOSER_ID).then(function(on) {
-          if (!on) window.W9.open({ person: { id: DEFAULT_CLOSER_ID, name: ADMIN_DIALER_NAME }, required: false });
+        window.W9.check(DEFAULT_CLOSER_ID).then(function(r) {
+          if (!r.ok) window._w9BrokenBanner(r.error);
+          else if (!r.submitted) window.W9.open({ person: { id: DEFAULT_CLOSER_ID, name: ADMIN_DIALER_NAME }, required: false });
         }).catch(function() {});
       }
     } catch(e) {}
@@ -38068,9 +38080,14 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // ── W-9 gate (2026-10-28, per Dennis) — required once before payouts. A failed/unconfigured
     // status check never locks anyone out (W9.has resolves true on error).
     try {
-      if (window.W9 && !(await window.W9.has(person.id))) {
-        window.W9.open({ person: person, required: true, onDone: function(){ loadSalesDashboard(person, config); } });
-        return;
+      if (window.W9) {
+        var _w9r = await window.W9.check(person.id);
+        if (_w9r.ok && !_w9r.submitted) {
+          window.W9.open({ person: person, required: true, onDone: function(){ loadSalesDashboard(person, config); } });
+          return;
+        }
+        // Can't check (service broken) never locks a rep out, but the owner must be told it isn't working.
+        if (!_w9r.ok && person.id === DEFAULT_CLOSER_ID && window._w9BrokenBanner) window._w9BrokenBanner(_w9r.error);
       }
     } catch(e) {}
 
