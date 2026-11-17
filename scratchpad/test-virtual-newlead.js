@@ -36,7 +36,7 @@ const LEADS=[
 const slotsFor=v=>[1,2,3].map(i=>{const d=new Date(Date.now()+i*86400000);d.setHours(10,0,0,0);const e=new Date(d.getTime()+(v?45:120)*60000);return{startISO:d.toISOString(),endISO:e.toISOString(),label:(v?'V ':'L ')+i};});
 (async()=>{
  const browser=await chromium.launch({executablePath:'/opt/pw-browsers/chromium'});
- async function run(name,address,pickMode){
+ async function run(name,address,pickMode,manualPick){
   const page=await browser.newPage();const errs=[];page.on('pageerror',e=>errs.push(e.message));
   await page.route('**://*/**',r=>r.request().url().includes('localhost')?r.continue():r.fulfill({status:200,contentType:'application/javascript',body:''}));
   await page.addInitScript(()=>{
@@ -74,20 +74,33 @@ const slotsFor=v=>[1,2,3].map(i=>{const d=new Date(Date.now()+i*86400000);d.setH
   const r1=await page.evaluate(()=>({toggle:(document.getElementById('nlEvalModeWrap')||{}).innerText,slots:[...document.querySelectorAll('#nlSlotList button')].map(b=>b.innerText.trim()),slotCall:window.__fetches.filter(f=>/ghl-slots/.test(f.u)).map(f=>f.u.split('functions/')[1])}));
   if(pickMode){await page.evaluate(m=>nlEvmPick(m),pickMode);await page.waitForTimeout(500);}
   const r2=await page.evaluate(()=>({toggle:(document.getElementById('nlEvalModeWrap')||{}).innerText.replace(/\s+/g,' ').slice(0,200),slots:[...document.querySelectorAll('#nlSlotList button')].map(b=>b.innerText.trim())}));
+  let manualInfo=null;
+  if(manualPick){
+   manualInfo=await page.evaluate(async()=>{nlToggleManualAppt();const d=new Date(Date.now()+2*86400000);const y=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+     tpPickDate('nlm',y);tpPickStart('nlm','10:00');
+     const e1=document.getElementById('nlApptEndManual').value;const lens1=(document.getElementById('tp_nlm')||{}).innerText||'';
+     nlEvmPick('local');await new Promise(r=>setTimeout(r,200));const e2=document.getElementById('nlApptEndManual').value;
+     nlEvmPick('virtual');await new Promise(r=>setTimeout(r,200));const e3=document.getElementById('nlApptEndManual').value;
+     const btns=[...document.querySelectorAll('#nlEvalModeWrap button')].map(b=>({t:b.innerText.trim().slice(0,10),shadow:getComputedStyle(b).boxShadow!=='none',tick:b.innerText.includes('\u2713')}));
+     return {e1,e2,e3,lensHasNote:/always 45 minutes/.test(lens1),btns,sel:(document.getElementById('nlEvalModeWrap')||{}).innerText.match(/Selected:[^\n]*/)};});
+  } else {
   await page.evaluate(()=>{const b=document.querySelector('#nlSlotList button');if(b)b.click();});
+  }
   await page.evaluate(()=>createNewLead());await page.waitForTimeout(900);
   const out=await page.evaluate(()=>({ins:window.__inserts[0],book:(window.__fetches.find(f=>/ghl-book/.test(f.u))||{}).b,panel:(document.getElementById('newLeadPanel')||{}).innerText,alerts:window.__alerts}));
-  console.log('\n== '+name);console.log(' first toggle:',r1.toggle.replace(/\s+/g,' ').slice(0,150));console.log(' slot calls:',r1.slotCall.join(', '),'| slots:',r2.slots.join(','));
+  console.log('\n== '+name);if(manualInfo)console.log(' manual picker:',JSON.stringify(manualInfo));console.log(' first toggle:',r1.toggle.replace(/\s+/g,' ').slice(0,150));console.log(' slot calls:',r1.slotCall.join(', '),'| slots:',r2.slots.join(','));
   if(pickMode)console.log(' after pick',pickMode,':',r2.toggle.slice(0,120));
   const ins=out.ins||{};const bk=out.book?JSON.parse(out.book):{};
   console.log(' insert -> rep_id:',ins.rep_id,'eval_mode:',ins.eval_mode,'manual:',ins.eval_mode_manual,'| book virtual:',bk.virtual,'dur(min):',bk.startISO?(new Date(bk.endISO)-new Date(bk.startISO))/60000:'-');
   console.log(' confirmation:',(out.panel||'').replace(/\s+/g,' ').slice(0,260));
   console.log(' alerts:',out.alerts,'errors:',errs.length?errs:'none');
-  await page.close();return {ins,bk,panel:out.panel,errs};
+  await page.close();return {ins,bk,panel:out.panel,errs,manualInfo};
  }
  const far=await run('Far address (auto)','100 Far Rd, Sebastopol, CA 95472');
  const near=await run('Near address (auto)','200 Near St, San Diego, CA 92101');
  const forced=await run('Near address, forced Virtual by hand','200 Near St, San Diego, CA 92101','virtual');
+
+ const hand=await run('Far address, hand-picked time (the 2-hour bug)','100 Far Rd, Sebastopol, CA 95472',null,true);
  const forcedL=await run('Far address, forced Local by hand','100 Far Rd, Sebastopol, CA 95472','local');
  const T=(c,m)=>{if(c){pass++;console.log('  \x1b[32m✓\x1b[0m '+m)}else{fail++;console.log('  \x1b[31m✗\x1b[0m '+m)}};
  console.log('\n-- checks');
@@ -99,6 +112,11 @@ const slotsFor=v=>[1,2,3].map(i=>{const d=new Date(Date.now()+i*86400000);d.setH
  T((new Date(near.bk.endISO)-new Date(near.bk.startISO))===120*60000,'near: 2-hour window unchanged');
  T(forced.bk.virtual===true&&forced.ins.eval_mode_manual===true,'forced virtual: books virtual and locks it');
  T(forcedL.bk.virtual===undefined&&forcedL.ins.eval_mode==='local'&&forcedL.ins.eval_mode_manual===true,'forced local: books local and locks it');
- T([far,near,forced,forcedL].every(x=>!x.errs.length),'no page errors');
+ T(hand.manualInfo.e1==='10:45'&&hand.manualInfo.lensHasNote,'hand-picked virtual time ends 45 min later (10:00 -> 10:45) and the picker says so');
+ T(hand.manualInfo.e2==='12:00','switching to Local re-times to the 2-hour window');
+ T(hand.manualInfo.e3==='10:45','switching back to Virtual re-times to 45 minutes');
+ T((new Date(hand.bk.endISO)-new Date(hand.bk.startISO))===45*60000&&hand.bk.virtual===true,'saved hand-picked virtual lead books exactly 45 minutes');
+ T(hand.manualInfo.btns.filter(b=>b.shadow&&b.tick).length===1&&/Selected: Virtual/.test(hand.manualInfo.sel||''),'selected type is ticked, ringed and spelled out');
+ T([far,near,forced,forcedL,hand].every(x=>!x.errs.length),'no page errors');
  console.log(`\n${pass} passed, ${fail} failed`);await browser.close();srv.close();process.exit(fail?1:0);
 })();
