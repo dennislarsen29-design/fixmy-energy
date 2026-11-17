@@ -71,6 +71,7 @@ exports.handler = async function (event, context, deps) {
   // Utah homes never get the California-only CPUC guide (2026-11-02, per Dennis).
   const _addr = String(c.address || '');
   if (/\bUtah\b/i.test(_addr) || /,\s*UT\b/i.test(_addr) || /\bUT\s+84\d{3}\b/i.test(_addr)) return out(200, { ok: true, skipped: 'utah_no_cpuc', batteryConverted });
+  if (/\bTexas\b/i.test(_addr) || /,\s*TX\b/i.test(_addr) || /\bTX\s+7[5-9]\d{3}\b/i.test(_addr)) return out(200, { ok: true, skipped: 'texas_no_cpuc', batteryConverted });
   if (/\b(Colorado|Wyoming)\b/i.test(_addr) || /,\s*(CO|WY)\b/.test(_addr)) return out(200, { ok: true, skipped: 'other_state_no_cpuc', batteryConverted });
 
   // Open the CPUC guide for the rep. ignore-duplicates: a second call (refresh/replay) changes nothing and doesn't re-text.

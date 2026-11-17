@@ -11919,7 +11919,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     try {
       var sysKw       = parseFloat(rec.system_size) || 0;
       var bill        = parseFloat(rec.monthly_bill) || 0;
-      var yield_kw    = window._yieldFor(window._isUtahLead(rec));
+      var yield_kw    = window._yieldFor(window._isUtahLead(rec) || !!(window._isTexasLead && window._isTexasLead(rec)));
       var newPanelKw  = 4.2;
       // Production-based savings from _propCalcBaseProduction (same source as builder preview)
       var activeBuild = (_propBuilds && _propBuilds[0]) || null;
@@ -11984,7 +11984,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           system_size:                 rec.system_size  || null,
           monthly_bill:                rec.monthly_bill || null,
           nem_status:                  rec.nem_status   || '',
-          region:                      (window._isUtahLead && window._isUtahLead(rec)) ? 'UT' : ((window._isOtherStateLead && window._isOtherStateLead(rec)) ? 'OTHER' : 'CA'),
+          region:                      (window._isUtahLead && window._isUtahLead(rec)) ? 'UT' : (((window._isOtherStateLead && window._isOtherStateLead(rec)) || (window._isTexasLead && window._isTexasLead(rec))) ? 'OTHER' : 'CA'),
           installer:                   rec.installer    || '',
           option_totals:               optionTotals,
           issue:                       issueContext,
@@ -12088,7 +12088,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // 2026-11-11, per Dennis (Salt Lake appointment): the wizard was California-only. Region is read from the
   // lead's address; Utah swaps the utility, the net-metering card and the fallback rate.
   var UT_RATE_EST = 0.12; // ESTIMATE of Rocky Mountain Power's blended residential rate ($/kWh). Used ONLY when no bill has been read; the bill's own rate always wins. Replace once verified.
-  window._evRegion = function(){ return (window._isUtahLead && window._isUtahLead(_evRec || {})) ? 'UT' : 'CA'; };
+  var TX_RATE_EST = 0.15; // ESTIMATE of a typical Central Texas residential rate ($/kWh). Used ONLY when no bill has been read; the bill's own rate always wins. Verify before relying on it.
+  window._evRegion = function(){ var r = _evRec || {}; return (window._isUtahLead && window._isUtahLead(r)) ? 'UT' : (window._isTexasLead && window._isTexasLead(r)) ? 'TX' : 'CA'; };
   // Getting a real bill is the step reps most often fumble. Written out per utility.
   var UTILITY_HELP = {
     rmp: {
@@ -12100,6 +12101,46 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         'If they have solar, also open the bill that shows <b>exported / credit kWh</b> so Quoya can see how the system is credited.'
       ],
       tip: 'No login? The paper bill works &mdash; photograph the page with total kWh and the monthly usage graph.'
+    },
+    austin: {
+      label: 'Austin Energy',
+      steps: [
+        'Go to <b>austinenergy.com</b> (or the Austin utilities customer portal) and sign in as the homeowner.',
+        'Open <b>My Account</b> &rarr; <b>Billing</b> &rarr; <b>View Bill / Billing History</b>.',
+        'Download the most recent statement as a <b>PDF</b>. It carries the usage history; a screenshot of the summary does not.',
+        'If they have solar, open the bill that shows the <b>solar credit / kWh exported</b> so Quoya can see how the system is credited.'
+      ],
+      tip: 'No login? The paper bill works: photograph the page with total kWh and the monthly usage graph.'
+    },
+    pec: {
+      label: 'Pedernales Electric (PEC)',
+      steps: [
+        'Go to <b>pec.coop</b> (or the PEC app) and sign in as the member.',
+        'Open <b>My Account</b> &rarr; <b>Billing</b> &rarr; <b>View Bill / Bill History</b>.',
+        'Download the latest statement as a <b>PDF</b> (usage history included).',
+        'If they have solar, also grab a bill that shows <b>energy delivered and received</b>.'
+      ],
+      tip: 'No login? Photograph the paper bill page with total kWh and the usage graph.'
+    },
+    bluebonnet: {
+      label: 'Bluebonnet Electric',
+      steps: [
+        'Go to <b>bluebonnet.coop</b> (or the Bluebonnet app) and sign in as the member.',
+        'Open the <b>billing</b> section and the <b>bill history</b>.',
+        'Download the latest statement as a <b>PDF</b> (usage history included).',
+        'If they have solar, also grab a bill that shows energy sent back to the grid.'
+      ],
+      tip: 'No login? Photograph the paper bill page with total kWh and the usage graph.'
+    },
+    txretail: {
+      label: 'Oncor area (retail provider)',
+      steps: [
+        'In the Oncor area the <b>bill comes from the homeowner&rsquo;s retail electricity provider</b> (not Oncor). Ask who it is, or check the top of any bill.',
+        'Sign in to that provider&rsquo;s site or app and open <b>Billing</b> &rarr; <b>Bill History</b>.',
+        'Download the latest statement as a <b>PDF</b>. Also look for the <b>plan name</b> and the <b>buyback / export credit</b> line.',
+        'The plan name matters: solar buyback rates differ a lot between providers and plans.'
+      ],
+      tip: 'No login? Photograph the paper bill page with total kWh, the plan name and the usage graph.'
     },
     sdge: {
       label: 'SDG&E',
@@ -14355,6 +14396,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var inferred = false;
     if (!ver && d) { ver = d >= '2023-04-14' ? '3' : d < '2016-06-01' ? '1' : '2'; src = 'inferred from the ' + (est ? 'install year' : 'date') + ' (confirm on the bill)'; inferred = true; }
     var out = { ver: ver, date: d, est: est, src: src, dsrc: dsrc, inferred: inferred, text: '', tone: 'info' };
+    if (window._evRegion() === 'TX') {
+      // Texas has no statewide net metering. What an export is worth depends on who supplies the power. Nothing here carries a
+      // dollar figure on purpose: rates change yearly (Austin Energy resets its Value of Solar credit) and co-ops set their own terms.
+      var tp = a.tx_plan || '';
+      var TXP = {
+        'austin': { tone: 'info', ver: '3', label: 'Austin Energy Value of Solar', text: 'Austin Energy pays a Value of Solar credit for what the system produces, reset every year. Confirm the current rate on the utility&rsquo;s site and on the bill before quoting savings.' },
+        'retail': { tone: 'warn', ver: '3', label: 'Retail provider buyback', text: 'Oncor-area customers sell exports to their retail electricity provider. Buyback ranges from a few cents per kWh to roughly retail on some plans, and some plans pay nothing. Read the plan name and buyback line on the bill; never assume a rate.' },
+        'coop': { tone: 'warn', ver: '3', label: 'Co-op solar program', text: 'Pedernales and Bluebonnet set their own solar terms, including limits on system size and credit rates. Check the co-op&rsquo;s current tariff and confirm any interconnection limits before quoting.' },
+        'none': { tone: 'bad', ver: '3', label: 'No export credit', text: 'Exports earn little or nothing. Value comes from self-consumption, so a battery and right-sized production matter more than export credits.' }
+      };
+      var tt = TXP[tp];
+      out.ver = tt ? tt.ver : ''; out.label = tt ? tt.label : ''; out.src = tp ? 'entered by you' : ''; out.texas = true;
+      out.tone = tt ? tt.tone : 'info';
+      out.text = tt ? tt.text : 'Texas: pick how this customer is paid for solar exports. It depends on the utility or retail provider, not on a state rule.';
+      return out;
+    }
     if (window._evRegion() === 'UT') {
       // Utah is not NEM 1/2/3. Rocky Mountain Power: Schedule 137 net billing (applied after ~Oct 30 2020), a transition
       // schedule for ~2017-2020, and legacy net metering (Schedule 135). Figures are from the Jan 2026 PSC filing and
@@ -14408,6 +14465,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var a = _evLocal.answers || {}, nem = _evNemInfo(), col = { good: '#8DC63F', warn: '#ffaa00', bad: '#f87171', info: '#9fb3c8' };
     var lbl = 'display:block;font-size:0.68rem;font-weight:700;color:#bbb;margin:0 0 4px;';
     var inp = 'width:100%;box-sizing:border-box;background:#111;border:1px solid rgba(255,255,255,0.15);border-radius:9px;color:#fff;padding:9px;font-size:0.8rem;';
+    if (nem.texas) {
+      return '<div style="margin-bottom:8px;"><label style="' + lbl + '">How are solar exports paid?</label><select onchange="evNemSet(\'tx_plan\',this.value)" style="' + inp + '">'
+        + [['', 'Choose…'], ['austin', 'Austin Energy — Value of Solar'], ['retail', 'Oncor area — retail provider buyback'], ['coop', 'Co-op (Pedernales / Bluebonnet)'], ['none', 'No export credit']].map(function(o){ return '<option value="' + o[0] + '"' + ((a.tx_plan || '') === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('')
+        + '</select></div><div style="font-size:0.74rem;line-height:1.5;color:' + col[nem.tone] + ';margin-bottom:8px;">' + (nem.label ? '<b>' + nem.label + '</b><br>' : '') + nem.text + '</div>';
+    }
     if (nem.utah) {
       return '<div style="margin-bottom:8px;"><label style="' + lbl + '">Rocky Mountain Power solar plan</label><select onchange="evNemSet(\'ut_plan\',this.value)" style="' + inp + '">'
         + [['', 'Choose…'], ['137', 'Schedule 137 — net billing (after ~Oct 2020)'], ['136', 'Schedule 136 — transition (~2017–2020)'], ['135', 'Schedule 135 — legacy net metering (before Nov 2017)']].map(function(o){ return '<option value="' + o[0] + '"' + ((a.ut_plan || '') === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('')
@@ -14448,7 +14510,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     ((ba && ba.monthly_breakdown) || []).forEach(function(m){ var i = MN.indexOf(String(m.month || '').slice(0, 3).toLowerCase()), v = parseFloat(m.total_kwh); if (i > -1 && v > 0) cons[i] = v; });
     if (!s.existingKw && !cons.some(function(v){ return v; })) return '';
     var tot = _EV_SHAPE.reduce(function(a, b){ return a + b; }, 0), kw0 = s.existingKw || 0, kw1 = kw0 + (s.shortKw > 0.5 ? s.shortKw : 0);
-    var _ut = window._evRegion() === 'UT', _yy = window._yieldFor(_ut), _sh = _ut ? _EV_SHAPE_UT : _EV_SHAPE; tot = _sh.reduce(function(a, b){ return a + b; }, 0);
+    var _ut = window._evRegion() === 'UT', _yy = window._yieldFor(window._evRegion() !== 'CA'), _sh = _ut ? _EV_SHAPE_UT : _EV_SHAPE; tot = _sh.reduce(function(a, b){ return a + b; }, 0);
     var cur = _sh.map(function(f){ return kw0 * _yy * f / tot; }), upg = _sh.map(function(f){ return kw1 * _yy * f / tot; });
     var W = 320, H = 150, L = 8, B = 20, T = 8, mx = Math.max.apply(null, cons.concat(cur, upg).filter(Boolean)) || 1, bw = (W - L * 2) / 12;
     var y = function(v){ return (H - B) - (v / mx) * (H - B - T); };
@@ -14462,7 +14524,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var h = '<div style="background:rgba(255,255,255,0.035);border:1px solid rgba(255,255,255,0.1);border-radius:14px;padding:13px;margin:0 0 11px;">';
     h += '<div style="font-size:0.66rem;font-weight:800;text-transform:uppercase;letter-spacing:0.08em;color:#888;margin-bottom:6px;">Usage vs. solar, by month</div>' + svg;
     h += '<div style="display:flex;gap:12px;flex-wrap:wrap;font-size:0.66rem;color:#aaa;margin-top:4px;"><span><b style="color:#9b6de8;">&#9632;</b> Usage (bill)</span>' + (kw0 ? '<span><b style="color:#8DC63F;">&#9472;</b> Solar now (' + kw0.toFixed(1) + ' kW est.)</span>' : '') + (kw1 > kw0 ? '<span><b style="color:#4a9eff;">- -</b> With ' + (kw1 - kw0).toFixed(1) + ' kW more panels</span>' : '') + '</div>';
-    h += '<div style="font-size:0.66rem;color:#777;line-height:1.5;margin-top:6px;">Solar is an estimate (1 kW &asymp; ' + window._yieldFor(window._evRegion() === 'UT').toLocaleString() + ' kWh/yr, typical ' + (window._evRegion() === 'UT' ? 'Utah' : 'California') + ' seasons' + (window._evRegion() === 'UT' ? '; winter output is lower with snow and short days' : '') + '), not measured output. A battery doesn&rsquo;t add production; it moves daytime solar into the 4&ndash;9pm hours' + (s.pw3 ? ' (about ' + s.pw3 + ' Powerwall' + (s.pw3 > 1 ? 's' : '') + ' for this usage).' : '.') + ' A new inverter restores output a failed one is losing.</div></div>';
+    h += '<div style="font-size:0.66rem;color:#777;line-height:1.5;margin-top:6px;">Solar is an estimate (1 kW &asymp; ' + window._yieldFor(window._evRegion() !== 'CA').toLocaleString() + ' kWh/yr, typical ' + ({ UT: 'Utah', TX: 'Central Texas', CA: 'California' })[window._evRegion()] + ' seasons' + (window._evRegion() === 'UT' ? '; winter output is lower with snow and short days' : '') + '), not measured output. A battery doesn&rsquo;t add production; it moves daytime solar into the 4&ndash;9pm hours' + (s.pw3 ? ' (about ' + s.pw3 + ' Powerwall' + (s.pw3 > 1 ? 's' : '') + ' for this usage).' : '.') + ' A new inverter restores output a failed one is losing.</div></div>';
     return h;
   }
   // ── Quoya's Analysis (2026-10-22, per Dennis) ─────────────────────────────────────────────
@@ -14577,7 +14639,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   function _evEvAudit() {
     var a = (_evLocal.answers || {}), g = a.gbd || null, ba = (_evLocal.billAnalysis && !_evLocal.billAnalysis._err) ? _evLocal.billAnalysis : null;
     if (a.has_ev !== 'yes') return null;
-    if (window._evRegion() === 'UT') return null; // SDG&E EV-TOU rate comparison; no Utah equivalent built
+    if (window._evRegion() !== 'CA') return null; // SDG&E EV-TOU rate comparison; no Utah equivalent built
     var out = { need: [] };
     if (!g || g.night_kwh_per_day == null) { out.need.push('Green Button meter data (to see when the car charges)'); }
     if (!ba || !(ba.avg_rate_per_kwh > 0)) out.need.push('a utility bill (to know the rate they pay now)');
@@ -14968,7 +15030,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var ba = (_evLocal.billAnalysis && !_evLocal.billAnalysis._err) ? _evLocal.billAnalysis : null;
     var billMo = (ba && ba.monthly_source === 'monthly_bill' && ba.monthly_amount_paid > 0) ? ba.monthly_amount_paid : (parseFloat(_evRec && _evRec.monthly_bill) || (ba && ba.monthly_amount_paid) || 0);
     var fromBill = !!(ba && ba.annual_kwh > 0); // a NET-negative figure (solar > usage) can't size an upgrade — fall back to the estimate
-    var annualKwh = fromBill ? ba.annual_kwh : (billMo ? Math.round(billMo * 12 / (window._evRegion() === 'UT' ? UT_RATE_EST : 0.453)) : 0);
+    var annualKwh = fromBill ? ba.annual_kwh : (billMo ? Math.round(billMo * 12 / (window._evRegion() === 'UT' ? UT_RATE_EST : window._evRegion() === 'TX' ? TX_RATE_EST : 0.453)) : 0);
     var evAdd = window._evEvKwh(_evLocal.answers);   // new-EV charging not yet in the usage history
     if (annualKwh && evAdd) annualKwh += evAdd;
     var daily = annualKwh ? annualKwh / 365 : 0;
@@ -14976,7 +15038,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // _propCalcBaseProduction uses); 13.5 kWh per PW3.
     var pw3 = daily ? Math.min(3, Math.max(1, Math.ceil((daily * 0.6) / 13.5))) : 1;
     var existingKw = parseFloat(_evRec && _evRec.system_size) || null;
-    var neededKw = annualKwh ? annualKwh / window._yieldFor(window._evRegion() === 'UT') : null; // 1 kW ≈ 1,600 kWh/yr, the codebase's standing production rule
+    var neededKw = annualKwh ? annualKwh / window._yieldFor(window._evRegion() !== 'CA') : null; // 1 kW ≈ 1,600 kWh/yr, the codebase's standing production rule
     var shortKw = (existingKw != null && neededKw != null) ? Math.max(0, neededKw - existingKw) : null;
     return { fromBill: fromBill, evAdd: evAdd, annualKwh: annualKwh, daily: daily, pw3: pw3, existingKw: existingKw, neededKw: neededKw, shortKw: shortKw, rate: (ba && ba.avg_rate_per_kwh) || null };
   }
@@ -15101,9 +15163,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // utility reads as one line ("SDG&E — read from the bill") with a Change button that opens the pills.
   function _evUtilityPillsHtml() {
     var h = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0;">';
-    var _ut = window._evRegion() === 'UT';
-    Object.keys(UTILITY_HELP).filter(function(k){ return _ut ? (k === 'rmp' || k === 'other') : k !== 'rmp'; }).forEach(function(k){
-      var on = (_evLocal.utility || (_ut ? 'rmp' : '')) === k;
+    var _rg = window._evRegion(), _TXK = ['austin', 'pec', 'bluebonnet', 'txretail'];
+    Object.keys(UTILITY_HELP).filter(function(k){ return _rg === 'UT' ? (k === 'rmp' || k === 'other') : _rg === 'TX' ? (_TXK.indexOf(k) > -1 || k === 'other') : (k !== 'rmp' && _TXK.indexOf(k) < 0); }).forEach(function(k){
+      var on = (_evLocal.utility || (_rg === 'UT' ? 'rmp' : '')) === k;
       h += '<button onclick="_evLocal._utilEdit=false;evSetField(\'utility\',\'' + k + '\')" style="width:auto;margin:0;padding:9px 14px;border-radius:100px;font-size:0.76rem;font-weight:700;cursor:pointer;'
         + (on ? 'background:rgba(255,170,0,0.18);border:1px solid rgba(255,170,0,0.5);color:#ffaa00;'
               : 'background:transparent;border:1px solid rgba(255,255,255,0.14);color:#888;') + '">'
@@ -15971,7 +16033,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // Production-based savings helper — calculates kWh contributions by component
   // Used by propShowScenario (builder preview) and sendProposal (stored proposal)
   function _propCalcBaseProduction(build, solarData, systemSize, annualUsageKwh) {
-    var specificYield = window._yieldFor(!!window._propIsUT); // San Diego 1,600 (NREL NSRDB) / Salt Lake 1,500 (estimate)
+    var specificYield = window._yieldFor(!!(window._propIsUT || window._propIsTX)); // San Diego 1,600 (NREL NSRDB) / Salt Lake 1,500 (estimate)
     var sysKw = parseFloat(systemSize) || 0;
 
     // Panel kW from line items (stepper creates id: 'panel_addon_420w')
@@ -16062,6 +16124,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // editable was precisely so a human correction becomes the trusted number, not just
   // Quoya's first guess.
   function _propUsageFromBill(bill, fallbackRate) {
+    if (window._propIsTX && fallbackRate === 0.453) fallbackRate = 0.15; // Central Texas estimate, only when no bill is read
     if (window._propIsUT && fallbackRate === 0.453) fallbackRate = 0.12; // Utah estimate, only when no bill is read (bill's own rate wins)
     var ba = _propBillAnalysis;
     // A NEM true-up statement reports NET usage after solar offset (Becky Phan: 109 kWh on a
@@ -30359,7 +30422,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // ⚠️ Always reset first — opening the builder for a different customer must never
     // carry over the previous lead's bill_analysis into this one's savings math.
     _propBillAnalysis = null;
-    try { var _pc0 = (typeof adminCustomers !== 'undefined' ? adminCustomers : []).find(function(x){ return x.id === id; }); window._propIsUT = !!(_pc0 && window._isUtahLead(_pc0)); } catch(e) { window._propIsUT = false; }
+    try { var _pc0 = (typeof adminCustomers !== 'undefined' ? adminCustomers : []).find(function(x){ return x.id === id; }); window._propIsUT = !!(_pc0 && window._isUtahLead(_pc0)); window._propIsTX = !!(_pc0 && window._isTexasLead && window._isTexasLead(_pc0)); } catch(e) { window._propIsUT = false; window._propIsTX = false; }
     _propEvKwh = 0;
     var _propEvalRowId = null; // captured here so the job_photos fallback below can update the SAME row instead of guessing insert-vs-update
     try {
@@ -31420,7 +31483,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '<div style="font-size:0.74rem;font-weight:700;color:'+(_restoreOn?'#4a9eff':'#ddd')+';line-height:1.3;">Restore Existing Array'+(_restoreOn?' &#10003;':'')+'</div>';
         h += '<div style="font-size:0.62rem;color:#666;margin-top:2px;">Dead/degraded inverter &middot; recovery via new inverter or PW3\'s built-in 6-MPPT inverter</div>';
         if (_restoreOn && _restoreSysKw > 0) {
-          var _recKwh = Math.round(_restoreSysKw * window._yieldFor(!!window._propIsUT) * (1 - _restorePct/100));
+          var _recKwh = Math.round(_restoreSysKw * window._yieldFor(!!(window._propIsUT || window._propIsTX)) * (1 - _restorePct/100));
           h += '<div style="font-size:0.68rem;color:rgba(74,158,255,0.85);font-weight:700;margin-top:4px;">'+_restoreSysKw+' kW array producing '+_restorePct+'% of expected today &rarr; repair adds '+(100-_restorePct)+'% = ~'+_recKwh.toLocaleString()+' kWh/yr</div><div style="font-size:0.6rem;color:#777;margin-top:2px;">'+_restoreSysKw+' kW &times; 1,600 kWh &times; '+(100-_restorePct)+'% &middot; capped at 90% of his yearly usage in the savings</div>';
         } else if (_restoreOn) {
           h += '<div style="font-size:0.62rem;color:#ffaa00;margin-top:4px;">&#9888; Set system size on the lead to calculate recovery</div>';
@@ -37082,12 +37145,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var a = String((c && c.address) || '');
     return /\bUtah\b/i.test(a) || /,\s*UT\b/i.test(a) || /\bUT\s+84\d{3}\b/i.test(a);
   };
+  // Texas property = state TX in the address, or a 78xxx/786xx/787xx-style Austin-area ZIP. Texas has no CPUC guide (2026-11-17, per Dennis: Austin build).
+  window._isTexasLead = function(c){
+    var a = String((c && c.address) || '');
+    return /\bTexas\b/i.test(a) || /,\s*TX\b/i.test(a) || /\bTX\s+7[5-9]\d{3}\b/i.test(a);
+  };
   // Colorado / Wyoming (Spring Solar markets, 2026-11-14, per Dennis): no California CPUC guide, and proposal text stays generic.
   window._isOtherStateLead = function(c){
     var a = String((c && c.address) || '');
     return /\b(Colorado|Wyoming)\b/i.test(a) || /,\s*(CO|WY)\b/.test(a);
   };
-  window._skipCpuc = function(c){ return window._isUtahLead(c) || window._isOtherStateLead(c); };
+  window._skipCpuc = function(c){ return window._isUtahLead(c) || window._isTexasLead(c) || window._isOtherStateLead(c); };
   async function _refreshTeamMemberFields(base){
     try {
       var c = supabase.createClient(SUPA_URL, SUPA_KEY);

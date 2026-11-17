@@ -5,7 +5,7 @@ const SB = 'https://kbtobyoumvbcxfbugsid.supabase.co/rest/v1';
 const OK = ['https://fixmy.energy', 'https://www.fixmy.energy'];
 const KEY = 'partner_scorecard';
 const CHECKS = [
-  ['license', 'Utah contractor license active (dopl.utah.gov) and class covers batteries'],
+  ['license', 'State license active and covers batteries (Utah: dopl.utah.gov; Texas: TDLR electrical contractor license)'],
   ['tesla', 'Tesla Powerwall certified installer (Tesla locator)'],
   ['bbb', 'BBB / court records / news checked, no red flags'],
   ['insurance', 'Liability + workers comp certificate received'],
@@ -18,7 +18,8 @@ const SEED = [
   { id: 'smart-wave', name: 'Smart Wave Solar', city: 'Bluffdale', note: 'Self-claims Premier Powerwall 3; unverified' },
   { id: 'greenify', name: 'Greenify Energy Savers', city: 'Sandy/Draper', note: '~22 reviews; license record looked inconsistent' },
   { id: 'intermountain', name: 'Intermountain Wind & Solar', city: 'Centerville', note: 'Installs Powerwall; ask about dealer deal' },
-  { id: 'byop', name: 'BYOP Electric', city: 'Salt Lake area', note: 'Small, master-electrician-led; backup' }
+  { id: 'byop', name: 'BYOP Electric', city: 'Salt Lake area', note: 'Small, master-electrician-led; backup' },
+  { id: 'austin-tbd', name: 'Austin install partner (to be named)', city: 'Austin, TX', note: 'Placeholder. Sunrun does not service some Austin utilities (which ones is still being confirmed); repair and battery work needs a local partner.' }
 ];
 exports.handler = async function (event) {
   const origin = (event.headers || {}).origin || '';
