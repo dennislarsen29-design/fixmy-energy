@@ -3,6 +3,7 @@
 // Audits data quality, identifies workflow gaps, and generates portal improvement
 // tasks — written to the agent_reports table for the admin to review.
 
+const G = require('./lib/agent-guard');
 const SUPA_URL = 'https://kbtobyoumvbcxfbugsid.supabase.co';
 const SUPA_REST = SUPA_URL + '/rest/v1';
 const { sendAgentNotification } = require('./lib/push');
@@ -76,7 +77,7 @@ async function executeTool(name, input, key) {
   switch (name) {
 
     case 'audit_data_completeness': {
-      const rows = await supaGet('/customers?select=id,first_name,last_name,phone,email,address,rep_id,sold_type,invoice_amount,invoice_status,lead_category,step,solar_status,assigned_ops&limit=2000', key);
+      const rows = await supaGet('/customers?select=id,first_name,last_name,phone,email,address,rep_id,sold_type,invoice_amount,invoice_status,lead_category,step,solar_status,assigned_ops' + G.LIVE + '&limit=2000', key);
 
       const issues = {
         missingPhone: [], missingEmail: [], missingAddress: [],
@@ -105,7 +106,7 @@ async function executeTool(name, input, key) {
     }
 
     case 'audit_pipeline_health': {
-      const rows = await supaGet('/customers?select=id,first_name,last_name,lead_category,sold_type,step,solar_status,invoice_status,deposit_status&limit=2000', key);
+      const rows = await supaGet('/customers?select=id,first_name,last_name,lead_category,sold_type,step,solar_status,invoice_status,deposit_status' + G.LIVE + '&limit=2000', key);
 
       const anomalies = [];
 
@@ -161,16 +162,15 @@ async function executeTool(name, input, key) {
         unassignedCount: unassigned.length,
         unassigned: unassigned.slice(0, 10).map(j => (j.first_name || '') + ' [' + j.id.slice(0, 8) + ']'),
         loadByOpsPartner: byOps,
-        milestone1PaymentDue: milestone1Unpaid.length
+        note: 'Milestone 1 payments are retired.'
       });
     }
 
     case 'write_task': {
-      await supaInsert('agent_reports', {
+      return await G.guardedInsert({
         agent: 'crm-dev', priority: input.priority || 'normal',
         title: input.title, body: input.body, action_url: null
-      }, key);
-      return 'Saved.';
+      }, key, 'crm-dev');
     }
 
     default:
@@ -178,7 +178,7 @@ async function executeTool(name, input, key) {
   }
 }
 
-const SYSTEM = `You are the autonomous CRM Development Agent for FixMy.Energy — a solar diagnostic, battery retrofit, and new solar company serving Southern California.
+const SYSTEM = G.FACTS + `You are the autonomous CRM Development Agent for FixMy.Energy — a solar diagnostic, battery retrofit, and new solar company serving Southern California.
 
 You run every Wednesday at 9am. Your job: audit the database and portal for data quality issues, workflow gaps, and improvement opportunities. You are not a vague consultant — you write specific, actionable dev/ops tasks.
 

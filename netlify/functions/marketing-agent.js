@@ -6,6 +6,7 @@
 const SUPA_URL = 'https://kbtobyoumvbcxfbugsid.supabase.co';
 const SUPA_REST = SUPA_URL + '/rest/v1';
 const { sendAgentNotification } = require('./lib/push');
+const G = require('./lib/agent-guard');
 
 async function supaGet(path, key) {
   const resp = await fetch(SUPA_REST + path, {
@@ -100,10 +101,11 @@ async function executeTool(name, input, key) {
     case 'get_pipeline_stats': {
       const since = new Date();
       since.setDate(since.getDate() - (input.days_back || 30));
-      const rows = await supaGet(
+      let rows = await supaGet(
         '/customers?select=step,solar_status,lead_source,lead_category,sold_type,created_at,invoice_amount,address' +
-        '&created_at=gte.' + since.toISOString() + '&limit=2000', key
+        '&created_at=gte.' + since.toISOString() + G.LIVE + '&limit=2000', key
       );
+      rows = G.real(rows);
       const bySource = {};
       let leads = 0, jobs = 0, revenue = 0;
       rows.forEach(c => {
@@ -126,7 +128,7 @@ async function executeTool(name, input, key) {
     case 'get_referral_stats': {
       const rows = await supaGet(
         '/customers?select=first_name,last_name,lead_source,referred_by,referral_incentive_paid,sold_type,solar_status,created_at' +
-        '&lead_source=eq.referral&order=created_at.desc&limit=200', key
+        '&lead_source=eq.referral&archived=not.is.true&order=created_at.desc&limit=200', key
       );
       const converted = rows.filter(r => r.sold_type || (r.solar_status && r.solar_status !== 'ns_eval_canceled'));
       return JSON.stringify({ totalReferrals: rows.length, converted: converted.length, conversionRate: rows.length ? Math.round(converted.length / rows.length * 100) + '%' : '0%', records: rows.slice(0, 20) });
@@ -135,10 +137,11 @@ async function executeTool(name, input, key) {
     case 'get_zip_performance': {
       const since = new Date();
       since.setDate(since.getDate() - (input.days_back || 90));
-      const rows = await supaGet(
+      let rows = await supaGet(
         '/customers?select=address,sold_type,lead_category,lead_source,invoice_amount,created_at' +
-        '&created_at=gte.' + since.toISOString() + '&limit=2000', key
+        '&created_at=gte.' + since.toISOString() + G.LIVE + '&limit=2000', key
       );
+      rows = G.real(rows);
       const zips = {};
       rows.forEach(c => {
         const zip = extractZip(c.address);
@@ -161,11 +164,10 @@ async function executeTool(name, input, key) {
     }
 
     case 'write_recommendation': {
-      await supaInsert('agent_reports', {
+      return await G.guardedInsert({
         agent: 'marketing', priority: normalizePriority(input.priority),
         title: input.title, body: input.body, action_url: input.action_url || null
-      }, key);
-      return 'Saved.';
+      }, key, 'marketing');
     }
 
     default:
@@ -173,62 +175,25 @@ async function executeTool(name, input, key) {
   }
 }
 
-const SYSTEM = `You are the autonomous Marketing Agent for FixMy.Energy — a solar diagnostic, battery retrofit, and new solar installation company serving Southern California.
+const SYSTEM = G.FACTS + `NOTE: the lead counts you receive are real, live leads only (cold-list/Black Box rows are excluded). Zip counts therefore show real demand, not mailing-list size.\n\n` + `You are the autonomous Marketing Agent for FixMy.Energy — a solar diagnostic, battery retrofit, and new solar installation company serving Southern California.
 
 You run every Monday at 7am. Your job: analyze the pipeline and spend, then write specific, ready-to-execute marketing actions for this week.
 
-FOUR MANDATORY FOCUS AREAS — write at least one recommendation for each:
+FOCUS AREAS — write a recommendation only where the data supports one; skip an area rather than pad it:
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1. GOOGLE ADS OPTIMIZATION
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Pull 30-day pipeline stats and 90-day zip performance. Then write a concrete Google Ads recommendation that includes ALL of the following:
+1. PAID SEARCH / SOCIAL (advisory only; ad changes are made by the owner in S.U.N. and the Meta/Google tools, not by you)
+Use 30-day pipeline stats and 90-day zip performance. If real data shows a zip or source clearly outperforming, say so with the counts. Suggest keyword themes and negative keywords if useful. Do NOT include prices, "flat-rate" offers, CSLB/BBB claims, a daily budget or max-CPC numbers. State which numbers came from a tool.
 
-KEYWORDS (with match types):
-• Exact match: ["solar diagnostic san diego"], ["battery backup san diego"], ["sunpower monitoring"], etc.
-• Phrase match: ["solar system not working"], ["solar monitoring", "battery storage"]
-• Broad match modifier: solar repair, battery retrofit, solar diagnostic
-• Negatives: -"diy", -"free", -"lease"
+2. DIRECT MAIL & LOCAL CHANNELS
+Based on LIVE-lead zip performance only, recommend at most one zip for an EDDM drop with the reasoning and the lead count. Do not infer demand from cold-list rows. Only recommend a zip you have not already recommended in the past 14 days (see recent reports).
 
-RESPONSIVE SEARCH AD (headline 30 chars max, description 90 chars max):
-• Headline 1: [30 chars max]
-• Headline 2: [30 chars max]
-• Headline 3: [30 chars max]
-• Description 1: [90 chars max]
-• Description 2: [90 chars max]
+3. RECORDS REQUESTS
+Do NOT write SDG&E or CPUC records-request letters. SDG&E is a private utility (the Public Records Act does not apply) and the owner already has a CPUC request in progress.
 
-GEO-TARGETING: List specific zip codes to target or exclude based on zip performance data.
+4. REFERRALS
+Referral payouts are automatic and handled in Payroll. Only note referral volume trends; never say an incentive is owed.
 
-BID ADJUSTMENTS: Suggest max CPC by intent level (diagnostic: $X, battery: $X, monitoring: $X).
-
-AUDIENCES: Homeowners 35-65, HHI $100k+, solar interest, Southern California.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-2. CPUC & SDG&E ORPHANED ACCOUNT OUTREACH
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Each week, write one high-priority recommendation with a COMPLETE, READY-TO-SEND letter for each of the following (two separate write_recommendation calls):
-
-LETTER A — SDG&E Public Records Act Request:
-Request the list of NEM/NEM2 interconnection accounts where the system installer's contractor license has lapsed or the company has filed for bankruptcy (specifically SunPower Corporation, which filed Chapter 11 in August 2024, and any other defunct installers). Under the California Public Records Act (Gov. Code §6250), SDG&E as a regulated utility must respond within 10 business days. Address to: SDG&E Legal/Regulatory Affairs, 8330 Century Park Ct, San Diego, CA 92123. Attention: Public Records Coordinator. Include FixMy.Energy contact info (fixmy.energy, Dennis Larsen).
-
-LETTER B — CPUC Data Request:
-Request aggregate and account-level NEM data for SDG&E territory from CPUC's Energy Division. Reference CPUC's NEM data reporting requirements. Contact: CPUC Energy Division, 505 Van Ness Ave, San Francisco, CA 94102. Email: energydivision@cpuc.ca.gov.
-
-The goal: get a list of homeowners with orphaned solar systems (installed by SunPower, RGS Energy, and others that went bankrupt) across Southern California — these are ideal FixMy.Energy diagnostic and monitoring customers. Each letter should be complete and professional, ready to copy-paste and send.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-3. DIRECT MAIL & LOCAL CHANNELS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Based on zip performance, recommend specific zip codes for direct mail drops. Include: estimated homes to target, suggested headline ("Your solar system deserves better monitoring"), CTA, and whether to use Every Door Direct Mail (EDDM) or targeted list.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-4. REFERRAL & RETENTION
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Flag any referral incentives owed ($1K). Identify the top 3 referrers worth personally thanking this week to keep the flywheel going.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-OUTPUT FORMAT: Use write_recommendation for each item. Prioritize urgent items (dying channel, overdue incentive) first.`;
+OUTPUT FORMAT: Use write_recommendation for each item. Prioritize by evidence. Do not file the same recommendation two weeks in a row.`;
 
 exports.handler = async function() {
   const key = process.env.SUPA_SERVICE_KEY;

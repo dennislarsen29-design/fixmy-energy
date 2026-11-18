@@ -6,6 +6,7 @@
 const SUPA_URL = 'https://kbtobyoumvbcxfbugsid.supabase.co';
 const SUPA_REST = SUPA_URL + '/rest/v1';
 const { sendAgentNotification } = require('./lib/push');
+const G = require('./lib/agent-guard');
 
 async function supaGet(path, key) {
   const resp = await fetch(SUPA_REST + path, {
@@ -69,7 +70,7 @@ const TOOLS = [
   },
   {
     name: 'get_referral_pipeline',
-    description: 'Get all referral-source leads and their conversion status. Shows who is referring, which referrals converted, and where the $1K incentive is owed.',
+    description: 'Get all referral-source leads and their conversion status. Shows referral-source leads and whether they converted. Payouts are automatic (Payroll); do not chase them.',
     input_schema: { type: 'object', properties: {} }
   },
   {
@@ -113,10 +114,10 @@ async function executeTool(name, input, key) {
     case 'get_conversion_funnel': {
       const since = new Date();
       since.setDate(since.getDate() - (input.days_back || 60));
-      const rows = await supaGet(
+      const rows = G.real(await supaGet(
         '/customers?select=step,solar_status,lead_source,lead_category,sold_type,rep_id,setter_name,created_at,lead_temp' +
-        '&created_at=gte.' + since.toISOString() + '&limit=2000', key
-      );
+        '&created_at=gte.' + since.toISOString() + G.LIVE + '&limit=2000', key
+      ));
 
       // FixMy funnel
       const fm = rows.filter(r => r.lead_category !== 'new_solar');
@@ -152,11 +153,11 @@ async function executeTool(name, input, key) {
       const cutoff = new Date();
       cutoff.setDate(cutoff.getDate() - (input.stale_days || 14));
       // Get leads (not jobs) that were created before cutoff and are still in early stages
-      const rows = await supaGet(
+      const rows = G.real(await supaGet(
         '/customers?select=id,first_name,last_name,phone,email,step,solar_status,lead_category,sold_type,lead_source,rep_id,setter_name,created_at,lead_temp' +
-        '&sold_type=is.null&created_at=lte.' + cutoff.toISOString() +
+        '&sold_type=is.null&disposition_exit=is.null&created_at=lte.' + cutoff.toISOString() + G.LIVE +
         '&order=created_at.asc&limit=100', key
-      );
+      ));
       // Filter to non-dead stages
       const alive = rows.filter(r => {
         if (r.lead_category === 'new_solar') return r.solar_status !== 'ns_eval_canceled' && r.solar_status !== 'ns_welcome_dead' && r.solar_status !== 'ns_call_dead';
@@ -181,10 +182,10 @@ async function executeTool(name, input, key) {
     case 'get_rep_performance': {
       const since = new Date();
       since.setDate(since.getDate() - 30);
-      const rows = await supaGet(
+      const rows = G.real(await supaGet(
         '/customers?select=rep_id,setter_name,sold_type,lead_category,created_at' +
-        '&created_at=gte.' + since.toISOString() + '&limit=2000', key
-      );
+        '&created_at=gte.' + since.toISOString() + G.LIVE + '&limit=2000', key
+      ));
       const byRep = {};
       rows.forEach(c => {
         const rep = c.setter_name || c.rep_id || 'unassigned';
@@ -197,7 +198,7 @@ async function executeTool(name, input, key) {
     case 'get_referral_pipeline': {
       const rows = await supaGet(
         '/customers?select=id,first_name,last_name,lead_source,referred_by,referral_incentive_paid,sold_type,solar_status,lead_category,created_at' +
-        '&lead_source=eq.referral&order=created_at.desc&limit=200', key
+        '&lead_source=eq.referral&archived=not.is.true&order=created_at.desc&limit=200', key
       );
       const incentiveDue = rows.filter(r =>
         (r.solar_status === 'ns_pto' || r.sold_type) && !r.referral_incentive_paid
@@ -212,14 +213,14 @@ async function executeTool(name, input, key) {
     }
 
     case 'audit_data_completeness': {
-      const rows = await supaGet('/customers?select=id,first_name,last_name,phone,email,address,rep_id,sold_type,invoice_amount,invoice_status,lead_category,step,solar_status,assigned_ops&limit=2000', key);
+      const rows = G.real(await supaGet('/customers?select=id,first_name,last_name,phone,email,address,rep_id,sold_type,invoice_amount,invoice_status,lead_category,step,solar_status,assigned_ops,disposition_exit' + G.LIVE + '&limit=2000', key));
       const issues = { missingPhone: [], missingEmail: [], missingAddress: [], soldJobMissingInvoice: [], soldJobMissingOps: [], missingRep: [] };
       rows.forEach(c => {
         const label = (c.first_name || '?') + ' ' + (c.last_name || '') + ' [' + c.id.slice(0, 8) + ']';
         if (!c.phone) issues.missingPhone.push(label);
         if (!c.email) issues.missingEmail.push(label);
         if (!c.address) issues.missingAddress.push(label);
-        if (c.sold_type && (!c.invoice_amount || c.invoice_amount === '0')) issues.soldJobMissingInvoice.push(label);
+        if (c.sold_type && c.sold_type !== 'battery_retrofit' && (!c.invoice_amount || c.invoice_amount === '0')) issues.soldJobMissingInvoice.push(label);
         if (c.sold_type && !c.assigned_ops && c.lead_category !== 'new_solar') issues.soldJobMissingOps.push(label);
         if (!c.rep_id) issues.missingRep.push(label);
       });
@@ -235,7 +236,7 @@ async function executeTool(name, input, key) {
     }
 
     case 'audit_pipeline_health': {
-      const rows = await supaGet('/customers?select=id,first_name,last_name,lead_category,sold_type,step,solar_status,invoice_status,deposit_status&limit=2000', key);
+      const rows = G.real(await supaGet('/customers?select=id,first_name,last_name,lead_category,sold_type,step,solar_status,invoice_status,deposit_status' + G.LIVE + '&limit=2000', key));
       const anomalies = [];
       rows.forEach(c => {
         const label = (c.first_name || '?') + ' ' + (c.last_name || '') + ' [' + c.id.slice(0, 8) + ']';
@@ -252,7 +253,7 @@ async function executeTool(name, input, key) {
     case 'get_volume_trends': {
       const since = new Date();
       since.setDate(since.getDate() - 84);
-      const rows = await supaGet('/customers?select=lead_category,sold_type,created_at&created_at=gte.' + since.toISOString() + '&limit=3000', key);
+      const rows = await supaGet('/customers?select=lead_category,sold_type,created_at&created_at=gte.' + since.toISOString() + G.LIVE + '&limit=3000', key);
       const weeks = {};
       rows.forEach(c => {
         const d = new Date(c.created_at);
@@ -267,26 +268,24 @@ async function executeTool(name, input, key) {
     }
 
     case 'get_ops_assignment_health': {
-      const jobs = await supaGet('/customers?select=id,first_name,last_name,sold_type,lead_category,assigned_ops,ops_payout_status,deposit_status,ops_milestone1_status,install_date&sold_type=not.is.null&lead_category=neq.new_solar&limit=500', key);
+      const jobs = G.real(await supaGet('/customers?select=id,first_name,last_name,sold_type,lead_category,assigned_ops,ops_payout_status,deposit_status,ops_milestone1_status,install_date&sold_type=not.is.null&lead_category=neq.new_solar&archived=not.is.true&limit=500', key));
       const unassigned = jobs.filter(j => !j.assigned_ops);
       const byOps = {};
       jobs.filter(j => j.assigned_ops).forEach(j => { byOps[j.assigned_ops] = (byOps[j.assigned_ops] || 0) + 1; });
-      const milestone1Unpaid = jobs.filter(j => j.deposit_status === 'paid' && j.ops_milestone1_status !== 'paid');
-      return JSON.stringify({
+            return JSON.stringify({
         totalFixMyJobs: jobs.length,
         unassignedCount: unassigned.length,
         unassigned: unassigned.slice(0, 10).map(j => (j.first_name || '') + ' [' + j.id.slice(0, 8) + ']'),
         loadByOpsPartner: byOps,
-        milestone1PaymentDue: milestone1Unpaid.length
+        note: 'Milestone 1 payments are retired; ops3 (Cosmic) is the main partner by design.'
       });
     }
 
     case 'write_action_item': {
-      await supaInsert('agent_reports', {
+      return await G.guardedInsert({
         agent: 'bizdev', priority: normalizePriority(input.priority),
         title: input.title, body: input.body, action_url: null
-      }, key);
-      return 'Saved.';
+      }, key, 'bizdev');
     }
 
     default:
@@ -294,7 +293,7 @@ async function executeTool(name, input, key) {
   }
 }
 
-const SYSTEM = `You are the autonomous Business Development + CRM Agent for FixMy.Energy — a solar diagnostic, battery retrofit, and new solar company serving Southern California.
+const SYSTEM = G.FACTS + `You are the autonomous Business Development + CRM Agent for FixMy.Energy — a solar diagnostic, battery retrofit, and new solar company serving Southern California.
 
 You run every Tuesday at 7am. Your job: find the highest-leverage actions the team can take this week across two domains — sales/growth AND data/operations health.
 
