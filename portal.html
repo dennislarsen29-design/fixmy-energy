@@ -4023,6 +4023,13 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   };
   window._plMenu = function(id) { var m = document.getElementById('plm_' + id); if (m) m.hidden = !m.hidden; };
   window._plAssignTech = async function(id, v) { try { await assignLeadTech(id, v); } catch (e) {} if (adminView === 'pipeline') renderPipelineView(); };
+  // A Setter's only "next step": reschedule an evaluation that was missed/rescheduled and hasn't closed yet (per Dennis).
+  window._plSetterResched = function(c) {
+    if (c.sold_type || window._lfIsCanceled && _lfIsCanceled(c)) return false;
+    if (c.lead_category === 'new_solar') return c.solar_status === 'ns_eval_rescheduled' || c.solar_status === 'ns_welcome_rescheduled';
+    var t = new Date(c.diagnostic_date || 0).getTime();
+    return (parseInt(c.step, 10) || 1) <= 2 && !isNaN(t) && !!c.diagnostic_date && t < Date.now() - 4 * 3600000;
+  };
   window._plLeadCardHtml = function(c, opts) {
     opts = opts || {};
     var nx = _plNextStep(c), sg = _sharedStage(c), col = nx.tone === 'hot' ? '#ef4444' : nx.tone === 'ok' ? '#8DC63F' : '#f5a623';
@@ -4056,7 +4063,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       _jobTagHtml(c) +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center;">' +
       (pd ? '<a class="lead-btn lime" href="tel:' + pd + '" style="text-decoration:none;' + (nx.tone === 'hot' ? 'background:#ef4444;border-color:#ef4444;color:#fff;' : '') + '">&#128222; Call</a>' : '') +
-      '<button class="lead-btn ghost" onclick="jobNext(\'' + c.id + '\')" style="color:#8DC63F;border-color:rgba(141,198,63,0.4);">&#9654; Next step</button>' +
+      (opts.setter ? (_plSetterResched(c) ? '<button class="lead-btn ghost" onclick="quickReschedule(\'' + c.id + '\',\'diagnostic_date\',\'' + esc(name).replace(/'/g,'') + '\',\'' + (c.diagnostic_date || '') + '\',\'' + (c.arrival_end || '') + '\')" style="color:#f3a93c;border-color:rgba(243,169,60,0.45);">&#128197; Reschedule</button>' : '')
+        : '<button class="lead-btn ghost" onclick="jobNext(\'' + c.id + '\')" style="color:#8DC63F;border-color:rgba(141,198,63,0.4);">&#9654; Next step</button>') +
       '<button class="lead-btn ghost" data-id="' + c.id + '" onclick="' + (opts.rep ? 'salesEditLead' : 'openLeadEditor') + '(this.dataset.id)">Open lead</button>' +
       '<button class="lead-btn ghost" onclick="_plMenu(\'' + c.id + '\')" aria-label="More actions" style="min-width:42px;">&#8943;</button></div>' + menu + '</div>';
   };
@@ -38597,7 +38605,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         return h2;
       }
 
-      function repJobCardHtml(j) {
+      function repJobCardHtml(j, extraHtml) {
         // Matches the admin J2 card (2026-11-05): stage dots + the rep's OWN pay up front, everything else behind Details.
         // Reps never see Revenue, Costs or Solar Review margin (_commLineHtmlForRep shows only this person's share).
         var isNSJ = j.lead_category === 'new_solar', sg = _sharedStage(j), dots = '', nsJRec = isNSJ ? (NS_STATUSES[j.solar_status]||{label:'Axia/QCells',color:'#4a9eff'}) : null;
@@ -38630,6 +38638,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '<div style="background:'+pc+'22;border-radius:6px;padding:4px 10px;font-size:0.72rem;font-weight:700;color:'+pc+';border:1px solid '+pc+'44;white-space:nowrap;">'+esc(pl)+'</div></div>' +
           '<div style="display:flex;gap:5px;margin:8px 0 0;" aria-label="Stage '+(sg.i+1)+' of 8">'+dots+'</div>' +
           '<div id="repJobComm_'+j.id+'">'+(isNSJ ? _axiaCommLineHtmlForRep(j.id, person) : _jobCommLineHtmlForRep(j.id, person))+'</div>' +
+          (extraHtml || '') +
+          ((!config.setterMode && _canOpen) ? '<div style="margin-top:8px;"><button onclick="event.stopPropagation();jobNext(\''+j.id+'\')" style="width:auto;margin:0;padding:7px 16px;border-radius:100px;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.45);color:#8DC63F;font-size:0.76rem;font-weight:800;cursor:pointer;">&#9654; Next step</button></div>' : '') +
           '<details onclick="event.stopPropagation()" style="margin-top:8px;"><summary style="cursor:pointer;color:#8DC63F;font-weight:700;font-size:0.8rem;">Details</summary><div style="padding-top:6px;">'+inner+'</div></details>' +
           '</div>';
       }
@@ -38643,18 +38653,12 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           h += '</div>';
           h += '<div style="font-size:0.7rem;color:#777;line-height:1.5;margin-bottom:10px;">You set these &mdash; a closing Tech is running them. You still earn the setter share. View only.</div>';
           handedOff.forEach(function(l) {
-            var nm = ((l.first_name||'')+' '+(l.last_name||'')).trim() || l.title_owner || 'No name';
             var when = l.diagnostic_date ? new Date(l.diagnostic_date) : null;
             var whenTxt = when && !isNaN(when.getTime())
               ? when.toLocaleString('en-US',{ weekday:'short', month:'short', day:'numeric', hour:'numeric', minute:'2-digit' })
               : 'No appointment date';
-            var closer = _closerLabel(l.rep_id);
-            h += '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:11px 13px;margin-bottom:7px;">';
-            h += '<div style="font-size:0.85rem;font-weight:700;margin-bottom:2px;">'+esc(nm)+'</div>';
-            h += '<div style="font-size:0.72rem;color:#888;margin-bottom:4px;">'+esc(l.address||'')+'</div>';
-            h += '<div style="font-size:0.72rem;color:#8DC63F;font-weight:600;">&#128197; '+esc(whenTxt)+'</div>';
-            h += '<div style="font-size:0.68rem;color:#666;margin-top:3px;">Closing: '+esc(closer)+(l.step ? ' &middot; step '+l.step : '')+'</div>';
-            h += '</div>';
+            var extra = '<div style="font-size:0.72rem;color:#8DC63F;font-weight:600;margin-top:8px;">&#128197; '+esc(whenTxt)+' <span style="color:#777;font-weight:500;">&middot; Closing: '+esc(_closerLabel(l.rep_id))+'</span></div>';
+            h += repJobCardHtml(l, extra);
           });
           h += '</div>';
         }
@@ -38744,7 +38748,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         if (!_list.length) h += '<div style="text-align:center;padding:32px;color:#555;">Nothing here'+(_rq?' for &ldquo;'+esc(_rpl.q)+'&rdquo;':'')+'. '+(_rq?'':'Tap + New Lead to add one.')+'</div>';
         else {
           h += '<div class="sales-card-grid">';
-          _list.forEach(function(r){ h += r.job ? repJobCardHtml(r.c) : _plLeadCardHtml(r.c, { rep: true }); });
+          _list.forEach(function(r){ h += r.job ? repJobCardHtml(r.c) : _plLeadCardHtml(r.c, { rep: true, setter: !!config.setterMode }); });
           h += '</div>';
         }
         h += handedOffHtml();
@@ -41759,6 +41763,45 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var opsView = sessionStorage.getItem('opsView_' + ops.id) || 'sun';
     if (opsView === 'subsheet') opsView = 'jobs';   // Sub Sheet removed for Ops — normalize stale state
 
+    // Sort / filter bar for the Ops job list (same idea as the shared Sort/Filter bar on the other portals, from Ops' POV).
+    var opsFilter = { q: '', sort: 'updated', stage: '', hideDone: false };
+    window.opsFilterSet = function(k, v) { opsFilter[k] = v; renderOps(); };
+    function opsFilteredJobs() {
+      var q = (opsFilter.q || '').trim().toLowerCase(), qd = q.replace(/\D/g, '');
+      var list = jobs.filter(function(j) {
+        if (opsFilter.hideDone && opsJobDone(j)) return false;
+        if (opsFilter.stage && opsStage(j).k !== opsFilter.stage) return false;
+        if (q) { var hay = ((j.first_name || '') + ' ' + (j.last_name || '') + ' ' + (j.address || '')).toLowerCase(); if (hay.indexOf(q) < 0 && !(qd.length >= 3 && String(j.phone || '').replace(/\D/g, '').indexOf(qd) > -1)) return false; }
+        return true;
+      });
+      var T = function(x) { var v = new Date(x || 0).getTime(); return isNaN(v) ? 0 : v; };
+      var sorters = {
+        updated: function(a, b) { return T(b.updated_at || b.created_at) - T(a.updated_at || a.created_at); },
+        appt: function(a, b) { var x = T(a.install_date || a.diagnostic_date), y = T(b.install_date || b.diagnostic_date); if (!x && !y) return 0; if (!x) return 1; if (!y) return -1; return x - y; },
+        name: function(a, b) { return ((a.last_name || '') + (a.first_name || '')).toLowerCase().localeCompare(((b.last_name || '') + (b.first_name || '')).toLowerCase()); }
+      };
+      return list.sort(sorters[opsFilter.sort] || sorters.updated);
+    }
+    function opsFilterBarHtml() {
+      var sel = 'background:var(--p2);border:1px solid var(--ln);color:var(--fg);border-radius:8px;padding:7px 8px;font-size:0.72rem;flex:1;min-width:110px;';
+      var o = function(v, l, cur) { return '<option value="' + v + '"' + (v === cur ? ' selected' : '') + '>' + l + '</option>'; };
+      var stages = {}; jobs.forEach(function(j) { var st = opsStage(j); stages[st.k] = st.label; });
+      return '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:0 0 12px;">' +
+        '<input type="text" value="' + _odEsc(opsFilter.q) + '" placeholder="&#128269; Search name, address, phone" onchange="opsFilterSet(\'q\',this.value)" style="' + sel + 'flex:2 1 180px;">' +
+        '<select onchange="opsFilterSet(\'sort\',this.value)" style="' + sel + '">' + o('updated', '&#8645; Recently updated', opsFilter.sort) + o('appt', '&#8645; Next appointment', opsFilter.sort) + o('name', '&#8645; Name', opsFilter.sort) + '</select>' +
+        '<select onchange="opsFilterSet(\'stage\',this.value)" style="' + sel + '"><option value="">All stages</option>' + Object.keys(stages).map(function(k) { return o(k, _odEsc(stages[k]), opsFilter.stage); }).join('') + '</select>' +
+        '<button onclick="opsFilterSet(\'hideDone\',' + (!opsFilter.hideDone) + ')" style="width:auto;margin:0;padding:7px 12px;border-radius:100px;font-size:0.7rem;font-weight:800;cursor:pointer;border:1px solid var(--ln);background:' + (opsFilter.hideDone ? '#8DC63F' : 'transparent') + ';color:' + (opsFilter.hideDone ? '#1A1A1A' : 'var(--mu)') + ';">' + (opsFilter.hideDone ? 'Completed hidden' : 'Hide completed') + '</button></div>';
+    }
+    // This partner's own pay on one job (their cost lines + M2/M3 only). Never the customer price or any commission.
+    function opsPayLineHtml(j) {
+      var jp = 0, jn = 0;
+      opsCostsFor(j.id).forEach(function(c) { var a = parseFloat(c.amount) || 0; if (c.status === 'paid') jp += a; else jn += a; });
+      [['milestone2_amount', 'milestone2_status'], ['milestone3_amount', 'milestone3_status']].forEach(function(pr) { var a = parseFloat(j[pr[0]]) || 0; if (!a) return; if (j[pr[1]] === 'paid') jp += a; else jn += a; });
+      var m = function(n) { return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 }); };
+      if (!jp && !jn) return '<div style="font-size:0.74rem;color:var(--mu);margin-top:8px;">Your pay: not entered yet</div>';
+      return '<div style="display:flex;gap:16px;align-items:baseline;margin-top:8px;"><div><div style="font-size:0.6rem;text-transform:uppercase;letter-spacing:0.07em;color:var(--mu);">Your pay</div><div style="font-size:1.35rem;font-weight:800;line-height:1.1;">' + m(jp + jn) + '</div></div>' +
+        '<div style="font-size:0.74rem;line-height:1.5;">' + (jn ? '<div style="color:#f3a93c;font-weight:700;">' + m(jn) + ' pending</div>' : '') + (jp ? '<div style="color:#4ade80;font-weight:700;">' + m(jp) + ' paid</div>' : '') + '</div></div>';
+    }
     function renderOps() {
       var h = '<div class="tech-portal-wrap"><div class="tech-header">' +
         '<div><div class="tech-name">🔧 ' + ops.name + '</div>' +
@@ -41870,8 +41913,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       }
 
       h += window._opsTopBarHtml();
+      h += opsFilterBarHtml();
+      var _opsShown = opsFilteredJobs();
+      if (!_opsShown.length) h += '<div style="padding:24px 8px;text-align:center;color:var(--mu);font-size:0.84rem;">No jobs match these filters.</div>';
 
-      jobs.forEach(function(job) {
+      _opsShown.forEach(function(job) {
         var jid = job.id;
         var isOpen = activeJobId === jid;
         var dateHtml = (function(){
@@ -41956,8 +42002,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
             (job.email ? '<div style="font-size:0.72rem;color:var(--mu);margin-top:2px;">&#9993; ' + (job.email||'') + '</div>' : '') +
             '</div>' +
             '<div class="tech-job-date" onclick="event.stopPropagation()">' + dateHtml + (job.diag_visit_confirmed_at && window._checkinBtnHtml ? '<div style="margin-top:8px;">' + window._checkinBtnHtml(job) + '</div>' : '') + '</div></div>' +
-          _dots +
-          '<div style="font-size:0.74rem;font-weight:700;color:#8DC63F;margin-top:8px;">' + (isOpen ? '&#9650; Close job' : '&#9660; Tap the card to open the job') + '</div>' +
+          _dots + opsPayLineHtml(job) +
+          '<div style="font-size:0.8rem;font-weight:700;color:#8DC63F;margin-top:8px;">' + (isOpen ? 'Details &#9652;' : 'Details &#9662;') + '</div>' +
           '<div class="tech-actions" onclick="event.stopPropagation()">' +
             (job.sold_type === 'battery_retrofit' || job.sold_type === 'new_solar' ? '' : '<button class="tech-btn tech-btn-primary" onclick="opsDiagOpen(\'' + jid + '\')" style="flex:1 1 100%;">&#129514; Open Quoya Diagnostic</button>') +
             (job.phone ? '<a href="tel:' + (job.phone||'').replace(/\D/g,'') + '" class="tech-btn tech-btn-call">&#128222; Call</a>' : '') +
