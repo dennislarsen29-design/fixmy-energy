@@ -2,7 +2,7 @@
 Status: [ ] open · [x] done · [-] dismissed
 
 ## A. Make Meta trackable (≈20 min total)
-- [ ] A1. Open Meta Ads Manager → each ACTIVE ad → Edit → "Website URL" → add URL parameters (the box under the URL): `utm_source=facebook&utm_medium=paid&utm_campaign=<name-of-campaign>` → Publish.
+- [ ] A1. (2026-11-18: the S.U.N. Meta panel now has a "Fix tags" button per ad, deployed; needs META_ADS_EDIT_TOKEN + ADS_ADMIN_KEY set in Netlify. Try it before editing by hand.) Open Meta Ads Manager → each ACTIVE ad → Edit → "Website URL" → add URL parameters (the box under the URL): `utm_source=facebook&utm_medium=paid&utm_campaign=<name-of-campaign>` → Publish.
 - [x] A2. 2026-10-28: Meta has 2 campaigns ("Powerwall · Oct", "Installer rescue · Oct"), both NOT DELIVERING because the ad account shows "Payment unsettled". $321 spent total, 1 website schedule each.
 - [x] A0. (done 2026-10-28) Tap "Verify payment method" in Meta Ads app (Solar Review account) and fix the card so ads can run.
 - [ ] A3. Google Ads: Settings → Account settings → Auto-tagging ON (confirm).
@@ -48,7 +48,7 @@ Status: [ ] open · [x] done · [-] dismissed
 - [x] I1. (done 2026-11-02) Search Console: the hub, LA, Orange and Riverside pages were already indexed; San Bernardino County indexing requested.
 - [x] I2. (Dennis added it 2026-11-02; takes effect after the next deploy) Netlify env var VIRTUAL_MEET_URL = a meet.google.com link (Site configuration → Environment variables), then trigger a deploy.
 - [x] I3a. (done 2026-11-12) Axia paid the full $5,418.00 Domestic Content for Seacombe; Solar Review's $2,438.10 marked received. Ronda's $270.90 setter share stays owed (pay in Payroll).
-- [ ] I3b. Delete Vijay Ranu $300 (id 080ed1fc-f914-47a5-91ed-bdafded43dc6), Stephen Sandberg $15,272 (id e0019082-b4d0-4816-944c-aef5a2a03a9f), Dennis Test $300 (id d0f7acde-73fb-41e6-9f11-f7f5ec4b8308) from job_costs. The delete times out at the database approval each time: approve the prompt within 60 seconds, or paste the SQL in the Supabase SQL editor.
+- [ ] I3b. Delete Vijay Ranu $300 (id 080ed1fc-f914-47a5-91ed-bdafded43dc6), Stephen Sandberg $15,272 (id e0019082-b4d0-4816-944c-aef5a2a03a9f), Dennis Test $300 (id d0f7acde-73fb-41e6-9f11-f7f5ec4b8308) from job_costs. The delete times out at the database approval each time: approve the prompt within 60 seconds, or paste the SQL in the Supabase SQL editor. (2026-11-18: the "Dennis Test 10/25" job record itself was archived; its $300 cost line is still to delete.)
 - [ ] I4. Utah compliance questions (HB 57 registration/bond, W-2 vs 1099 reps, contractor license) → counsel or Utah Division of Consumer Protection. Parked in S.U.N., not blocking.
 - [ ] H1b. 2026-11-02: the 5 new guides are requested. Still to request (5/day): /utah-solar-repair, then the Utah and California city pages from sitemap.xml.
 
