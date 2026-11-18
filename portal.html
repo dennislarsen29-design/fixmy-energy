@@ -13938,17 +13938,29 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       return rows;
     }
     var lines = t.split(/\r?\n/), hi = -1, i;
-    for (i = 0; i < Math.min(lines.length, 40); i++) { if (/(start|date)/i.test(lines[i]) && /(usage|value|kwh|deliver|receiv|export|generat|consum)/i.test(lines[i])) { hi = i; break; } }
+    // Browsers reject "11/18/2025 12:00AM" (no space before AM/PM) — SCE writes it that way.
+    var _ts = function(x){ return Date.parse(String(x).replace(/(\d)\s*(AM|PM)\b/i, '$1 $2')); };
+    var _sp0 = function(l){ return l.split(',').map(function(x){ return x.replace(/^"|"$/g,'').trim(); }); };
+    // Header = a keyword line made of SHORT column names whose next non-blank line starts with a real date.
+    // (SCE's file opens with a long prose paragraph that mentions "usage" and "date" — it must not win.)
+    for (i = 0; i < Math.min(lines.length, 40); i++) {
+      if (!(/(start|date)/i.test(lines[i]) && /(usage|value|kwh|deliver|receiv|export|generat|consum)/i.test(lines[i]))) continue;
+      var _f = _sp0(lines[i]); if (_f.length < 2 || _f.some(function(x){ return x.length > 60; })) continue;
+      var _n = i + 1; while (_n < lines.length && !lines[_n].trim()) _n++;
+      if (_n < lines.length && !isNaN(_ts(_sp0(lines[_n])[0]))) { hi = i; break; }
+    }
     if (hi < 0) return rows;
     var sp = function(l){ return l.split(',').map(function(x){ return x.replace(/^"|"$/g,'').trim(); }); };
     var hd = sp(lines[hi]).map(function(x){ return x.toLowerCase(); });
     var find = function(re){ for (var k = 0; k < hd.length; k++) if (re.test(hd[k])) return k; return -1; };
     var cDate = find(/date|^start/), cTime = find(/start time|^time/), cType = find(/type|direction|flow/);
-    var vals = []; hd.forEach(function(h, k){ if (/(usage|value|kwh|deliver|receiv|export|generat|consum)/.test(h) && !/(cost|price|\$|temp)/.test(h)) vals.push(k); });
+    // SCE: "Date" is date-only; "Energy Consumption time Period Start" carries the full timestamp.
+    var cPer = find(/period start/); if (cPer > -1) { cDate = cPer; cTime = -1; }
+    var vals = []; hd.forEach(function(h, k){ if (/(usage|value|kwh|deliver|receiv|export|generat|consum)/.test(h) && !/(cost|price|\$|temp|period|start|end|date|time)/.test(h)) vals.push(k); });
     for (i = hi + 1; i < lines.length; i++) {
       if (!lines[i]) continue;
       var c = sp(lines[i]); if (!c[cDate]) continue;
-      var ms = Date.parse(c[cDate] + (cTime > -1 && cTime !== cDate && !/\d:\d/.test(c[cDate]) ? ' ' + c[cTime] : '')); if (isNaN(ms)) continue;
+      var ms = _ts(c[cDate] + (cTime > -1 && cTime !== cDate && !/\d:\d/.test(c[cDate]) ? ' ' + c[cTime] : '')); if (isNaN(ms)) continue;
       vals.forEach(function(k){
         var v = parseFloat(c[k]); if (isNaN(v)) return;
         var ex = /(receiv|export|generat|to grid)/.test(hd[k]) || (cType > -1 && /(export|generat|receiv|to grid)/i.test(c[cType]));
