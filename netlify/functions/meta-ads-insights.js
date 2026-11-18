@@ -30,6 +30,24 @@ exports.handler = async function (event) {
       return { ad_id: x.ad_id, ad_name: x.ad_name, campaign: x.campaign_name, spend: parseFloat(x.spend) || 0,
         impressions: parseInt(x.impressions, 10) || 0, clicks: parseInt(x.clicks, 10) || 0, schedules: sch };
     });
+    // Tracking audit (read-only): does each ad's link carry the tags that tie a booking back to the ad?
+    // Needs only ads_read. A failure here never hides the spend table.
+    let audit = {};
+    try {
+      const au = 'https://graph.facebook.com/v21.0/act_' + acct + '/ads?fields=id,effective_status,creative{url_tags,link_url,object_story_spec,asset_feed_spec}&limit=200&access_token=' + encodeURIComponent(token);
+      const ar = await fetch(au); const aj = await ar.json().catch(() => ({}));
+      (aj.data || []).forEach(function (ad) {
+        const c = ad.creative || {};
+        const spec = c.object_story_spec || {};
+        const ld = (spec.link_data && spec.link_data.link) || (spec.video_data && spec.video_data.call_to_action && spec.video_data.call_to_action.value && spec.video_data.call_to_action.value.link) || c.link_url || '';
+        const feed = c.asset_feed_spec && c.asset_feed_spec.link_urls && c.asset_feed_spec.link_urls[0] && c.asset_feed_spec.link_urls[0].website_url || '';
+        const dest = ld || feed || '';
+        const tags = String(c.url_tags || '') + '&' + (dest.indexOf('?') > -1 ? dest.split('?')[1] : '');
+        const has = function (k) { return new RegExp('(^|&)' + k + '=').test(tags); };
+        audit[ad.id] = { status: ad.effective_status, dest: dest.split('?')[0], has_source: has('utm_source'), has_campaign: has('utm_campaign'), has_content: has('utm_content'), off_site: !!dest && !/^https?:\/\/(www\.)?fixmy\.energy/i.test(dest) };
+      });
+    } catch (e) { audit = {}; }
+    rows.forEach(function (r) { r.audit = audit[r.ad_id] || null; });
     return J(200, { ok: true, range: preset, rows: rows, truncated: !!(j.paging && j.paging.next) });
   } catch (e) { return J(200, { ok: false, reason: 'network', detail: String(e.message || e) }); }
 };
