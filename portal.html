@@ -12195,6 +12195,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // lead's address; Utah swaps the utility, the net-metering card and the fallback rate.
   var UT_RATE_EST = 0.12; // ESTIMATE of Rocky Mountain Power's blended residential rate ($/kWh). Used ONLY when no bill has been read; the bill's own rate always wins. Replace once verified.
   var TX_RATE_EST = 0.15; // ESTIMATE of a typical Central Texas residential rate ($/kWh). Used ONLY when no bill has been read; the bill's own rate always wins. Verify before relying on it.
+  var SCE_RATE_EST = 0.32; // ESTIMATE of Southern California Edison's blended residential rate ($/kWh), NOT verified against a tariff. Used ONLY when no bill has been read and the utility is SCE (picked by the rep or read from a bill); the bill's own rate always wins.
+  window._evFallbackRate = function(){ var rg = window._evRegion(); return rg === 'UT' ? UT_RATE_EST : rg === 'TX' ? TX_RATE_EST : (_evLocal && _evLocal.utility === 'sce') ? SCE_RATE_EST : 0.453; };
   window._evRegion = function(){ var r = _evRec || {}; return (window._isUtahLead && window._isUtahLead(r)) ? 'UT' : (window._isTexasLead && window._isTexasLead(r)) ? 'TX' : 'CA'; };
   // Getting a real bill is the step reps most often fumble. Written out per utility.
   var UTILITY_HELP = {
@@ -15137,7 +15139,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var ba = (_evLocal.billAnalysis && !_evLocal.billAnalysis._err) ? _evLocal.billAnalysis : null;
     var billMo = (ba && ba.monthly_source === 'monthly_bill' && ba.monthly_amount_paid > 0) ? ba.monthly_amount_paid : (parseFloat(_evRec && _evRec.monthly_bill) || (ba && ba.monthly_amount_paid) || 0);
     var fromBill = !!(ba && ba.annual_kwh > 0); // a NET-negative figure (solar > usage) can't size an upgrade — fall back to the estimate
-    var annualKwh = fromBill ? ba.annual_kwh : (billMo ? Math.round(billMo * 12 / (window._evRegion() === 'UT' ? UT_RATE_EST : window._evRegion() === 'TX' ? TX_RATE_EST : 0.453)) : 0);
+    var annualKwh = fromBill ? ba.annual_kwh : (billMo ? Math.round(billMo * 12 / window._evFallbackRate()) : 0);
     var evAdd = window._evEvKwh(_evLocal.answers);   // new-EV charging not yet in the usage history
     if (annualKwh && evAdd) annualKwh += evAdd;
     var daily = annualKwh ? annualKwh / 365 : 0;
@@ -16233,6 +16235,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // Quoya's first guess.
   function _propUsageFromBill(bill, fallbackRate) {
     if (window._propIsTX && fallbackRate === 0.453) fallbackRate = 0.15; // Central Texas estimate, only when no bill is read
+    if (window._propIsSCE && fallbackRate === 0.453) fallbackRate = 0.32; // Southern California Edison estimate, only when no bill is read (bill's own rate wins)
     if (window._propIsUT && fallbackRate === 0.453) fallbackRate = 0.12; // Utah estimate, only when no bill is read (bill's own rate wins)
     var ba = _propBillAnalysis;
     // A NEM true-up statement reports NET usage after solar offset (Becky Phan: 109 kWh on a
@@ -30533,14 +30536,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // ⚠️ Always reset first — opening the builder for a different customer must never
     // carry over the previous lead's bill_analysis into this one's savings math.
     _propBillAnalysis = null;
+    window._propIsSCE = false;
     try { var _pc0 = (typeof adminCustomers !== 'undefined' ? adminCustomers : []).find(function(x){ return x.id === id; }); window._propIsUT = !!(_pc0 && window._isUtahLead(_pc0)); window._propNonCA = !!(_pc0 && window._isNonCaLead(_pc0)); window._propIsTX = !!(_pc0 && window._isTexasLead && window._isTexasLead(_pc0)); } catch(e) { window._propIsUT = false; window._propIsTX = false; }
     _propEvKwh = 0;
     var _propEvalRowId = null; // captured here so the job_photos fallback below can update the SAME row instead of guessing insert-vs-update
     try {
       var _beClient = supabase.createClient(SUPA_URL, SUPA_KEY);
-      var _beRes = await _beClient.from('lead_evaluations').select('id,bill_analysis,answers').eq('customer_id', id).limit(1);
+      var _beRes = await _beClient.from('lead_evaluations').select('id,bill_analysis,answers,utility').eq('customer_id', id).limit(1);
       if (!_beRes.error && _beRes.data && _beRes.data[0]) {
         _propEvalRowId = _beRes.data[0].id;
+        window._propIsSCE = (_beRes.data[0].utility === 'sce') || !!(_beRes.data[0].bill_analysis && _beRes.data[0].bill_analysis.utility_detected === 'sce');
         if (_beRes.data[0].bill_analysis) _propBillAnalysis = _beRes.data[0].bill_analysis;
         try { _propEvKwh = window._evEvKwh(_beRes.data[0].answers) || 0; } catch(e) {}
       }
