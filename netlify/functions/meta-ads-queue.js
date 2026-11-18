@@ -1,6 +1,7 @@
 // meta-ads-queue.js — API for the ad approval queue (S.U.N. Meta panel). Same password rule as the tag fixer (ADS_ADMIN_KEY).
 const crypto = require('crypto');
 const q = require('./lib/ads-queue');
+const create = require('./lib/ads-create');
 const OK = ['https://fixmy.energy', 'https://www.fixmy.energy'];
 const sameKey = function (a, b) { const x = Buffer.from(String(a || '')), y = Buffer.from(String(b || '')); return x.length === y.length && x.length > 0 && crypto.timingSafeEqual(x, y); };
 exports.handler = async function (event) {
@@ -14,6 +15,9 @@ exports.handler = async function (event) {
   if (!sameKey((event.headers || {})['x-ads-key'], process.env.ADS_ADMIN_KEY)) return J(401, { ok: false, reason: 'bad_key' });
   let b = {}; try { b = JSON.parse(event.body || '{}'); } catch (e) { return J(400, { error: 'bad json' }); }
   try {
+    if (b.action === 'library') return J(200, await create.library());
+    if (b.action === 'draft_copy') return J(200, await create.draftCopy(String(b.market || ''), String(b.angle || '')));
+    if (b.action === 'create') return J(200, await create.create(b));
     if (b.action === 'list') return J(200, await q.list());
     if (b.action === 'scan') { const s = await q.scan(); return J(200, Object.assign({}, s, s.ok ? await q.list() : {})); }
     if (b.action === 'approve') return J(200, await q.execute(String(b.id || '')));

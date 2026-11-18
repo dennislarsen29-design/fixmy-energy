@@ -2888,7 +2888,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   window._sunAdsCall = async function(body) {
     var key = ''; try { key = localStorage.getItem('adsAdminKey') || ''; } catch (e) {}
     if (!key) { key = prompt('Ads admin password (the ADS_ADMIN_KEY you set in Netlify):') || ''; if (!key) return { ok: false, reason: 'cancelled' }; }
-    var fnName = (['list','scan','approve','dismiss'].indexOf(body.action) > -1 || body.via === 'queue') ? 'meta-ads-queue' : 'meta-ads-fix';
+    var fnName = (['list','scan','approve','dismiss','library','draft_copy','create'].indexOf(body.action) > -1 || body.via === 'queue') ? 'meta-ads-queue' : 'meta-ads-fix';
     var r = await fetch('/.netlify/functions/' + fnName, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-ads-key': key }, body: JSON.stringify(body) });
     var j = await r.json().catch(function(){ return { ok: false, reason: 'error' }; });
     if (j.reason === 'bad_key') { try { localStorage.removeItem('adsAdminKey'); } catch (e) {} } else if (j.reason !== 'cancelled') { try { localStorage.setItem('adsAdminKey', key); } catch (e) {} }
@@ -2913,15 +2913,52 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var h = '<div class="sun-ph" style="margin-top:14px"><h2>Ad suggestions</h2><span class="sun-note">Nothing changes until you approve &middot; limits: $2,000/mo, $150 per booking</span></div>';
     if (!j.open.length) h += '<div class="sun-why">No suggestions right now. The system checks daily and queues a pause or a budget increase only when your rules say so.</div>';
     j.open.forEach(function(p) {
-      var what = p.kind === 'pause' ? 'Pause ad &ldquo;' + _sunEsc(p.name) + '&rdquo;' : 'Raise &ldquo;' + _sunEsc(p.name) + '&rdquo; from $' + p.from + ' to $' + p.to + ' a day';
+      var what = p.kind === 'launch' ? 'Launch new ad &ldquo;' + _sunEsc(p.name) + '&rdquo;' : p.kind === 'pause' ? 'Pause ad &ldquo;' + _sunEsc(p.name) + '&rdquo;' : 'Raise &ldquo;' + _sunEsc(p.name) + '&rdquo; from $' + p.from + ' to $' + p.to + ' a day';
       h += '<div class="sun-row"><span class="sun-dot ' + (p.kind === 'pause' ? 'sun-d-bad' : 'sun-d-ok') + '"></span><div class="b"><strong>' + what + '</strong><span>' + _sunEsc(p.why) + '</span></div><div class="sun-acts"><button type="button" onclick="_sunAdsDecide(\'' + p.id + '\',true)" style="width:auto;margin:0 6px 0 0;padding:6px 14px;border-radius:100px;border:none;background:#8DC63F;color:#1A1A1A;font-weight:800;cursor:pointer">Approve</button><button type="button" onclick="_sunAdsDecide(\'' + p.id + '\',false)" style="width:auto;margin:0;padding:6px 12px;border-radius:100px;border:1px solid var(--ln,#ccc);background:transparent;cursor:pointer">Dismiss</button></div></div>';
     });
-    h += '<div style="margin-top:8px"><button type="button" onclick="_sunAdsScan()" style="width:auto;margin:0;padding:6px 14px;border-radius:100px;border:1px solid var(--ln,#ccc);background:transparent;font-size:.74rem;cursor:pointer">Check now</button></div>';
+    h += '<div style="margin-top:8px"><button type="button" onclick="_sunAdsNewOpen()" style="width:auto;margin:0 6px 0 0;padding:6px 14px;border-radius:100px;border:none;background:#8DC63F;color:#1A1A1A;font-weight:800;font-size:.76rem;cursor:pointer">+ Create a new ad</button><button type="button" onclick="_sunAdsScan()" style="width:auto;margin:0;padding:6px 14px;border-radius:100px;border:1px solid var(--ln,#ccc);background:transparent;font-size:.74rem;cursor:pointer">Check now</button></div><div id="sunAdsNew"></div>';
     if (j.changes && j.changes.length) {
       h += '<div class="sun-why" style="margin-top:10px"><b>Recent changes</b></div>';
-      j.changes.forEach(function(c) { h += '<div class="sun-row"><span class="sun-dot sun-d-unk"></span><div class="b"><strong>' + (c.kind === 'pause' ? 'Paused ' : 'Budget changed on ') + _sunEsc(c.name) + (c.kind === 'budget' ? ' ($' + c.before + ' to $' + c.after + ')' : '') + '</strong><span>' + _sunEsc(String(c.at || '').slice(0, 10)) + (c.undone_at ? ' &middot; undone' : '') + '</span></div>' + (c.undone_at ? '' : '<div class="sun-acts"><button type="button" onclick="_sunAdsUndo(\'' + c.id + '\')" style="width:auto;margin:0;padding:5px 12px;border-radius:100px;border:1px solid var(--ln,#ccc);background:transparent;cursor:pointer">Undo</button></div>') + '</div>'; });
+      j.changes.forEach(function(c) { h += '<div class="sun-row"><span class="sun-dot sun-d-unk"></span><div class="b"><strong>' + (c.kind === 'launch' ? 'Launched ' : c.kind === 'pause' ? 'Paused ' : 'Budget changed on ') + _sunEsc(c.name) + (c.kind === 'budget' ? ' ($' + c.before + ' to $' + c.after + ')' : '') + '</strong><span>' + _sunEsc(String(c.at || '').slice(0, 10)) + (c.undone_at ? ' &middot; undone' : '') + '</span></div>' + (c.undone_at ? '' : '<div class="sun-acts"><button type="button" onclick="_sunAdsUndo(\'' + c.id + '\')" style="width:auto;margin:0;padding:5px 12px;border-radius:100px;border:1px solid var(--ln,#ccc);background:transparent;cursor:pointer">Undo</button></div>') + '</div>'; });
     }
     el.innerHTML = h;
+  };
+  // New-ad builder (2026-11-17): pick a library video + a winning ad set + a market, edit the drafted copy, create it PAUSED.
+  window._sunAdsNewOpen = async function() {
+    var box = document.getElementById('sunAdsNew'); if (!box) return;
+    box.innerHTML = '<div class="sun-why" style="margin-top:10px">Loading your Meta videos and ad sets&hellip;</div>';
+    var lib = await _sunAdsCall({ action: 'library' });
+    if (!lib.ok) { box.innerHTML = '<div class="sun-why" style="margin-top:10px">' + _sunEsc(lib.reason === 'cancelled' ? '' : 'Could not load the Meta library (' + (lib.reason || 'error') + ').') + '</div>'; return; }
+    window._sunAdsLib = lib;
+    var sel = 'width:100%;margin:2px 0 8px;padding:7px;border-radius:8px;border:1px solid var(--ln,#ccc);background:var(--p2,#fff);color:inherit;font-size:.8rem';
+    var opt = function(a, f) { return a.map(f).join(''); };
+    box.innerHTML = '<div class="sun-row" style="display:block;margin-top:10px"><strong>Create a new ad</strong><div class="sun-why">It is created <b>paused</b>, sends people to /book with tracking tags, and starts at $10/day only after you approve the launch above.</div>' +
+      '<label style="font-size:.74rem">Market</label><select id="sunNewMarket" style="' + sel + '">' + opt(lib.markets, function(m){ return '<option value="' + m.key + '">' + _sunEsc(m.label) + '</option>'; }) + '</select>' +
+      '<label style="font-size:.74rem">Video (from your Meta library)</label><select id="sunNewVideo" style="' + sel + '">' + (lib.videos.length ? opt(lib.videos, function(v){ return '<option value="' + v.id + '">' + _sunEsc(v.title) + (v.length ? ' (' + Math.round(v.length) + 's)' : '') + '</option>'; }) : '<option value="">No videos in the library yet</option>') + '</select>' +
+      '<label style="font-size:.74rem">Copy the audience and settings from</label><select id="sunNewSet" style="' + sel + '">' + opt(lib.adsets, function(s){ return '<option value="' + s.id + '">' + _sunEsc(s.name) + ' (' + _sunEsc(s.status) + ')</option>'; }) + '</select>' +
+      '<label style="font-size:.74rem">Angle</label><input id="sunNewAngle" value="Is your solar installer still in business?" style="' + sel + '">' +
+      '<button type="button" onclick="_sunAdsNewDraft()" style="width:auto;margin:0 0 8px;padding:6px 14px;border-radius:100px;border:1px solid #8DC63F;background:transparent;font-weight:800;font-size:.76rem;cursor:pointer">Draft copy with Quoya</button><div id="sunNewCopy"></div></div>';
+  };
+  window._sunAdsNewDraft = async function() {
+    var out = document.getElementById('sunNewCopy'); if (!out) return;
+    out.innerHTML = '<div class="sun-why">Drafting&hellip;</div>';
+    var r = await _sunAdsCall({ action: 'draft_copy', market: document.getElementById('sunNewMarket').value, angle: document.getElementById('sunNewAngle').value });
+    if (!r.ok) { out.innerHTML = '<div class="sun-why">' + _sunEsc(r.reason === 'cancelled' ? '' : 'Could not draft copy (' + (r.reason || 'error') + '). You can type it yourself below.') + '</div>' + _sunAdsCopyForm({ primary: '', headline: '', description: '' }); return; }
+    window._sunAdsVariants = r.variants;
+    out.innerHTML = '<div class="sun-why">Pick one and edit it. Prices, percentages and guarantees are blocked.</div>' + r.variants.map(function(v, i){ return '<button type="button" onclick="_sunAdsPick(' + i + ')" style="display:block;width:100%;text-align:left;margin:0 0 6px;padding:8px;border-radius:8px;border:1px solid var(--ln,#ccc);background:transparent;font-size:.78rem;cursor:pointer"><b>' + _sunEsc(v.headline) + '</b><br>' + _sunEsc(v.primary) + '</button>'; }).join('') + '<div id="sunNewForm"></div>';
+  };
+  window._sunAdsCopyForm = function(v) {
+    var sel = 'width:100%;margin:2px 0 8px;padding:7px;border-radius:8px;border:1px solid var(--ln,#ccc);background:var(--p2,#fff);color:inherit;font-size:.8rem';
+    return '<div id="sunNewForm"><label style="font-size:.74rem">Primary text</label><textarea id="sunNewPrimary" rows="3" style="' + sel + '">' + _sunEsc(v.primary) + '</textarea><label style="font-size:.74rem">Headline (40 characters max)</label><input id="sunNewHead" maxlength="40" value="' + _sunEsc(v.headline) + '" style="' + sel + '"><label style="font-size:.74rem">Description</label><input id="sunNewDesc" maxlength="30" value="' + _sunEsc(v.description) + '" style="' + sel + '"><button type="button" onclick="_sunAdsNewCreate()" style="width:auto;margin:0;padding:7px 16px;border-radius:100px;border:none;background:#8DC63F;color:#1A1A1A;font-weight:800;cursor:pointer">Create (paused)</button></div>';
+  };
+  window._sunAdsPick = function(i) { var v = (window._sunAdsVariants || [])[i]; var f = document.getElementById('sunNewForm'); if (v && f) f.outerHTML = _sunAdsCopyForm(v); };
+  window._sunAdsNewCreate = async function() {
+    var v = document.getElementById('sunNewVideo').value; if (!v) { alert('Pick a video first. Upload videos in Meta’s Media Library.'); return; }
+    var r = await _sunAdsCall({ action: 'create', market: document.getElementById('sunNewMarket').value, video_id: v, source_adset_id: document.getElementById('sunNewSet').value,
+      copy: { primary: document.getElementById('sunNewPrimary').value.trim(), headline: document.getElementById('sunNewHead').value.trim(), description: document.getElementById('sunNewDesc').value.trim() } });
+    if (!r.ok) { if (r.reason !== 'cancelled') alert(r.message || ('Not created (' + (r.reason || 'error') + ').')); return; }
+    alert('Created, paused. It now shows under Ad suggestions as a launch. Approve it there when you are ready.');
+    _sunAdsQueueLoad(true);
   };
   window._sunAdsDecide = async function(id, yes) {
     if (yes && !confirm('Approve this change? The system re-checks your limits first and will refuse if it is no longer allowed. You can undo it afterward.')) return;

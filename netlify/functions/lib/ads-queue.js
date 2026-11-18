@@ -117,6 +117,17 @@ async function execute(id) {
     const after = await graph(p.target + '?fields=daily_budget', etoken);
     if (Math.round(parseFloat(after.daily_budget)) !== Math.round(r.to * 100)) return { ok: false, reason: 'verify_failed', message: 'Meta did not confirm the new budget. Check Ads Manager.' };
     entry = { kind: 'budget', target: p.target, name: p.name, before: r.from, after: r.to };
+  } else if (p.kind === 'launch') {
+    // Re-check the ceiling with fresh numbers, then turn on the ad set and the ad together; verify both.
+    const cur = snap.adsets.filter(function (s) { return s.status === 'ACTIVE' && s.id !== p.target; }).reduce(function (t, s) { return t + s.budget; }, 0);
+    const mine = snap.adsets.find(function (s) { return s.id === p.target; });
+    if (!mine) return { ok: false, reason: 'rule_failed', message: 'No longer allowed: ad set not found' };
+    if (cur + mine.budget > L.monthly_ceiling / 30 + 0.01) return { ok: false, reason: 'rule_failed', message: 'No longer allowed: launching would pass your $' + L.monthly_ceiling + '/month ceiling' };
+    await graph(p.target, etoken, 'POST', { status: 'ACTIVE' });
+    await graph(p.ad_id, etoken, 'POST', { status: 'ACTIVE' });
+    const [s2, a2] = await Promise.all([graph(p.target + '?fields=status', etoken), graph(p.ad_id + '?fields=status', etoken)]);
+    if (s2.status !== 'ACTIVE' || a2.status !== 'ACTIVE') return { ok: false, reason: 'verify_failed', message: 'Meta did not confirm the launch. Check Ads Manager.' };
+    entry = { kind: 'launch', target: p.target, ad_id: p.ad_id, name: p.name, before: 'PAUSED', after: 'ACTIVE' };
   } else return { ok: false, reason: 'unknown_kind' };
   entry.id = 'chg_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); entry.at = new Date().toISOString(); entry.queue_id = p.id;
   p.status = 'approved'; p.decided_at = entry.at;
@@ -134,15 +145,15 @@ async function undo(logId) {
   const etoken = process.env.META_ADS_EDIT_TOKEN; if (!etoken) return { ok: false, reason: 'no_token' };
   const log = await readKey('ads_change_log', { items: [] }), items = (log && log.items) || [];
   const it = items.find(function (x) { return x.id === logId; });
-  if (!it || (it.kind !== 'pause' && it.kind !== 'budget')) return { ok: false, reason: 'not_found' };
+  if (!it || ['pause', 'budget', 'launch'].indexOf(it.kind) < 0) return { ok: false, reason: 'not_found' };
   if (it.undone_at) return { ok: false, reason: 'already_undone' };
-  if (it.kind === 'pause') await graph(it.target, etoken, 'POST', { status: 'ACTIVE' }); else await graph(it.target, etoken, 'POST', { daily_budget: Math.round(it.before * 100) });
+  if (it.kind === 'launch') { await graph(it.target, etoken, 'POST', { status: 'PAUSED' }); await graph(it.ad_id, etoken, 'POST', { status: 'PAUSED' }); } else if (it.kind === 'pause') await graph(it.target, etoken, 'POST', { status: 'ACTIVE' }); else await graph(it.target, etoken, 'POST', { daily_budget: Math.round(it.before * 100) });
   it.undone_at = new Date().toISOString(); await writeKey('ads_change_log', { items: items });
   return { ok: true };
 }
 async function list() {
   const queue = await readKey('ads_queue', []), items = Array.isArray(queue) ? queue : (queue.items || []);
   const log = await readKey('ads_change_log', { items: [] });
-  return { ok: true, open: items.filter(function (p) { return p.status === 'open'; }), changes: ((log && log.items) || []).filter(function (c) { return c.kind === 'pause' || c.kind === 'budget'; }).slice(0, 10) };
+  return { ok: true, open: items.filter(function (p) { return p.status === 'open'; }), changes: ((log && log.items) || []).filter(function (c) { return c.kind === 'pause' || c.kind === 'budget' || c.kind === 'launch'; }).slice(0, 10) };
 }
 module.exports = { scan: scan, execute: execute, dismiss: dismiss, undo: undo, list: list, pauseRule: pauseRule, budgetRule: budgetRule };
