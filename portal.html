@@ -2884,6 +2884,24 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // Meta ads: counts leads our own database can attribute to Meta (fbclid or utm_source facebook/instagram/meta).
   // It cannot see ad spend or pixel health (those live only in Meta), so spend is typed in and stored per device.
   window._sunMetaSpend = function(v) { try { var n = parseFloat(String(v).replace(/[^0-9.]/g, '')); if (n > 0) localStorage.setItem('sunMetaSpend30', String(n)); else localStorage.removeItem('sunMetaSpend30'); } catch (e) {} if (typeof renderAdminHomeView === 'function') renderAdminHomeView(); };
+  // Meta tag fixer (2026-11-17): the only change the system makes on its own to an ad is its link's tracking tags.
+  window._sunAdsCall = async function(body) {
+    var key = ''; try { key = localStorage.getItem('adsAdminKey') || ''; } catch (e) {}
+    if (!key) { key = prompt('Ads admin password (the ADS_ADMIN_KEY you set in Netlify):') || ''; if (!key) return { ok: false, reason: 'cancelled' }; }
+    var r = await fetch('/.netlify/functions/meta-ads-fix', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-ads-key': key }, body: JSON.stringify(body) });
+    var j = await r.json().catch(function(){ return { ok: false, reason: 'error' }; });
+    if (j.reason === 'bad_key') { try { localStorage.removeItem('adsAdminKey'); } catch (e) {} } else if (j.reason !== 'cancelled') { try { localStorage.setItem('adsAdminKey', key); } catch (e) {} }
+    return j;
+  };
+  window._sunAdFix = async function(adId) {
+    var p = await _sunAdsCall({ action: 'preview', ad_id: adId });
+    if (!p.ok) { if (p.reason !== 'cancelled') alert(p.reason === 'disabled' ? 'The tag fixer is off. Add the Netlify variable ADS_ADMIN_KEY (any password) and deploy.' : p.reason === 'bad_key' ? 'Wrong password.' : (p.message || p.hint || 'Could not preview this ad (' + (p.reason || 'error') + ').')); return; }
+    if (!confirm('Add tracking tags to "' + p.ad + '"?\n\nAdding: ' + p.adding.join(', ') + '\nSends people to: ' + p.destination + '\n\n' + p.note + '\n\nOnly the link tags change. You can undo it afterward.')) return;
+    var a = await _sunAdsCall({ action: 'apply', ad_id: adId });
+    if (!a.ok) { alert(a.message || a.hint || ('Not changed (' + (a.reason || 'error') + ').')); return; }
+    if (confirm('Done. "' + a.ad + '" now has: ' + a.adding.join(', ') + '.\n\nTap OK to keep it, or Cancel to undo it right now.')) { return; }
+    var u = await _sunAdsCall({ action: 'undo', log_id: a.log_id }); alert(u.ok ? 'Undone. The ad is back to how it was.' : 'Could not undo (' + (u.reason || 'error') + '). Check Ads Manager.');
+  };
   window._sunMetaAdsFill = function(leadRows) {
     var el = document.getElementById('sunMetaAds'); if (!el) return;
     fetch('/.netlify/functions/meta-ads-insights').then(function(r){ return r.json(); }).then(function(j){
@@ -2902,7 +2920,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       h += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:.8rem"><tr style="text-align:left;color:var(--mu)"><th style="padding:4px 6px">Ad</th><th>Spent</th><th>Clicks</th><th>Meta schedules</th><th>Cost each</th><th>Tied in portal</th></tr>';
       rows.forEach(function(r){
         var t = byAd[r.ad_id] || { leads: 0, booked: 0 };
-        h += '<tr style="border-top:1px solid var(--line,#ddd)"><td style="padding:5px 6px"><b>' + _sunEsc(r.ad_name || r.ad_id) + '</b>' + (r.audit ? ((!r.audit.has_source || !r.audit.has_content || !r.audit.has_campaign) ? ' <span style="color:#c0392b;font-weight:700" title="This ad link is missing tracking tags, so its bookings cannot be tied back to it">&#9888; missing tags</span>' : '') + (r.audit.off_site ? ' <span style="color:#c0392b;font-weight:700" title="This ad sends people to a page that is not fixmy.energy">&#9888; off-site link</span>' : '') : '') + '<br><span style="color:var(--mu)">' + _sunEsc(r.campaign || '') + '</span></td><td>$' + r.spend.toFixed(2) + '</td><td>' + r.clicks + '</td><td>' + r.schedules + '</td><td>' + (r.schedules ? '$' + (r.spend / r.schedules).toFixed(0) : '&mdash;') + '</td><td>' + t.leads + ' lead' + (t.leads === 1 ? '' : 's') + ', ' + t.booked + ' booked</td></tr>';
+        h += '<tr style="border-top:1px solid var(--line,#ddd)"><td style="padding:5px 6px"><b>' + _sunEsc(r.ad_name || r.ad_id) + '</b>' + (r.audit ? ((!r.audit.has_source || !r.audit.has_content || !r.audit.has_campaign) ? ' <span style="color:#c0392b;font-weight:700" title="This ad link is missing tracking tags, so its bookings cannot be tied back to it">&#9888; missing tags</span> <button type="button" onclick="_sunAdFix(\'' + _sunEsc(r.ad_id) + '\')" style="width:auto;margin:0 0 0 4px;padding:2px 9px;font-size:.7rem;border-radius:100px;border:1px solid #8DC63F;background:transparent;color:#2e7d32;font-weight:800;cursor:pointer">Fix tags</button>' : '') + (r.audit.off_site ? ' <span style="color:#c0392b;font-weight:700" title="This ad sends people to a page that is not fixmy.energy">&#9888; off-site link</span>' : '') : '') + '<br><span style="color:var(--mu)">' + _sunEsc(r.campaign || '') + '</span></td><td>$' + r.spend.toFixed(2) + '</td><td>' + r.clicks + '</td><td>' + r.schedules + '</td><td>' + (r.schedules ? '$' + (r.spend / r.schedules).toFixed(0) : '&mdash;') + '</td><td>' + t.leads + ' lead' + (t.leads === 1 ? '' : 's') + ', ' + t.booked + ' booked</td></tr>';
       });
       h += '</table></div><div class="sun-why" style="margin-top:6px">Meta counts website Schedule events from the pixel. &ldquo;Tied in portal&rdquo; counts leads whose ad id in the link tag (utm_content) matches that ad, so a gap between the two columns means some bookings lost their tag.' + (j.truncated ? ' Showing the first 200 ads.' : '') + '</div>';
       el2.innerHTML = h;
