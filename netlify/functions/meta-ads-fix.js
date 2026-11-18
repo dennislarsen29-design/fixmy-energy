@@ -77,7 +77,7 @@ exports.handler = async function (event) {
     if (action === 'log') return J(200, { ok: true, items: (await readLog()).slice(0, 25) });
     if (action === 'undo') {
       const items = await readLog(), it = items.find(function (x) { return x.id === b.log_id; });
-      if (!it) return J(404, { ok: false, reason: 'not_found' });
+      if (!it || it.kind !== 'url_tags') return J(404, { ok: false, reason: 'not_found' });
       if (it.undone_at) return J(200, { ok: false, reason: 'already_undone' });
       await g(it.ad_id, token, 'POST', { creative: { creative_id: it.before_creative_id } });
       it.undone_at = new Date().toISOString(); await writeLog(items);
@@ -108,7 +108,7 @@ exports.handler = async function (event) {
       return J(200, { ok: false, reason: 'destination_changed', message: 'The link destination did not match after the change, so it was rolled back.', ad: ad.name });
     }
     const items = await readLog();
-    const entry = { id: 'chg_' + Date.now().toString(36), at: new Date().toISOString(), ad_id: adId, ad_name: ad.name, kind: 'url_tags', before_creative_id: cr.id, after_creative_id: created.id, before: cr.url_tags || '', after: m.tags, adding: m.added };
+    const entry = { id: 'chg_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), at: new Date().toISOString(), ad_id: adId, ad_name: ad.name, kind: 'url_tags', before_creative_id: cr.id, after_creative_id: created.id, before: cr.url_tags || '', after: m.tags, adding: m.added };
     items.unshift(entry); const logged = await writeLog(items);
     return J(200, { ok: true, applied: true, log_id: entry.id, ad: ad.name, adding: m.added, logged: logged });
   } catch (e) {

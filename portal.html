@@ -2888,7 +2888,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   window._sunAdsCall = async function(body) {
     var key = ''; try { key = localStorage.getItem('adsAdminKey') || ''; } catch (e) {}
     if (!key) { key = prompt('Ads admin password (the ADS_ADMIN_KEY you set in Netlify):') || ''; if (!key) return { ok: false, reason: 'cancelled' }; }
-    var r = await fetch('/.netlify/functions/meta-ads-fix', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-ads-key': key }, body: JSON.stringify(body) });
+    var fnName = (['list','scan','approve','dismiss'].indexOf(body.action) > -1 || body.via === 'queue') ? 'meta-ads-queue' : 'meta-ads-fix';
+    var r = await fetch('/.netlify/functions/' + fnName, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-ads-key': key }, body: JSON.stringify(body) });
     var j = await r.json().catch(function(){ return { ok: false, reason: 'error' }; });
     if (j.reason === 'bad_key') { try { localStorage.removeItem('adsAdminKey'); } catch (e) {} } else if (j.reason !== 'cancelled') { try { localStorage.setItem('adsAdminKey', key); } catch (e) {} }
     return j;
@@ -2902,6 +2903,39 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (confirm('Done. "' + a.ad + '" now has: ' + a.adding.join(', ') + '.\n\nTap OK to keep it, or Cancel to undo it right now.')) { return; }
     var u = await _sunAdsCall({ action: 'undo', log_id: a.log_id }); alert(u.ok ? 'Undone. The ad is back to how it was.' : 'Could not undo (' + (u.reason || 'error') + '). Check Ads Manager.');
   };
+  // Ad approval queue (2026-11-17): the system proposes pauses / budget increases; nothing happens until Dennis taps Approve.
+  window._sunAdsQueueLoad = async function(force) {
+    var el = document.getElementById('sunAdsQueue'); if (!el) return;
+    var has = ''; try { has = localStorage.getItem('adsAdminKey') || ''; } catch (e) {}
+    if (!has && !force) { el.innerHTML = '<div style="margin-top:12px"><button type="button" onclick="_sunAdsQueueLoad(true)" style="width:auto;margin:0;padding:7px 14px;border-radius:100px;border:1px solid #8DC63F;background:transparent;color:#2e7d32;font-weight:800;font-size:.78rem;cursor:pointer">Unlock ad approvals</button> <span style="font-size:.74rem;color:var(--mu)">Pause and budget suggestions that need your OK.</span></div>'; return; }
+    var j = await _sunAdsCall({ action: 'list' });
+    if (!j.ok) { el.innerHTML = '<div class="sun-why" style="margin-top:10px">' + _sunEsc(j.reason === 'disabled' ? 'Ad approvals are off. Add the Netlify variable ADS_ADMIN_KEY.' : j.reason === 'bad_key' ? 'Wrong password. Tap Unlock ad approvals to try again.' : j.reason === 'cancelled' ? '' : 'Could not load ad approvals.') + '</div>' + (j.reason === 'bad_key' ? '<button type="button" onclick="_sunAdsQueueLoad(true)" style="width:auto;margin:6px 0 0;padding:6px 12px;border-radius:100px;border:1px solid #8DC63F;background:transparent;font-weight:800;cursor:pointer">Unlock ad approvals</button>' : ''); return; }
+    var h = '<div class="sun-ph" style="margin-top:14px"><h2>Ad suggestions</h2><span class="sun-note">Nothing changes until you approve &middot; limits: $2,000/mo, $150 per booking</span></div>';
+    if (!j.open.length) h += '<div class="sun-why">No suggestions right now. The system checks daily and queues a pause or a budget increase only when your rules say so.</div>';
+    j.open.forEach(function(p) {
+      var what = p.kind === 'pause' ? 'Pause ad &ldquo;' + _sunEsc(p.name) + '&rdquo;' : 'Raise &ldquo;' + _sunEsc(p.name) + '&rdquo; from $' + p.from + ' to $' + p.to + ' a day';
+      h += '<div class="sun-row"><span class="sun-dot ' + (p.kind === 'pause' ? 'sun-d-bad' : 'sun-d-ok') + '"></span><div class="b"><strong>' + what + '</strong><span>' + _sunEsc(p.why) + '</span></div><div class="sun-acts"><button type="button" onclick="_sunAdsDecide(\'' + p.id + '\',true)" style="width:auto;margin:0 6px 0 0;padding:6px 14px;border-radius:100px;border:none;background:#8DC63F;color:#1A1A1A;font-weight:800;cursor:pointer">Approve</button><button type="button" onclick="_sunAdsDecide(\'' + p.id + '\',false)" style="width:auto;margin:0;padding:6px 12px;border-radius:100px;border:1px solid var(--ln,#ccc);background:transparent;cursor:pointer">Dismiss</button></div></div>';
+    });
+    h += '<div style="margin-top:8px"><button type="button" onclick="_sunAdsScan()" style="width:auto;margin:0;padding:6px 14px;border-radius:100px;border:1px solid var(--ln,#ccc);background:transparent;font-size:.74rem;cursor:pointer">Check now</button></div>';
+    if (j.changes && j.changes.length) {
+      h += '<div class="sun-why" style="margin-top:10px"><b>Recent changes</b></div>';
+      j.changes.forEach(function(c) { h += '<div class="sun-row"><span class="sun-dot sun-d-unk"></span><div class="b"><strong>' + (c.kind === 'pause' ? 'Paused ' : 'Budget changed on ') + _sunEsc(c.name) + (c.kind === 'budget' ? ' ($' + c.before + ' to $' + c.after + ')' : '') + '</strong><span>' + _sunEsc(String(c.at || '').slice(0, 10)) + (c.undone_at ? ' &middot; undone' : '') + '</span></div>' + (c.undone_at ? '' : '<div class="sun-acts"><button type="button" onclick="_sunAdsUndo(\'' + c.id + '\')" style="width:auto;margin:0;padding:5px 12px;border-radius:100px;border:1px solid var(--ln,#ccc);background:transparent;cursor:pointer">Undo</button></div>') + '</div>'; });
+    }
+    el.innerHTML = h;
+  };
+  window._sunAdsDecide = async function(id, yes) {
+    if (yes && !confirm('Approve this change? The system re-checks your limits first and will refuse if it is no longer allowed. You can undo it afterward.')) return;
+    var r = await _sunAdsCall({ action: yes ? 'approve' : 'dismiss', id: id });
+    if (!r.ok && r.reason !== 'cancelled') alert(r.message || ('Not done (' + (r.reason || 'error') + ').'));
+    _sunAdsQueueLoad(true);
+  };
+  window._sunAdsUndo = async function(logId) {
+    if (!confirm('Undo this change?')) return;
+    var r = await _sunAdsCall({ action: 'undo', log_id: logId, via: 'queue' });
+    if (!r.ok && r.reason !== 'cancelled') alert('Could not undo (' + (r.reason || 'error') + '). Check Ads Manager.');
+    _sunAdsQueueLoad(true);
+  };
+  window._sunAdsScan = async function() { var r = await _sunAdsCall({ action: 'scan' }); if (!r.ok && r.reason !== 'cancelled') alert('Check failed (' + (r.reason || 'error') + ').'); _sunAdsQueueLoad(true); };
   window._sunMetaAdsFill = function(leadRows) {
     var el = document.getElementById('sunMetaAds'); if (!el) return;
     fetch('/.netlify/functions/meta-ads-insights').then(function(r){ return r.json(); }).then(function(j){
@@ -2923,7 +2957,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         h += '<tr style="border-top:1px solid var(--line,#ddd)"><td style="padding:5px 6px"><b>' + _sunEsc(r.ad_name || r.ad_id) + '</b>' + (r.audit ? ((!r.audit.has_source || !r.audit.has_content || !r.audit.has_campaign) ? ' <span style="color:#c0392b;font-weight:700" title="This ad link is missing tracking tags, so its bookings cannot be tied back to it">&#9888; missing tags</span> <button type="button" onclick="_sunAdFix(\'' + _sunEsc(r.ad_id) + '\')" style="width:auto;margin:0 0 0 4px;padding:2px 9px;font-size:.7rem;border-radius:100px;border:1px solid #8DC63F;background:transparent;color:#2e7d32;font-weight:800;cursor:pointer">Fix tags</button>' : '') + (r.audit.off_site ? ' <span style="color:#c0392b;font-weight:700" title="This ad sends people to a page that is not fixmy.energy">&#9888; off-site link</span>' : '') : '') + '<br><span style="color:var(--mu)">' + _sunEsc(r.campaign || '') + '</span></td><td>$' + r.spend.toFixed(2) + '</td><td>' + r.clicks + '</td><td>' + r.schedules + '</td><td>' + (r.schedules ? '$' + (r.spend / r.schedules).toFixed(0) : '&mdash;') + '</td><td>' + t.leads + ' lead' + (t.leads === 1 ? '' : 's') + ', ' + t.booked + ' booked</td></tr>';
       });
       h += '</table></div><div class="sun-why" style="margin-top:6px">Meta counts website Schedule events from the pixel. &ldquo;Tied in portal&rdquo; counts leads whose ad id in the link tag (utm_content) matches that ad, so a gap between the two columns means some bookings lost their tag.' + (j.truncated ? ' Showing the first 200 ads.' : '') + '</div>';
-      el2.innerHTML = h;
+      el2.innerHTML = h + '<div id="sunAdsQueue"></div>'; try { _sunAdsQueueLoad(false); } catch (e) {}
     }).catch(function(){ var e3 = document.getElementById('sunMetaAds'); if (e3) e3.innerHTML = '<div class="sun-row"><span class="sun-dot sun-d-unk"></span><div class="b"><strong>Per-ad results: not available</strong><span>Could not reach the Meta function.</span></div></div>'; });
   };
   function _sunMetaHtml(D) {
