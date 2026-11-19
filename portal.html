@@ -30583,6 +30583,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // carry over the previous lead's bill_analysis into this one's savings math.
     _propBillAnalysis = null;
     window._propIsSCE = false;
+    window._propPhotos = null; window._propHiddenIds = [];   // per-lead photo list for the Review step
     try { var _pc0 = (typeof adminCustomers !== 'undefined' ? adminCustomers : []).find(function(x){ return x.id === id; }); window._propIsUT = !!(_pc0 && window._isUtahLead(_pc0)); window._propNonCA = !!(_pc0 && window._isNonCaLead(_pc0)); window._propIsTX = !!(_pc0 && window._isTexasLead && window._isTexasLead(_pc0)); } catch(e) { window._propIsUT = false; window._propIsTX = false; }
     _propEvKwh = 0;
     var _propEvalRowId = null; // captured here so the job_photos fallback below can update the SAME row instead of guessing insert-vs-update
@@ -32031,6 +32032,56 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     });
     return h + '</div>';
   }
+  // ── Rep-only: choose which job photos the customer sees on this proposal (duplicates etc.). Nothing is deleted. ──
+  // Stored on customers.proposal.hidden_photos (job_photos ids); proposal-preview.html filters them out; sendProposal carries them over.
+  window._propPhotos = null; window._propHiddenIds = [];
+  function _propPhotosPanelHtml() {
+    return '<details id="propPhotosPanel" ontoggle="_propPhotosOpen(this)" style="margin-top:12px;border:1px solid rgba(255,255,255,0.12);border-radius:10px;padding:8px 12px;">' +
+      '<summary style="cursor:pointer;font-size:0.74rem;font-weight:700;color:#bbb;">&#128247; Photos shown to the customer <span id="propPhotosCount" style="font-weight:400;color:#777;"></span></summary>' +
+      '<div id="propPhotosBody" style="padding-top:8px;font-size:0.72rem;color:#888;">Loading&hellip;</div></details>';
+  }
+  window._propPhotosOpen = async function(d) {
+    if (!d.open || window._propPhotos) return;
+    try {
+      var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var r = await c.from('job_photos').select('id,url,label').or('job_id.eq.' + _propPropId + ',customer_id.eq.' + _propPropId);
+      var seen = {}, list = [];
+      (r.data || []).forEach(function(p){ if (p && p.url && !seen[p.url] && !/\.pdf(\?|$)/i.test(p.url)) { seen[p.url] = 1; list.push(p); } });
+      list.sort(function(a, b){ return (Number(a.id) || 0) - (Number(b.id) || 0); });
+      window._propPhotos = list;
+      var pr = await c.from('customers').select('proposal').eq('id', _propPropId).limit(1);
+      var cur = pr.data && pr.data[0] && pr.data[0].proposal; try { if (typeof cur === 'string') cur = JSON.parse(cur); } catch(e) { cur = null; }
+      window._propHiddenIds = (cur && Array.isArray(cur.hidden_photos)) ? cur.hidden_photos.map(String) : [];
+    } catch (e) { var b = document.getElementById('propPhotosBody'); if (b) b.textContent = 'Could not load photos: ' + e.message; return; }
+    _propPhotosRender();
+  };
+  function _propPhotosRender() {
+    var b = document.getElementById('propPhotosBody'), list = window._propPhotos || [], hid = window._propHiddenIds || [];
+    var cnt = document.getElementById('propPhotosCount'); if (cnt) cnt.textContent = list.length ? '(' + (list.length - hid.length) + ' of ' + list.length + ' shown)' : '';
+    if (!b) return;
+    if (!list.length) { b.textContent = 'No photos on this job.'; return; }
+    b.innerHTML = '<div style="margin-bottom:8px;">Tap Hide on duplicates to remove them from the customer\u2019s proposal. They stay on the job. Then tap Refresh preview.</div>' +
+      '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px;">' + list.map(function(p) {
+        var h = hid.indexOf(String(p.id)) > -1;
+        return '<div style="position:relative;' + (h ? 'opacity:.4;' : '') + '"><img src="' + p.url + '" loading="lazy" style="width:100%;height:70px;object-fit:cover;border-radius:6px;display:block;"/>' +
+          '<div style="font-size:0.58rem;color:#999;margin:2px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + (p.label || 'Photo') + '</div>' +
+          '<button onclick="_propTogglePhoto(\'' + p.id + '\')" style="width:100%;padding:4px 0;border-radius:6px;font-size:0.62rem;font-weight:700;cursor:pointer;background:' + (h ? 'rgba(141,198,63,0.15)' : 'rgba(255,255,255,0.08)') + ';border:1px solid rgba(255,255,255,0.15);color:#ddd;">' + (h ? '\u21BA Show' : '\u00D7 Hide') + '</button></div>';
+      }).join('') + '</div>';
+  }
+  window._propTogglePhoto = async function(id) {
+    var hid = (window._propHiddenIds || []).slice(), i = hid.indexOf(String(id));
+    if (i > -1) hid.splice(i, 1); else hid.push(String(id));
+    try {
+      var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var pr = await c.from('customers').select('proposal').eq('id', _propPropId).limit(1);
+      var cur = pr.data && pr.data[0] && pr.data[0].proposal; if (typeof cur === 'string') cur = JSON.parse(cur);
+      cur = cur || {}; cur.hidden_photos = hid;
+      var u = await c.from('customers').update({ proposal: cur }).eq('id', _propPropId);
+      if (u.error) throw u.error;
+    } catch (e) { alert('Could not save: ' + e.message); return; }
+    window._propHiddenIds = hid;
+    _propPhotosRender();
+  };
   function _propReviewHtml() {
     var any = _propBuilds.some(function(b){ return b.lineItems.length; });
     var below = _propBuilds.some(function(b){ return b.lineItems.length && !b.kind && Math.round(Math.max(0, b.price + (b.diagCredit||0) - b.redline) * 0.40) < 1000; });
@@ -32041,7 +32092,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       (below ? '<div style="font-size:0.74rem;color:#ef4444;margin-bottom:8px;">&#9888; Commission is under the $1,000 minimum &mdash; this needs admin approval before it can go out.</div>' : '') +
       '<div style="display:flex;justify-content:flex-end;margin-bottom:6px;"><button onclick="_propShowLivePreview()" style="width:auto;padding:5px 12px;border-radius:100px;font-size:0.7rem;font-weight:700;cursor:pointer;background:transparent;border:1px solid rgba(255,255,255,0.2);color:#aaa;">&#8635; Refresh preview</button></div>' +
       '<div id="propLivePreview"></div>' +
-      '<div style="font-size:0.7rem;color:#777;text-align:center;margin-top:8px;">Approving puts this in the customer\u2019s portal and texts + emails them the link.</div></div>';
+      '<div style="font-size:0.7rem;color:#777;text-align:center;margin-top:8px;">Approving puts this in the customer\u2019s portal and texts + emails them the link.</div>' +
+      _propPhotosPanelHtml() + '</div>';
   }
 
   // One-tap starting points (only shown while nothing is picked yet)
