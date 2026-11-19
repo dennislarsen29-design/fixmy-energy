@@ -388,6 +388,9 @@ button.component-chip.open{border-color:var(--dark);}
     return 'new_solar';
   }
   // Single-product options (inverter swap etc.) are bought through Sign & Pay (agreement + full payment), not the CPUC document flow.
+  // Utah has no CPUC guide. The Powerwall option's agreement goes through Artemis (external), so the rep's Approve only records
+  // the approval and tells them to send the Artemis agreement; future integrations will plug in here (per Dennis, 2026-11-19).
+  function usesArtemis(opt){ return !!opt && !opt.kind && hasPowerwall(opt) && isNonCA(); }
   function usesSignPay(opt){ return !!opt && !opt.kind && !hasPowerwall(opt) && (opt.price||0) > 0; }
   function hasPowerwall(opt){ return /powerwall|pw3/.test(componentText(opt)); }
   function heroImageFor(opt){
@@ -1555,7 +1558,7 @@ button.component-chip.open{border-color:var(--dark);}
               ? '<button class="cta-btn" disabled>Accepted &#10003;</button>'
               : '<button id="sendBtn" class="cta-btn" onclick="'+(usesSignPay(opt)?'startSignPay()':'acceptSelected()')+'">'+(usesSignPay(opt)?'Sign &amp; Pay':'Accept this option')+'</button>')
           : '<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">'+
-              '<button id="approveBtn" class="cta-btn" onclick="'+(usesSignPay(opt)?'startSignPay()':'approveForCustomer()')+'">1. Approve &mdash; Option '+(selIdx+1)+' &rarr; '+(usesSignPay(opt)?'Sign &amp; Pay':'CPUC')+'</button>'+
+              '<button id="approveBtn" class="cta-btn" onclick="'+(usesSignPay(opt)?'startSignPay()':usesArtemis(opt)?'approveArtemis()':'approveForCustomer()')+'">1. Approve &mdash; Option '+(selIdx+1)+(usesSignPay(opt)?' &rarr; Sign &amp; Pay':usesArtemis(opt)?'':' &rarr; CPUC')+'</button>'+
               '<button id="sendBtn" class="cta-btn" style="background:transparent;border:2px solid currentColor;" onclick="send()">2. Send to Customer</button></div>')+
       '</div>'+
       '<div id="sendStatus" class="status-msg"></div>';
@@ -1717,6 +1720,20 @@ button.component-chip.open{border-color:var(--dark);}
     }
   }
   window.startSignPay = startSignPay;
+  async function approveArtemis(){
+    var opt = OPTS[selIdx], btn = document.getElementById('approveBtn'), status = document.getElementById('sendStatus');
+    btn.disabled = true;
+    try {
+      var prop = Object.assign({}, PROP, { approved_option: opt.id, approved_at: new Date().toISOString() });
+      var r = await client.from('customers').update({ proposal: prop }).eq('id', custId);
+      if (r.error) throw r.error;
+      PROP = prop;
+      status.className = 'status-msg ok';
+      status.textContent = 'Option ' + (selIdx+1) + ' approved. Next: send the agreement through Artemis (external).';
+    } catch(e) { status.className = 'status-msg err'; status.textContent = 'Could not approve: ' + (e.message || e); }
+    btn.disabled = false;
+  }
+  window.approveArtemis = approveArtemis;
   async function approveForCustomer(){
     var opt = OPTS[selIdx], btn = document.getElementById('approveBtn'), status = document.getElementById('sendStatus');
     btn.disabled = true; btn.textContent = 'Opening CPUC…';
