@@ -387,6 +387,8 @@ button.component-chip.open{border-color:var(--dark);}
     if (/panel/.test(s)) return 'panel_add';
     return 'new_solar';
   }
+  // Single-product options (inverter swap etc.) are bought through Sign & Pay (agreement + full payment), not the CPUC document flow.
+  function usesSignPay(opt){ return !!opt && !opt.kind && !hasPowerwall(opt) && (opt.price||0) > 0; }
   function hasPowerwall(opt){ return /powerwall|pw3/.test(componentText(opt)); }
   function heroImageFor(opt){
     var s = componentText(opt);
@@ -1551,9 +1553,9 @@ button.component-chip.open{border-color:var(--dark);}
         (CUSTOMER_MODE
           ? (PROP.status === 'accepted'
               ? '<button class="cta-btn" disabled>Accepted &#10003;</button>'
-              : '<button id="sendBtn" class="cta-btn" onclick="acceptSelected()">Accept this option</button>')
+              : '<button id="sendBtn" class="cta-btn" onclick="'+(usesSignPay(opt)?'startSignPay()':'acceptSelected()')+'">'+(usesSignPay(opt)?'Sign &amp; Pay':'Accept this option')+'</button>')
           : '<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">'+
-              '<button id="approveBtn" class="cta-btn" onclick="approveForCustomer()">1. Approve &mdash; Option '+(selIdx+1)+' &rarr; CPUC</button>'+
+              '<button id="approveBtn" class="cta-btn" onclick="'+(usesSignPay(opt)?'startSignPay()':'approveForCustomer()')+'">1. Approve &mdash; Option '+(selIdx+1)+' &rarr; '+(usesSignPay(opt)?'Sign &amp; Pay':'CPUC')+'</button>'+
               '<button id="sendBtn" class="cta-btn" style="background:transparent;border:2px solid currentColor;" onclick="send()">2. Send to Customer</button></div>')+
       '</div>'+
       '<div id="sendStatus" class="status-msg"></div>';
@@ -1694,6 +1696,27 @@ button.component-chip.open{border-color:var(--dark);}
     }
   }
   // Tech's Approve: record which option is being approved, then go straight to the CPUC review screen.
+  async function startSignPay(){
+    var opt = OPTS[selIdx], btn = document.getElementById(CUSTOMER_MODE ? 'sendBtn' : 'approveBtn'), status = document.getElementById('sendStatus');
+    var label = btn ? btn.innerHTML : '';
+    if (btn) { btn.disabled = true; btn.textContent = CUSTOMER_MODE ? 'Opening…' : 'Sending…'; }
+    try {
+      var body = { action:'issue', customerId: custId, optionId: opt.id, send: !CUSTOMER_MODE };
+      if (CUSTOMER_MODE) body.code = (qs.get('code')||'').replace(/\s/g,'');
+      var r = await fetch('/.netlify/functions/equip-pay', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+      var j = await r.json().catch(function(){ return {}; });
+      if (!r.ok || !j.ok) throw new Error(j.error || 'Could not create the link');
+      if (CUSTOMER_MODE) { if (!j.url) throw new Error('Could not open the signing page'); location.href = j.url; return; }
+      var st = j.sent && j.sent.ok;
+      status.className = 'status-msg ' + (st ? 'ok' : 'err');
+      status.textContent = st ? ('Sign & Pay link sent to the customer (' + ((j.sent.sent_to && (j.sent.sent_to.phone || j.sent.sent_to.email)) || 'contact on file') + '). They sign and pay on their own device.') : 'The link was created but could not be sent. Check the phone and email on file.';
+      if (btn) { btn.disabled = false; btn.innerHTML = label; }
+    } catch(e) {
+      if (btn) { btn.disabled = false; btn.innerHTML = label; }
+      status.className = 'status-msg err'; status.textContent = 'Could not start Sign & Pay: ' + (e.message || e);
+    }
+  }
+  window.startSignPay = startSignPay;
   async function approveForCustomer(){
     var opt = OPTS[selIdx], btn = document.getElementById('approveBtn'), status = document.getElementById('sendStatus');
     btn.disabled = true; btn.textContent = 'Opening CPUC…';

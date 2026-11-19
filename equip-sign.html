@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex"/>
+<title>Solar Review — Sign &amp; Pay</title>
+<link rel="apple-touch-icon" sizes="256x256" href="/assets/apple-touch-icon-v2.png"/>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Playfair+Display:wght@700&display=swap" rel="stylesheet">
+<script src="https://js.stripe.com/v3/"></script>
+<script src="/assets/signature-capture.js"></script>
+<style>
+  :root{--bg:#fbf9f4;--fg:#1a1a1a;--mut:#6b6b6b;--card:#fff;--line:#e4dfd3;--acc:#8DC63F;--accd:#4f7a14}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:Inter,system-ui,sans-serif;font-size:15px;line-height:1.55}
+  .wrap{max-width:640px;margin:0 auto;padding:20px 16px 60px}
+  h1{font-family:'Playfair Display',serif;font-size:1.7rem;margin:6px 0 4px}
+  .sub{color:var(--mut);margin:0 0 18px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px;margin-bottom:14px}
+  .k{font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;color:var(--mut);font-weight:700;margin-bottom:6px}
+  .row{display:flex;justify-content:space-between;gap:12px;padding:5px 0}
+  .tot{border-top:1px solid var(--line);margin-top:6px;padding-top:10px;font-weight:700;font-size:1.1rem}
+  .terms h3{font-size:.95rem;margin:14px 0 2px}
+  .terms p{margin:0;color:#333}
+  input[type=text]{width:100%;padding:12px;border:1px solid var(--line);border-radius:10px;font-size:1rem;font-family:inherit}
+  .sigbox{border:2px dashed var(--line);border-radius:12px;min-height:76px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--mut);padding:8px;text-align:center}
+  .sigbox.signed{border-style:solid;border-color:var(--acc)}
+  #card{padding:12px;border:1px solid var(--line);border-radius:10px;background:#fff}
+  button.pay{width:100%;margin-top:14px;padding:15px;border:0;border-radius:100px;background:var(--acc);color:#111;font-weight:800;font-size:1.05rem;cursor:pointer}
+  button.pay:disabled{opacity:.45;cursor:not-allowed}
+  .err{color:#b3261e;margin-top:10px;font-weight:600}
+  .ok{background:#eef7e1;border:1px solid var(--acc);border-radius:14px;padding:20px;text-align:center}
+  label.chk{display:flex;gap:10px;align-items:flex-start;margin-top:12px;font-size:.92rem}
+  small{color:var(--mut)}
+</style>
+</head>
+<body>
+<div class="wrap" id="app"><p class="sub">Loading your agreement…</p></div>
+<script src="/assets/equip-agreement.js"></script>
+<script>
+(function(){
+  var app = document.getElementById('app');
+  var token = new URLSearchParams(location.search).get('t') || '';
+  var data = null, stripe, cardEl, sigResult = null;
+  function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function money(c){ return '$'+(c/100).toLocaleString('en-US',{minimumFractionDigits:2}); }
+  function say(html){ app.innerHTML = html; }
+  async function post(body){
+    var r = await fetch('/.netlify/functions/equip-pay',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    var j = await r.json().catch(function(){return {};}); j._status = r.status; return j;
+  }
+  async function load(){
+    if (!token) return say('<div class="card"><b>This link is missing its code.</b><p class="sub">Please use the link we sent you, or call (619) 777-6527.</p></div>');
+    data = await post({action:'init', token:token});
+    if (data.alreadyComplete) return say('<div class="ok"><h1>All set, '+esc((data.customerName||'').split(' ')[0])+'.</h1><p>Your agreement for <b>'+esc(data.title)+'</b> is signed and paid. We will contact you to schedule the work.</p></div>');
+    if (!data.clientSecret) return say('<div class="card"><b>'+esc(data.error||'This link is not available.')+'</b><p class="sub">Call (619) 777-6527 and we will send a new one.</p></div>');
+    render();
+  }
+  function render(){
+    var first = (data.customerName||'').split(' ')[0] || 'there';
+    var terms = data.agreement.sections.map(function(s){ return '<h3>'+esc(s.h)+'</h3><p>'+esc(s.p)+'</p>'; }).join('');
+    say('<h1>Hi '+esc(first)+', one last step</h1><p class="sub">Review the agreement, sign, and pay to lock in your upgrade.</p>'+
+      '<div class="card"><div class="k">Your upgrade</div><div><b>'+esc(data.title)+'</b></div><small>'+esc(data.address)+'</small></div>'+
+      '<div class="card"><div class="row"><span>Price (diagnostic credit applied)</span><span>'+money(data.amountCents)+'</span></div>'+
+        '<div class="row"><span>Card processing fee (3.9%)</span><span>'+money(data.surchargeAmountCents)+'</span></div>'+
+        '<div class="row tot"><span>Total today</span><span>'+money(data.totalAmountCents)+'</span></div>'+
+        '<small>Prefer to pay by check or bank transfer? Call (619) 777-6527 and we will arrange it with no card fee.</small></div>'+
+      '<div class="card terms"><div class="k">Agreement</div>'+terms+'</div>'+
+      '<div class="card"><div class="k">Your printed name</div><input type="text" id="nm" value="'+esc(data.customerName)+'" autocomplete="name"/>'+
+        '<div class="k" style="margin-top:14px">Your signature</div><div class="sigbox" id="sig">Tap to sign</div>'+
+        '<label class="chk"><input type="checkbox" id="agree"/> <span>I have read the agreement above, I agree to sign electronically, and I authorize this payment.</span></label></div>'+
+      '<div class="card"><div class="k">Card</div><div id="card"></div><div class="err" id="err"></div>'+
+        '<button class="pay" id="pay" disabled>Sign &amp; Pay '+money(data.totalAmountCents)+'</button></div>');
+    stripe = Stripe(data.publishableKey);
+    var els = stripe.elements({clientSecret:data.clientSecret});
+    cardEl = els.create('card',{style:{base:{fontSize:'16px'}}}); cardEl.mount('#card');
+    var nm = document.getElementById('nm'), agree = document.getElementById('agree'), pay = document.getElementById('pay'), sig = document.getElementById('sig');
+    function upd(){ pay.disabled = !(nm.value.trim().length>=2 && sigResult && agree.checked); }
+    nm.addEventListener('input',upd); agree.addEventListener('change',upd);
+    sig.addEventListener('click',function(){
+      SigCapture.open({defaultName:nm.value.trim(), initial:sigResult, onDone:function(r){
+        sigResult=r; sig.classList.add('signed'); sig.innerHTML = SigCapture.previewHtml(r,{maxHeight:56})+'<br><small>Tap to change</small>'; upd();
+      }});
+    });
+    pay.addEventListener('click', async function(){
+      var err = document.getElementById('err'); err.textContent=''; pay.disabled=true; pay.textContent='Processing…';
+      var res = await stripe.confirmCardPayment(data.clientSecret,{payment_method:{card:cardEl}});
+      if (res.error){ err.textContent = res.error.message; pay.disabled=false; pay.innerHTML='Sign &amp; Pay '+money(data.totalAmountCents); return; }
+      var done = null;
+      for (var i=0;i<3 && !(done&&done.ok);i++){
+        try { done = await post({action:'complete', token:token, paymentIntentId:res.paymentIntent.id, signature:nm.value.trim(), signatureData:sigResult}); } catch(e) { done=null; }
+        if (!(done&&done.ok)) await new Promise(function(r){setTimeout(r,1500);});
+      }
+      if (done && done.ok) return say('<div class="ok"><h1>Signed and paid.</h1><p>Thank you, '+esc(first)+'. Your agreement for <b>'+esc(data.title)+'</b> is recorded and we will contact you shortly to schedule the work.</p><p><small>A receipt was emailed by our payment processor.</small></p></div>');
+      say('<div class="card"><b>Your payment went through, but we could not finish recording it.</b><p class="sub">Please do not pay again. Call (619) 777-6527 and we will complete it for you.</p></div>');
+    });
+  }
+  load();
+})();
+</script>
+</body>
+</html>
