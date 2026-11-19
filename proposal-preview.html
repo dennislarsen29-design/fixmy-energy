@@ -316,6 +316,12 @@ button.component-chip.open{border-color:var(--dark);}
   var LENDER_NAME = 'Wheelhouse CU', LENDER_FULL = 'Wheelhouse Credit Union';
   // Utah jobs are installed by Spring Solar, who finance through Credit Human: 20 years at 8.99% (per Dennis, 2026-11-19).
   // Other Credit Human terms are not set yet, so only the 20-year term is offered there.
+  // Utah rates have not been climbing like California's, so the 25-year outlook uses flatter growth there
+  // (2% / 3% / 5% instead of 5% / 7% / 10%). An assumption, not a Rocky Mountain Power forecast.
+  function applyRateGrowth(){
+    if (!isNonCA()) return;
+    SCENS.conservative.r = 0.02; SCENS.moderate.r = 0.03; SCENS.significant.r = 0.05;
+  }
   function applyLender(){
     var a = String((CUST && CUST.address) || '');
     var ut = /\bUtah\b/i.test(a) || /,\s*UT\b/i.test(a) || /\bUT\s+84\d{3}\b/i.test(a) || (CUST && CUST.assigned_ops === 'ops_hatkat');
@@ -390,6 +396,12 @@ button.component-chip.open{border-color:var(--dark);}
   // Single-product options (inverter swap etc.) are bought through Sign & Pay (agreement + full payment), not the CPUC document flow.
   // Utah has no CPUC guide. The Powerwall option's agreement goes through Artemis (external), so the rep's Approve only records
   // the approval and tells them to send the Artemis agreement; future integrations will plug in here (per Dennis, 2026-11-19).
+  // The Powerwall option is the recommended one when it sits next to options that don't give backup power.
+  function isRecommended(i){ var o = OPTS[i]; return i === 0 && OPTS.length > 1 && !!o && !o.kind && hasPowerwall(o) && OPTS.slice(1).some(function(x){ return x && !x.kind && !hasPowerwall(x); }); }
+  function noBackupHtml(opt){
+    if (!opt || opt.kind || hasPowerwall(opt) || !OPTS.some(function(x){ return x && !x.kind && hasPowerwall(x); })) return '';
+    return '<div class="ov-section" style="padding:12px 14px;"><div class="ov-note" style="margin:0;"><strong>No backup power.</strong> This option brings your solar savings back, but your home still goes dark when the grid is down. Adding a Powerwall (Option 1) keeps your essentials on.</div></div>';
+  }
   function usesArtemis(opt){ return !!opt && !opt.kind && hasPowerwall(opt) && isNonCA(); }
   function usesSignPay(opt){ return !!opt && !opt.kind && !hasPowerwall(opt) && (opt.price||0) > 0; }
   function hasPowerwall(opt){ return /powerwall|pw3/.test(componentText(opt)); }
@@ -1270,7 +1282,7 @@ button.component-chip.open{border-color:var(--dark);}
     el.innerHTML = OPTS.map(function(o,i){
       var t = o.title || componentNames(o).filter(Boolean).join(' + ');
       return '<button class="opt-tab t'+Math.min(i,1)+(i===selIdx?' active':'')+'" onclick="selectOption('+i+')">'+
-        '<div class="ot-n">View Option '+(i+1)+'</div>'+
+        '<div class="ot-n">View Option '+(i+1)+(isRecommended(i)?' <span style="background:#8DC63F;color:#111;font-size:.62rem;padding:2px 8px;border-radius:99px;margin-left:6px;vertical-align:middle;">Recommended</span>':'')+'</div>'+
         '<div class="ot-t">'+esc(t)+'</div>'+(o.pill_note ? '<div class="ot-note">&#10003; '+esc(o.pill_note)+'</div>' : '')+'</button>';
     }).join('');
     var w = document.getElementById('cmpBtnWrap');
@@ -1487,7 +1499,7 @@ button.component-chip.open{border-color:var(--dark);}
     // performance / VPP -> optional outage costs -> long term -> fine print. Each number appears once.
     var financeBlock = costCardHtml(opt, hasParticipate, monthly, subHtml, noteHtml) + creditMathHtml(opt) + billToggleHtml() +
       monthlyCardHtml(opt, fin, monthly, perfMonthly, perfLabel, touDeltaMonthly) +
-      touSavingsHtml(opt) + ongoingValueHtml(opt) + wattsmartHtml(opt) + outageCardHtml(opt) +
+      touSavingsHtml(opt) + ongoingValueHtml(opt) + wattsmartHtml(opt) + outageCardHtml(opt) + noBackupHtml(opt) +
       longTermHtml(opt, hasParticipate, perfMonthly) +
       '<div class="fine-print">'+finePrint+'</div>';
 
@@ -1511,7 +1523,7 @@ button.component-chip.open{border-color:var(--dark);}
       }
       var parts = optPartsLine(o);
       return '<div class="opt-row'+(i===selIdx?' active':'')+'" onclick="selectOption('+i+')">'+
-        '<div><div class="ot">'+esc(optDisplayName(o))+'</div><div class="os">'+(parts?esc(parts):('Option '+(i+1)))+'</div></div>'+
+        '<div><div class="ot">'+esc(optDisplayName(o))+'</div><div class="os">'+(isRecommended(i)?'<b style="color:#3d6b12;">Recommended</b> &middot; ':'')+(parts?esc(parts):('Option '+(i+1)))+'</div></div>'+
         '<div class="op">'+money(disp)+'</div>'+
       '</div>';
     }).join('');
@@ -1807,7 +1819,7 @@ button.component-chip.open{border-color:var(--dark);}
     if (!custId) { app.innerHTML = '<div class="state">No customer specified. Open this page from a lead’s Proposal Tools.</div>'; return; }
     var { data, error } = await client.from('customers').select('*').eq('id', custId).limit(1);
     if (error || !data || !data[0]) { app.innerHTML = '<div class="state">Could not load this customer.</div>'; return; }
-    CUST = data[0]; applyLender();
+    CUST = data[0]; applyLender(); applyRateGrowth();
     PROP = CUST.proposal ? (typeof CUST.proposal === 'string' ? JSON.parse(CUST.proposal) : CUST.proposal) : null;
     // No annual usage saved on the proposal -> use the utility-bill read (rep-corrected figure wins). In memory only.
     // Without it TOU savings read "Needs usage data" and added panels can't be valued.
