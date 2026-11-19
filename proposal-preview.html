@@ -302,6 +302,17 @@ button.component-chip.open{border-color:var(--dark);}
   var WHEELHOUSE_RATES = { 5: 0.0649, 12: 0.0824, 15: 0.0849, 20: 0.0874 };
   var WHEELHOUSE_TERM_YEARS = 20, WHEELHOUSE_APR = WHEELHOUSE_RATES[20]; // default 20-yr (lowest payment); "More" reveals the other terms
   var WH_MORE = false;
+  // Utah's CCA-style battery program is Rocky Mountain Power Wattsmart. It reuses the SDCP structure exactly (upfront incentive on
+  // the SDCP tab + the Performance Incentive credit against the monthly bottom line); only the name and figures differ.
+  // Per Dennis 2026-11-19: up to $2,000 upfront and up to $250 a year per Powerwall 3.
+  var WATTSMART_PERF_ANNUAL = 250;
+  function isWm(opt){ return !!(opt && opt.cca === 'wattsmart'); }
+  function ccaName(opt){ return isWm(opt || OPTS[selIdx]) ? 'Wattsmart' : 'SDCP'; }
+  function applyCca(){
+    (OPTS || []).forEach(function(o){
+      if (o && o.wattsmart && hasPowerwall(o)) { o.cca = 'wattsmart'; o.sdcp_rebate = o.wattsmart.upfront_max || 2000; }
+    });
+  }
   var LENDER_NAME = 'Wheelhouse CU', LENDER_FULL = 'Wheelhouse Credit Union';
   // Utah jobs are installed by Spring Solar, who finance through Credit Human: 20 years at 8.99% (per Dennis, 2026-11-19).
   // Other Credit Human terms are not set yet, so only the 20-year term is offered there.
@@ -497,9 +508,9 @@ button.component-chip.open{border-color:var(--dark);}
     var partPrice = participatePriceFor(opt);
     return {
       sdcp: hasSdcp ? {
-        label: 'SDCP Enhanced',
+        label: isWm(opt) ? 'Wattsmart Enhanced' : 'SDCP Enhanced',
         principal: Math.max(0, partPrice - opt.sdcp_rebate),
-        note: 'Assumes your ' + moneyRound(opt.sdcp_rebate) + ' SDCP battery incentive (calculated from your battery size and income tier; the program maximum is ' + moneyRound(SDCP_UPFRONT_MAX) + ') is approved and applied directly to this loan. <strong>You must qualify</strong> — not guaranteed until confirmed after evaluation.'
+        note: isWm(opt) ? ('Assumes your Rocky Mountain Power Wattsmart upfront incentive of up to ' + moneyRound(opt.sdcp_rebate) + ' is approved and applied to this loan. <strong>You must qualify</strong> and the application has to be approved <strong>before</strong> the battery is installed. Joining is a ' + ((opt.wattsmart && opt.wattsmart.years) || 4) + '-year commitment, leaving early means paying part of the incentive back, and Rocky Mountain Power may use part of your battery during grid events. Not guaranteed until confirmed.') : 'Assumes your ' + moneyRound(opt.sdcp_rebate) + ' SDCP battery incentive (calculated from your battery size and income tier; the program maximum is ' + moneyRound(SDCP_UPFRONT_MAX) + ') is approved and applied directly to this loan. <strong>You must qualify</strong> — not guaranteed until confirmed after evaluation.'
       } : null,
       standard: {
         label: 'Standard',
@@ -697,7 +708,7 @@ button.component-chip.open{border-color:var(--dark);}
     return null;
   }
   function perfIncentiveLabel(){
-    return perfIncentive === 'sdcp' ? 'SDCP Performance Incentive'
+    return perfIncentive === 'sdcp' ? (ccaName()+' Performance Incentive')
       : perfIncentive === 'tesla' ? 'Tesla VPP Performance Incentive'
       : '';
   }
@@ -714,7 +725,7 @@ button.component-chip.open{border-color:var(--dark);}
         ? '<span class="ov-amt">'+moneyRound(sdcpA)+'/yr</span>'
         : '<span class="ov-amt muted">Needs usage data to estimate</span>';
       row = '<label class="ov-check"><input type="checkbox" '+(checked?'checked':'')+' onchange="togglePerfIncentive(\'sdcp\', this.checked)"/>'+
-        '<span>SDCP Performance Incentive<small>$'+SDCP_PERF_RATE_PER_KWH.toFixed(2)+'/kWh for battery energy sent to the grid during 2-hour weekday events (about '+SDCP_EVENTS_PER_YEAR+' a year). Based on enrolling the whole battery.</small></span>'+sdcpAmt+
+        '<span>'+ccaName(opt)+' Performance Incentive<small>'+(isWm(opt) ? 'Bill credit from Rocky Mountain Power, up to '+moneyRound(WATTSMART_PERF_ANNUAL)+' a year per Powerwall 3, starting in year two of the program.' : '$'+SDCP_PERF_RATE_PER_KWH.toFixed(2)+'/kWh for battery energy sent to the grid during 2-hour weekday events (about '+SDCP_EVENTS_PER_YEAR+' a year). Based on enrolling the whole battery.')+'</small></span>'+(isWm(opt) && sdcpAmt.indexOf('/yr')>-1 ? sdcpAmt.replace('<span class="ov-amt">','<span class="ov-amt">up to ') : sdcpAmt)+
       '</label>';
     } else {
       var units = powerwallUnitCountFor(opt);
@@ -742,7 +753,7 @@ button.component-chip.open{border-color:var(--dark);}
   // (opt.wattsmart). Deliberately conditional wording, never part of any price, savings or financing figure.
   function wattsmartHtml(opt){
     var w = opt && opt.wattsmart;
-    if (!w) return '';
+    if (!w || isWm(opt)) return ''; // Wattsmart now rides the SDCP structure (applyCca)
     var up = w.upfront_max || 2000, yr = w.credit_per_powerwall_year || 0;
     return '<details class="ov-section"><summary><span class="ov-title">Rocky Mountain Power Wattsmart Battery Program&nbsp; <span class="g-tag">Possible incentive &middot; not included in your price</span></span><span><span class="ov-amt">up to '+moneyRound(up)+'</span><span class="ov-chev">&rsaquo;</span></span></summary>'+
       '<div class="ov-note">You may qualify for an upfront incentive of <strong>up to '+moneyRound(up)+'</strong>'+(yr?', plus a bill credit of about '+moneyRound(yr)+' a year per Powerwall 3 starting in year two':'')+'. Rocky Mountain Power decides eligibility and the amount; it is not guaranteed and is not part of the price, savings or financing shown here.</div>'+
@@ -862,8 +873,8 @@ button.component-chip.open{border-color:var(--dark);}
     }
     if (fin) {
       var _fp = cashPriceFor(opt, true).price;
-      rows += row('Monthly payment'+(finSub==='sdcp'?'<span class="applied-badge">&#10003; SDCP</span>':''), '', moneyRound(financeMonthly)+'/mo', '',
-        'Financed amount '+money(_fp)+' (the estimated prepaid LTO price, subject to approval'+(finSub==='sdcp'?' after your SDCP incentive':'')+') at '+(WHEELHOUSE_APR*100).toFixed(2)+'% APR over '+WHEELHOUSE_TERM_YEARS+' years through '+LENDER_NAME+', subject to approval. Standard loan amortization: '+money(_fp)+' paid down in '+(WHEELHOUSE_TERM_YEARS*12)+' equal monthly payments.');
+      rows += row('Monthly payment'+(finSub==='sdcp'?'<span class="applied-badge">&#10003; '+ccaName(opt)+'</span>':''), '', moneyRound(financeMonthly)+'/mo', '',
+        'Financed amount '+money(_fp)+' (the estimated prepaid LTO price, subject to approval'+(finSub==='sdcp'?' after your '+ccaName(opt)+' incentive':'')+') at '+(WHEELHOUSE_APR*100).toFixed(2)+'% APR over '+WHEELHOUSE_TERM_YEARS+' years through '+LENDER_NAME+', subject to approval. Standard loan amortization: '+money(_fp)+' paid down in '+(WHEELHOUSE_TERM_YEARS*12)+' equal monthly payments.');
     }
     if (perfMonthly > 0) rows += row(esc(perfLabel||'Performance incentive'), 'paid to you each month', '&minus;'+moneyRound(perfMonthly)+'/mo', 'neg',
         'Estimated at about '+moneyRound(perfMonthly*12)+' a year ('+moneyRound(perfMonthly)+' &times; 12). Utility and program rules apply and the payment isn&rsquo;t guaranteed, so treat it as an estimate that can change.');
@@ -948,6 +959,7 @@ button.component-chip.open{border-color:var(--dark);}
   function sdcpPerfAnnualFor(opt, share){
     var units = powerwallUnitCountFor(opt);
     if (units == null) return null;
+    if (isWm(opt)) return units * WATTSMART_PERF_ANNUAL;
     return units * POWERWALL_UNIT_KWH * SDCP_EVENTS_PER_YEAR * (share == null ? SDCP_ENROLLED_SHARE : share) * SDCP_PERF_RATE_PER_KWH;
   }
   // Always resets to the CURRENT tab's own required kind, auto-checked. Since each tab now
@@ -1460,7 +1472,7 @@ button.component-chip.open{border-color:var(--dark);}
       var cashKeys = hasSdcp ? ['standard','sdcp'] : [];
       subHtml = cashKeys.length ? ('<div class="fin-sub">'+
         '<button class="fin-sub-btn'+(finSub==='standard'?' active':'')+'" onclick="setFinSub(\'standard\')">Standard</button>'+
-        '<button class="fin-sub-btn'+(finSub==='sdcp'?' active':'')+'" onclick="setFinSub(\'sdcp\')">With SDCP incentive</button>'+
+        '<button class="fin-sub-btn'+(finSub==='sdcp'?' active':'')+'" onclick="setFinSub(\'sdcp\')">With '+ccaName(opt)+' incentive</button>'+
       '</div>') : '';
       noteHtml = hasParticipate ? ('Prepaid 5 Year LTO Discount (subject to approval)'+estimateNote) : '';
     }
@@ -1499,7 +1511,7 @@ button.component-chip.open{border-color:var(--dark);}
       '</div>';
     }).join('');
 
-    var rebateHtml = (opt.sdcp_rebate && finSub !== 'sdcp') ? '<div class="rebate-note">SDCP battery incentive: '+moneyRound(opt.sdcp_rebate)+' for your battery size (program max '+moneyRound(SDCP_UPFRONT_MAX)+') after qualification</div>' : '';
+    var rebateHtml = (opt.sdcp_rebate && finSub !== 'sdcp') ? (isWm(opt) ? '<div class="rebate-note">Wattsmart battery incentive: up to '+moneyRound(opt.sdcp_rebate)+' after qualification and approval</div>' : '<div class="rebate-note">SDCP battery incentive: '+moneyRound(opt.sdcp_rebate)+' for your battery size (program max '+moneyRound(SDCP_UPFRONT_MAX)+') after qualification</div>') : '';
 
     var panel = document.getElementById('panel');
     panel.innerHTML =
@@ -1801,6 +1813,7 @@ button.component-chip.open{border-color:var(--dark);}
     // Keep the options in the order the rep built them (Option 1, Option 2) — customer-facing
     // "Option 1 / Option 2" references in the write-up must line up. Preview keeps price order.
     OPTS = PROP.options.slice().sort(function(a,b){ return (b.price||0)-(a.price||0); }); // always most expensive first (customer and rep views)
+    applyCca();
 
     await loadPhotos();
     app.innerHTML =
