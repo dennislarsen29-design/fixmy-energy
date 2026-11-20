@@ -48,7 +48,7 @@ Status: [ ] open · [x] done · [-] dismissed
 - [x] I1. (done 2026-11-02) Search Console: the hub, LA, Orange and Riverside pages were already indexed; San Bernardino County indexing requested.
 - [x] I2. (Dennis added it 2026-11-02; takes effect after the next deploy) Netlify env var VIRTUAL_MEET_URL = a meet.google.com link (Site configuration → Environment variables), then trigger a deploy.
 - [x] I3a. (done 2026-11-12) Axia paid the full $5,418.00 Domestic Content for Seacombe; Solar Review's $2,438.10 marked received. Ronda's $270.90 setter share stays owed (pay in Payroll).
-- [ ] I3b. Delete Vijay Ranu $300 (id 080ed1fc-f914-47a5-91ed-bdafded43dc6), Stephen Sandberg $15,272 (id e0019082-b4d0-4816-944c-aef5a2a03a9f), Dennis Test $300 (id d0f7acde-73fb-41e6-9f11-f7f5ec4b8308) from job_costs. The delete times out at the database approval each time: approve the prompt within 60 seconds, or paste the SQL in the Supabase SQL editor. (2026-11-18: the "Dennis Test 10/25" job record itself was archived; its $300 cost line is still to delete.)
+- [x] I3b. (done, confirmed by Dennis 2026-11-20) Stale job_costs deletes (Vijay Ranu $300, Stephen Sandberg $15,272, Dennis Test $300).
 - [ ] I4. Utah compliance questions (HB 57 registration/bond, W-2 vs 1099 reps, contractor license) → counsel or Utah Division of Consumer Protection. Parked in S.U.N., not blocking.
 - [ ] H1b. 2026-11-02: the 5 new guides are requested. Still to request (5/day): /utah-solar-repair, then the Utah and California city pages from sitemap.xml.
 
