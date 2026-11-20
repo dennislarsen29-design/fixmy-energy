@@ -37022,6 +37022,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       '</div>'+
       '<div class="sect-label">Required Documents</div>'+
       '<div class="upload-grid">'+ucCard('bill','&#128196;','Most Recent Utility Bill','Upload your full PDF utility bill.')+ucCard('inverter','&#128247;','Inverter Photo','Photo of your inverter on garage wall or exterior.')+ucCard('serial','&#128290;','Serial Number','Close-up of the serial number sticker on inverter.')+ucCard('panel','&#9889;','Main Service Panel','Photo of open breaker panel with amp rating visible.')+'</div>'+
+      _custGbdCardHtml(c)+
       (_hasReport ? '</details>' : '')+
       signPayHtml+(_hasReport ? '' : proposalHtml)+invHtml+guaranteeHtml+agHtml+_custDocsWrapHtml(c)+_refWrapHtml(c)+(_hasReport ? '' : findingsHtml)+brHtml+
       '<div id="solarWrap"></div>'+
@@ -37056,6 +37057,71 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
   }
 
+  // ── Usage data (Green Button) card for the customer portal (2026-11-20, per Dennis) ── virtual evals especially: the Tech
+  // can't see the meter, so the homeowner's own 15-minute file is the best evidence. The upload lands in job_photos like any
+  // other customer file; the Tech's Eval Wizard already reads a data file (.csv/.xlsx/.xml) found there automatically.
+  function _custGbdCardHtml(c){
+    var virt = (c.eval_mode === 'virtual') || (typeof _isUtahLead === 'function' && _isUtahLead(c));
+    if (!virt || c.lead_category === 'new_solar') return '';
+    var u = String(c.utility || '').toLowerCase(), a = String(c.address || '');
+    var ut = /\bUtah\b/i.test(a) || /,\s*UT\b/i.test(a) || /\bUT\s+84\d{3}\b/i.test(a);
+    var open = { sdge: /sdg|san diego/.test(u), sce: /sce|edison/.test(u), rmp: ut || /rocky|rmp/.test(u) };
+    var det = function(id, title, steps, tip){
+      return '<details'+(open[id]?' open':'')+' style="border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:10px 12px;margin-bottom:8px;">'+
+        '<summary style="cursor:pointer;font-size:0.82rem;font-weight:700;">'+title+'</summary>'+
+        '<ol style="margin:10px 0 6px 18px;padding:0;font-size:0.78rem;color:#bbb;line-height:1.7;">'+steps.map(function(t){ return '<li>'+t+'</li>'; }).join('')+'</ol>'+
+        (tip?'<div style="font-size:0.72rem;color:#888;line-height:1.6;">'+tip+'</div>':'')+'</details>';
+    };
+    var common = 'Pick the <b>longest date range</b> available (at least 12 months), the <b>15-minute</b> interval if offered (hourly is fine), and the <b>CSV</b> format (Excel is fine too).';
+    return '<div class="sect-label">Your Usage Data (Green Button)</div>'+
+      '<div class="card" id="custGbdCard">'+
+        '<div style="font-size:0.78rem;color:#aaa;line-height:1.7;margin-bottom:12px;">Your virtual evaluation is much more accurate with your utility\'s <b>usage file</b>. It shows how your home and solar behave through the day, so we can spot a down system, clipping or a problem before the call. It takes about two minutes, and it is optional.</div>'+
+        det('sdge','San Diego Gas &amp; Electric (SDG&amp;E)',[
+          'Go to <b>sdge.com</b> and sign in to <b>My Account</b>.',
+          'Open <b>Usage</b> (also called <b>Energy Use</b>), then choose <b>Download My Data</b> / <b>Green Button</b>.',
+          common,
+          'Click <b>Download</b>, then come back here and upload the file below.'],'Menu names change from time to time. If you can\'t find it, search the site for &ldquo;Green Button&rdquo;.')+
+        det('sce','Southern California Edison (SCE)',[
+          'Go to <b>sce.com</b> and sign in to <b>My Account</b>.',
+          'Open <b>Usage</b> (<b>Energy Use</b>), then <b>Green Button</b> / <b>Download My Data</b>.',
+          common,
+          'Click <b>Download</b>, then upload the file below.'],'Make sure the account shown is the one for <b>your address</b> (some customers see a different utility name by mistake).')+
+        det('rmp','Rocky Mountain Power (Utah)',[
+          'Go to <b>rockymountainpower.net</b> (or the app) and sign in.',
+          'Open <b>My Account</b> and look for <b>Usage</b> or <b>Energy Usage</b>, then <b>Download / Export my data</b>.',
+          common,
+          'Upload the file below.'],'Can\'t find a download option? No problem: upload your last 12 months of bills (PDF) in the section above instead.')+
+        det('other','Another utility',[
+          'Sign in to your utility\'s online account.',
+          'Look for <b>Usage</b>, <b>Energy Use</b>, <b>Green Button</b> or <b>Download My Data</b>.',
+          common],'No online option? Skip this. The bill upload above is enough to get started.')+
+        '<label style="display:block;text-align:center;margin-top:12px;padding:13px;background:rgba(141,198,63,0.14);border:1px solid rgba(141,198,63,0.4);color:#8DC63F;border-radius:100px;font-size:0.85rem;font-weight:700;cursor:pointer;">&#128206; Upload your usage file (CSV, Excel or XML)'+
+          '<input type="file" accept=".csv,.xml,.xlsx,.xls,text/csv,application/xml,text/xml,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="display:none" onchange="handleGbdUpload(this)"/></label>'+
+        '<div id="ust-gbd" class="upload-status" style="margin-top:8px;text-align:center;"></div>'+
+      '</div>';
+  }
+  async function handleGbdUpload(input){
+    if(!input.files||!input.files[0]||!currentUser) return;
+    var el=document.getElementById('ust-gbd'), file=input.files[0];
+    var say=function(t,ok){ if(el){ el.textContent=t; el.className='upload-status'+(ok?' ok':''); } };
+    if(!/\.(csv|xml|xlsx|xls)$/i.test(file.name)){ say('Please choose the CSV, Excel or XML file you downloaded from your utility.'); input.value=''; return; }
+    if(file.size>25*1024*1024){ say('That file is too large (max 25 MB). Try a shorter date range.'); input.value=''; return; }
+    say('Uploading…');
+    try{
+      var client=supabase.createClient(SUPA_URL,SUPA_KEY), custId=String(currentUser.id||'anon');
+      var safeName=file.name.replace(/[^a-zA-Z0-9._-]/g,'_');
+      var path='jobs/'+custId+'/customer_greenbutton_'+Date.now()+'_'+safeName;
+      var up=await client.storage.from('job_photos').upload(path,file,{upsert:true,contentType:file.type||undefined});
+      if(up.error){ say('Error: '+(up.error.message||'Upload failed')); return; }
+      var publicUrl=client.storage.from('job_photos').getPublicUrl(path).data.publicUrl;
+      var ins=await client.from('job_photos').insert({ job_id:custId, customer_id:custId, url:publicUrl, path:path, label:'Additional Photos', expected_label:'Additional Photos', uploaded_by:'customer', quality_flag:null, quality_note:null, quoya_status:'done' });
+      if(ins.error){ say('The file uploaded but we could not record it: '+(ins.error.message||'try again')); return; }
+      var nm=((currentUser.first_name||'')+' '+(currentUser.last_name||'')).trim()||'A customer';
+      fetch('/.netlify/functions/notify-photo-upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({customerId:custId,customerName:nm})}).catch(function(){});
+      say('✓ Received. Your technician will review it before your evaluation.',true);
+    }catch(e){ say('Failed: '+(e.message||'Unknown error')); }
+  }
+  window.handleGbdUpload = handleGbdUpload;
   function ucCard(type,icon,title,desc){ return '<div class="upload-card"><div style="font-size:1.5rem;margin-bottom:8px;">'+icon+'</div><div style="font-weight:700;margin-bottom:5px;font-size:0.85rem;">'+title+'</div><div style="font-size:0.7rem;color:#aaa;line-height:1.5;margin-bottom:12px;">'+desc+'</div><div class="upload-status" id="ust-'+type+'">&#9888; Not Uploaded</div><input type="file" id="ufile-'+type+'" data-type="'+type+'" style="display:none;" onchange="handleUpload(this.dataset.type,this)"/><button class="btn-upload" data-type="'+type+'" onclick="triggerUpload(this.dataset.type)">Upload</button></div>'; }
 
   async function loadUploadStatus(custId){
