@@ -9468,13 +9468,15 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var tiles = '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">' + tile(by(['new', 'approved']).length, 'To review', '#8DC63F') + tile(by(['pitched']).length, 'Pitched', '#4a9eff') + tile(due, 'Follow-up due', due ? '#f59e0b' : '#fff') + tile(by(['responded']).length, 'Replies', '#9b6de8') + tile(C.length, 'Articles') + tile(live, 'Live links', '#8DC63F') + '</div>';
     var actions = '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;"><button id="runBtn-pr" onclick="prRunResearch()" style="width:auto;padding:7px 14px;background:#8DC63F18;border:1px solid #8DC63F55;border-radius:8px;color:#8DC63F;font-size:0.75rem;font-weight:700;cursor:pointer;">&#128269; Run research now</button>'
       + _prBtn('+ Add outlet', 'prAddOutlet()', '#4a9eff') + _prBtn('&#8635; Check links now', 'prCheckAll(this)', '#e879f9') + '</div>';
-    var tabs = [['review', 'To review', by(['new', 'approved']).length], ['pitched', 'Pitched', by(['pitched']).length], ['responded', 'Replies', by(['responded']).length], ['coverage', 'Coverage', C.length], ['passed', 'Passed', by(['passed', 'declined']).length]];
+    var _lsN = _pr.listings ? (_pr.listings.items.filter(function (x) { return x.status === 'live'; }).length + '/' + _pr.listings.items.filter(function (x) { return x.status !== 'skip'; }).length) : '';
+    var tabs = [['review', 'To review', by(['new', 'approved']).length], ['pitched', 'Pitched', by(['pitched']).length], ['responded', 'Replies', by(['responded']).length], ['coverage', 'Coverage', C.length], ['listings', 'Listings', _lsN], ['passed', 'Passed', by(['passed', 'declined']).length]];
     var tabHtml = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">' + tabs.map(function (x) {
       var on = _pr.tab === x[0];
       return '<button onclick="_pr.tab=\'' + x[0] + '\';_prRender()" style="width:auto;padding:5px 12px;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;border:1px solid ' + (on ? '#8DC63F' : '#333') + ';background:' + (on ? '#8DC63F' : 'transparent') + ';color:' + (on ? '#1A1A1A' : '#999') + ';">' + x[1] + ' ' + x[2] + '</button>';
     }).join('') + '</div>';
     var body = '';
     if (_pr.tab === 'coverage') body = _prCoverageHtml();
+    else if (_pr.tab === 'listings') body = _prListingsHtml();
     else {
       var set = { review: ['new', 'approved'], pitched: ['pitched'], responded: ['responded'], passed: ['passed', 'declined'] }[_pr.tab];
       var list = by(set);
@@ -9537,6 +9539,99 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     }
     return h + '</div>';
   }
+
+  // ── Business listings (directory citations) ────────────────────────────────
+  // Same name, phone and website everywhere is a local-SEO signal. Every site needs the owner to sign up
+  // and verify (phone, email or postcard), so this is a checklist + the exact details to paste; nothing is
+  // submitted from here. Listing pages are re-read nightly (listings-check) to confirm name + phone.
+  var LS_GROUPS = [['core', 'Core (do these first)'], ['home', 'Home-services sites'], ['solar', 'Solar industry'], ['data', 'Data feeds & directories'], ['local', 'Local (chambers, your own adds)']];
+  var LS_STATUS = { not_started: ['Not started', '#888'], submitted: ['Submitted', '#4a9eff'], verifying: ['Waiting to verify', '#f59e0b'], live: ['Live', '#22c55e'], skip: ['Skip', '#555'] };
+  var LS_CHECK = { match: ['Name + phone found', '#22c55e'], name_only: ['Name found, phone missing', '#f59e0b'], phone_only: ['Phone found, name missing', '#f59e0b'], mismatch: ['Name and phone not found', '#ef4444'], blocked: ['Site blocks automatic checks — look yourself', '#888'], unreachable: ['Page did not load', '#ef4444'], bad_url: ['That link cannot be checked', '#ef4444'], no_url: ['Add the listing link to check it', '#888'] };
+  async function _lsCall(body) {
+    var r = await fetch('/.netlify/functions/listings-api', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    var d = {}; try { d = await r.json(); } catch (e) {}
+    if (!r.ok || !d.ok) throw new Error({ phone_invalid: 'Phone needs 10 digits.', bad_url: 'Paste the full link, starting with https://', exists: 'Already in the list.' }[d.error] || d.error || ('HTTP ' + r.status));
+    _pr.listings = { nap: d.nap, items: d.items }; _pr.lsErr = '';
+    return d;
+  }
+  window.prLoadListings = async function () {
+    _pr.lsLoading = true;
+    try { await _lsCall({ action: 'list' }); } catch (e) { _pr.lsErr = e.message || 'Could not load'; }
+    _pr.lsLoading = false; _prRender();
+  };
+  function _prListingsHtml() {
+    if (!_pr.listings) {
+      if (!_pr.lsLoading && !_pr.lsErr) setTimeout(prLoadListings, 0);
+      return _pr.lsErr ? '<div style="color:#ef4444;font-size:0.8rem;">' + esc(_pr.lsErr) + ' ' + _prBtn('Retry', 'prLoadListings()') + '</div>' : '<div style="color:#888;font-size:0.8rem;">Loading listings…</div>';
+    }
+    var n = _pr.listings.nap, it = _pr.listings.items;
+    var inp = function (id, val, ph) { return '<input id="lsNap_' + id + '" value="' + esc(val || '') + '" placeholder="' + esc(ph || '') + '" style="width:100%;box-sizing:border-box;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:7px 9px;color:#fff;font-size:0.76rem;"/>'; };
+    var row = function (label, html) { return '<div style="margin-bottom:7px;"><div style="font-size:0.64rem;color:#888;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px;">' + label + '</div>' + html + '</div>'; };
+    var h = '<div style="font-size:0.74rem;color:#bbb;line-height:1.55;margin-bottom:10px;">Listing the business on trusted sites, with the <b>exact same</b> name, phone and website everywhere, helps you show up in Google Maps and local searches. Each site needs you to sign up and confirm by phone, email or postcard, so nothing is submitted from here. Work down the list, paste the details below, and add each live listing link so we can check it every night.</div>';
+    h += '<div style="border:1px solid ' + (n.confirmed ? 'rgba(141,198,63,0.35)' : 'rgba(245,158,11,0.5)') + ';border-radius:12px;padding:12px;margin-bottom:12px;background:rgba(255,255,255,0.02);">';
+    h += '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;"><b style="color:#fff;font-size:0.85rem;">Business details to use everywhere</b>' + (n.confirmed ? _prBadge('Confirmed ' + _prDay(n.confirmed_at), '#22c55e') : _prBadge('Not confirmed yet — check and save', '#f59e0b')) + '</div>';
+    h += row('Business name', inp('name', n.name)) + row('Phone', inp('phone', n.phone)) + row('Website', inp('website', n.website)) + row('Email', inp('email', n.email));
+    h += row('Street address', '<select id="lsNap_address_mode" style="width:100%;box-sizing:border-box;background:#1d1d1d;border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:7px 9px;color:#fff;font-size:0.76rem;margin-bottom:5px;"><option value="hidden"' + (n.address_mode !== 'shown' ? ' selected' : '') + '>Hide it (we go to customers; show a service area instead)</option><option value="shown"' + (n.address_mode === 'shown' ? ' selected' : '') + '>Show a street address</option></select>' + inp('address', n.address, 'Only if you chose to show it'));
+    h += row('Service area', inp('service_area', n.service_area)) + row('Main category', inp('category', n.category)) + row('Other categories', inp('categories_extra', n.categories_extra)) + row('Hours', inp('hours', n.hours));
+    h += row('Short description', '<textarea id="lsNap_description" rows="3" style="width:100%;box-sizing:border-box;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:7px 9px;color:#fff;font-size:0.76rem;resize:vertical;">' + esc(n.description || '') + '</textarea>');
+    h += '<div style="display:flex;gap:6px;flex-wrap:wrap;">' + _prBtn('Save details', 'prSaveNap(this)', '#8DC63F', true) + _prBtn('Copy all details', 'prCopyNap()', '#4a9eff') + '</div></div>';
+    var live = it.filter(function (x) { return x.status === 'live'; }).length, todo = it.filter(function (x) { return x.status !== 'skip'; }).length;
+    h += '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:10px;"><span style="font-size:0.74rem;color:#bbb;">' + live + ' of ' + todo + ' live</span>' + _prBtn('&#8635; Check listings now', 'prCheckListings(this)', '#e879f9') + _prBtn('+ Add a site', 'prAddListing()', '#4a9eff') + '</div>';
+    LS_GROUPS.forEach(function (g) {
+      var list = it.filter(function (x) { return (x.group || 'local') === g[0]; }); if (!list.length) return;
+      h += '<div style="font-size:0.7rem;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:0.06em;margin:12px 0 6px;">' + g[1] + '</div>';
+      list.forEach(function (x) {
+        var st = LS_STATUS[x.status] || LS_STATUS.not_started, ck = x.check && LS_CHECK[x.check.result];
+        h += '<div style="border:1px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.02);border-radius:12px;padding:10px 12px;margin-bottom:8px;' + (x.status === 'skip' ? 'opacity:0.55;' : '') + '">';
+        h += '<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:flex-start;"><div style="min-width:0;"><a href="' + esc(x.url) + '" target="_blank" rel="noopener" style="color:#fff;font-weight:700;font-size:0.84rem;text-decoration:none;">' + esc(x.name) + ' &#8599;</a><div style="font-size:0.66rem;color:#777;">' + esc(x.cost === 'free' ? 'Free' : x.cost === 'membership' ? 'Paid membership' : 'Paid') + (x.verify ? ' &middot; verify by ' + esc(x.verify) : '') + '</div></div>';
+        h += '<select onchange="prSetListing(\'' + x.id + '\',{status:this.value})" style="width:auto;background:#1d1d1d;border:1px solid ' + st[1] + '66;border-radius:100px;padding:3px 8px;color:' + st[1] + ';font-size:0.68rem;font-weight:700;">' + Object.keys(LS_STATUS).map(function (k) { return '<option value="' + k + '"' + (k === (x.status || 'not_started') ? ' selected' : '') + '>' + LS_STATUS[k][0] + '</option>'; }).join('') + '</select></div>';
+        if (x.note) h += '<div style="font-size:0.72rem;color:#bbb;margin-top:6px;line-height:1.5;">' + esc(x.note) + '</div>';
+        if (x.status !== 'skip' && x.status !== 'not_started') {
+          h += '<div style="display:flex;gap:6px;margin-top:8px;"><input id="lsUrl_' + x.id + '" value="' + esc(x.listing_url || '') + '" placeholder="Paste your live listing link (https://…)" style="flex:1;min-width:0;box-sizing:border-box;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:6px 9px;color:#fff;font-size:0.74rem;"/>' + _prBtn('Save', 'prSetListingUrl(\'' + x.id + '\')', '#8DC63F') + '</div>';
+        }
+        if (ck) h += '<div style="font-size:0.68rem;margin-top:6px;color:' + ck[1] + ';">' + ck[0] + (x.check.at ? ' <span style="color:#666;">&middot; checked ' + _prDay(x.check.at) + '</span>' : '') + (x.check.last_try_result ? ' <span style="color:#666;">(last try: ' + esc((LS_CHECK[x.check.last_try_result] || [''])[0]) + ')</span>' : '') + '</div>';
+        if (x.custom) h += '<div style="margin-top:6px;">' + _prBtn('Remove', 'prRemoveListing(\'' + x.id + '\')', '#888') + '</div>';
+        h += '</div>';
+      });
+    });
+    return h;
+  }
+  window.prSaveNap = async function (btn) {
+    var nap = {}; ['name', 'phone', 'website', 'email', 'address_mode', 'address', 'service_area', 'category', 'categories_extra', 'hours', 'description'].forEach(function (f) { var el = document.getElementById('lsNap_' + f); if (el) nap[f] = el.value; });
+    var o = btn.innerHTML; btn.disabled = true; btn.innerHTML = 'Saving…';
+    try { await _lsCall({ action: 'save_nap', nap: nap, by: (typeof person !== 'undefined' && person && person.name) || 'Admin' }); _prRender(); }
+    catch (e) { alert('Could not save: ' + e.message); btn.disabled = false; btn.innerHTML = o; }
+  };
+  window.prCopyNap = function () {
+    var n = _pr.listings && _pr.listings.nap; if (!n) return;
+    var txt = 'Business name: ' + n.name + '\nPhone: ' + n.phone + '\nWebsite: ' + n.website + '\nEmail: ' + n.email + '\nAddress: ' + (n.address_mode === 'shown' && n.address ? n.address : 'Hidden (service-area business)') + '\nService area: ' + n.service_area + '\nCategory: ' + n.category + '\nOther categories: ' + n.categories_extra + '\nHours: ' + n.hours + '\nDescription: ' + n.description;
+    (navigator.clipboard ? navigator.clipboard.writeText(txt) : Promise.reject()).then(function () { alert('Copied.'); }, function () { prompt('Copy this:', txt); });
+  };
+  window.prSetListing = async function (id, patch) {
+    try { await _lsCall(Object.assign({ action: 'update', id: id }, patch)); _prRender(); } catch (e) { alert('Could not save: ' + e.message); prLoadListings(); }
+  };
+  window.prSetListingUrl = async function (id) {
+    var el = document.getElementById('lsUrl_' + id); if (!el) return;
+    try {
+      await _lsCall({ action: 'update', id: id, listing_url: el.value.trim() });
+      if (el.value.trim()) await _lsCall({ action: 'check', id: id });
+      _prRender();
+    } catch (e) { alert('Could not save: ' + e.message); }
+  };
+  window.prCheckListings = async function (btn) {
+    var o = btn.innerHTML; btn.disabled = true; btn.innerHTML = 'Checking…';
+    try { await _lsCall({ action: 'check' }); } catch (e) { alert('Check failed: ' + e.message); }
+    _prRender();
+  };
+  window.prAddListing = async function () {
+    var name = prompt('Site name (e.g. a local directory or association):'); if (!name) return;
+    var url = prompt('Where to sign up (https://…):'); if (!url) return;
+    try { await _lsCall({ action: 'add', name: name, url: /^https?:/i.test(url) ? url : 'https://' + url }); _prRender(); } catch (e) { alert('Could not add: ' + e.message); }
+  };
+  window.prRemoveListing = async function (id) {
+    if (!confirm('Remove this site from the list?')) return;
+    try { await _lsCall({ action: 'remove', id: id }); _prRender(); } catch (e) { alert('Could not remove: ' + e.message); }
+  };
 
   function _prCoverageHtml() {
     var C = _pr.coverage; if (!C.length) return '<div style="color:#666;font-size:0.8rem;padding:10px 0;">No articles logged yet. When a pitch lands, open it and tap <b>Article is out</b>. We re-read the page every night to confirm the link.</div>';
