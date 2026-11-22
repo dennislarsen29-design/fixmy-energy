@@ -9405,13 +9405,265 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '</div>'+
         // SEO Pulse
         '<div id="seoPulse"></div>'+
+        '<div id="prPanel"></div>'+
         // Inbox
         '<div id="agentsContainer"><p style="color:#888;padding:20px 0;">Loading agent reports...</p></div>'+
       '</div>';
 
     loadAgentInbox();
     loadSEOPulse();
+    loadPrPanel();
   }
+
+  // ── PR & Backlinks (Agents tab) ────────────────────────────────────────────
+  // Earned media, not paid links. The weekly PR agent queues real outlets + PUBLIC editorial contacts as
+  // 'new'; Dennis reviews, drafts a pitch with Quoya, sends it himself (copy / open in his email), then
+  // logs replies and published articles. Published articles are re-read nightly to confirm the link is
+  // still live. Nothing here ever sends email.
+  var _pr = { targets: null, coverage: null, seo: {}, tab: 'review', open: {}, pubFor: null, err: '' };
+  var PR_PAGES = ['', '/defunct-solar-installers', '/blog/sunpower-out-of-business', '/blog/sunnova-bankruptcy', '/blog/freedom-forever-bankruptcy', '/blog/solaredge-inverter-error-codes', '/blog/sdge-electric-rates-2026', '/blog/battery-storage-sgip-rebate', '/blog/sunrun-vivint-evening-bills-battery', '/southern-california-solar-repair', '/'];
+  function _prDay(d) { return d ? new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : ''; }
+  function _prPath(u) { try { return new URL(u, 'https://fixmy.energy').pathname.replace(/\/$/, '') || '/'; } catch (e) { return ''; } }
+
+  window.loadPrPanel = async function () {
+    var host = document.getElementById('prPanel'); if (!host) return;
+    host.innerHTML = '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:16px;margin-bottom:16px;color:#888;font-size:0.8rem;">Loading PR &amp; Backlinks…</div>';
+    try {
+      var sc = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var t = await sc.from('pr_targets').select('*').order('priority', { ascending: true }).order('created_at', { ascending: false }).limit(400);
+      if (t.error) throw t.error;
+      var c = await sc.from('pr_coverage').select('*').order('created_at', { ascending: false }).limit(300);
+      if (c.error) throw c.error;
+      _pr.targets = t.data || []; _pr.coverage = c.data || []; _pr.err = '';
+      try {
+        var s = await sc.from('seo_queries').select('date,key,clicks,impressions').eq('dimension', 'page').order('date', { ascending: false }).limit(500);
+        var latest = null, map = {};
+        (s.data || []).forEach(function (r) { if (!latest) latest = r.date; if (r.date === latest) map[_prPath(r.key)] = { clicks: r.clicks || 0, impressions: r.impressions || 0, date: r.date }; });
+        _pr.seo = map;
+      } catch (e) { _pr.seo = {}; }
+    } catch (e) {
+      _pr.targets = null;
+      _pr.err = /pr_targets|relation|does not exist|schema cache/i.test(e.message || '') ? 'setup' : (e.message || 'Could not load');
+    }
+    _prRender();
+  };
+
+  function _prBadge(txt, col) { return '<span style="font-size:0.62rem;font-weight:700;padding:2px 8px;border-radius:100px;background:' + col + '22;color:' + col + ';border:1px solid ' + col + '44;white-space:nowrap;">' + txt + '</span>'; }
+  function _prBtn(label, fn, col, solid) {
+    col = col || '#8DC63F';
+    return '<button onclick="' + fn + '" style="width:auto;padding:6px 12px;border-radius:8px;font-size:0.72rem;font-weight:700;cursor:pointer;background:' + (solid ? col : col + '18') + ';border:1px solid ' + col + '55;color:' + (solid ? '#1A1A1A' : col) + ';">' + label + '</button>';
+  }
+
+  function _prRender() {
+    var host = document.getElementById('prPanel'); if (!host) return;
+    var box = 'background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:16px;margin-bottom:16px;';
+    var head = '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;"><h2 style="font-size:1rem;font-weight:700;margin:0;color:#fff;">&#128240; PR &amp; Backlinks</h2><span style="font-size:0.68rem;color:#666;">earned coverage only &middot; nothing is sent from here</span></div>';
+    if (_pr.err === 'setup') { host.innerHTML = '<div style="' + box + '">' + head + '<div style="color:#f59e0b;font-size:0.8rem;line-height:1.6;">One-time setup: run <code>supabase/migrations/20261122_pr_outreach.sql</code> in the Supabase SQL editor, then reload this tab.</div></div>'; return; }
+    if (!_pr.targets) { host.innerHTML = '<div style="' + box + '">' + head + '<div style="color:#ef4444;font-size:0.8rem;">' + esc(_pr.err || 'Could not load') + ' ' + _prBtn('Retry', 'loadPrPanel()') + '</div></div>'; return; }
+    var T = _pr.targets, C = _pr.coverage;
+    var by = function (st) { return T.filter(function (x) { return st.indexOf(x.status) > -1; }); };
+    var live = C.filter(function (x) { return x.link_status === 'live'; }).length;
+    var due = by(['pitched']).filter(function (x) { return x.followup_at && new Date(x.followup_at) < new Date(); }).length;
+    var tile = function (n, l, col) { return '<div style="flex:1;min-width:84px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:8px 10px;"><div style="font-size:1.15rem;font-weight:800;color:' + (col || '#fff') + ';">' + n + '</div><div style="font-size:0.62rem;color:#888;text-transform:uppercase;letter-spacing:0.05em;">' + l + '</div></div>'; };
+    var tiles = '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">' + tile(by(['new', 'approved']).length, 'To review', '#8DC63F') + tile(by(['pitched']).length, 'Pitched', '#4a9eff') + tile(due, 'Follow-up due', due ? '#f59e0b' : '#fff') + tile(by(['responded']).length, 'Replies', '#9b6de8') + tile(C.length, 'Articles') + tile(live, 'Live links', '#8DC63F') + '</div>';
+    var actions = '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;"><button id="runBtn-pr" onclick="prRunResearch()" style="width:auto;padding:7px 14px;background:#8DC63F18;border:1px solid #8DC63F55;border-radius:8px;color:#8DC63F;font-size:0.75rem;font-weight:700;cursor:pointer;">&#128269; Run research now</button>'
+      + _prBtn('+ Add outlet', 'prAddOutlet()', '#4a9eff') + _prBtn('&#8635; Check links now', 'prCheckAll(this)', '#e879f9') + '</div>';
+    var tabs = [['review', 'To review', by(['new', 'approved']).length], ['pitched', 'Pitched', by(['pitched']).length], ['responded', 'Replies', by(['responded']).length], ['coverage', 'Coverage', C.length], ['passed', 'Passed', by(['passed', 'declined']).length]];
+    var tabHtml = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">' + tabs.map(function (x) {
+      var on = _pr.tab === x[0];
+      return '<button onclick="_pr.tab=\'' + x[0] + '\';_prRender()" style="width:auto;padding:5px 12px;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;border:1px solid ' + (on ? '#8DC63F' : '#333') + ';background:' + (on ? '#8DC63F' : 'transparent') + ';color:' + (on ? '#1A1A1A' : '#999') + ';">' + x[1] + ' ' + x[2] + '</button>';
+    }).join('') + '</div>';
+    var body = '';
+    if (_pr.tab === 'coverage') body = _prCoverageHtml();
+    else {
+      var set = { review: ['new', 'approved'], pitched: ['pitched'], responded: ['responded'], passed: ['passed', 'declined'] }[_pr.tab];
+      var list = by(set);
+      body = list.length ? list.map(_prCardHtml).join('') : '<div style="color:#666;font-size:0.8rem;padding:10px 0;">' + (_pr.tab === 'review' ? 'Nothing waiting. Tap <b>Run research now</b>, or wait for Tuesday’s weekly run.' : 'Nothing here yet.') + '</div>';
+    }
+    host.innerHTML = '<div style="' + box + '">' + head + tiles + actions + tabHtml + body + '</div>';
+  }
+
+  function _prCardHtml(t) {
+    var id = t.id, st = t.status;
+    var col = { new: '#8DC63F', approved: '#8DC63F', pitched: '#4a9eff', responded: '#9b6de8', declined: '#888', passed: '#888', published: '#22c55e' }[st] || '#888';
+    var contact = '';
+    if (t.contact_name || t.contact_email || t.contact_form_url) {
+      contact = '<div style="font-size:0.72rem;color:#bbb;margin-top:6px;line-height:1.6;">&#128100; ' + esc(t.contact_name || 'Editorial desk') + (t.contact_role ? ' &middot; ' + esc(t.contact_role) : '');
+      if (t.contact_email) contact += '<br>&#9993; <span style="user-select:all;color:#fff;">' + esc(t.contact_email) + '</span> ' + (t.contact_verified ? '<a href="' + esc(t.contact_source_url) + '" target="_blank" rel="noopener" style="color:#8DC63F;text-decoration:none;font-size:0.66rem;">&#10003; listed publicly</a>' : '<span style="color:#f59e0b;font-size:0.66rem;">added by hand — not auto-verified</span>');
+      else if (t.contact_form_url) contact += '<br>&#128279; <a href="' + esc(t.contact_form_url) + '" target="_blank" rel="noopener" style="color:#4a9eff;">Public contact / tip form</a>';
+      else contact += '<br><span style="color:#888;">No public email found.</span>' + (t.contact_source_url ? ' <a href="' + esc(t.contact_source_url) + '" target="_blank" rel="noopener" style="color:#4a9eff;">Where they list staff</a>' : '');
+      contact += '</div>';
+    } else contact = '<div style="font-size:0.7rem;color:#888;margin-top:6px;">No contact found yet. Open the outlet’s site and look for a newsroom or tips page.</div>';
+    var h = '<div style="border:1px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.02);border-radius:12px;padding:12px;margin-bottom:10px;">';
+    h += '<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:flex-start;"><div style="min-width:0;"><a href="' + esc(t.url || ('https://' + t.domain)) + '" target="_blank" rel="noopener" style="color:#fff;font-weight:700;font-size:0.9rem;text-decoration:none;">' + esc(t.outlet) + ' &#8599;</a><div style="font-size:0.66rem;color:#777;">' + esc(t.domain) + (t.region ? ' &middot; ' + esc(t.region) : '') + '</div></div><div style="display:flex;gap:5px;flex-wrap:wrap;">' + _prBadge(esc(t.outlet_type || 'outlet'), '#888') + _prBadge('P' + (t.priority || 3), t.priority <= 2 ? '#8DC63F' : '#888') + _prBadge(st, col) + (t.source === 'manual' ? _prBadge('manual', '#4a9eff') : '') + '</div></div>';
+    if (t.why) h += '<div style="font-size:0.74rem;color:#ccc;margin-top:8px;line-height:1.5;"><b style="color:#888;">Why:</b> ' + esc(t.why) + '</div>';
+    if (t.angle) h += '<div style="font-size:0.74rem;color:#ccc;margin-top:5px;line-height:1.5;"><b style="color:#888;">Angle:</b> ' + esc(t.angle) + '</div>';
+    if (t.authority_note) h += '<div style="font-size:0.68rem;color:#777;margin-top:5px;line-height:1.5;">' + esc(t.authority_note) + '</div>';
+    h += contact;
+    if (st === 'pitched') {
+      var overdue = t.followup_at && new Date(t.followup_at) < new Date();
+      h += '<div style="font-size:0.72rem;margin-top:8px;color:' + (overdue ? '#f59e0b' : '#888') + ';">Sent ' + _prDay(t.sent_at) + (t.followup_at ? ' &middot; follow up ' + (overdue ? '<b>now</b> (' + _prDay(t.followup_at) + ')' : _prDay(t.followup_at)) : '') + '</div>';
+    }
+    if (st === 'responded' && t.response_note) h += '<div style="font-size:0.74rem;color:#ccc;margin-top:8px;"><b style="color:#9b6de8;">Reply ' + _prDay(t.response_at) + ':</b> ' + esc(t.response_note) + '</div>';
+    if (t.pitch_body && (_pr.open[id] || st === 'new' || st === 'approved')) {
+      h += '<div style="margin-top:10px;"><input id="prSub_' + id + '" value="' + esc(t.pitch_subject || '') + '" onchange="prSavePitch(\'' + id + '\')" placeholder="Subject" style="width:100%;box-sizing:border-box;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:8px 10px;color:#fff;font-size:0.78rem;margin-bottom:6px;"/>'
+        + '<textarea id="prBody_' + id + '" rows="9" onchange="prSavePitch(\'' + id + '\')" style="width:100%;box-sizing:border-box;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:8px 10px;color:#fff;font-size:0.78rem;line-height:1.5;resize:vertical;">' + esc(t.pitch_body) + '</textarea></div>';
+    } else if (t.pitch_body) {
+      h += '<div style="margin-top:8px;">' + _prBtn('Show pitch', '_pr.open[\'' + id + '\']=true;_prRender()', '#888') + '</div>';
+    }
+    h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;">';
+    if (st === 'new' || st === 'approved') {
+      h += _prBtn(t.pitch_body ? '&#8635; Re-draft' : '&#9998; Draft pitch', 'prDraft(\'' + id + '\',this)', '#8DC63F', !t.pitch_body);
+      if (t.pitch_body) {
+        h += _prBtn('Copy pitch', 'prCopy(\'' + id + '\')', '#4a9eff');
+        if (t.contact_email) h += '<a href="#" onclick="prMailto(\'' + id + '\');return false;" style="display:inline-block;padding:6px 12px;border-radius:8px;font-size:0.72rem;font-weight:700;background:#4a9eff18;border:1px solid #4a9eff55;color:#4a9eff;text-decoration:none;">Open in email</a>';
+        h += _prBtn('&#10003; I sent it', 'prSent(\'' + id + '\')', '#22c55e');
+      }
+      h += _prBtn('Pass', 'prSet(\'' + id + '\',\'passed\')', '#888');
+    } else if (st === 'pitched') {
+      h += _prBtn('They replied', 'prReplied(\'' + id + '\')', '#9b6de8') + _prBtn('Article is out', 'prPubForm(\'' + id + '\')', '#22c55e') + _prBtn('Follow-up sent (+7d)', 'prFollowed(\'' + id + '\')', '#4a9eff') + _prBtn('No thanks', 'prSet(\'' + id + '\',\'declined\')', '#888');
+    } else if (st === 'responded') {
+      h += _prBtn('Article is out', 'prPubForm(\'' + id + '\')', '#22c55e') + _prBtn('Declined', 'prSet(\'' + id + '\',\'declined\')', '#888');
+    } else if (st === 'passed' || st === 'declined') {
+      h += _prBtn('Move back to review', 'prSet(\'' + id + '\',\'new\')', '#8DC63F');
+    }
+    h += '</div>';
+    if (_pr.pubFor === id) {
+      h += '<div style="margin-top:10px;padding:10px;border:1px dashed rgba(34,197,94,0.4);border-radius:10px;"><div style="font-size:0.72rem;color:#22c55e;font-weight:700;margin-bottom:6px;">Log the published article</div>'
+        + '<input id="prArtUrl" placeholder="Article URL (https://…)" style="width:100%;box-sizing:border-box;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:8px 10px;color:#fff;font-size:0.78rem;margin-bottom:6px;"/>'
+        + '<input id="prArtTitle" placeholder="Headline (optional)" style="width:100%;box-sizing:border-box;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:8px 10px;color:#fff;font-size:0.78rem;margin-bottom:6px;"/>'
+        + '<select id="prArtPage" style="width:100%;box-sizing:border-box;background:#1d1d1d;border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:8px 10px;color:#fff;font-size:0.78rem;margin-bottom:8px;">' + PR_PAGES.map(function (p) { return '<option value="' + p + '">' + (p === '' ? 'Page we hoped they would link to (optional)' : 'fixmy.energy' + p) + '</option>'; }).join('') + '</select>'
+        + '<div style="display:flex;gap:6px;">' + _prBtn('Save &amp; check the link', 'prPubSave(\'' + id + '\')', '#22c55e', true) + _prBtn('Cancel', '_pr.pubFor=null;_prRender()', '#888') + '</div></div>';
+    }
+    return h + '</div>';
+  }
+
+  function _prCoverageHtml() {
+    var C = _pr.coverage; if (!C.length) return '<div style="color:#666;font-size:0.8rem;padding:10px 0;">No articles logged yet. When a pitch lands, open it and tap <b>Article is out</b>. We re-read the page every night to confirm the link.</div>';
+    var stl = { live: ['Link live', '#22c55e'], nofollow: ['Link (nofollow)', '#f59e0b'], mention_only: ['Named, not linked', '#4a9eff'], missing: ['Link missing', '#ef4444'], unreachable: ['Page unreachable', '#ef4444'], unchecked: ['Not checked yet', '#888'] };
+    return C.map(function (c) {
+      var s = stl[c.link_status] || stl.unchecked, tg = (_pr.targets || []).find(function (x) { return x.id === c.target_id; });
+      var impact = '';
+      if (c.target_page) {
+        var now = _pr.seo[_prPath(c.target_page)];
+        if (c.baseline_date && now) {
+          var days = Math.round((new Date(now.date) - new Date(c.baseline_date)) / 864e5);
+          impact = '<div style="font-size:0.7rem;color:#bbb;margin-top:6px;">Search Console for <code>' + esc(c.target_page) + '</code> (7-day window): clicks <b>' + (c.baseline_clicks || 0) + ' &rarr; ' + now.clicks + '</b>, impressions <b>' + (c.baseline_impressions || 0) + ' &rarr; ' + now.impressions + '</b> since ' + _prDay(c.baseline_date) + '. ' + (days < 14 ? '<span style="color:#888;">Too early to read (' + days + ' days).</span>' : '<span style="color:#888;">Correlation, not proof &mdash; seasonality and rankings move too.</span>') + '</div>';
+        } else impact = '<div style="font-size:0.7rem;color:#777;margin-top:6px;">No Search Console snapshot for ' + esc(c.target_page) + ' yet (only the top pages are tracked).</div>';
+      }
+      var h = '<div style="border:1px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.02);border-radius:12px;padding:12px;margin-bottom:10px;">';
+      h += '<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;"><div style="min-width:0;"><a href="' + esc(c.article_url) + '" target="_blank" rel="noopener" style="color:#fff;font-weight:700;font-size:0.85rem;text-decoration:none;word-break:break-word;">' + esc(c.title || c.article_url) + ' &#8599;</a><div style="font-size:0.66rem;color:#777;">' + esc(tg ? tg.outlet : '') + (c.published_on ? ' &middot; ' + _prDay(c.published_on) : '') + '</div></div>' + _prBadge(s[0], s[1]) + '</div>';
+      if (c.anchor_text) h += '<div style="font-size:0.7rem;color:#bbb;margin-top:6px;">Anchor text: &ldquo;' + esc(c.anchor_text) + '&rdquo;</div>';
+      if (c.link_status === 'mention_only') h += '<div style="font-size:0.7rem;color:#4a9eff;margin-top:6px;">They named us without linking. A short, polite note asking them to link usually works. ' + _prBtn('Copy the ask', 'prCopyAsk(\'' + c.id + '\')', '#4a9eff') + '</div>';
+      if (c.link_status === 'missing') h += '<div style="font-size:0.7rem;color:#ef4444;margin-top:6px;">The page loads but has no link or mention. It may have been edited or removed.</div>';
+      if (c.notes) h += '<div style="font-size:0.66rem;color:#777;margin-top:4px;">' + esc(c.notes) + '</div>';
+      h += impact + '<div style="font-size:0.64rem;color:#666;margin-top:6px;">' + (c.last_checked_at ? 'Checked ' + _prDay(c.last_checked_at) : 'Not checked yet') + '</div>';
+      h += '<div style="display:flex;gap:6px;margin-top:8px;">' + _prBtn('Check now', 'prCheckOne(\'' + c.id + '\',this)', '#e879f9') + _prBtn('Remove', 'prDelCov(\'' + c.id + '\')', '#888') + '</div></div>';
+      return h;
+    }).join('');
+  }
+
+  // ── actions ──
+  async function _prUpd(id, patch, quiet) {
+    try {
+      patch.updated_at = new Date().toISOString();
+      var sc = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var r = await sc.from('pr_targets').update(patch).eq('id', id).select('id');
+      if (r.error) throw r.error;
+      if (!r.data || !r.data.length) throw new Error('No row was updated');
+      var t = _pr.targets.find(function (x) { return x.id === id; }); if (t) Object.assign(t, patch);
+      if (!quiet) _prRender();
+      return true;
+    } catch (e) { alert('Could not save: ' + (e.message || e)); return false; }
+  }
+  window.prSet = function (id, st) { _prUpd(id, { status: st }); };
+  window.prSavePitch = function (id) {
+    var s = document.getElementById('prSub_' + id), b = document.getElementById('prBody_' + id); if (!s || !b) return;
+    _prUpd(id, { pitch_subject: s.value, pitch_body: b.value }, true);
+  };
+  window.prDraft = async function (id, btn) {
+    var t = _pr.targets.find(function (x) { return x.id === id; });
+    if (t && t.pitch_body && !confirm('Replace the current draft with a new one?')) return;
+    var o = btn.innerHTML; btn.disabled = true; btn.innerHTML = '&#9203; Quoya is drafting…';
+    try {
+      var r = await fetch('/.netlify/functions/pr-pitch-draft', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: id }) });
+      var d = await r.json();
+      if (!r.ok) throw new Error(d.error || 'Draft failed');
+      t.pitch_subject = d.subject; t.pitch_body = d.body; _pr.open[id] = true; _prRender();
+    } catch (e) { alert('Could not draft: ' + (e.message || e)); btn.disabled = false; btn.innerHTML = o; }
+  };
+  window.prCopy = function (id) {
+    var t = _pr.targets.find(function (x) { return x.id === id; });
+    var txt = 'Subject: ' + (t.pitch_subject || '') + '\n\n' + (t.pitch_body || '');
+    (navigator.clipboard ? navigator.clipboard.writeText(txt) : Promise.reject()).then(function () { alert('Copied.'); }, function () { prompt('Copy this:', txt); });
+  };
+  window.prMailto = function (id) {
+    var t = _pr.targets.find(function (x) { return x.id === id; });
+    location.href = 'mailto:' + encodeURIComponent(t.contact_email) + '?subject=' + encodeURIComponent(t.pitch_subject || '') + '&body=' + encodeURIComponent(t.pitch_body || '');
+  };
+  window.prSent = function (id) { var d = new Date(); _prUpd(id, { status: 'pitched', sent_at: d.toISOString(), followup_at: new Date(d.getTime() + 7 * 864e5).toISOString() }); };
+  window.prFollowed = function (id) { _prUpd(id, { followup_at: new Date(Date.now() + 7 * 864e5).toISOString() }); };
+  window.prReplied = function (id) { var n = prompt('What did they say? (one line)', ''); if (n === null) return; _prUpd(id, { status: 'responded', response_at: new Date().toISOString(), response_note: n }); };
+  window.prPubForm = function (id) { _pr.pubFor = id; _pr.tab = _pr.tab === 'review' ? 'review' : _pr.tab; _prRender(); };
+  window.prPubSave = async function (id) {
+    var url = (document.getElementById('prArtUrl').value || '').trim();
+    if (!/^https?:\/\/[^\s]+\.[^\s]+/i.test(url)) { alert('Paste the full article URL, starting with https://'); return; }
+    var page = document.getElementById('prArtPage').value;
+    var base = page ? _pr.seo[_prPath(page)] : null;
+    try {
+      var sc = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var ins = await sc.from('pr_coverage').insert({ target_id: id, article_url: url, title: (document.getElementById('prArtTitle').value || '').trim() || null, published_on: new Date().toISOString().slice(0, 10),
+        target_page: page || null, baseline_clicks: base ? base.clicks : null, baseline_impressions: base ? base.impressions : null, baseline_date: base ? base.date : null }).select('id');
+      if (ins.error) throw ins.error;
+      if (!ins.data || !ins.data.length) throw new Error('Nothing was saved');
+      await _prUpd(id, { status: 'published' }, true);
+      _pr.pubFor = null; _pr.tab = 'coverage';
+      fetch('/.netlify/functions/pr-link-check', { method: 'POST', body: JSON.stringify({ id: ins.data[0].id }) }).catch(function () {}).then(function () { loadPrPanel(); });
+      loadPrPanel();
+    } catch (e) { alert('Could not save: ' + (/duplicate|unique/i.test(e.message || '') ? 'that article is already logged.' : (e.message || e))); }
+  };
+  window.prCheckOne = async function (id, btn) {
+    var o = btn.innerHTML; btn.disabled = true; btn.innerHTML = 'Checking…';
+    try { await fetch('/.netlify/functions/pr-link-check', { method: 'POST', body: JSON.stringify({ id: id }) }); } catch (e) {}
+    loadPrPanel();
+  };
+  window.prCheckAll = async function (btn) {
+    var o = btn.innerHTML; btn.disabled = true; btn.innerHTML = 'Checking…';
+    try { await fetch('/.netlify/functions/pr-link-check', { method: 'POST', body: '{}' }); } catch (e) {}
+    loadPrPanel();
+  };
+  window.prDelCov = async function (id) {
+    if (!confirm('Remove this article from tracking?')) return;
+    var sc = supabase.createClient(SUPA_URL, SUPA_KEY);
+    var r = await sc.from('pr_coverage').delete().eq('id', id);
+    if (r.error) { alert('Could not remove: ' + r.error.message); return; }
+    loadPrPanel();
+  };
+  window.prCopyAsk = function (id) {
+    var c = _pr.coverage.find(function (x) { return x.id === id; });
+    var txt = 'Hi — thank you for including Solar Review in your piece. Would you be able to add a link to fixmy.energy' + (c && c.target_page ? c.target_page : '') + ' where we are mentioned, so readers can find us easily? Happy to help with anything else you need. — Dennis Larsen, Solar Review, (619) 777-6527';
+    (navigator.clipboard ? navigator.clipboard.writeText(txt) : Promise.reject()).then(function () { alert('Copied.'); }, function () { prompt('Copy this:', txt); });
+  };
+  window.prAddOutlet = async function () {
+    var name = prompt('Outlet name (e.g. Times of San Diego):'); if (!name) return;
+    var url = prompt('Outlet website (https://…):'); if (!url) return;
+    var dom = ''; try { dom = new URL(/^https?:/i.test(url) ? url : 'https://' + url).hostname.toLowerCase().replace(/^www\./, ''); } catch (e) { alert('That does not look like a website.'); return; }
+    var cname = prompt('Reporter or editor name (optional):') || null;
+    var cmail = (prompt('Their email, only if it is listed publicly (optional):') || '').trim().toLowerCase() || null;
+    try {
+      var sc = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var r = await sc.from('pr_targets').insert({ outlet: name, domain: dom, url: /^https?:/i.test(url) ? url : 'https://' + url, outlet_type: 'other', contact_name: cname, contact_email: cmail, source: 'manual', status: 'new', priority: 2 }).select('id');
+      if (r.error) throw r.error;
+      _pr.tab = 'review'; loadPrPanel();
+    } catch (e) { alert('Could not add: ' + (/duplicate|unique/i.test(e.message || '') ? 'that outlet and contact are already in the list.' : (e.message || e))); }
+  };
+  window.prRunResearch = function () {
+    var b = document.getElementById('runBtn-pr'); if (!b || b.disabled) return;
+    b.disabled = true; b.innerHTML = '&#9203; Research started…';
+    fetch('/.netlify/functions/run-agent-background?agent=pr').catch(function () {});
+    setTimeout(function () { alert('Research is running in the background and takes a few minutes. New outlets appear under To review; a summary lands in the Agent Inbox. Reload this tab to see them.'); }, 400);
+    setTimeout(function () { loadPrPanel(); }, 150000);
+  };
 
   // ── SEO sync health ────────────────────────────────────────────────────────
   // This panel used to print "updated nightly" above whatever rows existed. The sync
@@ -9738,7 +9990,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var filtered = filterState === 'all' ? reports : reports.filter(function(r){ return r.agent === filterState; });
       var priorityColor = { urgent:'#ef4444', high:'#f97316', normal:'#888' };
       var priorityBg    = { urgent:'rgba(239,68,68,0.12)', high:'rgba(249,115,22,0.1)', normal:'rgba(255,255,255,0.04)' };
-      var agentColor    = { 'marketing':'#8DC63F', 'socials':'#4a9eff', 'bizdev':'#9b6de8', 'crm-dev':'#f59e0b', 'seo':'#e879f9' };
+      var agentColor    = { 'marketing':'#8DC63F', 'socials':'#4a9eff', 'bizdev':'#9b6de8', 'crm-dev':'#f59e0b', 'seo':'#e879f9', 'pr':'#4a9eff' };
       var filterBtns = '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">'+
         '<button onclick="window._agentFilter=\'all\';loadAgentInbox()" style="padding:5px 14px;border-radius:100px;border:1px solid '+(filterState==='all'?'#8DC63F':'#333')+';background:'+(filterState==='all'?'#8DC63F':'transparent')+';color:'+(filterState==='all'?'#1A1A1A':'#888')+';font-size:0.75rem;font-weight:700;cursor:pointer;">All ('+reports.length+')</button>'+
         agentNames.map(function(a){

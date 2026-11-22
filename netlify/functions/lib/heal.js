@@ -23,7 +23,7 @@ const ALLOW = {
 };
 // Cities the market loop keeps a fresh report on. Override with pipeline_state key market_watchlist ([{city,state}]).
 const MARKETS = [{ city: 'Salt Lake City', state: 'UT' }, { city: 'Austin', state: 'TX' }];
-const AGENT_FN = { seo: 'seo', finance: 'finance', marketing: 'marketing', socials: 'socials', bizdev: 'bizdev', 'crm-dev': 'crm-dev', roadmap: 'roadmap', coaching: 'coaching' };
+const AGENT_FN = { seo: 'seo', finance: 'finance', marketing: 'marketing', socials: 'socials', bizdev: 'bizdev', 'crm-dev': 'crm-dev', roadmap: 'roadmap', coaching: 'coaching', pr: 'pr' };
 function H(k, x) { return Object.assign({ apikey: k, Authorization: 'Bearer ' + k, 'Content-Type': 'application/json' }, x || {}); }
 async function get(path, k) { const r = await fetch(SB + path, { headers: H(k) }); if (!r.ok) throw new Error('GET ' + path + ' ' + r.status); return r.json(); }
 async function state(k) { const rows = await get('/pipeline_state?select=key,value', k); const o = {}; rows.forEach(r => { let v = r.value; if (typeof v === 'string') { try { v = JSON.parse(v); } catch (e) {} } o[r.key] = v; }); return o; }
