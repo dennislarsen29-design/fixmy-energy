@@ -3071,3 +3071,6 @@ Committed on the branch, awaiting Dennis saying "deploy": Southern Utah pages, p
 - Data fix done: four Cosmic "50% at sale" receivable `commissions` rows marked paid (received date is a placeholder, Oct 3).
 - Search Console: all actionable not-indexed pages requested; after deploy request `/southern-utah-solar-repair` and `/solar-repair-st-george-ut` first; recheck in ~2 weeks.
 - Open: Dennis to share the Cosmic "Dennis' Sales" Google Sheet (not found in this Drive; try sharing with dennislarsen29@gmail.com) to reconcile payroll vs S.U.N.; GBP/Facebook/Nextdoor auto-posting not built (`gbp-post-agent.js` posts only if `GHL_GBP_ACCOUNT_ID` is set); optional PR "Partners" targets (roofers, electricians, realtors/inspectors, HVAC) awaiting his yes; review `assets/equip-agreement.js` wording.
+
+## Migrations applied (2026-11-22, Dennis via Supabase SQL Editor)
+`20261122_pr_outreach.sql`, `20261105c_heal_pr.sql` and `20261121_auto_unset_aside.sql` are now live (verified: `pr_targets`, `pr_coverage`, `heal_proposals.pr_url`, both `pv_unset_aside_*` triggers, Christopher McFarland reopened). `20261103_referrals.sql` was already applied. The Supabase connector's approval card keeps timing out in this app, so for schema changes give Dennis paste-ready SQL for the SQL Editor (Dashboard → SQL Editor → New query → Run) and verify afterward with `execute_sql`.
