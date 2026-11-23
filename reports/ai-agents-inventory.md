@@ -7,7 +7,7 @@ Reports filed = agent_reports rows, last 30 days.
 ## Scheduled agents (run on their own)
 | Agent | What it does | Schedule | Model | Web search | Reports 30d | Est. cost |
 |---|---|---|---|---|---|---|
-| finance-agent | Business books review, tax ideas — now ONE daily brief | Daily 5am PT | Sonnet 5 | yes | 64 (before the change) | ~$0.40–0.70/run → $12–20/mo |
+| finance-agent | Business books review — ONE weekly brief: this week vs last week, then 2–4 actions with dollar amounts | Mondays 5am PT | Sonnet 5 | yes (only when a tax rule needs confirming) | 64/30 days before the change → ~4/month | ~$0.50–0.80/run → ~$2–4/mo |
 | personal-finance-agent | Dennis's private financial coach | Daily 5:15am PT | Sonnet 5 | yes | (private table) | ~$10–15/mo |
 | business-review-agent (NEW, replaces marketing + bizdev + crm-dev) | Sales, marketing, ops, data, portal findings (max 8) | Mon | Sonnet 5.5 | no | — | ~$0.40/run → ~$2/mo |
 | seo-agent | SEO recommendations, title/meta PRs, blog topic ideas → content engine | Thu | Sonnet 5.5 | no | 12 | ~$0.35/run → ~$1.50/mo |
@@ -48,6 +48,6 @@ Reports filed = agent_reports rows, last 30 days.
 - gbp-post-agent: schedule removed 2026-11-23 (content engine posts to Google Business).
 
 - marketing-agent, bizdev-agent, crm-dev-agent: merged 2026-11-23 into business-review-agent (their schedules removed; their Run-now names run the review; their files stay because the review reuses their read tools).
-- finance-agent: files one combined daily brief instead of one report per finding.
+- finance-agent: weekly (Mondays) instead of nightly; one brief per run (numbers block + 2–4 actions, max 5 items), new week-over-week data tool, looks back 4 weeks to avoid repeats.
 - seo-agent: new article ideas go to the content engine (pipeline_state content_topic_ideas) instead of the inbox.
 - seo-agent and chat-agent moved from Opus 4.7 to Sonnet 5.5 (about 60% cheaper).

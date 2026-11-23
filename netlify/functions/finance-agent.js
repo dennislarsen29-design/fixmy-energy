@@ -1,5 +1,6 @@
-// Finance Agent — the AI financial advisor. Runs nightly ~5am PT (see netlify.toml),
-// after the 3:20am GHL payments sweep, so it always sees fresh books.
+// Finance Agent — the AI financial advisor. Runs WEEKLY, Mondays ~5am PT (see netlify.toml; was nightly
+// until 2026-11-23 — Dennis: "send one every week, it hasn't been very helpful yet"). Files ONE weekly brief:
+// last 7 days vs the 7 before, then the top 3–5 actions with dollar amounts.
 // Env vars required: ANTHROPIC_KEY, SUPA_SERVICE_KEY (+ VAPID keys for push).
 //
 // Reads the full financial picture (P&L, expense ledger, recurring charges,
@@ -157,7 +158,8 @@ const TOOLS = [
   { name: 'get_recurring_charges', description: 'Detects recurring same-merchant charges (subscriptions, memberships) with monthly cost — the subscription-audit list.', input_schema: { type: 'object', properties: {} } },
   { name: 'get_commissions_summary', description: 'Commissions by payee and status: owed to reps, override income owed to Solar Review Corp, paid totals — the payroll picture.', input_schema: { type: 'object', properties: {} } },
   { name: 'get_cash_position', description: 'Cash exposure: outstanding customer balances (invoiced minus paid), unpaid job costs, commissions owed — what is coming in vs going out.', input_schema: { type: 'object', properties: {} } },
-  { name: 'get_recent_reports', description: 'Your own finance reports from the last 7 days — check before writing to avoid repeating yesterday\'s findings.', input_schema: { type: 'object', properties: {} } },
+  { name: 'get_week_summary', description: 'This week vs last week: revenue collected, override income received, rep/setter pay, paid job costs, operating expenses (with the biggest new charges), owner money out/in, new commissions locked, and transactions still needing review. Start here.', input_schema: { type: 'object', properties: {} } },
+  { name: 'get_recent_reports', description: 'Your own finance briefs from the last 4 weeks — check before writing so you never repeat last week\'s advice.', input_schema: { type: 'object', properties: {} } },
   { name: 'write_recommendation', description: 'Save one advisor recommendation. Call once per distinct finding.', input_schema: {
       type: 'object',
       properties: {
@@ -295,13 +297,51 @@ async function executeTool(name, input, key, cache) {
     }
 
     case 'get_recent_reports': {
-      const since = new Date(); since.setDate(since.getDate() - 7);
-      const rows = await supaGet('/agent_reports?select=title,priority,body,created_at&agent=eq.finance&created_at=gte.' + since.toISOString() + '&order=created_at.desc&limit=30', key);
-      return JSON.stringify(rows.map(r => ({ date: r.created_at, priority: r.priority, title: r.title, said: String(r.body || '').slice(0, 220) })));
+      const since = new Date(); since.setDate(since.getDate() - 28);
+      const rows = await supaGet('/agent_reports?select=title,priority,body,created_at&agent=eq.finance&created_at=gte.' + since.toISOString() + '&order=created_at.desc&limit=40', key);
+      return JSON.stringify(rows.map(r => ({ date: r.created_at, priority: r.priority, title: r.title, said: String(r.body || '').slice(0, 600) })));
+    }
+
+    case 'get_week_summary': {
+      // Two 7-day windows ending now. Same booking rules as pnlSnapshot (owner equity off the P&L, owner's
+      // auto-paid commission reported separately because it is a ledger entry, not cash out).
+      const now = Date.now(), D = 86400000;
+      const win = t => { const x = new Date(t).getTime(); if (isNaN(x)) return null; if (x > now) return null; if (x >= now - 7 * D) return 'thisWeek'; if (x >= now - 14 * D) return 'lastWeek'; return null; };
+      const blank = () => ({ revenueCollected: 0, overrideIncomeReceived: 0, teamPayPaid: 0, ownerAutoPaidCommission: 0, jobCostsPaid: 0, operatingExpenses: 0, ownerTakenOut: 0, ownerPutIn: 0, newCommissionsLocked: 0, newCommissionRows: 0, expenseByAccount: {}, biggestCharges: [] });
+      const w = { thisWeek: blank(), lastWeek: blank() };
+      const r2 = n => Math.round(n * 100) / 100;
+      const isEq = n => /distribution|shareholder|owner.?(draw|contribution)/i.test(n || '');
+      b.pays.forEach(p => { const k = win(p.paid_at); if (k && (p.category || 'revenue') === 'revenue') w[k].revenueCollected += parseFloat(p.amount) || 0; });
+      b.comms.forEach(c => {
+        const amt = parseFloat(c.amount) || 0;
+        const kp = c.status === 'paid' ? win(c.paid_at) : null;
+        if (kp && c.payee === 'solar_review_corp') w[kp].overrideIncomeReceived += amt;
+        else if (kp && (c.kind === 'rep_commission' || c.kind === 'setter_commission')) { if (c.payee === OWNER_PAYEE) w[kp].ownerAutoPaidCommission += amt; else w[kp].teamPayPaid += amt; }
+        const ks = win(c.sold_at); if (ks) { w[ks].newCommissionsLocked += amt; w[ks].newCommissionRows++; }
+      });
+      b.costs.forEach(c => { const k = c.status === 'paid' ? win(c.paid_at) : null; if (k) w[k].jobCostsPaid += parseFloat(c.amount) || 0; });
+      b.expenses.forEach(e => {
+        const k = win(e.txn_date); if (!k) return; const amt = parseFloat(e.amount) || 0;
+        if (isEq(e.account_name)) { if (amt >= 0) w[k].ownerTakenOut += amt; else w[k].ownerPutIn += -amt; return; }
+        w[k].operatingExpenses += amt; const a = e.account_name || 'Uncategorized'; w[k].expenseByAccount[a] = (w[k].expenseByAccount[a] || 0) + amt;
+        w[k].biggestCharges.push({ date: e.txn_date, merchant: e.merchant || e.description, amount: r2(amt), account: e.account_name || 'Uncategorized' });
+      });
+      Object.keys(w).forEach(k => {
+        const o = w[k];
+        ['revenueCollected', 'overrideIncomeReceived', 'teamPayPaid', 'ownerAutoPaidCommission', 'jobCostsPaid', 'operatingExpenses', 'ownerTakenOut', 'ownerPutIn', 'newCommissionsLocked'].forEach(f => { o[f] = r2(o[f]); });
+        o.moneyIn = r2(o.revenueCollected + o.overrideIncomeReceived);
+        o.moneyOutExcludingOwner = r2(o.teamPayPaid + o.jobCostsPaid + o.operatingExpenses);
+        o.netCashLikeExcludingOwner = r2(o.moneyIn - o.moneyOutExcludingOwner);
+        o.expenseByAccount = Object.fromEntries(Object.entries(o.expenseByAccount).map(([a, x]) => [a, r2(x)]).sort((x, y) => y[1] - x[1]));
+        o.biggestCharges = o.biggestCharges.sort((x, y) => y.amount - x.amount).slice(0, 6);
+      });
+      const needsReview = b.expenses.filter(e => e.review_status === 'needs_review').length;
+      const lastTxn = b.expenses.map(e => e.txn_date).filter(Boolean).sort().pop() || null;
+      return JSON.stringify({ windows: 'thisWeek = last 7 days ending today; lastWeek = the 7 days before that', thisWeek: w.thisWeek, lastWeek: w.lastWeek, needsReviewCountAllTime: needsReview, newestBankTransactionDate: lastTxn, caveat: 'ownerAutoPaidCommission is a ledger entry, not cash out. If newestBankTransactionDate is more than ~3 days old, the bank sync is behind and this week\'s expenses are incomplete — say so instead of calling spending down.' });
     }
 
     case 'write_recommendation': {
-      // Buffered (2026-11-23, per Dennis): all of a run's recommendations are filed as ONE daily brief at the end.
+      // Buffered (2026-11-23, per Dennis): all of a run's recommendations are filed as ONE weekly brief at the end.
       if (cache) { cache.recs = cache.recs || []; cache.recs.push({ priority: normalizePriority(input.priority), title: String(input.title || ''), body: String(input.body || '') }); return 'Saved.'; }
       await supaInsert('agent_reports', {
         agent: 'finance', priority: normalizePriority(input.priority),
@@ -319,7 +359,12 @@ const WEB_SEARCH_TOOL = { type: 'web_search_20250305', name: 'web_search', max_u
 
 const SYSTEM = `You are the AI Financial Advisor for Solar Review Corp — a California S-Corp (cash-basis books) doing solar diagnostics, repairs, battery retrofits, and solar sales commissions in San Diego. The owner is Dennis Larsen; he currently pays a CPA $145/month for bookkeeping this portal is designed to replace.
 
-You run nightly. You are a PROACTIVE advisor, not a reporter: don't restate what happened — recommend what to DO next, with dollar amounts.
+You run ONCE A WEEK (Monday morning) and file ONE weekly brief. Dennis found the old nightly reports unhelpful: too many, repetitive, and full of things he could not act on. This brief must be worth reading in two minutes.
+
+Shape of the brief (write_recommendation calls, most valuable first, 3 to 5 total):
+- FIRST call, always: title "This week in numbers", priority normal. Body = 3 to 5 short lines from get_week_summary comparing this week to last week: money in, money out (excluding the owner's auto-paid commission), new commissions locked, and the one number that moved most and why (name the merchant, customer or account). Say plainly if the bank sync is behind.
+- Then 2 to 4 ACTIONS. Each one: title starts with a verb; body says what to do, the dollar amount at stake, who does it, and by when (a date this week or next). Only include an action if it is worth at least ~$100 or prevents a real problem.
+- If nothing is worth acting on, write only the numbers block and add one line saying no action is needed this week.
 
 Your analysis, in priority order:
 1. WASTE — redundant subscriptions, creeping recurring charges, expense categories growing faster than revenue. Name the merchant and the annual cost.
@@ -329,14 +374,15 @@ Your analysis, in priority order:
 5. BOOKS HYGIENE — uncategorized/needs-review transactions piling up; months with income but no expense data (statements not uploaded).
 
 Rules:
-- Check get_recent_reports FIRST. Do NOT repeat a recommendation or reminder from the last 7 days unless a number changed by more than ~10% or the situation changed. Never write a countdown/deadline nag ("N days left", "due today") more than once. Write at most 3 reports a night; if nothing material changed write ONE "books are quiet" note.
+- Check get_recent_reports FIRST. Do NOT repeat an action from the last 4 weeks unless the dollar amount changed by more than ~10% or the situation changed; if you do repeat, say what changed. Never write a countdown/deadline nag more than once. Never more than 5 write_recommendation calls.
+- Skip anything Dennis cannot act on this week, generic tax tips, and anything that needs more data you do not have. Tax ideas only when the books show a concrete trigger (e.g. a quarterly estimate is due within 3 weeks, net taken out with no salary), and only after web_search confirms the current rule.
 - RECONCILE BEFORE YOU FLAG. Never ask Dennis to "confirm whether it's timing or real losses" — work it out yourself with the tools (get_pnl_snapshot cogsByAccount, ownerAutoPaidCommission, get_commissions_summary due-now vs not-yet-due) and state what the numbers show.
 - The owner's (Dennis's) commission is auto-marked paid and lands in the same bank account — it is a ledger entry, not cash out. When you quote a margin, state whether it includes it, and prefer the *ExcludingOwnerAutoPaid figures. Do not call it a cash payout or compute payroll tax on it as if cash moved.
 - Never say books are "closed" or "finalized" and never invent a close deadline — this system has no close step. A bucket of uncategorized transactions only affects the month it is dated in.
 - Money coming in: only overrideIncomeDueNow is collectable. Never tell Dennis to "collect" the full locked override total, and never describe the cash gap using unpaidJobCostsAccruedVisitNotDone or suspectJobCostLines — those are not obligations. Quote customerBalancesOutstanding, unpaidJobCostsConfirmed, overrideIncomeDueNow and commissionsOwedToTeamNonOwner.
 - Transfers to the owner's personal Chase (****1065) or to "Larsen,Dennis" are owner distributions (equity), not uncategorized expenses — recommend coding them as Shareholder Distributions.
 - Quote counts exactly as the tools return them (needsReviewCountAllTime vs InWindow); never round or guess.
-- If the books are empty or nothing material changed, write ONE brief "books are quiet" note at normal priority — never invent findings.
+- If the books are empty or nothing material changed, write only the numbers block plus "no action needed this week" — never invent findings.
 - Owner money: each month's "ownerEquity" shows takenOut, putIn and net. Judge distributions by the NET over the period, never the sum of monthly sizes. Owner transfers in from personal accounts are not income and not expenses; they reduce net distributions, and a net contribution means no distribution-vs-salary issue from those months. Flag a distribution-without-salary concern only when the cumulative net taken out is positive, and quote that net.
 - Be specific: dollar amounts, merchant names, month names, exact next actions. No generic advice.
 - You are not a licensed CPA or tax attorney and never present yourself as one.`;
@@ -345,7 +391,7 @@ exports.handler = async function () {
   const key = process.env.SUPA_SERVICE_KEY;
   if (!process.env.ANTHROPIC_KEY || !key) {
     console.error('[finance-agent] Missing ANTHROPIC_KEY or SUPA_SERVICE_KEY');
-    try { if (key) await supaInsert('agent_reports', { agent: 'finance', priority: 'urgent', title: 'Finance Agent Error — ANTHROPIC_KEY is not set in Netlify', body: 'The nightly advisor could not run because ANTHROPIC_KEY is missing.', action_url: null }, key); } catch (e) {}
+    try { if (key) await supaInsert('agent_reports', { agent: 'finance', priority: 'urgent', title: 'Finance Agent Error — ANTHROPIC_KEY is not set in Netlify', body: 'The weekly finance advisor could not run because ANTHROPIC_KEY is missing.', action_url: null }, key); } catch (e) {}
     return { statusCode: 200, body: 'Missing required env vars' };
   }
 
@@ -358,7 +404,7 @@ exports.handler = async function () {
     const _fb = await require('./lib/agent-replies').loadFeedback('finance', key);
     const messages = [{
       role: 'user',
-      content: _fb.text + `Run tonight's financial review. Today is ${today}. Start with get_recent_reports, then gather: get_pnl_snapshot, get_expense_breakdown, get_recurring_charges, get_commissions_summary, get_cash_position. Use web_search only where a tax rule or rate needs confirming.`
+      content: _fb.text + `Run this week's financial review. Today is ${today}. Start with get_recent_reports and get_week_summary, then gather what you need from: get_pnl_snapshot, get_expense_breakdown, get_recurring_charges, get_commissions_summary, get_cash_position. Use web_search only where a tax rule or rate needs confirming.`
     }];
 
     // Phase 1: data gathering (client tools + server-side web search)
@@ -381,7 +427,7 @@ exports.handler = async function () {
 
     // Phase 2: write recommendations — tool_choice:any guarantees at least one
     let recCount = 0;
-    messages.push({ role: 'user', content: 'You have the full picture. Write your recommendations now with write_recommendation — one call per finding, most valuable first. If nothing material changed since recent reports, write the single "books are quiet" note.' });
+    messages.push({ role: 'user', content: 'You have the full picture. Write the weekly brief now with write_recommendation: first "This week in numbers", then 2 to 4 actions (verb title, dollar amount, who, by when), most valuable first. 5 calls maximum. If nothing needs action, write only the numbers block and say no action is needed this week.' });
 
     const wr1 = await callClaude(messages, [WRITE_TOOL], SYSTEM, { type: 'any' });
     messages.push({ role: 'assistant', content: wr1.content });
@@ -415,12 +461,18 @@ exports.handler = async function () {
     const recs = (cache && cache.recs) || [];
     if (recs.length) {
       const rank = { urgent: 0, high: 1, normal: 2 };
+      // Keep the "This week in numbers" block first; rank the actions behind it.
+      const nIdx = recs.findIndex(r => /in numbers/i.test(r.title));
+      const numbers = nIdx > -1 ? recs.splice(nIdx, 1) : [];
       recs.sort((a, b) => (rank[a.priority] ?? 2) - (rank[b.priority] ?? 2));
-      const dayLabel = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/Los_Angeles' });
+      recs.unshift.apply(recs, numbers);
+      const topPriority = recs.map(r => r.priority).sort((a, b) => (rank[a] ?? 2) - (rank[b] ?? 2))[0] || 'normal';
+      const dayLabel = 'week of ' + new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/Los_Angeles' });
+      recs.splice(5);
       await supaInsert('agent_reports', {
-        agent: 'finance', priority: recs[0].priority,
-        title: recs.length === 1 ? recs[0].title : 'Finance brief ' + dayLabel + ' — ' + recs.length + ' items: ' + recs[0].title.slice(0, 70),
-        body: recs.length === 1 ? recs[0].body : recs.map((r, i) => (i + 1) + '. ' + r.title + (r.priority !== 'normal' ? ' [' + r.priority + ']' : '') + '\n' + r.body).join('\n\n'),
+        agent: 'finance', priority: topPriority,
+        title: 'Weekly finance brief, ' + dayLabel + (recs.length > 1 ? ' — ' + (recs.length - (/in numbers/i.test(recs[0].title) ? 1 : 0)) + ' action(s)' : ' — no action needed'),
+        body: recs.map((r, i) => (i + 1) + '. ' + r.title + (r.priority !== 'normal' ? ' [' + r.priority + ']' : '') + '\n' + r.body).join('\n\n'),
         action_url: null
       }, key);
     }
