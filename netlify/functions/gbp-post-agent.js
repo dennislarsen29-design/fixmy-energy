@@ -1,3 +1,5 @@
+// ⚠️ RETIRED 2026-11-23: replaced by the content engine (content-agent + content-publish). Not scheduled and
+// not reachable from the portal; kept only for reference. Do not re-schedule (it would double-post).
 // Google Business Profile post agent — scheduled twice a week (see netlify.toml).
 // Writes ONE local-SEO post per run. Always files the finished text in agent_reports
 // (agent 'gbp', so the daily digest email carries it). If GHL Social Planner has the Business

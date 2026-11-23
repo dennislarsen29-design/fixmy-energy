@@ -1,3 +1,5 @@
+// ⚠️ RETIRED 2026-11-23: replaced by the content engine (content-agent + content-publish). Not scheduled and
+// not reachable from the portal; kept only for reference. Do not re-schedule (it would double-post).
 // Socials Agent — runs daily ~8am PT (see netlify.toml)
 // Env vars required: ANTHROPIC_KEY, SUPA_SERVICE_KEY, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY
 // Generates ready-to-post social content based on recent wins, pipeline events,

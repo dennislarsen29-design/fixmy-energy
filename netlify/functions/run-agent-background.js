@@ -4,7 +4,7 @@
 
 const AGENTS = {
   marketing: require('./marketing-agent'),
-  socials:   require('./socials-agent'),
+  socials:   require('./content-agent'),   // retired 2026-11-23: socials-agent replaced by the content engine
   bizdev:    require('./bizdev-agent'),
   'crm-dev': require('./crm-dev-agent'),
   seo:       require('./seo-agent'),
