@@ -95,12 +95,14 @@ exports.handler = async function (event) {
       C.imageOptions(key, 8)
     ]);
     const fb = await feedback.loadFeedback('content', key);
+    const ideas = ((await C.stateGet('content_topic_ideas', key)) || {}).items || [];
+    const ideasText = ideas.length ? '\n\nBLOG TOPIC IDEAS FROM THE SEO AGENT (backed by Search Console data — prefer one of these for the blog if it is not already covered):\n' + ideas.map(x => '- ' + x.topic + (x.target_query ? ' (query: ' + x.target_query + ')' : '') + ' — ' + x.evidence).join('\n') : '';
     const gbpText = gbp.map(g => '- ' + String(g.created_at).slice(0, 10) + ': ' + String(g.body || '').split('\n—')[0].slice(0, 500).replace(/\s+/g, ' ')).join('\n') || 'none yet';
     const recentText = recent.map(r => '- [' + r.kind + ', ' + r.status + '] ' + (r.title || r.topic)).join('\n') || 'none yet';
     const weekLabel = monday.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
     const user = fb.text + 'Week of ' + weekLabel + '.\n\nEXISTING BLOG PAGES (do not repeat their topic; you may link to them):\n' + (blogPaths.join('\n') || '/blog') +
       '\nOther pages you may link: /book, /defunct-solar-installers, /sunpower, /titan, /sunnova, /southern-california-solar-repair\n\n' +
-      'RECENT GOOGLE BUSINESS POSTS (match this voice, do not repeat these topics):\n' + gbpText + '\n\nCONTENT ALREADY DRAFTED OR PUBLISHED (do not repeat):\n' + recentText;
+      'RECENT GOOGLE BUSINESS POSTS (match this voice, do not repeat these topics):\n' + gbpText + '\n\nCONTENT ALREADY DRAFTED OR PUBLISHED (do not repeat):\n' + recentText + ideasText;
 
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -137,6 +139,7 @@ exports.handler = async function (event) {
       });
     });
     await C.sbPost('/content_posts', rows, key);
+    if (ideas.length) await C.stateSet('content_topic_ideas', { items: [] }, key);   // offered once; the SEO agent re-queues anything still worth writing
 
     const summary = 'This week\'s content is ready to review in Agents -> Content.\n\nBlog: ' + b.title + ' (goes live Wednesday once approved)\n' +
       out.shorts.slice(0, 3).map((s, i) => 'Post ' + (i + 1) + ' (' + ['Tue', 'Thu', 'Sat'][i] + '): ' + s.topic).join('\n') +

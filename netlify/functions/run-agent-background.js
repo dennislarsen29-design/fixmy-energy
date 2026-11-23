@@ -3,10 +3,11 @@
 // Background function (15-min timeout) so agents can complete their full run.
 
 const AGENTS = {
-  marketing: require('./marketing-agent'),
+  marketing: require('./business-review-agent'),   // 2026-11-23: marketing, bizdev and crm-dev merged into the weekly business review
+  review:    require('./business-review-agent'),
   socials:   require('./content-agent'),   // retired 2026-11-23: socials-agent replaced by the content engine
-  bizdev:    require('./bizdev-agent'),
-  'crm-dev': require('./crm-dev-agent'),
+  bizdev:    require('./business-review-agent'),
+  'crm-dev': require('./business-review-agent'),
   seo:       require('./seo-agent'),
   finance:   require('./finance-agent'),
   personal_coach: require('./personal-finance-agent'),

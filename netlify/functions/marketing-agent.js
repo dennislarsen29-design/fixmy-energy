@@ -281,3 +281,8 @@ exports.handler = async function() {
     return { statusCode: 200, body: 'Error: ' + e.message };
   }
 };
+
+// Shared with business-review-agent.js (2026-11-23): its read tools are reused there.
+exports.TOOLS = TOOLS;
+exports.executeTool = executeTool;
+exports.SYSTEM = SYSTEM;

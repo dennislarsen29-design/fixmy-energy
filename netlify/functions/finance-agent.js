@@ -301,6 +301,8 @@ async function executeTool(name, input, key, cache) {
     }
 
     case 'write_recommendation': {
+      // Buffered (2026-11-23, per Dennis): all of a run's recommendations are filed as ONE daily brief at the end.
+      if (cache) { cache.recs = cache.recs || []; cache.recs.push({ priority: normalizePriority(input.priority), title: String(input.title || ''), body: String(input.body || '') }); return 'Saved.'; }
       await supaInsert('agent_reports', {
         agent: 'finance', priority: normalizePriority(input.priority),
         title: input.title, body: input.body, action_url: null
@@ -410,7 +412,19 @@ exports.handler = async function () {
       }
     }
 
-    if (recCount > 0) await sendAgentNotification('finance', recCount);
+    const recs = (cache && cache.recs) || [];
+    if (recs.length) {
+      const rank = { urgent: 0, high: 1, normal: 2 };
+      recs.sort((a, b) => (rank[a.priority] ?? 2) - (rank[b.priority] ?? 2));
+      const dayLabel = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/Los_Angeles' });
+      await supaInsert('agent_reports', {
+        agent: 'finance', priority: recs[0].priority,
+        title: recs.length === 1 ? recs[0].title : 'Finance brief ' + dayLabel + ' — ' + recs.length + ' items: ' + recs[0].title.slice(0, 70),
+        body: recs.length === 1 ? recs[0].body : recs.map((r, i) => (i + 1) + '. ' + r.title + (r.priority !== 'normal' ? ' [' + r.priority + ']' : '') + '\n' + r.body).join('\n\n'),
+        action_url: null
+      }, key);
+    }
+    if (recCount > 0) await sendAgentNotification('finance', 1);
     console.log('[finance-agent] Done. Turns:', turns, 'Recommendations:', recCount);
     return { statusCode: 200, body: 'Finance agent completed' };
   } catch (e) {

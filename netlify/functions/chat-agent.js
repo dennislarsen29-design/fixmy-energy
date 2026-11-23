@@ -152,7 +152,7 @@ ${context}`;
     const resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({ model: 'claude-opus-4-7', max_tokens: 1024, system: systemPrompt, messages })
+      body: JSON.stringify({ model: 'claude-sonnet-5-5', max_tokens: 4000, system: systemPrompt, messages })
     });
 
     if (!resp.ok) throw new Error('Claude API error: ' + resp.status + ' ' + await resp.text());

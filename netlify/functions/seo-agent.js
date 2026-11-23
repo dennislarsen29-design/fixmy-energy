@@ -36,7 +36,7 @@ async function callClaude(messages, tools, system) {
   const resp = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_KEY, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({ model: 'claude-opus-4-7', max_tokens: 8192, system, tools, messages })
+    body: JSON.stringify({ model: 'claude-sonnet-5-5', max_tokens: 12000, system, tools, messages })
   });
   if (!resp.ok) throw new Error('Claude API error: ' + resp.status + ' ' + await resp.text());
   return resp.json();
@@ -85,6 +85,17 @@ const PROPOSE_TOOL = {
   }, required: ['page_url', 'new_title', 'new_meta', 'hypothesis'] }
 };
 
+// Hands new-article ideas to the content engine (2026-11-23, per Dennis), instead of filing them as recommendations.
+const TOPIC_TOOL = {
+  name: 'suggest_blog_topic',
+  description: 'Queue ONE blog article idea for the content engine (it drafts 1 article a week for Dennis to approve). Use this instead of write_recommendation for any "write a page/article about X" idea. Max 3 per run.',
+  input_schema: { type: 'object', properties: {
+    topic: { type: 'string', description: 'The article topic or question it answers' },
+    target_query: { type: 'string', description: 'The search query it should rank for' },
+    evidence: { type: 'string', description: 'The data behind it, e.g. "query X: 340 impressions at position 38, no dedicated page"' }
+  }, required: ['topic', 'evidence'] }
+};
+
 async function runTool(name, input, key) {
   switch (name) {
     case 'get_seo_metrics': {
@@ -117,6 +128,16 @@ async function runTool(name, input, key) {
       global.__seoProposals = (global.__seoProposals || 0) + 1;
       return JSON.stringify(await require('./lib/seo-loop').proposeChange(input, key));
     }
+    case 'suggest_blog_topic': {
+      if ((global.__seoTopics || 0) >= 3) return 'Limit reached: 3 topics per run.';
+      global.__seoTopics = (global.__seoTopics || 0) + 1;
+      const C = require('./lib/content');
+      const cur = (await C.stateGet('content_topic_ideas', key)) || { items: [] };
+      const items = (cur.items || []).filter(x => x && x.topic && Date.now() - new Date(x.at).getTime() < 60 * 86400000);
+      if (items.some(x => x.topic.toLowerCase() === String(input.topic || '').toLowerCase())) return 'Already queued.';
+      items.push({ topic: String(input.topic || '').slice(0, 200), target_query: String(input.target_query || '').slice(0, 120), evidence: String(input.evidence || '').slice(0, 400), at: new Date().toISOString() });
+      return (await C.stateSet('content_topic_ideas', { items: items.slice(-10) }, key)) ? 'Queued for the content engine.' : 'Could not save.';
+    }
     case 'write_recommendation':
       await supaInsert('agent_reports', {
         agent: 'seo', priority: normalizePriority(input.priority),
@@ -136,7 +157,7 @@ Context you must factor in:
 - Strategy: own "orphaned solar installer" queries (SunPower/Titan/Sunnova bankruptcies), solar repair symptom queries, and battery-retrofit + SGIP/SDCP rebate queries in San Diego County.
 - The business goal is booked evaluations, not traffic. Weigh queries by commercial intent.
 
-SELF-CORRECTION LOOP: your title/meta fixes are NOT just advice. Use propose_title_meta_change to open a pull request for Dennis to merge; each one is tracked and measured ~2 weeks after merging, and the verdicts (win/loss/rejected) come back to you in EXPERIMENT HISTORY. Learn from it: copy the pattern of titles that won, drop patterns that lost, never re-propose something Dennis rejected, and do not touch a page that is still measuring. Use write_recommendation only for things a PR cannot do (new pages, content, links, off-site work).\n\nEach week: pull the data, compare the recent period to the prior one, and write 2-5 concrete recommendations via write_recommendation (most important first). Good recommendations name a specific page, query, or metric and a specific change ("write a page targeting X — it gets N impressions at position 40 with no dedicated page", "title of /sunpower truncated in SERPs, shorten to ...", "CTR on query X is 1.2% at position 4 — rewrite the meta description"). If data is missing or too thin to analyze, write ONE 'normal' recommendation explaining exactly what setup step is missing and stop.`;
+SELF-CORRECTION LOOP: your title/meta fixes are NOT just advice. Use propose_title_meta_change to open a pull request for Dennis to merge; each one is tracked and measured ~2 weeks after merging, and the verdicts (win/loss/rejected) come back to you in EXPERIMENT HISTORY. Learn from it: copy the pattern of titles that won, drop patterns that lost, never re-propose something Dennis rejected, and do not touch a page that is still measuring. New article ideas go to suggest_blog_topic (the content engine drafts them for Dennis to approve), not write_recommendation. Use write_recommendation only for things neither a PR nor an article can do (links, off-site work, technical fixes).\n\nEach week: pull the data, compare the recent period to the prior one, and write 2-5 concrete recommendations via write_recommendation (most important first). Good recommendations name a specific page, query, or metric and a specific change ("write a page targeting X — it gets N impressions at position 40 with no dedicated page", "title of /sunpower truncated in SERPs, shorten to ...", "CTR on query X is 1.2% at position 4 — rewrite the meta description"). If data is missing or too thin to analyze, write ONE 'normal' recommendation explaining exactly what setup step is missing and stop.`;
 
 exports.handler = async function() {
   const key = process.env.SUPA_SERVICE_KEY;
@@ -167,7 +188,7 @@ exports.handler = async function() {
 
   try {
     let turns = 0, wrote = 0;
-    const tools = DATA_TOOLS.concat([WRITE_TOOL, PROPOSE_TOOL]);
+    const tools = DATA_TOOLS.concat([WRITE_TOOL, PROPOSE_TOOL, TOPIC_TOOL]); global.__seoTopics = 0;
     while (turns++ < 10) {
       const response = await callClaude(messages, tools, SYSTEM);
       messages.push({ role: 'assistant', content: response.content });
