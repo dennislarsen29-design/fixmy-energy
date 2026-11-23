@@ -3084,3 +3084,12 @@ Separate from the PR agent (which still skips directories). A checklist of 23 si
 
 ## Google review ask in Next step (2026-11-23, per Dennis)
 Close-out todo `gbreview` ("Google review not asked") right after the referral ask, on FixMy and Axia jobs (counts toward Completed). The popup shows an editable message with the direct Google review link + Copy message / Text it (sms:) / Copy link only; "Yes, I asked" stamps `customers.review_asked_at` (column applied live; migration `20261123_review_asked_at.sql`). Nothing is auto-sent. The link is stored once in `pipeline_state` key `google_review_url` (`{url}`); until set, the popup asks for it (GBP → Ask for reviews → copy link). Existing completed jobs will now show this one step until answered.
+
+## Dennis's owner story — approved copy for profiles/write-ups (2026-11-23, per Dennis)
+Approved for Nextdoor's Owner Spotlight; reuse (lightly adapted) for any About page, GBP, Yelp, Facebook, LinkedIn, directory bios or press. Don't name the bankrupt company he worked for (Dennis chose "a company I was working for"). Don't call Solar Review a "public company".
+> Hi, I'm Dennis, a regular homeowner who's spent about a decade in the solar industry and helped thousands of homes go solar. Along the way I kept running into the same problem: homeowners who couldn't tell if their system was making power, and couldn't reach the company that installed it.
+> Then I was displaced myself when a company I was working for went bankrupt. I took it as a sign to make helping those homeowners our one and only focus, and that's how Solar Review started.
+> We built Solar Review to be the company that shows up. We handle diagnostics, repairs, warranty claims, battery add-ons, new solar and system expansions, no matter who installed your system. It starts with a free evaluation to find out what's actually going on and give you real value, with no commitment to move forward.
+> If your solar isn't doing what it should, call me at (619) 777-6527.
+
+Business "About" text (Nextdoor/directories): "Solar Review fixes and upgrades home solar systems in Southern California. We service systems from any installer, including companies that have gone out of business like SunPower, Titan and Sunnova. Free solar evaluation. Inverter repair and replacement, warranty claims, Tesla Powerwall battery add-ons and system health checks. Call (619) 777-6527 or book at fixmy.energy." Nextdoor business page is live (updated 2026-11-23); page link not yet logged in Listings.
