@@ -3692,6 +3692,25 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       return { known: true, complete: false, workDone: false, missing: todos.map(function(t){ return t.label; }), todos: todos };
     }
     if (c.sold_type === 'diagnostic' && c.invoice_status !== 'paid') todos.push({ key: 'fee', label: 'Diagnostic fee not paid' });
+    // What the diagnostic found decides the next move (2026-11-23, per Dennis — Cynthia Castillo). Until that work is
+    // finished, close-out questions (commissions, referral, review) wait, so a warranty exchange isn't skipped.
+    // Jobs that already reached the referral ask before this existed are left closed (no surprise re-opens).
+    if (c.sold_type === 'diagnostic' && !(c.referral_asked_at && !c.dx_outcome)) {
+      var dxo = c.dx_outcome || {}, dxp = c.proposal;
+      if (typeof dxp === 'string') { try { dxp = JSON.parse(dxp); } catch (e) { dxp = null; } }
+      var dxAcc = !!(dxp && dxp.status === 'accepted'), dxSent = !!(dxp && dxp.options && dxp.options.length && dxp.status !== 'draft');
+      var dxTodos = [];
+      if (!dxo.outcome) dxTodos.push({ key: 'dxout', label: 'Diagnostic result not recorded' });
+      else if (dxo.outcome === 'rma' || dxo.outcome === 'repair' || dxo.outcome === 'upgrade') {
+        if (!dxAcc) dxTodos.push(dxSent ? { key: 'dxaccept', label: 'Customer has not accepted and paid yet' } : { key: 'dxprop', label: 'Proposal not built yet' });
+        else if (dxo.outcome === 'rma') {
+          if (!dxo.rma_filed_at) dxTodos.push({ key: 'rmafiled', label: 'Warranty claim not filed' });
+          else if (!dxo.part_arrived_at) dxTodos.push({ key: 'rmapart', label: 'Replacement part not received' });
+          else if (!dxo.work_done_at) dxTodos.push({ key: 'dxdone', label: 'Warranty swap not done' });
+        } else if (!dxo.work_done_at) dxTodos.push({ key: 'dxdone', label: 'Work not marked done' });
+      }
+      if (dxTodos.length) { todos = todos.concat(dxTodos); return { known: true, complete: false, workDone: true, missing: todos.map(function(t){ return t.label; }), todos: todos }; }
+    }
     if ((d.closerAmt > 0 && !d.closerLocked) || (d.hasSetter && d.setterAmt > 0 && !d.setterLocked)) todos.push({ key: 'lock', label: 'Commissions not locked in' });
     var unpaidRows = st.comms.filter(function(k){ return (k.kind === 'rep_commission' || k.kind === 'setter_commission') && k.status !== 'paid'; });
     if (unpaidRows.length) todos.push({ key: 'comm_paid', label: 'Commission not paid out (' + unpaidRows.length + ')', rows: unpaidRows });
@@ -3865,6 +3884,29 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     else if (t.key === 'audit') { q = 'Is the install audit signed off?'; detail = 'Compare the sold design with the installed one. Payment 1 waits on this.'; yes = 'Yes, signed off'; }
     else if (t.key === 'pto') { q = 'Has the utility granted permission to operate (PTO)?'; detail = 'This starts the second Axia payment, the Domestic Content bonus.'; yes = 'Yes, PTO granted'; }
     else if (t.key === 'review') { q = 'The electrician\'s findings are in. Review them and build the upgrade path.'; detail = 'Open the job: read the findings and photos, write the customer report, book the Diagnostic Evaluation (Results Review) with the customer, then build the proposal.'; yes = 'Open the job'; }
+    else if (t.key === 'dxout') {
+      q = 'What did the diagnostic find? What happens next?';
+      var _df = c.diag_findings || {}, _dfl = [];
+      if (_df.cause) _dfl.push('Cause: ' + esc(_df.cause));
+      if (_df.error_codes) _dfl.push('Codes: ' + esc(_df.error_codes));
+      if (_df.warranty) _dfl.push('Warranty: ' + esc(_df.warranty));
+      detail = (_dfl.length ? _dfl.join('<br>') + '<br>' : (c.diagnostic_findings ? esc(String(c.diagnostic_findings).slice(0, 220)) + '&hellip;<br>' : '<span style="color:#777;">No written findings on file (the installer may have reported by phone).</span><br>')) + '<span style="color:#777;">Pick the result. Close-out (commissions, referral) waits until that work is done.</span>';
+    }
+    else if (t.key === 'dxprop') {
+      var _o = (c.dx_outcome || {}).outcome;
+      q = _o === 'rma' ? 'Build the proposal with the warranty exchange as Option 2' : _o === 'repair' ? 'Build the repair proposal' : 'Build the upgrade proposal';
+      detail = _o === 'rma' ? 'Option 1 = the upgrade you recommend. Option 2 = the warranty exchange: tap <b>Template: Warranty exchange (RMA) as Option 2</b> in the builder and type the service fee. When the customer accepts it, they sign and pay right away.' : 'Build the options in the Internal Proposal Tool and send it. A service option is signed and paid when accepted.';
+      yes = 'Open the proposal builder';
+    }
+    else if (t.key === 'dxaccept') {
+      var _dp = c.proposal; if (typeof _dp === 'string') { try { _dp = JSON.parse(_dp); } catch (e) { _dp = null; } }
+      var _sp = _dp && _dp.sign_pay;
+      q = 'Waiting on the customer to accept and pay';
+      detail = 'The proposal is ' + (_dp && _dp.status === 'sent' ? 'sent' : 'saved') + '. ' + (_sp && _sp.issued_at ? 'A Sign &amp; Pay link for <b>' + esc(_sp.title || 'an option') + '</b> went out ' + new Date(_sp.issued_at).toLocaleDateString() + '.' : 'No Sign &amp; Pay link has been sent yet.');
+    }
+    else if (t.key === 'rmafiled') { q = 'Has the warranty claim (RMA) been filed with the manufacturer?'; detail = 'The customer has signed and paid. File the claim, then come back here.'; yes = 'Yes, claim filed'; }
+    else if (t.key === 'rmapart') { q = 'Has the replacement part arrived?'; detail = 'Once it is in hand, book the swap in the lead\'s Schedule box.'; yes = 'Yes, part is here'; }
+    else if (t.key === 'dxdone') { q = (c.dx_outcome || {}).outcome === 'rma' ? 'Is the warranty swap done?' : 'Is the work done?'; detail = 'The system is back up and the customer was told. Then the commissions and referral questions come next.'; yes = 'Yes, it is done'; }
     else if (t.key === 'ops') { q = 'Which partner installs this job?'; detail = 'Assigns the Ops partner so they see it in their portal.'; yes = 'Choose a partner'; }
     else if (t.key === 'install') { q = 'Is the install finished?'; detail = 'Saying yes marks the job Installed today. That starts the pay clock for the team.'; yes = 'Yes, it is installed'; }
     else if (t.key === 'fee') { q = 'Has the diagnostic fee been paid?'; detail = 'Zelle, check or any other way. This turns the lead into a paid job.'; yes = 'Yes, mark it paid'; }
@@ -3915,17 +3957,64 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     _jnShell(head + '<div style="font-size:0.7rem;color:#777;margin-bottom:12px;">' + left + ' step' + (left > 1 ? 's' : '') + ' left to close out</div>' +
       '<div style="font-size:1.15rem;font-weight:800;color:#fff;margin:0 0 8px;line-height:1.3;">' + q + '</div>' +
       '<div style="font-size:0.84rem;color:#aaa;line-height:1.55;margin-bottom:18px;">' + detail + '</div>' +
-      (t.key === 'ops'
+      (t.key === 'dxout'
+        ? '<div style="display:grid;gap:8px;margin-bottom:12px;">' + [['rma', '&#128295; Warranty exchange (RMA)'], ['repair', '&#128736; Repair / service fee'], ['upgrade', '&#9889; Upgrade proposal (battery, panels, inverter)'], ['nothing', '&#10003; Nothing needed / fixed on site']].map(function(o){ return '<button onclick="jobNextAnswer(\'' + id + '\',\'dxout\',\'' + o[0] + '\')" style="' + _jnBtn + 'background:rgba(255,255,255,0.06);color:#fff;border:1px solid rgba(255,255,255,0.14);text-align:left;padding:13px 18px;">' + o[1] + '</button>'; }).join('') + '</div><button onclick="jobNextClose()" style="' + _jnBtn + 'background:rgba(255,255,255,0.07);color:#bbb;border:1px solid rgba(255,255,255,0.12);">Not yet</button>'
+      : t.key === 'dxaccept'
+        ? '<div style="display:grid;gap:8px;margin-bottom:12px;">' +
+            (_dxPayOpt(c) ? '<button id="jnYes" onclick="jobNextAnswer(\'' + id + '\',\'dxsend\')" style="' + _jnBtn + 'background:#8DC63F;color:#1A1A1A;">&#128233; Text + email the Sign &amp; Pay link (' + esc(_dxPayOpt(c).title || 'service option') + ')</button>' : '') +
+            '<button onclick="jobNextAnswer(\'' + id + '\',\'dxopen\')" style="' + _jnBtn + 'background:rgba(255,255,255,0.06);color:#fff;border:1px solid rgba(255,255,255,0.14);">Open the proposal</button>' +
+            '<button onclick="jobNextAnswer(\'' + id + '\',\'dxdeclined\')" style="' + _jnBtn + 'background:rgba(255,255,255,0.04);color:#bbb;border:1px solid rgba(255,255,255,0.12);">Customer declined &mdash; close out the diagnostic</button>' +
+          '</div><div id="jnDxMsg" style="font-size:0.76rem;color:#aaa;text-align:center;margin-bottom:8px;"></div><button onclick="jobNextClose()" style="' + _jnBtn + 'background:rgba(255,255,255,0.07);color:#bbb;border:1px solid rgba(255,255,255,0.12);">Not yet</button>'
+      : t.key === 'ops'
         ? '<div style="display:grid;gap:8px;margin-bottom:12px;">' + _opsList().map(function(o){ return '<button onclick="jobNextAnswer(\'' + id + '\',\'ops\',\'' + o.id + '\')" style="' + _jnBtn + 'background:rgba(255,255,255,0.06);color:#fff;border:1px solid rgba(255,255,255,0.14);text-align:left;padding:13px 18px;">' + esc(o.name) + '</button>'; }).join('') + '</div><button onclick="jobNextClose()" style="' + _jnBtn + 'background:rgba(255,255,255,0.07);color:#bbb;border:1px solid rgba(255,255,255,0.12);">Not yet</button>'
         : '<div style="display:flex;gap:10px;"><button onclick="jobNextClose()" style="' + _jnBtn + 'flex:1;background:rgba(255,255,255,0.07);color:#bbb;border:1px solid rgba(255,255,255,0.12);">Not yet</button>' +
       '<button id="jnYes" onclick="jobNextAnswer(\'' + id + '\',\'' + t.key + '\')" style="' + _jnBtn + 'flex:1.4;background:#8DC63F;color:#1A1A1A;">' + yes + '</button></div>') + extra);
   };
+  // The priced, non-battery option a Sign & Pay link can go out for: the warranty exchange first, else any service option.
+  window._dxPayOpt = function(c) {
+    var p = c && c.proposal; if (typeof p === 'string') { try { p = JSON.parse(p); } catch (e) { p = null; } }
+    var opts = (p && p.options) || [];
+    var ok = function(o){ return o && (parseFloat(o.price) || 0) > 0 && !(o.line_items || []).some(function(li){ return li && /powerwall|pw3/i.test((li.id || '') + ' ' + (li.name || '')); }); };
+    return opts.find(function(o){ return o && o.warranty && ok(o); }) || opts.find(function(o){ return o && o.kind === 'service' && ok(o); }) || null;
+  };
+  async function _dxWrite(id, patch, note) {
+    var c = adminCustomers.find(function(x){ return x.id === id; });
+    var next = Object.assign({}, (c && c.dx_outcome) || {}, patch, { updated_at: new Date().toISOString(), updated_by: (window.person && window.person.name) || CURRENT_ROLE || 'admin' });
+    var ok = await _leadWrite(id, { dx_outcome: next }, note);
+    if (ok && c) c.dx_outcome = next;
+    return ok;
+  }
   window.jobNextAnswer = async function(id, key, arg) {
     var c = adminCustomers.find(function(x){ return x.id === id; }); if (!c) return;
     var yb = document.getElementById('jnYes'); if (yb) { yb.disabled = true; yb.textContent = 'Saving…'; }
     var cl = supabase.createClient(SUPA_URL, SUPA_KEY), ts = new Date().toISOString();
     try {
       if (key === 'review') { jobNextClose(); if (typeof openJob === 'function') openJob(id); return; }
+      if (key === 'dxout') {
+        var _lab = { rma: 'Warranty exchange (RMA)', repair: 'Repair / service fee', upgrade: 'Upgrade proposal', nothing: 'Nothing needed / fixed on site' }[arg];
+        if (!_lab) throw new Error('Pick a result');
+        if (!(await _dxWrite(id, { outcome: arg, set_at: ts }, 'Diagnostic result: ' + _lab + '.'))) { jobNextClose(); return; }
+      }
+      else if (key === 'dxprop') { jobNextClose(); if (typeof openProposalBuilder === 'function') openProposalBuilder(id); return; }
+      else if (key === 'dxopen') { jobNextClose(); window.open('/proposal-preview?id=' + encodeURIComponent(id), '_blank'); return; }
+      else if (key === 'dxdeclined') {
+        if (!confirm('Customer declined the options? This closes out the diagnostic (commissions and referral come next).')) { window.jobNext(id); return; }
+        if (!(await _dxWrite(id, { outcome: 'nothing', declined_at: ts, prior_outcome: (c.dx_outcome || {}).outcome || null }, 'Customer declined the post-diagnostic options. Diagnostic closed out.'))) { jobNextClose(); return; }
+      }
+      else if (key === 'dxsend') {
+        var _po = _dxPayOpt(c); if (!_po) throw new Error('No priced service option on the proposal');
+        var _m = document.getElementById('jnDxMsg'); if (_m) _m.textContent = 'Sending…';
+        var _r = await fetch('/.netlify/functions/equip-pay', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'issue', customerId: id, optionId: _po.id, send: true }) });
+        var _j = await _r.json().catch(function(){ return {}; });
+        if (!_r.ok || !_j.ok) throw new Error(_j.error || 'Could not send the link');
+        var _st = _j.sent || {};
+        if (_m) _m.innerHTML = _st.ok ? '&#10003; Sent to ' + esc((_st.sent_to && (_st.sent_to.phone || _st.sent_to.email)) || 'the contact on file') + '.' : '&#9888; Link created but not delivered. Check the phone and email on file.';
+        try { var _fr = await cl.from('customers').select('proposal').eq('id', id).limit(1); if (_fr.data && _fr.data[0]) c.proposal = _fr.data[0].proposal; } catch (e) {}
+        return;
+      }
+      else if (key === 'rmafiled') { if (!(await _dxWrite(id, { rma_filed_at: ts }, 'Warranty claim (RMA) filed with the manufacturer.'))) { jobNextClose(); return; } }
+      else if (key === 'rmapart') { if (!(await _dxWrite(id, { part_arrived_at: ts }, 'Replacement part received.'))) { jobNextClose(); return; } }
+      else if (key === 'dxdone') { if (!(await _dxWrite(id, { work_done_at: ts }, ((c.dx_outcome || {}).outcome === 'rma' ? 'Warranty swap' : 'Post-diagnostic work') + ' done.'))) { jobNextClose(); return; } }
       if (key === 'install') await _doMarkInstalled(id);
       else if (key === 'axbutton' || key === 'axpermit' || key === 'axsched') {
         var _ns = { axbutton: 'ns_button_up', axpermit: 'ns_permit_submitted', axsched: 'ns_install_scheduled' }[key];
@@ -31079,7 +31168,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       build.diagCreditTouched = true; // a saved proposal keeps its own choice
       if (!build.diagCredit && opt.line_items) { var _dcl = opt.line_items.find(function(li){ return li.id === 'diagnostic_credit' && (li.price||0) < 0; }); if (_dcl) build.diagCredit = Math.abs(_dcl.price); }
       build.pillNote = opt.pill_note || '';
-      if (opt.kind === 'axia' || opt.kind === 'service') { build.kind = opt.kind; build.title = opt.title || ''; build.participate = false; }
+      if (opt.kind === 'axia' || opt.kind === 'service') { build.kind = opt.kind; build.title = opt.title || ''; build.participate = false; build.warranty = !!opt.warranty; }
       // Rehydrate the reroof + R&R blocks (their line items are display-only echoes,
       // filtered out below so they can't double-count against the recomputed price)
       if (opt.reroof && opt.reroof.squares > 0) {
@@ -31556,7 +31645,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (build.kind === 'axia' || build.kind === 'service') {
         // Template options: an Axia/QCells upgrade (no price here — Aurora carries it) and a flat service replacement.
         opt.kind = build.kind;
-        opt.id = build.kind === 'axia' ? 'axia_upgrade' : 'service_replacement';
+        opt.id = build.kind === 'axia' ? 'axia_upgrade' : (build.warranty ? 'warranty_exchange' : 'service_replacement');
+        if (build.kind === 'service' && build.warranty) opt.warranty = true;
         opt.title = build.title || (build.kind === 'axia' ? 'Second solar system (Axia / QCells) + inverter swap' : 'Service replacement — inverter swap');
         opt.participate = false; opt.participate_price = null;
         if (build.kind === 'axia') { opt.price = 0; opt.price_hidden = true; }
@@ -32029,6 +32119,32 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     b.priceManual = true; b.basePrice = 1390;
     _propBuilds = [a, b];
     _propRecalcRedline(0); _propRecalcRedline(1);
+    window._propRenderBuilds();
+  };
+
+  // Warranty exchange (RMA), 2026-11-23 per Dennis: added as Option 2 by default (Option 1 stays the upgrade).
+  // The part is covered by the manufacturer; the customer pays a service fee the admin types. Pays through Sign & Pay.
+  window._propApplyRmaTemplate = function() {
+    var what = prompt('What is being replaced under warranty?', 'Inverter');
+    if (what === null) return;
+    what = String(what || '').trim() || 'Equipment';
+    var priceTxt = prompt('Service fee the customer pays for the warranty exchange ($). The part is covered by the manufacturer.', '');
+    if (priceTxt === null) return;
+    var price = parseFloat(String(priceTxt).replace(/[^0-9.]/g, ''));
+    if (!(price > 0)) { alert('Enter a price above $0.'); return; }
+    var b = _propInitBuild();
+    b.kind = 'service'; b.warranty = true; b.participate = false; b.diagCredit = 0; b.diagCreditTouched = true;
+    b.title = 'Warranty exchange (RMA) — ' + what;
+    b.lineItems = [{ id: null, name: what + ' replaced under the manufacturer\'s warranty (claim, labor and installation)', price: price, isCustom: true }];
+    b.priceManual = true; b.basePrice = price;
+    var idx;
+    if (_propBuilds.length >= 2) {
+      var o2 = _propBuilds[1];
+      if (o2.lineItems && o2.lineItems.length && !confirm('Replace Option 2 with the warranty exchange?')) return;
+      _propBuilds[1] = b; idx = 1;
+    } else if (_propBuilds.length === 1 && !(_propBuilds[0].lineItems && _propBuilds[0].lineItems.length)) { _propBuilds[0] = b; idx = 0; }
+    else { _propBuilds.push(b); idx = _propBuilds.length - 1; }
+    _propRecalcRedline(idx);
     window._propRenderBuilds();
   };
 
@@ -32658,6 +32774,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (window._propLiveStatus === 'sent') {
       h += '<div id="propLiveBanner" style="background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.45);border-radius:12px;padding:11px 13px;margin-bottom:10px;font-size:0.76rem;color:#f5b84b;line-height:1.5;">&#9888; This proposal was <b>already sent</b> to the customer, so your changes are <b>not saved</b> and the proposal page still shows the old version. <button onclick="sendProposal(\'' + _propPropId + '\',false,\'update\')" style="width:auto;margin:6px 0 0;display:block;padding:8px 14px;background:#8DC63F;border:none;border-radius:100px;color:#000;cursor:pointer;font-size:0.78rem;font-weight:800;">&#8635; Update the sent proposal with my changes</button><span style="color:#999;">No text or email goes out.</span></div>';
     }
+    h += '<button onclick="_propApplyRmaTemplate()" style="width:100%;padding:9px;margin-bottom:6px;background:rgba(141,198,63,0.06);border:1px dashed rgba(141,198,63,0.4);border-radius:10px;color:#8DC63F;cursor:pointer;font-size:0.74rem;font-weight:600;">&#128295; Template: Warranty exchange (RMA) as Option 2</button>';
     h += '<button onclick="_propApplyAxiaServiceTemplate()" style="width:100%;padding:9px;margin-bottom:6px;background:rgba(0,150,255,0.05);border:1px dashed rgba(0,150,255,0.3);border-radius:10px;color:#5bb4ff;cursor:pointer;font-size:0.74rem;font-weight:600;">&#9889; Template: Axia upgrade + service replacement (inverter swap)</button>';
     h += '<button onclick="_propAddOption()" style="width:100%;padding:9px;background:rgba(141,198,63,0.03);border:1px dashed rgba(141,198,63,0.22);border-radius:10px;color:#8DC63F;cursor:pointer;font-size:0.77rem;font-weight:600;letter-spacing:0.01em;">&#65291; Add Another Option</button>';
     h += '</div>';

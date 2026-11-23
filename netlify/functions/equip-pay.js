@@ -19,7 +19,7 @@ function hasBattery(o) { return ((o && (o.line_items || o.lineItems)) || []).som
 function itemNames(o) { return ((o && (o.line_items || o.lineItems)) || []).filter(function (li) { return li && li.id !== 'diagnostic_credit' && !(Number(li.price) < 0); }).map(function (li) { return String(li.name || '').replace(/\s*×1\s*$/, '').trim(); }).filter(Boolean); }
 function cents(o) { return Math.round((parseFloat(o.price) || 0) * 100); }
 function agreement() { require('../../assets/equip-agreement.js'); return globalThis.EQUIP_AGREEMENT; }
-function ctxFor(c, o) { return { title: o.title, items: itemNames(o), address: c.address, priceText: '$' + (cents(o) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 }) }; }
+function ctxFor(c, o) { return { title: o.title, items: itemNames(o), address: c.address, warranty: !!o.warranty, priceText: '$' + (cents(o) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 }) }; }
 
 exports.handler = async function (event, context, deps) {
   const doFetch = (deps && deps.fetch) || fetch;
@@ -29,7 +29,7 @@ exports.handler = async function (event, context, deps) {
   if (!SK) return out(500, { error: 'not configured' });
   const H = { apikey: SK, Authorization: 'Bearer ' + SK, 'Content-Type': 'application/json' };
   let b; try { b = JSON.parse(event.body || '{}'); } catch (e) { return out(400, { error: 'bad json' }); }
-  const SEL = 'id,first_name,last_name,email,phone,address,access_code,rep_id,lead_category,proposal,disposition_exit,sold_type,sold_at';
+  const SEL = 'id,first_name,last_name,email,phone,address,access_code,rep_id,lead_category,proposal,disposition_exit,sold_type,sold_at,dx_outcome';
   const load = async (filter) => { const r = await doFetch(SUPA_URL + '/rest/v1/customers?' + filter + '&select=' + SEL + '&limit=1', { headers: H }); const rows = await r.json().catch(function () { return null; }); return Array.isArray(rows) && rows[0]; };
   const save = (id, patch) => doFetch(SUPA_URL + '/rest/v1/customers?id=eq.' + id, { method: 'PATCH', headers: Object.assign({}, H, { Prefer: 'return=minimal' }), body: JSON.stringify(patch) });
   const A = agreement();
@@ -57,7 +57,7 @@ exports.handler = async function (event, context, deps) {
       const first = c.first_name || 'there';
       sent = await notify.sendBoth(c,
         'Hi ' + first + ', your Solar Review agreement for "' + (o.title || 'your upgrade') + '" is ready to sign and pay: ' + url + ' Reply STOP to opt out.',
-        { subject: 'Your Solar Review agreement is ready to sign', heading: 'Ready to sign and pay', lines: ['Hi ' + first + ', your agreement for <b>' + (o.title || 'your upgrade') + '</b> is ready.', 'Review it, sign, and pay on the next page. Your diagnostic fee credit is already applied.'], cta: { url, label: 'Review, sign and pay' } }, doFetch);
+        { subject: 'Your Solar Review agreement is ready to sign', heading: 'Ready to sign and pay', lines: ['Hi ' + first + ', your agreement for <b>' + (o.title || 'your upgrade') + '</b> is ready.', o.warranty ? 'The replacement part is covered by the manufacturer\'s warranty. Review, sign and pay the service fee on the next page.' : 'Review it, sign, and pay on the next page. Your diagnostic fee credit is already applied.'], cta: { url, label: 'Review, sign and pay' } }, doFetch);
     }
     const mayReveal = !!(b.code && codeMatches(b.code, c));
     return out(200, { ok: true, sent: sent && { ok: sent.ok, sent_to: sent.sent_to }, url: mayReveal ? url : undefined });
@@ -90,7 +90,7 @@ exports.handler = async function (event, context, deps) {
     const pi = await pr.json().catch(function () { return {}; });
     if (!pi.client_secret) return out(502, { error: 'Failed to create payment', detail: pi.error && pi.error.message });
     return out(200, { clientSecret: pi.client_secret, publishableKey: process.env.STRIPE_PUBLISHABLE_KEY || '', customerName: name, address: c.address || '', title: o.title || '',
-      amountCents, surchargeAmountCents: total - amountCents, totalAmountCents: total, agreement: { version: A.VERSION, sections: A.sectionsFor(ctxFor(c, o)) } });
+      amountCents, surchargeAmountCents: total - amountCents, totalAmountCents: total, warranty: !!o.warranty, agreement: { version: A.VERSION, sections: A.sectionsFor(ctxFor(c, o)) } });
   }
 
   if (b.action === 'complete') {
@@ -107,7 +107,7 @@ exports.handler = async function (event, context, deps) {
     const signedAt = new Date().toISOString();
     const ip = sigAudit.clientIp(event), ua = sigAudit.userAgent(event);
     const terms = A.sectionsFor(ctxFor(c, o));
-    const audit = { kind: 'equipment_agreement', version: A.VERSION, signed_at: signedAt, ip, user_agent: ua, printed_name: signature.slice(0, 120),
+    const audit = { kind: o.warranty ? 'warranty_exchange' : 'equipment_agreement', version: A.VERSION, signed_at: signedAt, ip, user_agent: ua, printed_name: signature.slice(0, 120),
       terms_sha256: sigAudit.sha256(JSON.stringify(terms)), signature_sha256: sigData ? sigAudit.signatureFingerprint(sigData) : null, payment_intent: b.paymentIntentId, amount_paid: paid, method: 'card' };
     const fresh = await load('id=eq.' + c.id); const cur = parse(fresh && fresh.proposal) || prop;
     const opts = (cur.options || []).map(function (x) { return x && x.id === o.id ? Object.assign({}, x, { accepted_at: signedAt, accepted_via: 'sign_and_pay', financing: 'cash' }) : x; });
@@ -115,6 +115,7 @@ exports.handler = async function (event, context, deps) {
       sign_pay: Object.assign({}, cur.sign_pay || sp, { completed_at: signedAt, signature: signature.slice(0, 120), signature_data: sigData, audit }) });
     const upd = { proposal: next };
     if (!c.sold_type) { upd.sold_type = 'diagnostic'; upd.sold_at = c.sold_at || signedAt; }
+    if (o.warranty) upd.dx_outcome = Object.assign({}, (fresh && fresh.dx_outcome) || {}, { outcome: 'rma', paid_at: signedAt, paid_amount: paid });
     const pr2 = await save(c.id, upd);
     if (!pr2.ok) return out(502, { error: 'Payment captured but recording failed', paymentCaptured: true, customerId: c.id });
     try {
@@ -123,8 +124,8 @@ exports.handler = async function (event, context, deps) {
     } catch (e) { console.warn('equip-pay ledger', e.message); }
     try {
       await require('./lib/staff-alert').alertStaff({ key: b.paymentIntentId, customer: c,
-        sms: '{name} signed the agreement and PAID $' + paid.toFixed(2) + ' for "' + (o.title || 'the upgrade') + '". ✅ Schedule the install.',
-        subject: '{name} signed & paid $' + paid.toFixed(2), lines: ['Signed the Equipment Replacement Agreement and paid <b>$' + paid.toFixed(2) + '</b> by card for: ' + (o.title || '') + '.', 'Next: schedule the work and order the equipment.'] }, doFetch);
+        sms: '{name} signed the agreement and PAID $' + paid.toFixed(2) + ' for "' + (o.title || 'the upgrade') + '". ✅ ' + (o.warranty ? 'Next: file the warranty claim (RMA).' : 'Schedule the install.'),
+        subject: '{name} signed & paid $' + paid.toFixed(2), lines: ['Signed the Equipment Replacement Agreement and paid <b>$' + paid.toFixed(2) + '</b> by card for: ' + (o.title || '') + '.', o.warranty ? 'Next: file the warranty claim with the manufacturer, then book the swap. Next step on the job walks you through it.' : 'Next: schedule the work and order the equipment.'] }, doFetch);
     } catch (e) { console.warn('equip-pay alert', e.message); }
     return out(200, { ok: true, signedAt, customerName: name, title: o.title || '', paid });
   }
