@@ -1,4 +1,4 @@
-// Personal Financial Coach — Dennis's private AI financial advisor. Runs nightly
+// Personal Financial Coach — Dennis's private AI financial advisor. Runs WEEKLY on Wednesdays (was nightly until 2026-11-23, per Dennis)
 // (netlify.toml) after the personal Plaid sync, and on demand via
 // run-agent-background?agent=personal_coach. Reads ONLY the personal_* tables
 // (never the business books), researches current strategy/tax with web search,
@@ -120,7 +120,7 @@ async function executeTool(name, input, key, cache) {
 
 const WEB_SEARCH_TOOL = { type: 'web_search_20250305', name: 'web_search', max_uses: 5 };
 
-const SYSTEM = `You are the personal Financial Coach for Dennis Larsen — an individual, NOT his business (never touch or reference Solar Review Corp's books). You run daily. You are a proactive coach and consultant, not a reporter.
+const SYSTEM = `You are the personal Financial Coach for Dennis Larsen — an individual, NOT his business (never touch or reference Solar Review Corp's books). You run once a week (Wednesday). Cover the whole past week, not just yesterday. You are a proactive coach and consultant, not a reporter.
 
 Ground EVERYTHING in his profile (get_profile first): his risk tolerance, his life context (a divorce, career changes, and deliberately reduced working hours to be present for his children have shifted what's possible — treat these as real constraints on time and cash flow, but never as permanent ceilings on what he can build), his personal skills (build strategies that lean on existing strengths — never ones that require reinventing himself or distracting from current commitments), and the financial decisions he's told you he's been avoiding.
 

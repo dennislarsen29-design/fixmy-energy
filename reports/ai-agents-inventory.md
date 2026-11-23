@@ -13,8 +13,8 @@ Reports filed = agent_reports rows, last 30 days.
 | PR Research | Tuesday ~10am PT | Up to 8 press outlets with verified public contacts; never emails anyone | Agents → PR & Backlinks + weekly summary in Agent Inbox | Sonnet 5 + web search | ~$0.60/run, ~$3/mo |
 | SEO | Thursday ~8am PT | Search Console review, title/meta fix pull requests, blog topic ideas | Agent Inbox + GitHub pull requests (you merge) + topic ideas to the Content agent | Sonnet 5.5 | ~$0.35/run, ~$1.50/mo |
 | Roadmap | Friday ~8am PT | 2–4 new growth tasks | Business Model → Roadmap board + summary in Agent Inbox | Sonnet 5 + web search | ~$0.60/run, ~$3/mo |
-| Personal Financial Coach | Daily ~5:15am PT | Your personal finances (private) | Personal → Coach + daily digest email | Sonnet 5 + web search | ~$10–15/mo |
-| Photo labeling (Quoya sync) | Nightly ~3am PT, 60 photos max | Labels uploaded job photos | The photos themselves (job_photos labels) | Sonnet 5 | ~$0.005/photo |
+| Personal Financial Coach | Wednesday ~5:15am PT | Your personal finances (private), looking back over the week | Personal → Coach + daily digest email | Sonnet 5 + web search | ~$0.50–0.80/run, ~$2–3/mo |
+| Photo labeling (Quoya sync) | OFF (nightly run turned off 2026-11-23); manual "Sync with Quoya" button still works | Labels uploaded job photos | The photos themselves (job_photos labels) | Sonnet 5 | $0 while off |
 | Nightly lead pipeline | Nightly ~2am PT | Permit pulls, owner lookup, skip-trace (small AI step) | Black Box leads + Black Box status panel | Haiku 4.5 | pennies |
 | Bank/card categorizing (business + personal) | Daily ~4:30 / 4:45am PT | Categorizes new charges | Finance → Expenses / Personal → Bookkeeper | Sonnet 5 | ~$0.02–0.10/day each |
 
@@ -51,3 +51,5 @@ Reports filed = agent_reports rows, last 30 days.
 - finance-agent: weekly (Mondays) instead of nightly; one brief per run (numbers block + 2–4 actions, max 5 items), new week-over-week data tool, looks back 4 weeks to avoid repeats.
 - seo-agent: new article ideas go to the content engine (pipeline_state content_topic_ideas) instead of the inbox.
 - seo-agent and chat-agent moved from Opus 4.7 to Sonnet 5.5 (about 60% cheaper).
+- personal-finance-agent: weekly on Wednesdays instead of daily (2026-11-23).
+- quoya-sync-background (nightly photo labeling): schedule turned off 2026-11-23; manual button still works; self-heal photo-backlog alert disabled with it.
