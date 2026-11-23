@@ -3673,6 +3673,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       else {
         try { var calc = _nsCalcCommission(c); if (calc && calc.dcCloserAmt > 0 && !st.comms.some(function(k){ return k.note === 'dc_bonus' && k.kind === 'rep_commission'; })) todos.push({ key: 'dc', label: 'Domestic Content bonus not recorded' }); } catch (e) {}
         if (!c.referral_asked_at) todos.push({ key: 'referral', label: 'Referral not asked' });
+        if (!c.review_asked_at) todos.push({ key: 'gbreview', label: 'Google review not asked' });
       }
       return { known: true, complete: todos.length === 0, workDone: true, missing: todos.map(function(t){ return t.label; }), todos: todos };
     }
@@ -3702,6 +3703,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       });
     }
     if (!c.referral_asked_at) todos.push({ key: 'referral', label: 'Referral not asked' });
+        if (!c.review_asked_at) todos.push({ key: 'gbreview', label: 'Google review not asked' });
     return { known: true, complete: todos.length === 0, workDone: true, missing: todos.map(function(t){ return t.label; }), todos: todos };
   };
   // ── Unified pipeline vocabulary (2026-10-26) — display only; nothing in the data model changes. ──
@@ -3769,6 +3771,42 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var msg = 'Hi ' + (c.first_name || 'there') + ', thank you again for trusting Solar Review with your system! If you know a neighbor, friend or family member who would like a free solar check-up, please send them to fixmy.energy/book. We really appreciate it.';
     return 'sms:' + ph + '?body=' + encodeURIComponent(msg);
   };
+  // ── Google review ask (2026-11-23, per Dennis) ── The review link lives in pipeline_state 'google_review_url'
+  // (set once from the Next step popup; any staff can update it). Copy/paste message + sms: link; nothing is auto-sent.
+  window._gbReviewUrl = undefined;
+  window._gbReviewLoad = async function(force) {
+    if (window._gbReviewUrl !== undefined && !force) return window._gbReviewUrl;
+    try {
+      var r = await supabase.createClient(SUPA_URL, SUPA_KEY).from('pipeline_state').select('value').eq('key', 'google_review_url').maybeSingle();
+      var v = r && r.data && r.data.value; if (typeof v === 'string') { try { var j = JSON.parse(v); if (typeof j === 'string') v = j; else if (j && j.url) v = j.url; } catch (e) {} }
+      else if (v && v.url) v = v.url;
+      window._gbReviewUrl = (typeof v === 'string' && /^https:\/\//.test(v)) ? v : '';
+    } catch (e) { window._gbReviewUrl = ''; }
+    return window._gbReviewUrl;
+  };
+  window._gbReviewMsg = function(c) {
+    return 'Hi ' + (c.first_name || 'there') + ', thank you for choosing Solar Review! If you were happy with the work, would you leave us a quick Google review? It takes about a minute and really helps other homeowners find us:\n' + (window._gbReviewUrl || '') + '\nThank you! - The Solar Review team';
+  };
+  window.gbReviewSaveUrl = async function(id) {
+    var el = document.getElementById('jnRevUrl'), u = el ? el.value.trim() : '';
+    if (!/^https:\/\/\S+\.\S+/.test(u)) { alert('Paste the full link from Google (it starts with https://).'); return; }
+    var r = await supabase.createClient(SUPA_URL, SUPA_KEY).from('pipeline_state').upsert({ key: 'google_review_url', value: JSON.stringify({ url: u }), updated_at: new Date().toISOString() }, { onConflict: 'key' }).select('key');
+    if (r.error || !r.data || !r.data.length) { alert('Could not save the link: ' + ((r.error && r.error.message) || 'nothing saved')); return; }
+    window._gbReviewUrl = u; window.jobNext(id);
+  };
+  window.gbReviewCopy = function(id, what) {
+    var c = adminCustomers.find(function(x){ return x.id === id; }); if (!c) return;
+    var ta = document.getElementById('jnRevMsg'), txt = what === 'link' ? window._gbReviewUrl : (ta ? ta.value : _gbReviewMsg(c));
+    var done = function(){ var m = document.getElementById('jnRevNote'); if (m) m.textContent = (what === 'link' ? 'Link' : 'Message') + ' copied. Paste it into a text or email to the customer.'; };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt).then(done, function(){ prompt('Copy this:', txt); });
+    else prompt('Copy this:', txt);
+  };
+  window.gbReviewText = function(id) {
+    var c = adminCustomers.find(function(x){ return x.id === id; }); if (!c) return;
+    var ph = String(c.phone || '').replace(/\D/g, ''); if (!ph) { alert('No phone number on file for this customer. Use Copy message instead.'); return; }
+    var ta = document.getElementById('jnRevMsg');
+    location.href = 'sms:' + ph + '?body=' + encodeURIComponent(ta ? ta.value : _gbReviewMsg(c));
+  };
   // Card strip: one line + one button.
   window._jobCloseHtml = function(c) {
     var k = _jobCompletion(c), tag = _jobTagHtml(c);
@@ -3805,6 +3843,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (onlyIfTodos) { await _jnRefresh(id); var _k0 = _jobCompletion(c); if (!_k0.known || !_k0.todos.length) return; }
     _jnShell('<div style="padding:30px 0;text-align:center;color:#aaa;">One moment&hellip;</div>');
     await _jnRefresh(id);
+    if (window._gbReviewUrl === undefined) { try { await window._gbReviewLoad(); } catch (e) {} }
     c = adminCustomers.find(function(x){ return x.id === id; });
     var k = _jobCompletion(c), name = ((c.first_name || '') + ' ' + (c.last_name || '')).trim();
     var head = '<div style="font-size:0.62rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#8DC63F;margin-bottom:4px;">' + esc(name) + '</div>';
@@ -3857,6 +3896,22 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       extra = href ? '<a href="' + href + '" style="display:block;text-align:center;margin-top:10px;padding:11px;border-radius:100px;border:1px solid rgba(74,158,255,0.45);color:#4a9eff;font-weight:700;font-size:0.85rem;text-decoration:none;">&#128172; Text the ask now</a>' : '';
       extra = '<button id="jnRefSend" onclick="jobSendReferralLink(\'' + id + '\')" style="width:100%;margin-top:10px;padding:11px;border-radius:100px;border:1px solid rgba(141,198,63,0.5);background:rgba(141,198,63,0.1);color:#8DC63F;font-weight:700;font-size:0.85rem;cursor:pointer;">&#127873; Send their share link (text + email)</button><div id="jnRefMsg" style="font-size:0.74rem;color:#aaa;margin-top:6px;text-align:center;"></div>' + extra;
     }
+    else if (t.key === 'gbreview') {
+      q = 'Have you asked for a Google review?'; detail = 'Copy the message below, or tap Text it, and send it to the customer. It has the direct link to our Google review page.'; yes = 'Yes, I asked';
+      var _rb = 'width:auto;flex:1;margin:0;padding:10px 12px;border-radius:100px;font-weight:700;font-size:0.8rem;cursor:pointer;';
+      if (window._gbReviewUrl) {
+        extra = '<textarea id="jnRevMsg" rows="5" style="width:100%;box-sizing:border-box;margin-top:12px;padding:10px;border-radius:10px;background:#111;border:1px solid rgba(255,255,255,0.15);color:#fff;font-size:0.82rem;line-height:1.45;">' + esc(_gbReviewMsg(c)) + '</textarea>' +
+          '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;">' +
+          '<button onclick="gbReviewCopy(\'' + id + '\',\'msg\')" style="' + _rb + 'background:rgba(141,198,63,0.12);border:1px solid rgba(141,198,63,0.5);color:#8DC63F;">&#128203; Copy message</button>' +
+          '<button onclick="gbReviewText(\'' + id + '\')" style="' + _rb + 'background:rgba(74,158,255,0.1);border:1px solid rgba(74,158,255,0.45);color:#4a9eff;">&#128172; Text it</button>' +
+          '<button onclick="gbReviewCopy(\'' + id + '\',\'link\')" style="' + _rb + 'background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#ccc;">&#128279; Copy link only</button></div>' +
+          '<div id="jnRevNote" style="font-size:0.74rem;color:#aaa;margin-top:6px;text-align:center;"></div>';
+      } else if (window._gbReviewUrl === '') {
+        extra = '<div style="margin-top:12px;padding:12px;border-radius:10px;background:rgba(245,166,35,0.08);border:1px solid rgba(245,166,35,0.35);font-size:0.78rem;color:#e0b060;line-height:1.5;">The Google review link is not set yet. In your Google Business Profile, tap <b>Ask for reviews</b> (or Get more reviews), copy the link, and paste it here once. Everyone on the team will use it after that.</div>' +
+          '<input id="jnRevUrl" type="url" placeholder="https://g.page/r/..." style="width:100%;box-sizing:border-box;margin-top:8px;padding:10px;border-radius:10px;background:#111;border:1px solid rgba(255,255,255,0.15);color:#fff;font-size:0.85rem;"/>' +
+          '<button onclick="gbReviewSaveUrl(\'' + id + '\')" style="width:100%;margin-top:8px;padding:10px;border-radius:100px;background:rgba(141,198,63,0.12);border:1px solid rgba(141,198,63,0.5);color:#8DC63F;font-weight:700;font-size:0.82rem;cursor:pointer;">Save review link</button>';
+      }
+    }
     _jnShell(head + '<div style="font-size:0.7rem;color:#777;margin-bottom:12px;">' + left + ' step' + (left > 1 ? 's' : '') + ' left to close out</div>' +
       '<div style="font-size:1.15rem;font-weight:800;color:#fff;margin:0 0 8px;line-height:1.3;">' + q + '</div>' +
       '<div style="font-size:0.84rem;color:#aaa;line-height:1.55;margin-bottom:18px;">' + detail + '</div>' +
@@ -3903,6 +3958,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       else if (key === 'cosmic_sale' || key === 'cosmic_done') {
         var half = Math.round(((parseFloat(c.br_revenue) || 0) - (parseFloat(c.br_redline) || 0)) * 50) / 100;
         await cosmicRecordPayment(id, key === 'cosmic_sale' ? 'sale' : 'done', half);
+      }
+      else if (key === 'gbreview') {
+        var rv = await cl.from('customers').update({ review_asked_at: ts }).eq('id', id).select('id');
+        if (rv.error || !rv.data || !rv.data.length) throw new Error((rv.error && rv.error.message) || 'no row updated');
+        c.review_asked_at = ts;
       }
       else if (key === 'referral') {
         var rr = await cl.from('customers').update({ referral_asked_at: ts }).eq('id', id).select('id');
