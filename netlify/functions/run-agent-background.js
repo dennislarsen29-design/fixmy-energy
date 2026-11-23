@@ -13,6 +13,7 @@ const AGENTS = {
   roadmap:   require('./roadmap-agent'),
   coaching:  require('./coaching-agent'),
   pr:        require('./pr-research-agent'),
+  content:   require('./content-agent'),
 };
 
 exports.handler = async function(event) {

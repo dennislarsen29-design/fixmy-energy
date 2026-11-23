@@ -9465,6 +9465,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         '</div>'+
         // SEO Pulse
         '<div id="seoPulse"></div>'+
+        '<div id="contentPanel"></div>'+
         '<div id="prPanel"></div>'+
         // Inbox
         '<div id="agentsContainer"><p style="color:#888;padding:20px 0;">Loading agent reports...</p></div>'+
@@ -9472,8 +9473,258 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
     loadAgentInbox();
     loadSEOPulse();
+    loadContentPanel();
     loadPrPanel();
   }
+
+  // ── Content engine (Agents tab) — 2026-11-23 ─────────────────────────────────
+  // Quoya drafts 1 blog + 3 short posts every Monday (content-agent). Dennis edits, picks a photo and taps
+  // Approve; content-publish posts each item at its time (blog -> commit to main, posts -> GHL Social Planner,
+  // Nextdoor -> copy-ready text + email). Nothing is ever posted from a draft.
+  var _ct = { rows: null, channels: {}, setup: {}, tab: 'review', err: '', open: {}, chTab: {}, imgFor: null, acct: null };
+  var CT_CH = [['gbp', 'Google'], ['facebook', 'Facebook'], ['instagram', 'Instagram'], ['nextdoor', 'Nextdoor']];
+  function _ctApi(body) {
+    return fetch('/.netlify/functions/content-api', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      .then(function (r) { return r.json().then(function (j) { if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status)); return j; }); });
+  }
+  function _ctWho() { try { return (window.currentUser && (currentUser.name || currentUser.email)) || 'admin'; } catch (e) { return 'admin'; } }
+  function _ctWhen(d) { return d ? new Date(d).toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ''; }
+  function _ctBtn(label, fn, col, solid) { col = col || '#8DC63F'; return '<button onclick="' + fn + '" style="width:auto;padding:6px 12px;border-radius:8px;font-size:0.72rem;font-weight:700;cursor:pointer;background:' + (solid ? col : col + '18') + ';border:1px solid ' + col + '55;color:' + (solid ? '#1A1A1A' : col) + ';">' + label + '</button>'; }
+  function _ctBadge(t, col) { return '<span style="font-size:0.62rem;font-weight:700;padding:2px 8px;border-radius:100px;background:' + col + '22;color:' + col + ';border:1px solid ' + col + '44;white-space:nowrap;">' + t + '</span>'; }
+  function _ctRow(id) { return (_ct.rows || []).filter(function (x) { return x.id === id; })[0]; }
+  function _ctReplace(row) { if (!row) return; var i = (_ct.rows || []).findIndex(function (x) { return x.id === row.id; }); if (i > -1) _ct.rows[i] = row; else (_ct.rows = _ct.rows || []).push(row); }
+
+  window.loadContentPanel = async function () {
+    var host = document.getElementById('contentPanel'); if (!host) return;
+    if (!_ct.rows) host.innerHTML = '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:16px;margin-bottom:16px;color:#888;font-size:0.8rem;">Loading Content…</div>';
+    try { var j = await _ctApi({ action: 'list' }); _ct.rows = j.rows || []; _ct.channels = j.channels || {}; _ct.setup = j.setup || {}; _ct.err = ''; }
+    catch (e) { _ct.rows = null; _ct.err = e.message === 'setup' ? 'setup' : e.message; }
+    _ctRender();
+  };
+
+  function _ctRender() {
+    var host = document.getElementById('contentPanel'); if (!host) return;
+    var box = 'background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:16px;padding:16px;margin-bottom:16px;';
+    var head = '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;"><h2 style="font-size:1rem;font-weight:700;margin:0;color:#fff;">&#128227; Content</h2><span style="font-size:0.68rem;color:#666;">1 blog + 3 posts a week &middot; nothing posts until you approve</span></div>';
+    if (_ct.err === 'setup') { host.innerHTML = '<div style="' + box + '">' + head + '<div style="color:#f59e0b;font-size:0.8rem;line-height:1.6;">One-time setup: run <code>supabase/migrations/20261123b_content_posts.sql</code> in the Supabase SQL editor, then reload this tab.</div></div>'; return; }
+    if (!_ct.rows) { host.innerHTML = '<div style="' + box + '">' + head + '<div style="color:#ef4444;font-size:0.8rem;">' + esc(_ct.err || 'Could not load') + ' ' + _ctBtn('Retry', 'loadContentPanel()') + '</div></div>'; return; }
+    var R = _ct.rows, by = function (s) { return R.filter(function (x) { return s.indexOf(x.status) > -1; }); };
+    var acc = (_ct.channels && _ct.channels.accounts) || {};
+    var warn = [];
+    if (!_ct.setup.github) warn.push('Blog publishing needs <b>GITHUB_TOKEN</b> in Netlify.');
+    if (!_ct.setup.ghl) warn.push('Social posting needs <b>GHL_API_KEY</b> in Netlify.');
+    if (!(acc.gbp || []).length && !(acc.facebook || []).length && !(acc.instagram || []).length) warn.push('No social accounts picked yet: connect Google Business, Facebook and Instagram in GHL &rarr; Marketing &rarr; Social Planner, then tap <b>Channels</b>.');
+    var warnHtml = warn.length ? '<div style="background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.3);border-radius:10px;padding:8px 12px;margin-bottom:10px;font-size:0.74rem;color:#f5c26b;line-height:1.6;">' + warn.join('<br>') + '</div>' : '';
+    var actions = '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;"><button id="ctRunBtn" onclick="ctRunAgent()" style="width:auto;padding:7px 14px;background:#8DC63F18;border:1px solid #8DC63F55;border-radius:8px;color:#8DC63F;font-size:0.75rem;font-weight:700;cursor:pointer;">&#9889; Draft this week now</button>' + _ctBtn('&#128279; Channels', 'ctChannels()', '#4a9eff') + _ctBtn('&#8635; Refresh', 'loadContentPanel()', '#888') + '</div>';
+    var tabs = [['review', 'To approve', by(['draft']).length], ['scheduled', 'Scheduled', by(['approved', 'publishing']).length], ['posted', 'Posted', by(['published', 'partial', 'failed']).length], ['rejected', 'Rejected', by(['rejected']).length]];
+    var tabHtml = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">' + tabs.map(function (x) {
+      var on = _ct.tab === x[0];
+      return '<button onclick="_ctTab(\'' + x[0] + '\')" style="width:auto;padding:5px 12px;border-radius:100px;font-size:0.72rem;font-weight:700;cursor:pointer;border:1px solid ' + (on ? '#8DC63F' : '#333') + ';background:' + (on ? '#8DC63F' : 'transparent') + ';color:' + (on ? '#1A1A1A' : '#aaa') + ';">' + x[1] + ' (' + x[2] + ')</button>';
+    }).join('') + '</div>';
+    var set = { review: ['draft'], scheduled: ['approved', 'publishing'], posted: ['published', 'partial', 'failed'], rejected: ['rejected'] }[_ct.tab];
+    var list = by(set);
+    if (_ct.tab === 'posted' || _ct.tab === 'rejected') list = list.slice().reverse();
+    var body = list.length ? list.map(_ctCardHtml).join('') : '<div style="color:#666;font-size:0.8rem;padding:10px 0;">' + (_ct.tab === 'review' ? 'Nothing waiting. Monday’s run drafts the week, or tap <b>Draft this week now</b>.' : 'Nothing here yet.') + '</div>';
+    host.innerHTML = '<div style="' + box + '">' + head + warnHtml + actions + tabHtml + body + (_ct.acct ? _ctChannelsHtml() : '') + '</div>';
+  }
+  window._ctTab = function (t) { _ct.tab = t; _ctRender(); };
+
+  function _ctResultsHtml(r) {
+    var res = r.results || {}, keys = Object.keys(res); if (!keys.length) return '';
+    var col = { published: '#22c55e', copy_ready: '#4a9eff', skipped: '#888', failed: '#ef4444' };
+    return '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">' + keys.map(function (k) {
+      var x = res[k] || {}, name = k === 'gbp' ? 'Google' : k === 'nextdoor' ? 'Nextdoor' : k.charAt(0).toUpperCase() + k.slice(1);
+      var lbl = x.status === 'copy_ready' ? 'copy ready' : x.status;
+      return '<span title="' + esc(x.detail || '') + '">' + _ctBadge(name + ': ' + lbl, col[x.status] || '#888') + '</span>';
+    }).join('') + '</div>' + keys.filter(function (k) { return (res[k] || {}).status === 'failed' || (res[k] || {}).status === 'skipped'; }).map(function (k) {
+      return '<div style="font-size:0.68rem;color:' + (res[k].status === 'failed' ? '#f87171' : '#888') + ';margin-top:3px;">' + esc(k) + ': ' + esc(res[k].detail || '') + '</div>';
+    }).join('');
+  }
+
+  function _ctImgHtml(r, editable) {
+    var h = '<div style="display:flex;gap:10px;align-items:flex-start;margin-top:8px;">';
+    h += r.image_url ? '<img src="' + esc(r.image_url) + '" style="width:92px;height:92px;object-fit:cover;border-radius:10px;border:1px solid #333;flex-shrink:0;" onerror="this.style.opacity=0.2"/>' : '<div style="width:92px;height:92px;border-radius:10px;border:1px dashed #444;display:flex;align-items:center;justify-content:center;color:#666;font-size:0.66rem;text-align:center;flex-shrink:0;">No photo</div>';
+    if (editable) h += '<div style="display:flex;flex-direction:column;gap:6px;">' + _ctBtn('&#128247; Change photo', "ctPickImage('" + r.id + "')", '#4a9eff') + (r.image_url ? _ctBtn('Remove photo', "ctSetImage('" + r.id + "','','')", '#888') : '') + '<span style="font-size:0.64rem;color:#666;">' + (r.image_source === 'job_photo' ? 'Job photo (equipment only)' : r.image_source === 'branded' ? 'Branded graphic' : r.image_source === 'site' ? 'Website photo' : '') + '</span></div>';
+    h += '</div>';
+    if (editable && _ct.imgFor === r.id) {
+      h += '<div style="margin-top:10px;padding:10px;border:1px solid #333;border-radius:10px;"><div style="font-size:0.7rem;color:#aaa;margin-bottom:8px;">Pick a photo. Job photos are equipment only (no faces, no house numbers); check it before approving.</div><div style="display:flex;gap:8px;flex-wrap:wrap;">';
+      (r.image_options || []).forEach(function (o, i) {
+        h += '<img src="' + esc(o.url) + '" title="' + esc(o.label || '') + '" onclick="ctSetImage(\'' + r.id + '\',' + i + ')" style="width:74px;height:74px;object-fit:cover;border-radius:8px;cursor:pointer;border:2px solid ' + (o.url === r.image_url ? '#8DC63F' : 'transparent') + ';" onerror="this.style.display=\'none\'"/>';
+      });
+      h += '</div><div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">' + _ctBtn('&#127912; Make branded graphic', "ctBranded('" + r.id + "')", '#e879f9') + _ctBtn('Paste image link', "ctImageUrl('" + r.id + "')", '#888') + _ctBtn('Close', "_ct.imgFor=null;_ctRender()", '#888') + '</div></div>';
+    }
+    return h;
+  }
+
+  function _ctTa(id, field, val, rows) {
+    return '<textarea id="ct_' + field + '_' + id + '" rows="' + (rows || 6) + '" oninput="var c=document.getElementById(\'ctn_' + field + '_' + id + '\');if(c)c.textContent=this.value.length+\' chars\'" style="width:100%;box-sizing:border-box;background:rgba(0,0,0,0.25);border:1px solid #333;border-radius:8px;color:#eee;padding:8px;font-size:0.78rem;line-height:1.5;font-family:inherit;">' + esc(val || '') + '</textarea><div id="ctn_' + field + '_' + id + '" style="font-size:0.62rem;color:#666;text-align:right;">' + String(val || '').length + ' chars</div>';
+  }
+  function _ctInput(id, field, val, ph) { return '<input id="ct_' + field + '_' + id + '" value="' + esc(val || '') + '" placeholder="' + esc(ph || '') + '" style="width:100%;box-sizing:border-box;background:rgba(0,0,0,0.25);border:1px solid #333;border-radius:8px;color:#eee;padding:7px 8px;font-size:0.8rem;margin-bottom:6px;"/>'; }
+
+  function _ctCardHtml(r) {
+    var id = r.id, editable = ['draft', 'approved', 'partial', 'failed'].indexOf(r.status) > -1, open = !!_ct.open[id];
+    var stCol = { draft: '#8DC63F', approved: '#4a9eff', publishing: '#4a9eff', published: '#22c55e', partial: '#f59e0b', failed: '#ef4444', rejected: '#888' }[r.status] || '#888';
+    var h = '<div style="border:1px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.02);border-radius:12px;padding:12px;margin-bottom:10px;">';
+    h += '<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:flex-start;"><div style="min-width:0;flex:1;">';
+    h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px;">' + _ctBadge(r.kind === 'blog' ? 'BLOG' : 'POST', r.kind === 'blog' ? '#e879f9' : '#4a9eff') + _ctBadge(r.status, stCol) + '<span style="font-size:0.68rem;color:#888;">' + (r.status === 'published' || r.status === 'partial' ? 'posted ' + _ctWhen(r.published_at) : 'goes out ' + _ctWhen(r.scheduled_for)) + '</span></div>';
+    h += '<div style="color:#fff;font-weight:700;font-size:0.9rem;">' + esc(r.title || r.topic || '') + '</div>';
+    if (r.kind === 'short' && r.topic) h += '<div style="font-size:0.72rem;color:#888;">' + esc(r.topic) + '</div>';
+    if (r.kind === 'blog' && (r.results || {}).blog && r.results.blog.status === 'published') h += '<a href="https://fixmy.energy/blog/' + esc(r.slug) + '" target="_blank" rel="noopener" style="font-size:0.72rem;color:#8DC63F;">fixmy.energy/blog/' + esc(r.slug) + '</a>';
+    h += '</div>' + _ctBtn(open ? 'Close' : (editable ? 'Review &amp; edit' : 'View'), "_ctToggle('" + id + "')", '#aaa') + '</div>';
+    h += _ctResultsHtml(r);
+    if ((r.results || {}).nextdoor && r.results.nextdoor.status === 'copy_ready') h += '<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">' + _ctBtn('&#128203; Copy Nextdoor text', "ctCopy('" + id + "','nextdoor')", '#4a9eff') + _ctBtn('I posted it on Nextdoor', "ctNextdoorDone('" + id + "')", '#22c55e') + '</div>';
+    if (open) {
+      h += '<div style="margin-top:10px;border-top:1px solid rgba(255,255,255,0.06);padding-top:10px;">';
+      h += _ctImgHtml(r, editable);
+      if (r.kind === 'blog') {
+        var ch = r.channels || {};
+        h += '<div style="margin-top:10px;font-size:0.7rem;color:#aaa;">Title</div>' + _ctInput(id, 'title', r.title);
+        h += '<div style="font-size:0.7rem;color:#aaa;">Web address: fixmy.energy/blog/</div>' + _ctInput(id, 'slug', r.slug);
+        h += '<div style="font-size:0.7rem;color:#aaa;">Google description (120-158 characters)</div>' + _ctTa(id, 'meta', r.meta_description, 2);
+        h += '<div style="font-size:0.7rem;color:#aaa;">Category label</div>' + _ctInput(id, 'eyebrow', ch.eyebrow);
+        h += '<div style="font-size:0.7rem;color:#aaa;">Summary under the title</div>' + _ctTa(id, 'lede', ch.lede, 2);
+        h += '<div style="display:flex;justify-content:space-between;align-items:center;font-size:0.7rem;color:#aaa;margin-top:4px;"><span>Article (HTML)</span>' + _ctBtn(_ct.preview === id ? 'Edit HTML' : 'Preview article', "_ct.preview=_ct.preview==='" + id + "'?null:'" + id + "';_ctRender()", '#888') + '</div>';
+        if (_ct.preview === id) h += '<div style="background:#F3EDE3;color:#1A1A1A;border-radius:10px;padding:14px 16px;font-size:0.86rem;line-height:1.6;max-height:520px;overflow:auto;" class="ct-prev"><h1 style="font-size:1.4rem;margin:0 0 8px;">' + esc(r.title) + '</h1>' + (r.body || '') + ((r.faq || []).length ? '<h2>Frequently asked questions</h2>' + r.faq.map(function (f) { return '<p><b>' + esc(f.q) + '</b><br>' + esc(f.a) + '</p>'; }).join('') : '') + '</div>';
+        else h += _ctTa(id, 'body', r.body, 16);
+      } else {
+        var cur = _ct.chTab[id] || 'gbp';
+        h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 6px;">' + CT_CH.map(function (c) { var on = cur === c[0]; return '<button onclick="_ctSaveDraftTab(\'' + id + '\');_ct.chTab[\'' + id + '\']=\'' + c[0] + '\';_ctRender()" style="width:auto;padding:4px 10px;border-radius:100px;font-size:0.7rem;font-weight:700;cursor:pointer;border:1px solid ' + (on ? '#4a9eff' : '#333') + ';background:' + (on ? '#4a9eff' : 'transparent') + ';color:' + (on ? '#fff' : '#aaa') + ';">' + c[1] + '</button>'; }).join('') + '</div>';
+        var txt = (_ct.draft && _ct.draft[id] && _ct.draft[id][cur] != null) ? _ct.draft[id][cur] : (r.channels || {})[cur];
+        h += editable ? _ctTa(id, 'ch', txt, 9) : '<div style="white-space:pre-wrap;font-size:0.78rem;color:#ddd;background:rgba(0,0,0,0.2);border-radius:8px;padding:8px;">' + esc(txt || '') + '</div>';
+        h += '<div style="font-size:0.66rem;color:#666;">' + (cur === 'nextdoor' ? 'Nextdoor has no posting API: this text is emailed to you and shown here to copy.' : cur === 'instagram' ? 'Instagram needs a photo.' : '') + '</div>' + _ctBtn('&#128203; Copy', "ctCopy('" + id + "','" + cur + "')", '#888');
+      }
+      if (editable) {
+        h += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">' + _ctBtn('Save edits', "ctSave('" + id + "')", '#aaa');
+        if (r.status === 'draft') h += _ctBtn('&#10003; Approve (posts ' + _ctWhen(r.scheduled_for) + ')', "ctApprove('" + id + "',false)", '#8DC63F', true);
+        h += _ctBtn('Publish now', "ctApprove('" + id + "',true)", '#4a9eff');
+        if (r.status === 'approved') h += _ctBtn('Back to draft', "ctStatus('" + id + "','unapprove')", '#888');
+        h += _ctBtn('Change time', "ctReschedule('" + id + "')", '#888') + _ctBtn('Reject', "ctStatus('" + id + "','reject')", '#ef4444') + '</div>';
+      }
+      h += '</div>';
+    }
+    return h + '</div>';
+  }
+
+  window._ctToggle = function (id) { _ct.open[id] = !_ct.open[id]; _ctRender(); };
+  window._ctSaveDraftTab = function (id) {
+    var el = document.getElementById('ct_ch_' + id); if (!el) return;
+    var cur = _ct.chTab[id] || 'gbp'; _ct.draft = _ct.draft || {}; _ct.draft[id] = _ct.draft[id] || {}; _ct.draft[id][cur] = el.value;
+  };
+  function _ctCollect(id) {
+    var r = _ctRow(id), f = {}, v = function (k) { var e = document.getElementById('ct_' + k + '_' + id); return e ? e.value : undefined; };
+    if (r.kind === 'blog') {
+      if (v('title') !== undefined) f.title = v('title');
+      if (v('slug') !== undefined) f.slug = v('slug');
+      if (v('meta') !== undefined) f.meta_description = v('meta');
+      if (v('body') !== undefined) f.body = v('body');
+      var chb = {}; if (v('eyebrow') !== undefined) chb.eyebrow = v('eyebrow'); if (v('lede') !== undefined) chb.lede = v('lede');
+      if (Object.keys(chb).length) f.channels = chb;
+    } else {
+      window._ctSaveDraftTab(id);
+      if (_ct.draft && _ct.draft[id]) f.channels = _ct.draft[id];
+    }
+    return f;
+  }
+  window.ctSave = async function (id, quiet) {
+    var f = _ctCollect(id); if (!Object.keys(f).length) return true;
+    try { var j = await _ctApi({ action: 'update', id: id, fields: f }); _ctReplace(j.row); if (_ct.draft) delete _ct.draft[id]; if (!quiet) _ctRender(); return true; }
+    catch (e) { alert('Could not save: ' + e.message); return false; }
+  };
+  window.ctApprove = async function (id, now) {
+    var r = _ctRow(id); if (!r) return;
+    if (r.kind === 'short' && !r.image_url && !confirm('No photo picked. Instagram will be skipped and the other posts go out without a picture. Continue?')) return;
+    if (now && !confirm(r.kind === 'blog' ? 'Publish this article to fixmy.energy now? (It commits to the live site and starts a deploy.)' : 'Post this now to every picked channel?')) return;
+    if (!(await window.ctSave(id, true))) return;
+    try { var j = await _ctApi({ action: now ? 'publish_now' : 'approve', id: id, by: _ctWho() }); _ctReplace(j.row); _ct.open[id] = false; _ctRender(); if (now) alert('Done: ' + (j.row && j.row.status) + (j.row && j.row.error ? '\n' + j.row.error : '')); }
+    catch (e) { alert('Could not approve: ' + e.message); loadContentPanel(); }
+  };
+  window.ctStatus = async function (id, action) {
+    if (action === 'reject' && !confirm('Reject this item? It will not be posted.')) return;
+    try { var j = await _ctApi({ action: action, id: id }); _ctReplace(j.row); _ctRender(); } catch (e) { alert(e.message); }
+  };
+  window.ctReschedule = async function (id) {
+    var r = _ctRow(id), d = new Date(r.scheduled_for || Date.now()), pad = function (n) { return String(n).padStart(2, '0'); };
+    var def = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+    var v = prompt('New date and time (YYYY-MM-DD HH:MM, your local time):', def); if (!v) return;
+    var nd = new Date(v.replace(' ', 'T')); if (isNaN(nd)) return alert('Could not read that date.');
+    try { var j = await _ctApi({ action: 'update', id: id, fields: { scheduled_for: nd.toISOString() } }); _ctReplace(j.row); _ctRender(); } catch (e) { alert(e.message); }
+  };
+  window.ctCopy = function (id, ch) {
+    var r = _ctRow(id), t = (_ct.draft && _ct.draft[id] && _ct.draft[id][ch]) || (r.channels || {})[ch] || '';
+    var el = document.getElementById('ct_ch_' + id); if (el && (_ct.chTab[id] || 'gbp') === ch) t = el.value;
+    (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(function () { alert('Copied.'); }, function () { prompt('Copy this:', t); });
+  };
+  window.ctNextdoorDone = async function (id) { try { var j = await _ctApi({ action: 'nextdoor_done', id: id }); _ctReplace(j.row); _ctRender(); } catch (e) { alert(e.message); } };
+  window.ctPickImage = function (id) { _ct.imgFor = _ct.imgFor === id ? null : id; _ctRender(); };
+  window.ctSetImage = async function (id, idx, src) {
+    var r = _ctRow(id), url = '', source = '';
+    if (typeof idx === 'number') { var o = (r.image_options || [])[idx] || {}; url = o.url; source = o.source; } else { url = idx || ''; source = src || ''; }
+    try { var j = await _ctApi({ action: 'update', id: id, fields: { image_url: url, image_source: source } }); _ctReplace(j.row); _ct.imgFor = null; _ctRender(); } catch (e) { alert('Could not set photo: ' + e.message); }
+  };
+  window.ctImageUrl = function (id) { var u = prompt('Paste a public image link (https://…):'); if (u) window.ctSetImage(id, u.trim(), 'custom'); };
+
+  // Branded graphic: drawn in the browser (dark card, lime accent, headline, phone), uploaded to the
+  // job_photos storage bucket under content/, then set as the item's photo.
+  window.ctBranded = async function (id) {
+    var r = _ctRow(id); var headline = prompt('Headline on the graphic:', r.title || r.topic || ''); if (headline == null) return;
+    var cv = document.createElement('canvas'); cv.width = 1080; cv.height = 1080; var g = cv.getContext('2d');
+    var bg = g.createLinearGradient(0, 0, 1080, 1080); bg.addColorStop(0, '#16201a'); bg.addColorStop(1, '#0d0d0d'); g.fillStyle = bg; g.fillRect(0, 0, 1080, 1080);
+    g.fillStyle = '#8DC63F'; g.fillRect(80, 300, 120, 12);
+    try {
+      var logo = await new Promise(function (ok, no) { var im = new Image(); im.onload = function () { ok(im); }; im.onerror = no; im.src = '/assets/logo-solar-review.png'; });
+      var lw = 300, lh = lw * logo.height / logo.width; var t = document.createElement('canvas'); t.width = lw; t.height = lh; var tg = t.getContext('2d'); tg.drawImage(logo, 0, 0, lw, lh); tg.globalCompositeOperation = 'source-in'; tg.fillStyle = '#ffffff'; tg.fillRect(0, 0, lw, lh); g.drawImage(t, 80, 110);
+    } catch (e) { g.fillStyle = '#fff'; g.font = '700 54px Inter, Arial, sans-serif'; g.fillText('Solar Review', 80, 170); }
+    g.fillStyle = '#ffffff'; g.font = '800 84px Inter, Arial, sans-serif';
+    var words = String(headline).split(/\s+/), lines = [], line = '';
+    words.forEach(function (w) { var test = line ? line + ' ' + w : w; if (g.measureText(test).width > 900 && line) { lines.push(line); line = w; } else line = test; }); if (line) lines.push(line);
+    lines.slice(0, 5).forEach(function (l, i) { g.fillText(l, 80, 420 + i * 100); });
+    g.fillStyle = '#8DC63F'; g.font = '700 46px Inter, Arial, sans-serif'; g.fillText('(619) 777-6527', 80, 950);
+    g.fillStyle = 'rgba(255,255,255,0.6)'; g.font = '500 34px Inter, Arial, sans-serif'; g.fillText('Any installer · Free evaluation · fixmy.energy', 80, 1005);
+    var blob = await new Promise(function (ok) { cv.toBlob(ok, 'image/png'); });
+    try {
+      var sc = supabase.createClient(SUPA_URL, SUPA_KEY), path = 'content/' + id + '-' + Date.now() + '.png';
+      var up = await sc.storage.from('job_photos').upload(path, blob, { contentType: 'image/png', upsert: false });
+      if (up.error) throw up.error;
+      await window.ctSetImage(id, sc.storage.from('job_photos').getPublicUrl(path).data.publicUrl, 'branded');
+    } catch (e) { alert('Could not upload the graphic: ' + (e.message || e)); }
+  };
+
+  window.ctRunAgent = function () {
+    var b = document.getElementById('ctRunBtn'); var have = (_ct.rows || []).some(function (x) { return x.status === 'draft'; });
+    if (have && !confirm('There are already drafts waiting. Draft another batch anyway?')) return;
+    if (b) { b.disabled = true; b.textContent = 'Quoya is writing… (about 2 min)'; }
+    fetch('/.netlify/functions/run-agent-background?agent=content' + (have ? '&force=1' : '')).catch(function () {});
+    setTimeout(function () { loadContentPanel(); }, 90000); setTimeout(function () { loadContentPanel(); }, 180000);
+  };
+
+  // Channels: pick which GHL Social Planner accounts each channel posts to.
+  window.ctChannels = async function () {
+    _ct.acct = { loading: true }; _ctRender();
+    try { var j = await _ctApi({ action: 'accounts' }); _ct.acct = { list: j.accounts || [], error: j.error || '', saved: (j.saved && j.saved.accounts) || {} }; }
+    catch (e) { _ct.acct = { list: [], error: e.message, saved: {} }; }
+    _ctRender();
+  };
+  function _ctChannelsHtml() {
+    var a = _ct.acct, h = '<div style="margin-top:12px;padding:12px;border:1px solid #4a9eff55;border-radius:12px;background:rgba(74,158,255,0.05);"><div style="font-weight:700;color:#fff;font-size:0.85rem;margin-bottom:6px;">Where should posts go?</div>';
+    if (a.loading) return h + '<div style="color:#888;font-size:0.78rem;">Loading your GHL Social Planner accounts…</div></div>';
+    if (a.error) h += '<div style="color:#f87171;font-size:0.74rem;margin-bottom:6px;">' + esc(a.error) + '</div>';
+    if (!a.list.length) h += '<div style="color:#aaa;font-size:0.76rem;line-height:1.6;">No accounts found. In GHL go to Marketing &rarr; Social Planner &rarr; connect your Google Business Profile, Facebook Page and Instagram, then tap Channels again.</div>';
+    [['gbp', 'Google Business Profile'], ['facebook', 'Facebook'], ['instagram', 'Instagram']].forEach(function (c) {
+      var opts = a.list.filter(function (x) { return x.platform === c[0]; }), other = a.list.filter(function (x) { return ['gbp', 'facebook', 'instagram'].indexOf(x.platform) < 0; });
+      h += '<div style="margin-top:8px;font-size:0.74rem;color:#ccc;font-weight:700;">' + c[1] + '</div>';
+      if (!opts.length && !other.length) { h += '<div style="font-size:0.7rem;color:#666;">none connected</div>'; return; }
+      opts.concat(other).forEach(function (x) {
+        var on = ((a.saved || {})[c[0]] || []).indexOf(x.id) > -1;
+        h += '<label style="display:flex;gap:6px;align-items:center;font-size:0.74rem;color:#ddd;margin:3px 0;"><input type="checkbox" data-ctch="' + c[0] + '" value="' + esc(x.id) + '"' + (on ? ' checked' : '') + ' style="width:auto;"/>' + esc(x.name || x.id) + ' <span style="color:#666;">(' + esc(x.raw_platform || x.platform) + (x.expired ? ', reconnect in GHL' : '') + ')</span></label>';
+      });
+    });
+    return h + '<div style="display:flex;gap:8px;margin-top:10px;">' + _ctBtn('Save', 'ctSaveChannels()', '#4a9eff', true) + _ctBtn('Close', '_ct.acct=null;_ctRender()', '#888') + '</div></div>';
+  }
+  window.ctSaveChannels = async function () {
+    var acc = { gbp: [], facebook: [], instagram: [] };
+    document.querySelectorAll('input[data-ctch]').forEach(function (el) { if (el.checked) acc[el.getAttribute('data-ctch')].push(el.value); });
+    try { var j = await _ctApi({ action: 'save_accounts', accounts: acc }); _ct.channels = j.saved; _ct.acct = null; _ctRender(); } catch (e) { alert('Could not save: ' + e.message); }
+  };
 
   // ── PR & Backlinks (Agents tab) ────────────────────────────────────────────
   // Earned media, not paid links. The weekly PR agent queues real outlets + PUBLIC editorial contacts as
