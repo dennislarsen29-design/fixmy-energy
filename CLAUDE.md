@@ -3123,3 +3123,6 @@ Next step on a paid Diagnostic job now asks **what the diagnostic found** before
 
 ## Cosmic diagnostic = $350 total (2026-11-24, per Dennis)
 Cosmic (ops3) gets $350 per diagnostic in total: the $300 "Diagnostic — COGS" line (`COSMIC_FLAT` in `netlify/functions/lib/ops-pay.js`) plus the automatic $50 "Professional bonus — COGS" line. A brief change to a $350 base ($400 total) was reverted the same day. Every other partner is unchanged.
+
+## Impeccable design skill — project context (2026-11-24, per Dennis)
+`PRODUCT.md` (who the public site serves, voice, claims rules, approved proof) and `DESIGN.md` + `.impeccable/design.json` (current visual system) are the Impeccable skill's context files. Decisions: main visitor = existing-solar repair; voice = plain, honest, no pressure; proof = 5.0 Google rating, real customer quotes (Dennis supplies them; none yet), Dennis's owner story; no customer job photos as proof. Visual direction = **evolve**: keep Field Lime #8DC63F and the logo, fonts/background/layout may change; North Star "The Trusted Local Technician". The skill itself is installed by hand at `~/.claude/skills/impeccable` (lost on workspace reset; reinstall from GitHub `pbakaus/impeccable`, `.claude/skills/impeccable`).
