@@ -1,10 +1,10 @@
 // Independent-electrician pay (2026-10-31, per Dennis): every Ops partner EXCEPT Cosmic is paid on the electrician plan
 // shown on /electricians: $250 per completed diagnostic, a travel adder by distance from the partner's base ZIP to the job,
-// and a $50 Professional Bonus when the visit meets its conditions. Cosmic (ops3) stays on its own flat $350 model, plus the $50 bonus added automatically (they don't use our CRM).
+// and a $50 Professional Bonus when the visit meets its conditions. Cosmic (ops3) stays on its own flat $300 model, plus the $50 bonus added automatically (they don't use our CRM).
 // Everything is recomputed from the database on each call and is idempotent, so it is safe to call after every save.
 const SUPA_URL = process.env.SUPABASE_URL || 'https://kbtobyoumvbcxfbugsid.supabase.co';
 const EXCLUDED = ['ops3'];
-const BASE = 250, BASE_UT = 200, BONUS = 50, COSMIC_FLAT = 350; // every state other than CA starts $50 lower (2026-11-09, per Dennis); CA unchanged. Cosmic diagnostic raised $300 -> $350 (2026-11-24, per Dennis)
+const BASE = 250, BASE_UT = 200, BONUS = 50, COSMIC_FLAT = 300; // every state other than CA starts $50 lower (2026-11-09, per Dennis); CA unchanged. Cosmic total is $350 = $300 base + $50 auto bonus (2026-11-24, per Dennis)
 // Non-California = a state tag other than CA, or (no state tag) a last-5-digit ZIP outside California's 90001-96162.
 // Anything we cannot tell is treated as California, so the standard pay is never cut by a guess.
 const STATE_RX = /,\s*([A-Z]{2})\b(?:\s*,?\s*\d{5}(?:-\d{4})?)?(?:\s*,?\s*(?:USA|US))?\s*$/i;
@@ -54,7 +54,7 @@ async function reconcile(customerId, doFetch) {
   const pendingAuto = costs.filter(x => x.status === 'pending' && x.created_by === 'auto-diag-convert');
 
   if (EXCLUDED.indexOf(c.assigned_ops) > -1) {
-    // Back on Cosmic's model: drop any electrician-plan pending lines, keep the flat $350 line.
+    // Back on Cosmic's model: drop any electrician-plan pending lines, keep the flat $300 line.
     const own = costs.filter(x => x.status === 'pending' && String(x.created_by || '').indexOf('payee:') === 0 && /^(Diagnostic|Travel adder)/.test(x.label || ''));
     if (own.length) await del(own.map(x => x.id));
     const left = costs.length - own.length;
