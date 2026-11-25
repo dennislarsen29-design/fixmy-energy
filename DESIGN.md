@@ -78,6 +78,8 @@ components:
 
 The site should feel like the technician who shows up on time, looks at the actual equipment and explains the problem straight: calm, competent, unhurried, nothing to sell. Pages answer the homeowner's question first, then offer one clear next step (book the free evaluation, or call).
 
+**Direction chosen 2026-11-25: "A · Today's site, refined"** (round 2 of the preview). Same cream, Playfair + Inter, lime buttons; the homepage hero becomes text left + an arched house photo right; readable text (muted #5E5850, weight 400, nothing under ~13px), italic headline words and small labels in darker green #3F6A0E instead of lime, form labels attached on /book, 16px inputs. No wording changes (Dennis kept all copy). Applied to index.html and book.html first.
+
 This file records the system **as built on 2026-11-24**, which is the reference for the planned evolution. Direction confirmed with Dennis: **evolve, don't replace.** The lime green and the Solar Review logo stay. Fonts, background color and layout may change in the evolution; until a new direction is chosen and this file is rewritten, the tokens above remain the normative system for any page built today.
 
 Known weaknesses of the current build (from the 2026-11-24 Impeccable audit), to fix in the evolution: lime used as small text on cream (about 1.7:1 contrast); small uppercase labels above nearly every heading; muted body text near 10–11px; glow and side-bar accents; short slogan lines. These read as a generic template rather than a local technician.
