@@ -5018,7 +5018,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       var [costsRes, paysRes, commRes, cosmicRes] = await Promise.all([
         pc.from('job_costs').select('customer_id,amount').in('customer_id', need),
         pc.from('payments').select('customer_id,amount,category,method,source').in('customer_id', need),
-        pc.from('commissions').select('customer_id,kind,amount,status').in('customer_id', need).in('kind', ['rep_commission','setter_commission']),
+        pc.from('commissions').select('customer_id,kind,amount,status,note').in('customer_id', need).in('kind', ['rep_commission','setter_commission']),
         pc.from('commissions').select('customer_id,note,status,paid_at').in('customer_id', need).in('note', ['cosmic_done'])
       ]);
       var costsByC = {}, paysByC = {}, commByC = {}, surchByC = {}, cosmicDoneByC = {};
@@ -5053,7 +5053,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           var _ovr = _setterCompOverride(setterName, net, true);
           if (_ovr !== null) { setterEst = _ovr; _setterPlanApplied = _setterCompPlanFor(setterName); }
         }
-        var comms = commByC[id]||[];
+        var comms = (commByC[id]||[]).filter(function(x){ return x.note !== 'prior_diagnostic'; });  // earlier diagnostic pay is its own line, not this job's split
         var closerRow = comms.find(function(x){ return x.kind==='rep_commission'; });
         var setterRow = comms.find(function(x){ return x.kind==='setter_commission'; });
         var closerAmt = closerRow ? (parseFloat(closerRow.amount)||0) : closerEst;
@@ -34734,7 +34734,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       // Fresh setter-election data before computing the real, locked-in split — this is
       // the actual money-locking action, so it must never use a stale/empty cache.
       await window.bbLoadSetterCompPlans(true);
-      var commRes = await pc.from('commissions').select('kind').eq('customer_id', cid);
+      var commRes = await pc.from('commissions').select('kind,note').eq('customer_id', cid);
       var _splitPcts = _repSplitPcts(rep, setterName, hasSetter, 0.40);
       var closerAmt = !rep ? 0 : Math.round(netPos * _splitPcts.closerPct * 100)/100;
       var setterAmt = hasSetter ? Math.round(netPos * _splitPcts.setterPct * 100)/100 : 0;
@@ -34744,7 +34744,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var _ovrFm = _setterCompOverride(setterName, netPos, true);
         if (_ovrFm !== null) setterAmt = _ovrFm;
       }
-      var have = {}; (commRes.data||[]).forEach(function(x){ have[x.kind] = true; });
+      var have = {}; (commRes.data||[]).forEach(function(x){ if (x.note === 'prior_diagnostic') return; have[x.kind] = true; });  // an earlier diagnostic's commission never blocks the battery sale's
       var rows = [];
       if (!have.rep_commission && closerAmt > 0) rows.push(_stampAutoPaidIfDennis({ customer_id:cid, line:'fixmy', kind:'rep_commission', payee:rep, payee_name:closerNm, amount:closerAmt, status:'sold' }));
       if (hasSetter && !have.setter_commission && setterAmt > 0) {
