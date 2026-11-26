@@ -3770,7 +3770,32 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var t = _jobType(c), sg = _sharedStage(c);
     return '<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;font-size:0.66rem;font-weight:800;letter-spacing:0.05em;text-transform:uppercase;">' +
       (t ? '<span style="background:' + t.color + ';color:#fff;padding:2px 9px;border-radius:100px;">' + esc(t.n) + '</span>' : '') +
-      '<span style="border:1px solid rgba(255,255,255,0.18);color:#bbb;padding:2px 9px;border-radius:100px;">' + (sg.i + 1) + ' ' + esc(sg.n) + '</span></div>';
+      '</div>';   // stage itself now lives in the top-right clock pill (_stageClockHtml), not repeated here
+  };
+  // Days-in-stage clock (2026-11-26, per Dennis): replaces the duplicate stage pill. The date each stage
+  // started comes from real fields; when none exists we fall back to the last update and say "about".
+  var STAGE_SLOW_DAYS = [3, 7, 7, 14, 21, 14, 30, 0];   // after this many days a stage reads amber, 2x = red
+  window._stageSince = function(c, sg) {
+    var t = function(v){ var n = v ? new Date(v).getTime() : 0; return n > 0 ? n : 0; }, now = Date.now(), i = sg.i, at = 0;
+    var dd = t(c.diagnostic_date); if (dd > now) dd = 0;
+    if (i === 0) at = t(c.created_at);
+    else if (i === 1) at = Math.max(t(c.created_at), c.sold_type === 'diagnostic' ? t(c.sold_at) : 0, dd);
+    else if (i === 2) at = t(c.proposal && c.proposal.created_at);
+    else if (i === 3) at = (c.sold_type === 'battery_retrofit' ? t(c.docs_sent_at) : 0) || t(c.sold_at);
+    else if (i === 5) at = t(c.installed_at) || t(c.install_completed_at) || t(c.ns_pto_at);
+    else if (i === 6) at = t(c.install_completed_at);
+    if (at) return { t: at, approx: false };
+    var u = t(c.updated_at); return u ? { t: u, approx: true } : null;
+  };
+  window._stageClockHtml = function(c, label, color) {
+    var sg = _sharedStage(c), since = sg.i < 7 ? _stageSince(c, sg) : null, txt = label || sg.n, col = color || '#8DC63F', tip = 'Stage ' + (sg.i + 1) + ' of 8: ' + sg.n;
+    if (since) {
+      var days = Math.max(0, Math.floor((Date.now() - since.t) / 86400000)), slow = STAGE_SLOW_DAYS[sg.i];
+      if (slow && days >= slow * 2) col = '#ef4444'; else if (slow && days >= slow) col = '#f5a623';
+      txt += ' &middot; ' + (since.approx ? 'about ' : '') + (days === 0 ? 'today' : days === 1 ? '1 day' : days + ' days');
+      tip += '. In this stage since ' + new Date(since.t).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + (since.approx ? ' (last update; exact start not recorded)' : '') + (slow ? '. Normal is under ' + slow + ' days.' : '');
+    }
+    return '<span class="job-status-pill" title="' + esc(tip) + '" style="background:' + col + '22;color:' + col + ';border:1px solid ' + col + '55;white-space:nowrap;">' + esc(txt).replace(/&amp;middot;/g, '&middot;') + '</span>';
   };
   window.jobSendReferralLink = async function(id) {
     var b = document.getElementById('jnRefSend'), m = document.getElementById('jnRefMsg');
@@ -4301,7 +4326,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return '<div class="lead-card" id="lead-' + c.id + '" style="border-left:5px solid ' + col + ';">' +
       (window._checkinCardBanner ? window._checkinCardBanner(c) : '') +
       '<div style="font-size:1rem;font-weight:800;color:' + (nx.tone === 'hot' ? '#fca5a5' : nx.tone === 'ok' ? '#b7e07a' : '#f3c06a') + ';line-height:1.35;margin-bottom:8px;">' + esc(nx.t) + '</div>' +
-      '<div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start;"><div class="lead-name" style="font-size:0.95rem;">' + esc(name) + '</div><span style="font-size:0.7rem;font-weight:700;padding:3px 10px;border-radius:100px;border:1px solid rgba(255,255,255,0.18);color:#bbb;white-space:nowrap;">' + (sg.i + 1) + ' ' + esc(sg.n) + '</span></div>' +
+      '<div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start;"><div class="lead-name" style="font-size:0.95rem;">' + esc(name) + '</div>' + _stageClockHtml(c) + '</div>' +
       '<div class="lead-addr" style="margin:2px 0 0;">' + esc(c.address || 'No address') + '</div>' +
       (chips.filter(Boolean).length ? '<div style="margin-top:7px;display:flex;flex-wrap:wrap;gap:4px;align-items:center;">' + chips.join('') + '</div>' : '') +
       _jobTagHtml(c) +
@@ -4372,7 +4397,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     for (var i = 0; i < 8; i++) dots += '<i style="flex:1;max-width:34px;height:6px;border-radius:3px;background:' + (i <= sg.i ? '#8DC63F' : 'rgba(255,255,255,0.12)') + ';"></i>';
     var open = !!_plOpen[c.id];
     return '<div class="job-card" data-id="' + c.id + '" onclick="openJob(this.dataset.id)"><div class="job-card-top"><div class="job-name">' + esc((c.first_name || '') + ' ' + (c.last_name || '')) + '</div>' +
-      '<div class="job-status-pill" style="background:' + (nsRec ? nsRec.color : '#8DC63F') + '22;color:' + (nsRec ? nsRec.color : '#8DC63F') + ';border:1px solid ' + (nsRec ? nsRec.color : '#8DC63F') + '44;">' + esc(nsRec ? nsRec.label : (sg.i + 1) + ' ' + sg.n) + '</div></div>' +
+      _stageClockHtml(c, nsRec ? nsRec.label : null, nsRec ? nsRec.color : null) + '</div>' +
       '<div class="job-addr">' + esc(c.address || 'No address') + '</div>' +
       '<div style="display:flex;gap:5px;margin:8px 0 0;" aria-label="Stage ' + (sg.i + 1) + ' of 8">' + dots + '</div>' +
       '<div id="jobClose_' + c.id + '">' + _plJobStatusHtml(c) + '</div>' +
@@ -39882,7 +39907,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         var _canOpen = !(j.rep_id && j.rep_id !== person.id);
         return '<div'+(_canOpen ? ' data-id="'+j.id+'" onclick="salesEditLead(this.dataset.id)"' : '')+' style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:14px;margin-bottom:8px;'+(_canOpen?'cursor:pointer;':'')+'">' +
           '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;"><div style="flex:1;min-width:0;"><div style="font-size:0.92rem;font-weight:700;">'+esc((j.first_name||'')+' '+(j.last_name||''))+'</div><div style="font-size:0.75rem;color:#888;margin-top:2px;">'+esc(j.address||'No address')+'</div></div>' +
-          '<div style="background:'+pc+'22;border-radius:6px;padding:4px 10px;font-size:0.72rem;font-weight:700;color:'+pc+';border:1px solid '+pc+'44;white-space:nowrap;">'+esc(pl)+'</div></div>' +
+          _stageClockHtml(j, nsJRec ? nsJRec.label : null, nsJRec ? nsJRec.color : null)+'</div>' +
           '<div style="display:flex;gap:5px;margin:8px 0 0;" aria-label="Stage '+(sg.i+1)+' of 8">'+dots+'</div>' +
           '<div id="repJobComm_'+j.id+'">'+(isNSJ ? _axiaCommLineHtmlForRep(j.id, person) : _jobCommLineHtmlForRep(j.id, person))+'</div>' +
           (extraHtml || '') +
