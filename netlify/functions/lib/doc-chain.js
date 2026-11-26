@@ -7,7 +7,7 @@ const notify = require('./notify');
 
 const ORDER = ['participate_customer_agreement', 'sdcp_enrollment_form', 'tesla_sdcp', 'sdge_interconnect_battery', 'sdge_interconnect_pv_ess', 'sdge_check'];
 const LABEL = {
-  participate_customer_agreement: 'Participate agreement', sdcp_enrollment_form: 'SDCP enrollment form', tesla_sdcp: 'Tesla SDCP agreement',
+  participate_customer_agreement: 'Participate agreement (upload their prefilled PDF in Document Signer → "For one customer")', sdcp_enrollment_form: 'SDCP enrollment form', tesla_sdcp: 'Tesla SDCP agreement',
   sdge_check: 'SDG&E interconnection (couldn\'t tell battery-only from PV+storage — pick it by hand)', sdge_interconnect_battery: 'SDG&E interconnection (battery only)', sdge_interconnect_pv_ess: 'SDG&E interconnection (PV + storage)', cpuc_guide: 'CPUC guide'
 };
 
@@ -61,6 +61,15 @@ async function issueNext(ctx, customer) {
     const tr = await doFetch(SUPA_URL + '/rest/v1/document_templates?doc_type=in.(' + docs.join(',') + ')&select=doc_type,confirmed', { headers: H });
     const tj = await tr.json().catch(function () { return []; });
     const confirmed = {}; (Array.isArray(tj) ? tj : []).forEach(function (t) { confirmed[t.doc_type] = !!t.confirmed; });
+    // Participate is prefilled per deal (Dennis, 2026-11-26): the generic template is never sent. Use this
+    // customer's own uploaded copy (applies_to 'customer:<id>', doc_type participate_*) once it's confirmed.
+    const pi = docs.indexOf('participate_customer_agreement');
+    if (pi > -1) {
+      const cr = await doFetch(SUPA_URL + '/rest/v1/document_templates?applies_to=eq.' + encodeURIComponent('customer:' + customer.id) + '&doc_type=like.participate*&select=doc_type,confirmed&order=created_at.desc', { headers: H });
+      const cj = await cr.json().catch(function () { return []; });
+      const own = (Array.isArray(cj) ? cj : []).filter(function (t) { return t.confirmed; })[0];
+      if (own) { docs[pi] = own.doc_type; confirmed[own.doc_type] = true; } else confirmed.participate_customer_agreement = false;
+    }
     const now = new Date().toISOString();
     for (const d of docs) {
       if (!confirmed[d]) { res.skipped.push(d); continue; }
