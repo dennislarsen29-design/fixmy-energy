@@ -4356,11 +4356,35 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       bar = '<div style="display:flex;height:10px;border-radius:5px;overflow:hidden;gap:2px;background:rgba(255,255,255,0.08);margin-top:4px;"><i style="display:block;flex:' + Math.max(t.p1, 1) + ';background:' + (t.p1paid ? '#4ade80' : '#f5a623') + ';"></i><i style="display:block;flex:' + Math.max(t.p2, 1) + ';background:' + (t.p2due ? '#f5a623' : '#6b6b6b') + ';"></i></div>' +
         '<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:0.7rem;margin-top:5px;color:#aaa;"><span style="color:' + (t.p1paid ? '#4ade80' : '#f5a623') + ';">Payment 1 <b style="font-family:' + COMM_MONO + ';">' + _plMoney(t.p1) + '</b> ' + (t.p1paid ? 'paid' : 'pending') + '</span><span>Payment 2 <b style="font-family:' + COMM_MONO + ';">' + _plMoney(t.p2) + '</b> ' + (t.p2due ? 'due' : 'at PTO') + '</span></div>';
     } else {
-      bar = '<div style="font-size:0.72rem;margin-top:5px;color:' + (t.p1paid ? '#4ade80' : '#f5a623') + ';">' + (t.p1paid ? 'Paid' : 'Not paid yet') + '</div>';
+      bar = _plPayerLineHtml(c, d, t);
     }
     return '<div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.1fr);gap:14px;align-items:end;margin-top:8px;"><div><div style="font-size:0.62rem;text-transform:uppercase;letter-spacing:0.07em;color:#888;">Account value</div>' +
       '<div style="font-family:' + COMM_MONO + ';font-size:1.7rem;font-weight:700;line-height:1.05;color:#fff;">' + _plMoney(t.gross) + '</div>' +
       '<div style="font-size:0.74rem;color:#888;margin-top:3px;">Solar Review margin <b style="font-family:' + COMM_MONO + ';color:' + COMM_COLOR_MARGIN + ';">' + _plMoney(t.margin) + '</b></div></div><div>' + bar + '</div></div>';
+  };
+  // Who owes Solar Review what on this job, in plain words (2026-11-26, per Dennis).
+  window._plPayerLineHtml = function(c, d, t) {
+    var m = function(n){ return '<b style="font-family:' + COMM_MONO + ';">' + _plMoney(n) + '</b>'; };
+    var ln = function(ok, txt){ return '<div style="font-size:0.72rem;margin-top:3px;color:' + (ok ? '#4ade80' : '#f5a623') + ';">' + (ok ? '&#10003; ' : '') + txt + '</div>'; };
+    if (c.sold_type === 'battery_retrofit') {
+      var g = t.gross || 0, who = _payerName(d.installerId);
+      if (!(g > 0)) return ln(false, 'Add the revenue and redline to see what ' + esc(who) + ' owes.');
+      if (d.installerId === 'ops3') { var h = Math.round(g * 50) / 100; return ln(d.saleRcvd, 'Cosmic ' + (d.saleRcvd ? 'paid ' : 'owes ') + m(h) + ' at sale') + ln(d.doneRcvd, 'Cosmic ' + (d.doneRcvd ? 'paid ' : 'pays ') + m(h) + (d.doneRcvd ? ' at completion' : ' after install')); }
+      return ln(d.doneRcvd, esc(who) + (d.doneRcvd ? ' paid ' + m(g) : ' pays ' + m(g) + ' after install'));
+    }
+    var fee = parseFloat(c.invoice_amount) || 0, paid = d.collected || 0;
+    if (paid > 0) return ln(true, 'Customer paid ' + m(paid));
+    if (fee > 0) return ln(false, 'Customer owes ' + m(fee));
+    return ln(false, 'Customer fee not set yet');
+  };
+  // Rep's own view: when THEIR pay unlocks (never company numbers).
+  window._plRepPayWhenHtml = function(c) {
+    var d = c.lead_category === 'new_solar' ? _axiaCommCache[c.id] : _fixmyCommCache[c.id]; if (!d) return '';
+    var txt = c.lead_category === 'new_solar' ? 'You get paid the Friday after Axia\'s Payment 1 (after install).'
+      : c.sold_type === 'battery_retrofit' ? 'You get paid the Friday after ' + esc(_payerName(d.installerId)) + (d.installerId === 'ops3' ? '\'s final payment' : '\'s payment') + ' arrives (after install).'
+      : 'You get paid the Friday after the job is done.';
+    if (d.earned) txt = 'Earned. Paid on the next pay Friday.';
+    return '<div style="font-size:0.72rem;color:#aaa;margin-top:4px;">' + txt + '</div>';
   };
   window._plJobDetailsHtml = function(c) {
     var isNS = c.lead_category === 'new_solar', d = isNS ? _axiaCommCache[c.id] : _fixmyCommCache[c.id], h = '';
@@ -5040,7 +5064,16 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     return Math.max(0, Math.round((_panelPerW(n) - _panelPerW(n)) * n * PANEL_WATTS * 100) / 100);   // Cosmic's own rate = the Sub Sheet rate until Dennis has it, so $0
   }
   var _fixmyCommCache = {}; // customer_id -> computed split, see fields below
+  // Real names for every team member (admin, rep and Ops portals alike), so a card never shows an id like tech_tk6pfv.
+  window._teamNameMap = window._teamNameMap || {};
+  window._loadTeamNames = function() {
+    if (window._teamNamesP) return window._teamNamesP;
+    window._teamNamesP = (async function(){ try { var r = await supabase.createClient(SUPA_URL, SUPA_KEY).from('team_members').select('id,name'); (r.data || []).forEach(function(t){ if (t && t.id && t.name) window._teamNameMap[t.id] = t.name; }); } catch (e) { window._teamNamesP = null; } })();
+    return window._teamNamesP;
+  };
+  window._payerName = function(id) { return (id === 'ops3' ? 'Cosmic' : ({ ops1: 'Klos Electric', ops2: 'John Espinoza', ops4: 'Axia' })[id]) || (window._teamNameMap && window._teamNameMap[id]) || 'the installer'; };
   async function _loadFixmyJobCommissions(ids) {
+    await window._loadTeamNames();
     var need = (ids||[]).filter(function(id){ return id && !_fixmyCommCache[id]; });
     if (!need.length) return;
     try {
@@ -5050,11 +5083,11 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         pc.from('job_costs').select('customer_id,amount').in('customer_id', need),
         pc.from('payments').select('customer_id,amount,category,method,source').in('customer_id', need),
         pc.from('commissions').select('customer_id,kind,amount,status,note').in('customer_id', need).in('kind', ['rep_commission','setter_commission']),
-        pc.from('commissions').select('customer_id,note,status,paid_at').in('customer_id', need).in('note', ['cosmic_done'])
+        pc.from('commissions').select('customer_id,note,status,paid_at').in('customer_id', need).in('note', ['cosmic_done','cosmic_sale'])
       ]);
-      var costsByC = {}, paysByC = {}, commByC = {}, surchByC = {}, cosmicDoneByC = {};
+      var costsByC = {}, paysByC = {}, commByC = {}, surchByC = {}, cosmicDoneByC = {}, cosmicSaleByC = {};
       // Battery Retrofit: Cosmic's FINAL 50% received = job fully funded (2026-11-05, per Dennis).
-      (cosmicRes.data||[]).forEach(function(x){ if (x.status==='paid') cosmicDoneByC[x.customer_id] = x.paid_at || true; });
+      (cosmicRes.data||[]).forEach(function(x){ if (x.status!=='paid') return; if (x.note === 'cosmic_sale') cosmicSaleByC[x.customer_id] = x.paid_at || true; else cosmicDoneByC[x.customer_id] = x.paid_at || true; });
       (costsRes.data||[]).forEach(function(x){ costsByC[x.customer_id] = (costsByC[x.customer_id]||0) + (parseFloat(x.amount)||0); });
       (paysRes.data||[]).forEach(function(x){ if ((x.category||'revenue')==='revenue') { paysByC[x.customer_id] = (paysByC[x.customer_id]||0) + (parseFloat(x.amount)||0); surchByC[x.customer_id] = (surchByC[x.customer_id]||0) + _paySurcharge(x); } });
       (commRes.data||[]).forEach(function(x){ (commByC[x.customer_id] = commByC[x.customer_id]||[]).push(x); });
@@ -5109,6 +5142,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           // (David Witthoft, 2026-11-05: installed but not fully funded must not show as a payday).
           earned: (c.sold_type === 'battery_retrofit') ? ((c.step||1) >= 9 && !!cosmicDoneByC[id]) : (c.step||1) >= 9,
           awaitingCosmic: (c.sold_type === 'battery_retrofit') && (c.step||1) >= 9 && !cosmicDoneByC[id],
+          installerId: c.battery_ops || c.assigned_ops || 'ops3', saleRcvd: !!cosmicSaleByC[id], doneRcvd: !!cosmicDoneByC[id], collected: collected,
           net: net,
           revenue: collected, costs: costSum,
           soldAt: c.sold_at||null, earnedAt: (c.sold_type === 'battery_retrofit') ? (cosmicDoneByC[id] && cosmicDoneByC[id] !== true ? cosmicDoneByC[id] : (cosmicDoneByC[id] ? (c.installed_at || c.install_date || null) : null)) : (c.installed_at || ((c.step||1) >= 9 ? (c.install_date||null) : null)), durationKey: c.sold_type||'diagnostic'
@@ -5434,6 +5468,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   // any) are already locked into `commissions` so an estimate can't overwrite a real number.
   var _axiaCommCache = {};
   async function _loadAxiaJobCommissions(ids) {
+    await window._loadTeamNames();
     var need = (ids||[]).filter(function(id){ return id && !_axiaCommCache[id]; });
     if (!need.length) return;
     try {
@@ -34298,7 +34333,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
   // ── Accounting panel: Sub Sheet costs + commissions per SOP ────────────────
   var REP_NAMES = { tech4:'Dennis Larsen', tech2:'Ranie', tech3:'Michael Smith', tech5:'Cristina Huang', rep1:'Ronda Larsen', setter1:'Setter' };
-  function repName(id){ if (REP_NAMES[id]) return REP_NAMES[id]; var m = (typeof adminTeamMembers !== 'undefined' && adminTeamMembers || []).filter(function(t){ return t && t.id === id; })[0]; return (m && m.name) || id || 'Unassigned'; }   // team members added after launch (e.g. Brent Lewis) aren't in REP_NAMES
+  function repName(id){ if (REP_NAMES[id]) return REP_NAMES[id]; if (window._teamNameMap && window._teamNameMap[id]) return window._teamNameMap[id]; var m = (typeof adminTeamMembers !== 'undefined' && adminTeamMembers || []).filter(function(t){ return t && t.id === id; })[0]; return (m && m.name) || id || 'Unassigned'; }   // team members added after launch (e.g. Brent Lewis) aren't in REP_NAMES
 
   async function edLoadAccounting() {
     var panel = document.getElementById('edAcctPanel');
@@ -39910,6 +39945,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           _stageClockHtml(j, nsJRec ? nsJRec.label : null, nsJRec ? nsJRec.color : null)+'</div>' +
           '<div style="display:flex;gap:5px;margin:8px 0 0;" aria-label="Stage '+(sg.i+1)+' of 8">'+dots+'</div>' +
           '<div id="repJobComm_'+j.id+'">'+(isNSJ ? _axiaCommLineHtmlForRep(j.id, person) : _jobCommLineHtmlForRep(j.id, person))+'</div>' +
+          '<div id="repJobWhen_'+j.id+'">'+_plRepPayWhenHtml(j)+'</div>' +
           (extraHtml || '') +
           ((!config.setterMode && _canOpen) ? '<div style="margin-top:8px;"><button onclick="event.stopPropagation();jobNext(\''+j.id+'\')" style="width:auto;margin:0;padding:7px 16px;border-radius:100px;background:rgba(141,198,63,0.15);border:1px solid rgba(141,198,63,0.45);color:#8DC63F;font-size:0.76rem;font-weight:800;cursor:pointer;">&#9654; Next step</button></div>' : '') +
           '<details onclick="event.stopPropagation()" style="margin-top:8px;"><summary style="cursor:pointer;color:#8DC63F;font-weight:700;font-size:0.8rem;">Details</summary><div style="padding-top:6px;">'+inner+'</div></details>' +
@@ -40827,18 +40863,18 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       if (salesView === 'pipeline') {
         var _pf = payFixmyJobs.map(function(j){ return j.id; }), _pn = payNSJobs.map(function(j){ return j.id; });
         Promise.all([_pf.length ? _loadFixmyJobCommissions(_pf) : 0, _pn.length ? _loadAxiaJobCommissions(_pn) : 0]).then(function(){
-          payFixmyJobs.forEach(function(j){ var el = document.getElementById('repJobComm_'+j.id); if (el) el.innerHTML = _jobCommLineHtmlForRep(j.id, person); });
-          payNSJobs.forEach(function(j){ var el = document.getElementById('repJobComm_'+j.id); if (el) el.innerHTML = _axiaCommLineHtmlForRep(j.id, person); });
+          payFixmyJobs.forEach(function(j){ var el = document.getElementById('repJobComm_'+j.id); if (el) el.innerHTML = _jobCommLineHtmlForRep(j.id, person); var wl = document.getElementById('repJobWhen_'+j.id); if (wl) wl.innerHTML = _plRepPayWhenHtml(j); });
+          payNSJobs.forEach(function(j){ var el = document.getElementById('repJobComm_'+j.id); if (el) el.innerHTML = _axiaCommLineHtmlForRep(j.id, person); var wl = document.getElementById('repJobWhen_'+j.id); if (wl) wl.innerHTML = _plRepPayWhenHtml(j); });
         });
       }
       if (salesView === 'jobs' && salesJobCat !== 'new_solar' && payFixmyJobs.length) {
         _loadFixmyJobCommissions(payFixmyJobs.map(function(j){ return j.id; })).then(function(){
-          payFixmyJobs.forEach(function(j){ var el = document.getElementById('repJobComm_'+j.id); if (el) el.innerHTML = _jobCommLineHtmlForRep(j.id, person); });
+          payFixmyJobs.forEach(function(j){ var el = document.getElementById('repJobComm_'+j.id); if (el) el.innerHTML = _jobCommLineHtmlForRep(j.id, person); var wl = document.getElementById('repJobWhen_'+j.id); if (wl) wl.innerHTML = _plRepPayWhenHtml(j); });
         });
       }
       if (salesView === 'jobs' && salesJobCat === 'new_solar' && payNSJobs.length) {
         _loadAxiaJobCommissions(payNSJobs.map(function(j){ return j.id; })).then(function(){
-          payNSJobs.forEach(function(j){ var el = document.getElementById('repJobComm_'+j.id); if (el) el.innerHTML = _axiaCommLineHtmlForRep(j.id, person); });
+          payNSJobs.forEach(function(j){ var el = document.getElementById('repJobComm_'+j.id); if (el) el.innerHTML = _axiaCommLineHtmlForRep(j.id, person); var wl = document.getElementById('repJobWhen_'+j.id); if (wl) wl.innerHTML = _plRepPayWhenHtml(j); });
         });
       }
       // Payroll spans BOTH pipelines and its content is baked straight into the
