@@ -58,3 +58,8 @@ Status: [ ] open · [x] done · [-] dismissed
 - [ ] J3. San Diego Community Power: ask about a partner or referral path (they get the same high-bill calls and already run battery programs).
 - [ ] J4. Referral program: (a) DONE 2026-11-07, migration ran in the Supabase SQL editor; (b) legal review of multi-level payouts still open; (c) code already on main.
 - [ ] J5. Referral: on the New Lead form pick Lead Source = Referral to see the live lookup; after an install/PTO, use Next step → "Send their share link". Decide if the PTO text should send automatically.
+
+## K. Added 2026-11-23
+- [x] K1. (done 2026-11-23, per Dennis) Ran 4 migrations in SQL Editor: pr_outreach, auto_unset_aside, referrals, heal_pr. Claude to verify pr_targets exists.
+- [x] K2. (done 2026-11-23) Search Console indexing requested for /southern-utah-solar-repair and /solar-repair-st-george-ut. Next 5/day: remaining Utah/city pages (H3, H1b).
+- [x] C2 check 2026-11-23: no diagnostics waiting on a report.
