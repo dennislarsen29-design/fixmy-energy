@@ -3146,3 +3146,13 @@ When a diagnostic lead later becomes a Battery Retrofit, the diagnostic's commis
 
 ## Battery installer payment terms (2026-11-26, per Dennis — Spring Solar)
 Battery Retrofit installer = `battery_ops || assigned_ops` (default Cosmic `ops3`). **Cosmic** pays Solar Review 50% of Gross Commission at sale + 50% at completion. **Any other installer (e.g. Spring Solar `ops_hatkat`) pays the full Gross Commission once, when the install is done.** Administration → Payroll card is now "Installer payments to Solar Review" (one "Paid in full at completion" line for non-Cosmic jobs); S.U.N. receivables follow the same rule. The completion receipt reuses `note='cosmic_done'` (payee_name "<installer> payment") so the existing rule still holds: a battery rep commission becomes payable only after step ≥ 9 AND the completion payment is marked received.
+
+## Spring Solar (Utah installer, `ops_hatkat`) — rep rules from their Quick Start Guide (read 2026-11-26)
+Source: Google Doc "Whats needed to start selling 2026 Spring Solar" (Dennis shared). Key rules for any deal installed by Spring Solar:
+- **Before they process a job:** a recorded welcome call (CallPilot) or a recorded video of rep + homeowner going over page 1 of the installation agreement, confirming no promises beyond the agreement. Required since May 2026.
+- **Upload to their Monday.com** per deal: power bill (JPEG), site survey photos (ground level), installation agreement, proposal, homeowner info (ONE phone, ONE email). Rep is responsible for accuracy; they don't audit.
+- **Never sign for the homeowner**; no cash back/rebates; any promise (HVAC, roof) must be delivered. No sales to 80+; 70+ only with a stated reason.
+- Quote max $3.00/W before dealer fee/adders in Artemis; size ≥120% offset (110% with battery); Utah net billing exports at ~half credit; tell the homeowner to leave Rocky Mountain Power "equal pay" after signing.
+- **Payment:** they pay ~2 weeks after install (Saturdays). Their commission formula: Loan − Dealer Fee − System Cost + Adders. Powerwall 3s installed outside by the meter by default (>5 ft away ≈ $25/ft).
+- **Reps must be W-2** of Spring Solar (or via an LLC) — conflicts with our 1099 reps; ties to the open Utah HB 57 question.
+- Contacts: fulfillment@gospringsolar.com; Jeff (PM) 713-550-7938 first; Antonio (Participate jobs) antoniospringsolar@gmail.com; funding springsolarfunding@gmail.com.
