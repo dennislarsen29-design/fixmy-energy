@@ -34773,6 +34773,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           '<div id="nlSatWrap" style="margin-top:0;margin-bottom:8px;display:none;"><img id="nlSatImg" src="" style="width:100%;border-radius:8px;max-height:160px;object-fit:cover;"/></div>'+
           '<div id="nlSolarWrap" style="margin-bottom:8px;display:none;"><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;"><div id="nlS1" class="solar-stat-box"></div><div id="nlS2" class="solar-stat-box"></div><div id="nlS3" class="solar-stat-box"></div></div></div>'+
           '<div id="nlHomeMatch" style="display:none;margin-bottom:8px;"></div>'+
+          '<div id="nlQualify" style="margin-bottom:10px;"></div>'+
           '<div id="nlOwnerLookupWrap">'+
             '<button type="button" onclick="nlManualTitleLookup()" style="width:100%;padding:11px 14px;background:rgba(141,198,63,0.12);border:1px solid rgba(141,198,63,0.3);border-radius:8px;color:#8DC63F;font-size:0.85rem;font-weight:700;cursor:pointer;margin-bottom:8px;">&#128269; Look Up Owner</button>'+
             '<div id="nlTitleWrap" style="display:none;padding:12px 14px;background:rgba(141,198,63,0.06);border:1px solid rgba(141,198,63,0.2);border-radius:10px;">'+
@@ -34973,6 +34974,121 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     window.nlEvmRender();
     window._nlEvmTimer = setInterval(window.nlEvmCheck, 1500);
   };
+
+  // ── Quick Qualify (2026-11-26, per Dennis) ─────────────────────────────────────────────
+  // A live card on the New Lead form: what we already know about this lead from our OWN data (county
+  // parcel owner, Black Box home match, territory, distance to a Tech, bill) as green / amber / red chips,
+  // plus a suggested next step. No credit check (needs FCRA consent + a reseller account — deliberately not built).
+  // It only reads what is already on the form or already looked up; nothing is saved and nothing blocks submit.
+  window._nlQDup = { key: '', res: null };
+  window._nlQualifyCompute = function() {
+    var v = function(id){ return ((document.getElementById(id) || {}).value || '').trim(); };
+    var chips = [], need = [];
+    var add = function(level, label, why){ chips.push({ level: level, label: label, why: why || '' }); };
+    var addr = v('nlAddr');
+    // Territory
+    if (addr.length >= 8) {
+      var z = (typeof extractZip === 'function') ? extractZip(addr) : '';
+      var ut = window._isUtahLead && window._isUtahLead({ address: addr });
+      if (ut) add('info', 'Utah', 'Rocky Mountain Power territory; Utah plan rules apply.');
+      var sd = z && window.sdcpZipStatus ? window.sdcpZipStatus(z) : '';
+      if (sd === 'yes') add('good', 'SDCP territory', 'San Diego Community Power battery incentive can apply.');
+      else if (sd === 'mixed') add('warn', 'SDCP maybe', 'This ZIP is split between SDCP and another provider. Check the bill.');
+      var evm = window._nlEvm;
+      if (evm && evm.auto === true) add('info', 'Virtual evaluation', 'About ' + (evm.miles || '50+') + ' miles from every Tech.');
+      else if (evm && evm.auto === false) add('good', 'Tech nearby', 'Within reach of a Tech' + (evm.miles ? ' (about ' + evm.miles + ' mi)' : '') + '.');
+    } else need.push('service address');
+    // Owner of record
+    var owner = v('nlTitleOwner');
+    if (owner) {
+      var po = (typeof _bbOwnerParse === 'function') ? _bbOwnerParse(owner) : { display: owner, surname: '', isEntity: false };
+      var last = v('nlLast').toLowerCase(), first = v('nlFirst').toLowerCase();
+      var low = owner.toLowerCase();
+      var named = (last && low.indexOf(last) > -1) || (first && low.indexOf(first) > -1);
+      if (/\b(llc|inc|corp|properties|investments|holdings|partners|management|realty)\b/i.test(owner)) add('warn', 'Company owns it', po.display + '. Likely a rental or investment property. Ask who lives there.');
+      else if (last && !named) add('warn', 'Name differs from title', 'On title: ' + po.display + '. Confirm spouse, trust or relative.');
+      else add('good', 'On title', po.display + (po.isEntity ? ' (trust)' : ''));
+    } else if (addr.length >= 8) need.push('owner lookup');
+    // Existing system / home match
+    var hs = v('nlHasSolar');
+    var hm = window._nlHome;
+    if (hm && hm.summary) add('info', 'Home on file', String(hm.summary).slice(0, 160));
+    if (hs === 'yes') add('good', 'Has solar', 'Repair, diagnostic or battery lead.');
+    else if (hs === 'no') add('info', 'No solar yet', 'New-system lead (Axia/QCells path).');
+    else need.push('existing solar yes/no');
+    // Bill
+    var bill = parseFloat(v('nlBill')), tu = parseFloat(v('nlTrueUp'));
+    if (isFinite(bill) && bill > 0) {
+      if (bill >= 150) add('good', 'Bill $' + Math.round(bill) + '/mo', 'Real savings room.');
+      else if (bill >= 50) add('warn', 'Bill $' + Math.round(bill) + '/mo', 'Moderate. Qualify on a problem, not savings.');
+      else add('bad', 'Bill $' + Math.round(bill) + '/mo', 'Low. Worth a visit only if the system is faulty.');
+    } else need.push('monthly bill');
+    if (isFinite(tu) && tu >= 1000) add('good', 'True-up $' + Math.round(tu), 'Large annual true-up.');
+    // Roof age
+    var roof = v('nlRoof');
+    if (/^20\+/.test(roof)) add('warn', 'Roof 20+ years', 'Reroof may be needed before any panel work.');
+    else if (/^15/.test(roof)) add('warn', 'Roof 15-20 years', 'Ask about roof condition.');
+    // Duplicate / do-not-contact (async, cached)
+    var ph = v('nlPhone').replace(/\D/g, '').slice(-10);
+    if (ph.length === 10) {
+      var d = window._nlQDup;
+      if (d.key !== ph) { d.key = ph; d.res = null; window._nlQDupLookup(ph); }
+      else if (d.res === 'dnc') add('bad', 'Do not contact', 'This number is flagged Do Not Contact.');
+      else if (d.res && d.res.sold) add('warn', 'Already a customer', d.res.name + ' is already a customer.');
+      else if (d.res && d.res.lead) add('warn', 'Already a lead', d.res.name + ' is already in the pipeline.');
+    } else need.push('cell phone');
+    return { chips: chips, need: need };
+  };
+  window._nlQDupLookup = async function(ph) {
+    try {
+      var c = supabase.createClient(SUPA_URL, SUPA_KEY);
+      var r = await c.from('customers').select('id,first_name,last_name,phone,dnc,sold_type,archived').ilike('phone', '%' + ph.slice(-4)).limit(25);
+      var hit = ((r && r.data) || []).filter(function(x){ return String(x.phone || '').replace(/\D/g, '').slice(-10) === ph; });
+      var res = null;
+      if (hit.some(function(x){ return x.dnc; })) res = 'dnc';
+      else if (hit.length) { var x = hit.find(function(y){ return y.sold_type; }) || hit[0]; res = { sold: !!x.sold_type, lead: !x.sold_type, name: ((x.first_name || '') + ' ' + (x.last_name || '')).trim() || 'This person' }; }
+      if (window._nlQDup.key === ph) { window._nlQDup.res = res || 'none'; window._nlQSig = ''; }
+    } catch (e) { if (window._nlQDup.key === ph) window._nlQDup.res = 'none'; }
+  };
+  window._nlQualifyHtml = function(q) {
+    var col = { good: ['#8DC63F', 'rgba(141,198,63,0.12)', 'rgba(141,198,63,0.35)'], warn: ['#f5a623', 'rgba(245,166,35,0.12)', 'rgba(245,166,35,0.35)'], bad: ['#ef4444', 'rgba(239,68,68,0.12)', 'rgba(239,68,68,0.4)'], info: ['#4a9eff', 'rgba(74,158,255,0.10)', 'rgba(74,158,255,0.3)'] };
+    var bad = q.chips.filter(function(c){ return c.level === 'bad'; }).length, warn = q.chips.filter(function(c){ return c.level === 'warn'; }).length, good = q.chips.filter(function(c){ return c.level === 'good'; }).length;
+    var verdict, vcol, next;
+    if (bad) { verdict = 'Check before spending time'; vcol = 'bad'; next = 'Resolve the red item first.'; }
+    else if (good >= 3 && !warn) { verdict = 'Looks like a good lead'; vcol = 'good'; next = 'Book the evaluation now.'; }
+    else if (good >= 2) { verdict = 'Promising, confirm a few things'; vcol = 'warn'; next = warn ? 'Confirm the amber items, then book.' : 'Book the evaluation.'; }
+    else { verdict = 'Keep qualifying'; vcol = 'info'; next = 'Fill in the address, owner, existing solar and bill.'; }
+    var nextStep = (window._nlEvm && window._nlEvm.auto === true) ? ' Offer the 45-minute video evaluation.' : '';
+    var h = '<div style="padding:12px 14px;border-radius:12px;background:rgba(255,255,255,0.03);border:1px solid ' + col[vcol][2] + ';">'
+      + '<div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">'
+      + '<div style="font-size:0.66rem;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#888;">Quick qualify</div>'
+      + '<div style="font-size:0.8rem;font-weight:800;color:' + col[vcol][0] + ';">' + verdict + '</div></div>'
+      + '<div style="display:flex;gap:6px;flex-wrap:wrap;">';
+    q.chips.forEach(function(c){ var k = col[c.level]; h += '<span title="' + esc(c.why) + '" style="padding:4px 10px;border-radius:100px;background:' + k[1] + ';border:1px solid ' + k[2] + ';color:' + k[0] + ';font-size:0.72rem;font-weight:700;">' + esc(c.label) + '</span>'; });
+    h += '</div>';
+    var why = q.chips.filter(function(c){ return c.why && (c.level === 'bad' || c.level === 'warn'); }).slice(0, 3);
+    if (why.length) h += '<ul style="margin:8px 0 0;padding-left:18px;font-size:0.74rem;color:#d8d2c6;line-height:1.5;">' + why.map(function(c){ return '<li><strong>' + esc(c.label) + ':</strong> ' + esc(c.why) + '</li>'; }).join('') + '</ul>';
+    if (q.need.length) h += '<div style="margin-top:8px;font-size:0.72rem;color:#999;">Still need: ' + esc(q.need.join(', ')) + '</div>';
+    h += '<div style="margin-top:8px;font-size:0.76rem;font-weight:700;color:#F3EDE3;">Next: ' + esc(next) + esc(nextStep) + '</div></div>';
+    return h;
+  };
+  window.nlQualifyRender = function() {
+    var box = document.getElementById('nlQualify');
+    if (!box) { clearInterval(window._nlQTimer); return; }
+    var q = window._nlQualifyCompute();
+    var sig = JSON.stringify(q);
+    if (sig === window._nlQSig) return;
+    window._nlQSig = sig;
+    box.innerHTML = window._nlQualifyHtml(q);
+  };
+  window.nlQualifyStart = function() {
+    window._nlQSig = ''; window._nlHome = null; window._nlQDup = { key: '', res: null };
+    clearInterval(window._nlQTimer);
+    window.nlQualifyRender();
+    window._nlQTimer = setInterval(window.nlQualifyRender, 1200);
+  };
+
+  window._nlEvmStart0 = window.nlEvmStart; window.nlEvmStart = function(){ window._nlEvmStart0(); window.nlQualifyStart(); };
 
   function nlSetCat(cat) {
     document.getElementById('nlLeadCat').value = cat;
@@ -35243,6 +35359,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var box = document.getElementById('nlHomeMatch'); if (!box) return;
     try {
       var r = await (await fetch('/.netlify/functions/home-match', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({action:'preview', address:address})})).json();
+      window._nlHome = (r && r.found && r.summary) ? r : null;
       if (!r || !r.found || !r.summary) { box.style.display = 'none'; return; }
       box.innerHTML = '<div style="padding:10px 14px;background:rgba(155,109,232,0.10);border:1px solid rgba(155,109,232,0.35);border-radius:10px;">'
         + '<div style="font-size:0.68rem;font-weight:700;color:#c4a3f0;margin-bottom:4px;">&#127968; We already have this home on file</div>'
