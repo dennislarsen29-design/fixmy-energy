@@ -44,7 +44,7 @@ body = ('<article class="wrap">\n<div class="eyebrow">Closed solar installers</d
  '<p class="lede">If the company that installed your solar went bankrupt or shut down, your system still needs care. Here are the California installers that have closed, and where to get help.</p>\n'
  '<p class="meta">Solar Review &middot; Updated November 2026</p>\n<h2>Closed or bankrupt solar installers</h2>\n<ul>%s</ul>\n%s\n<h2>Common questions</h2>\n%s\n</article>') % (
  items, b.CTA, ''.join('<div class="faq-q">%s</div><p>%s</p>' % (b.esc(q), b.esc(a)) for q, a in faqs))
-open('defunct-solar-installers.html','w',encoding='utf-8').write(b.page('Solar Installers That Went Out of Business | Who Services Your System | Solar Review',
+open('defunct-solar-installers.html','w',encoding='utf-8').write(b.page('Solar Installers That Went Out of Business | Solar Review',
  'List of California solar installers that went bankrupt or closed, including SunPower, Titan, Sunnova and Freedom Forever, and where to get your system serviced.',
  b.SITE+'/defunct-solar-installers',[ld_faq,ld_bc,ld_list],body))
 print('ok')

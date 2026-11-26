@@ -27,8 +27,9 @@ FAQ = lambda n: [
 
 def city_html(c):
     slug, name, near = c; s = 'solar-repair-%s-ut' % slug
-    title = 'Solar Panel Repair & Inverter Diagnostics in %s, UT | Solar Review' % name
-    desc = 'Solar not producing in %s, Utah? Free video evaluation, inverter and panel diagnostics and Powerwall battery retrofits, even if your installer closed. Call (619) 777-6527.' % name
+    title = 'Solar Panel Repair in %s, UT | Solar Review' % name
+    desc = 'Solar not producing in %s, Utah? Free video evaluation, inverter repair and Powerwall battery add-ons, even if your installer closed. Call (619) 777-6527.' % name
+    if len(desc) > 160: desc = desc.replace(' Call (619) 777-6527.', '')
     faqs = FAQ(name) + [('What should I send first?', 'A photo of your inverter (including its label), a photo of any error or fault light, and your most recent utility bill. With those we can usually tell you what we think is wrong before anyone visits.')]
     near_links = ''.join('<a href="/solar-repair-%s-ut">%s</a>' % (n, names[n]) for n in near if n in names)
     body = ('<article class="wrap">\n<div class="eyebrow">%s, Utah</div>\n<h1>Solar Panel Repair and Inverter Diagnostics in %s, Utah</h1>\n'
@@ -59,8 +60,8 @@ def hub_html():
     svc = json.dumps({"@context":"https://schema.org","@type":"Service","name":"Solar repair and diagnostics in Southern Utah","provider":{"@type":"Organization","name":"Solar Review","url":SITE,"telephone":"+1-619-777-6527"},
       "areaServed":{"@type":"AdministrativeArea","name":"Washington County, Utah"},"url":SITE+"/southern-utah-solar-repair"})
     faqld = json.dumps({"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":q,"acceptedAnswer":{"@type":"Answer","text":a}} for q,a in faqs]})
-    return 'southern-utah-solar-repair', page('Solar Panel Repair & Inverter Diagnostics in St. George, UT | Solar Review',
-      'Solar not producing in St. George or Southern Utah? Free video evaluation, inverter and panel diagnostics and Powerwall battery retrofits, even if your installer closed.', SITE+'/southern-utah-solar-repair', [svc, faqld], body)
+    return 'southern-utah-solar-repair', page('Solar Panel Repair in St. George & Southern Utah | Solar Review',
+      'Solar not producing in St. George or Southern Utah? Free video evaluation, inverter repair and Powerwall battery add-ons, even if your installer closed.', SITE+'/southern-utah-solar-repair', [svc, faqld], body)
 
 pages = [hub_html()] + [city_html(c) for c in CITIES]
 sm = open('sitemap.xml').read(); nt = open('netlify.toml').read()

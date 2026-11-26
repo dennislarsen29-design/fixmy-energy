@@ -23,7 +23,7 @@ const ALLOW = {
 };
 // Cities the market loop keeps a fresh report on. Override with pipeline_state key market_watchlist ([{city,state}]).
 const MARKETS = [{ city: 'Salt Lake City', state: 'UT' }, { city: 'Austin', state: 'TX' }];
-const AGENT_FN = { seo: 'seo', finance: 'finance', marketing: 'marketing', socials: 'socials', bizdev: 'bizdev', 'crm-dev': 'crm-dev', roadmap: 'roadmap', coaching: 'coaching', pr: 'pr' };
+const AGENT_FN = { seo: 'seo', finance: 'finance', review: 'review', content: 'content', marketing: 'review', socials: 'socials', bizdev: 'review', 'crm-dev': 'review', roadmap: 'roadmap', coaching: 'coaching', pr: 'pr' };
 function H(k, x) { return Object.assign({ apikey: k, Authorization: 'Bearer ' + k, 'Content-Type': 'application/json' }, x || {}); }
 async function get(path, k) { const r = await fetch(SB + path, { headers: H(k) }); if (!r.ok) throw new Error('GET ' + path + ' ' + r.status); return r.json(); }
 async function state(k) { const rows = await get('/pipeline_state?select=key,value', k); const o = {}; rows.forEach(r => { let v = r.value; if (typeof v === 'string') { try { v = JSON.parse(v); } catch (e) {} } o[r.key] = v; }); return o; }
@@ -59,7 +59,9 @@ function detect(S, reports) {
   const nf = S._notifFails;
   if (Array.isArray(nf) && nf.length) add({ system: 'notifications', signature: 'failed_sends', problem: nf.length + ' customer text/email' + (nf.length > 1 ? 's' : '') + ' failed in the last 24 hours (latest: ' + String(nf[0].reason || 'unknown').slice(0, 80) + ').', evidence: { latest: nf.slice(0, 3).map(x => ({ at: x.at, kind: x.kind, to: x.to_masked, reason: x.reason })) }, fix_kind: 'manual', fix_label: 'Resend by hand', fix_detail: 'Open the lead and resend from there; a bad phone number or a customer who replied STOP are the usual causes. This clears itself 24 hours after the last failure.' });
   // Scheduled agents that went quiet (cadence from netlify.toml, with slack).
-  const CAD = { finance: 40, seo: 9 * 24, roadmap: 9 * 24, marketing: 9 * 24, bizdev: 9 * 24 };
+  // marketing/bizdev/crm-dev/socials were merged into 'review' and 'content' on 2026-11-23; check the merged agents instead.
+  const RETIRED = { marketing: 1, bizdev: 1, 'crm-dev': 1, socials: 1, gbp: 1 };
+  const CAD = { finance: 9 * 24, seo: 9 * 24, roadmap: 9 * 24, review: 9 * 24, content: 9 * 24 };
   Object.keys(CAD).forEach(a => {
     const mine = (reports || []).filter(r => r.agent === a).sort((x, y) => new Date(y.created_at) - new Date(x.created_at))[0];
     if (reports && reports.length && !mine) add({ system: 'agent:' + a, signature: 'silent', problem: 'The ' + a + ' agent has filed nothing in the last 30 days.', evidence: {}, fix_kind: 'rerun', fix_target: 'run-agent-background', fix_query: 'agent=' + a, fix_label: 'Run the ' + a + ' agent', fix_detail: 'Runs this agent once; it only writes a report.' });
@@ -71,6 +73,7 @@ function detect(S, reports) {
   const byAgent = {};
   (reports || []).forEach(r => { (byAgent[r.agent] = byAgent[r.agent] || []).push(r); });
   Object.keys(byAgent).forEach(a => {
+    if (RETIRED[a]) return;   // old errors from a retired agent can never be re-run or clear
     const list = byAgent[a].sort((x, y) => new Date(y.created_at) - new Date(x.created_at));
     const last = list[0];
     if (last && /agent error|run failed|could not (run|complete)|credit balance/i.test(last.title || '') && hrs(last.created_at) < 72) {

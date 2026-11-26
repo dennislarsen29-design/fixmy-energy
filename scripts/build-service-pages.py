@@ -9,7 +9,7 @@ esc, page, CTA, SITE = cp.esc, cp.page, cp.CTA, cp.SITE
 PAGES = [
 dict(slug='solar-panels-not-producing', h1='Solar Panels Not Producing Power? Causes and What to Check',
  title='Solar Panels Not Producing Power? Causes & Fixes | Solar Review',
- desc='Solar system making less power or none at all? Check these five things first, learn what the common causes are, and when to call a technician. Free evaluation in Southern California.',
+ desc='Solar making less power or none at all? Check these five things first, learn the common causes and when to call a technician. Free evaluation.',
  lede='If your solar system seems to be making less power than it used to, or nothing at all, the cause is usually one of a short list. Some you can check in five minutes. Others need a technician.',
  sections=[
  ('Check these first (safe, no tools)', '<ol><li><strong>Look at the inverter.</strong> A solid green light normally means it is producing. Red, flashing or blank means a fault or no power. Write down any error code or take a photo.</li><li><strong>Check your monitoring app.</strong> If it says offline, the panels may be fine and only the internet link is down. See <a href="/solar-monitoring-offline">monitoring offline</a>.</li><li><strong>Compare to last year.</strong> Open the same month from last year. A big drop on a similarly sunny stretch is a real signal.</li><li><strong>Look for new shade.</strong> Tree growth, a new building or a satellite dish can shade part of an array.</li><li><strong>Look at your bill.</strong> If your bill rose with no change in how you use power, your system may be making less than you think.</li></ol><p>Do not open the inverter, panel boxes or wiring. Switches on the outside are fine to read, but leave the rest to a licensed technician.</p>'),
@@ -21,8 +21,8 @@ dict(slug='solar-panels-not-producing', h1='Solar Panels Not Producing Power? Ca
        ('Can solar panels stop working without any warning?','Yes. An inverter fault, one failed microinverter or a tripped switch may not trigger a visible alarm, so a drop can go unnoticed for months.'),
        ('Will my warranty cover it?','It depends on the part and who made it. Many inverters and panels carry long manufacturer warranties even if the installer has closed. We check what applies to your equipment.')]),
 dict(slug='solar-inverter-replacement', h1='Solar Inverter Replacement and Repair',
- title='Solar Inverter Replacement & Repair in Southern California | Solar Review',
- desc='Inverter failing or showing an error? Learn the warning signs, when a repair is enough, when replacement makes sense, and how a Powerwall can replace your old inverter.',
+ title='Solar Inverter Replacement & Repair | Solar Review',
+ desc='Inverter failing or showing an error? Learn the warning signs, when a repair is enough, when to replace it, and how a Powerwall can replace your old inverter.',
  lede='The inverter is the part of a solar system most likely to fail first. Here is how to tell whether yours needs repair or replacement, and what the options are.',
  sections=[
  ('Warning signs', '<ul><li>An error code or red or flashing light on the inverter.</li><li>The inverter display is blank, or it clicks on and off.</li><li>Your monitoring shows zero or very low output on a sunny day.</li><li>Production that falls sharply when it gets hot.</li><li>The unit is more than ten years old and your bill has crept up.</li></ul>'),
@@ -50,8 +50,8 @@ dict(slug='solar-monitoring-offline', h1='Solar Monitoring Offline? How to Recon
        ('My installer closed. Can I still get monitoring?','Often yes. The account can usually be moved to you or reset. We can help.'),
        ('My app is offline and changing my Wi-Fi did not help. What now?','Your system may report through a cellular unit instead of Wi-Fi. Those units can stop connecting while the panels keep producing. Check your bill against last year, then send us photos of the inverter and its label and we can tell you what to ask the equipment maker.')]),
 dict(slug='add-powerwall-to-existing-solar', h1='Add a Tesla Powerwall to Existing Solar',
- title='Add a Powerwall to Existing Solar in Southern California | Solar Review',
- desc='Already have solar panels? Learn how a Tesla Powerwall 3 works with existing panels, how net metering affects it, and how we check whether it makes sense for your bill.',
+ title='Add a Powerwall to Existing Solar | Solar Review',
+ desc='Already have solar? Learn how a Tesla Powerwall 3 works with existing panels, how net metering affects it, and whether it makes sense for your bill.',
  lede='If you already have solar, adding a battery can give you backup power and shift more of your solar use into the evening. Whether it pays off depends on your rate plan and how you use power.',
  sections=[
  ('How it works with existing panels', '<p>The Tesla Powerwall 3 stores 13.5 kWh and has a built-in solar inverter, so on many systems your existing panels connect to it directly. Older systems with their own inverter can also be paired with a battery. We check your equipment before recommending which approach fits.</p>'),
@@ -65,7 +65,7 @@ dict(slug='add-powerwall-to-existing-solar', h1='Add a Tesla Powerwall to Existi
        ('How big is a Powerwall 3?','It stores 13.5 kWh. Some homes use more than one.')]),
 dict(slug='solar-system-health-check', h1='Free Solar System Health Check',
  title='Free Solar System Health Check | Solar Review',
- desc='A free check of your existing solar system: production, inverter, warranty, net metering and battery options. Photos and a utility bill are all we need to start.',
+ desc='A free check of your existing solar system: production, inverter, warranty, net metering and battery options. Photos and a utility bill are all we need.',
  lede='Most solar systems older than five years have never had a real checkup. A health check compares what your system should make with what it actually makes, and finds problems before they cost you.',
  sections=[
  ('What we look at', '<ul><li>Your inverter model, age and any error codes.</li><li>Production compared with what your bill shows.</li><li>Your net metering version and when it ends.</li><li>Warranty coverage on your equipment, even if your installer closed.</li><li>Whether a battery or other upgrade makes sense for your usage.</li></ul>'),

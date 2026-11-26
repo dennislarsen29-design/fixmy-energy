@@ -35,8 +35,9 @@ UT_FAQ = lambda n: [('Do you serve %s?' % n, 'Yes. We are expanding in Austin, T
 
 def city_html(c):
     slug, name, util, near = c; s = 'solar-repair-%s-tx' % slug
-    title = 'Solar Panel Repair & Inverter Diagnostics in %s, TX | Solar Review' % name
-    desc = 'Solar not producing in %s, Texas? Free evaluation, inverter and panel diagnostics and Powerwall battery retrofits, even if your installer closed. Call (619) 777-6527.' % name
+    title = 'Solar Panel Repair in %s, TX | Solar Review' % name
+    desc = 'Solar not producing in %s, Texas? Free evaluation, inverter repair and Powerwall battery add-ons, even if your installer closed. Call (619) 777-6527.' % name
+    if len(desc) > 160: desc = desc.replace(' Call (619) 777-6527.', '')
     faqs = UT_FAQ(name) + [('What should I send first?', 'A photo of your inverter (including its label), a photo of any error or fault light, and your most recent utility bill. With those we can usually tell you what we think is happening before anyone visits.')]
     near_links = ''.join('<a href="/solar-repair-%s-tx">%s</a>' % (n, names[n]) for n in near if n in names)
     body = ('<article class="wrap">\n<div class="eyebrow">%s, Texas</div>\n<h1>Solar Panel Repair and Inverter Diagnostics in %s, Texas</h1>\n'
@@ -67,7 +68,7 @@ def hub_html():
     svc = json.dumps({"@context":"https://schema.org","@type":"Service","name":"Solar repair and diagnostics in Austin, TX","provider":{"@type":"Organization","name":"Solar Review","url":SITE,"telephone":"+1-619-777-6527"},
       "areaServed":{"@type":"AdministrativeArea","name":"Travis County, Texas"},"url":SITE+"/austin-solar-repair"})
     faqld = json.dumps({"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":q,"acceptedAnswer":{"@type":"Answer","text":a}} for q,a in faqs]})
-    return 'austin-solar-repair', page('Solar Panel Repair & Inverter Diagnostics in Austin, TX | Solar Review',
+    return 'austin-solar-repair', page('Solar Panel Repair in Austin & Central Texas | Solar Review',
       'Solar not producing in Texas? Free evaluation, inverter and panel diagnostics and Powerwall battery retrofits across Austin, TX, even if your installer closed.', SITE+'/austin-solar-repair', [svc, faqld], body)
 
 pages = [hub_html()] + [city_html(c) for c in CITIES]

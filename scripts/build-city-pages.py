@@ -61,8 +61,9 @@ names = {c[0]: c[1] for c in CITIES}
 def city_html(c):
     slug, name, cty_slug, cty_name, util, local, near, fq, fa = c
     s = 'solar-repair-' + slug
-    title = 'Solar Panel Repair & Inverter Diagnostics in %s, CA | Solar Review' % name
-    desc = 'Solar not producing in %s? Free evaluation, inverter and panel diagnostics, and Powerwall battery retrofits, even if your installer closed. Call (619) 777-6527.' % name
+    title = 'Solar Panel Repair in %s, CA | Solar Review' % name
+    desc = 'Solar not producing in %s? Free evaluation, inverter repair and Powerwall battery add-ons, even if your installer closed. Call (619) 777-6527.' % name
+    if len(desc) > 160: desc = desc.replace(' Call (619) 777-6527.', '')
     faqs = [(fq, fa), ('Does it matter who installed my system?', 'No. We work on systems from any installer, including companies that have closed.'),
             ('Is the first evaluation free?', 'Yes. We start with your photos and utility bill, then a technician visit or a guided video evaluation. No obligation.')]
     faqs = faqs + [('What should I send first?', 'A photo of your inverter (including its label), a photo of any error or fault light, and your most recent utility bill. With those we can usually tell you what we think is happening before anyone visits.')]

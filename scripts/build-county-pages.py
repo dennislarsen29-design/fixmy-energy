@@ -18,8 +18,8 @@ PHONE = '(619) 777-6527'
 
 COUNTIES = [
  dict(slug='solar-repair-los-angeles-county', name='Los Angeles County', short='Los Angeles',
-  title='Solar Panel Repair & Inverter Diagnostics in Los Angeles County | Solar Review',
-  desc='Solar not producing in Los Angeles County? Free evaluation, inverter and panel diagnostics, and Powerwall battery retrofits for SCE and LADWP homes, even if your installer closed.',
+  title='Solar Panel Repair in Los Angeles County | Solar Review',
+  desc='Solar not producing in Los Angeles County? Free evaluation, inverter repair and battery add-ons for SCE and LADWP homes, even if your installer closed.',
   eyebrow='Los Angeles County',
   h1='Solar Panel Repair and Inverter Diagnostics in Los Angeles County',
   lede='If your solar system in Los Angeles County has stopped producing, throws an inverter error, or the company that installed it is gone, we diagnose it and tell you plainly what is wrong. The first evaluation is free, and it does not matter who installed the system.',
@@ -33,7 +33,7 @@ COUNTIES = [
         ('My system seems fine but my bill is high. Can you check?','Yes. Production can drop slowly without any alarm. We compare what the system should produce with what it actually produces, using your monitoring data and your bill.'),
         ('Can you add a battery to an existing system in Los Angeles County?','Often yes. A Tesla Powerwall retrofit can be added to many existing systems. Whether it also saves money depends on your utility and your rate plan, and we tell you that before you decide.')]),
  dict(slug='solar-repair-orange-county', name='Orange County', short='Orange County',
-  title='Solar Panel Repair & Inverter Diagnostics in Orange County, CA | Solar Review',
+  title='Solar Panel Repair in Orange County, CA | Solar Review',
   desc='Orange County solar not producing or installer gone? Free evaluation, inverter and panel diagnostics, and battery retrofits for SCE, SDG&E and Anaheim homes.',
   eyebrow='Orange County',
   h1='Solar Panel Repair and Inverter Diagnostics in Orange County',
@@ -48,8 +48,8 @@ COUNTIES = [
         ('Is the evaluation really free?','Yes. The first evaluation is free. If it turns up a problem that needs a paid diagnostic or repair, we explain what and why before anything is scheduled.'),
         ('Can a battery help during outages?','A battery with backup capability can keep selected circuits on during an outage. We look at your panel and your loads first, because what it can run depends on your home.')]),
  dict(slug='solar-repair-riverside-county', name='Riverside County', short='Riverside County',
-  title='Solar Panel Repair & Inverter Diagnostics in Riverside County, CA | Solar Review',
-  desc='Riverside County solar underperforming or installer closed? Free evaluation, heat-related inverter diagnostics, and battery retrofits across Riverside, Temecula, Palm Springs and the Coachella Valley.',
+  title='Solar Panel Repair in Riverside County, CA | Solar Review',
+  desc='Riverside County solar not producing or installer closed? Free evaluation, inverter repair and battery add-ons in Riverside, Temecula and the Coachella Valley.',
   eyebrow='Riverside County',
   h1='Solar Panel Repair and Inverter Diagnostics in Riverside County',
   lede='Riverside County is hard on solar equipment: long hot summers, dust, and a lot of systems installed during the boom years by companies that have since closed. We diagnose what is actually wrong and tell you what it will take to fix.',
@@ -63,8 +63,8 @@ COUNTIES = [
         ('My installer was Simply Solar. Now what?','We can evaluate the system, find any fault, and explain what the manufacturer warranty still covers. You do not need the original installer.'),
         ('Will adding panels or a battery change my utility rules?','It can. Expanding a system can move it onto newer rules, while adding a battery generally keeps your existing arrangement. We confirm with your bill before you commit.')]),
  dict(slug='solar-repair-san-bernardino-county', name='San Bernardino County', short='San Bernardino County',
-  title='Solar Panel Repair & Inverter Diagnostics in San Bernardino County, CA | Solar Review',
-  desc='San Bernardino County solar not working or installer gone? Free evaluation, inverter diagnostics and battery retrofits in Rancho Cucamonga, Fontana, Ontario, Redlands and the High Desert.',
+  title='Solar Panel Repair in San Bernardino County | Solar Review',
+  desc='San Bernardino County solar not working or installer gone? Free evaluation, inverter repair and battery add-ons in Rancho Cucamonga, Fontana and Ontario.',
   eyebrow='San Bernardino County',
   h1='Solar Panel Repair and Inverter Diagnostics in San Bernardino County',
   lede='From Rancho Cucamonga to Victorville, solar systems in San Bernardino County run in some of the harshest conditions in the state. If yours is underperforming or the installer has disappeared, we diagnose it and tell you the real fix.',
@@ -78,8 +78,8 @@ COUNTIES = [
         ('Why is my production lower in summer than I expected?','Heat reduces panel and inverter efficiency, and dust adds losses. Some drop is normal, but a large or sudden drop points to a fault we can find.'),
         ('Can I add storage to an older system?','Often yes. A Powerwall retrofit can be added to many existing systems. We confirm fit and rules for your utility first.')]),
  dict(slug='solar-repair-imperial-county', name='Imperial County', short='Imperial County',
-  title='Solar Panel Repair & Inverter Diagnostics in Imperial County, CA | Solar Review',
-  desc='Imperial County solar underperforming or installer gone? Free evaluation, extreme-heat inverter diagnostics and battery retrofits in Calexico, El Centro, Imperial and Brawley.',
+  title='Solar Panel Repair in Imperial County, CA | Solar Review',
+  desc='Imperial County solar underperforming or installer gone? Free evaluation, heat-related inverter repair and battery add-ons in Calexico, El Centro and Brawley.',
   eyebrow='Imperial County',
   h1='Solar Panel Repair and Inverter Diagnostics in Imperial County',
   lede='Imperial County is one of the hottest places solar equipment runs. If your system in Calexico, El Centro or the Imperial Valley has stopped producing, throws an inverter error, or the company that installed it is gone, we diagnose it and tell you plainly what is wrong.',
@@ -167,8 +167,8 @@ def hub_html():
       '<p class="meta">Solar Review &middot; Updated October 2026</p>\n<h2>Choose your area</h2>\n<ul>%s<li><a href="/"><strong>San Diego County</strong></a> &mdash; our home base</li></ul>\n'
       '<h2>Why homeowners call us</h2>\n<p>Millions of Southern California homes have solar from companies that have since closed, restructured or stopped answering. Production can fall for years without an alarm. We compare what your system should make with what it makes, find the fault, and tell you plainly what it will take to fix, including what the manufacturer warranty still covers.</p>\n%s\n'
       '<h2>Common questions</h2>\n%s\n</article>') % (cards, CTA, ''.join('<div class="faq-q">%s</div><p>%s</p>' % (esc(q), esc(a)) for q, a in faqs))
-    return page('Solar Repair & Inverter Diagnostics Across Southern California | Solar Review',
-      'Free solar evaluation, inverter and panel diagnostics, and Powerwall battery retrofits in Los Angeles, Orange, Riverside, San Bernardino, Imperial and San Diego counties.',
+    return page('Solar Repair Across Southern California | Solar Review',
+      'Free solar evaluation, inverter repair and Powerwall battery add-ons in Los Angeles, Orange, Riverside, San Bernardino, Imperial and San Diego counties.',
       SITE+'/southern-california-solar-repair', [json.dumps(hub), faqld, bc], body)
 
 if __name__ == '__main__':

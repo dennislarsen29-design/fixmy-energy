@@ -33,8 +33,9 @@ UT_FAQ = lambda n: [('Do you serve %s?' % n, 'Yes. We are expanding in Salt Lake
 
 def city_html(c):
     slug, name, util, near = c; s = 'solar-repair-%s-ut' % slug
-    title = 'Solar Panel Repair & Inverter Diagnostics in %s, UT | Solar Review' % name
-    desc = 'Solar not producing in %s, Utah? Free evaluation, inverter and panel diagnostics and Powerwall battery retrofits, even if your installer closed. Call (619) 777-6527.' % name
+    title = 'Solar Panel Repair in %s, UT | Solar Review' % name
+    desc = 'Solar not producing in %s, Utah? Free evaluation, inverter repair and Powerwall battery add-ons, even if your installer closed. Call (619) 777-6527.' % name
+    if len(desc) > 160: desc = desc.replace(' Call (619) 777-6527.', '')
     faqs = UT_FAQ(name) + [('What should I send first?', 'A photo of your inverter (including its label), a photo of any error or fault light, and your most recent utility bill. With those we can usually tell you what we think is happening before anyone visits.')]
     near_links = ''.join('<a href="/solar-repair-%s-ut">%s</a>' % (n, names[n]) for n in near if n in names)
     body = ('<article class="wrap">\n<div class="eyebrow">%s, Utah</div>\n<h1>Solar Panel Repair and Inverter Diagnostics in %s, Utah</h1>\n'
@@ -55,7 +56,7 @@ def city_html(c):
 
 def hub_html():
     lst = ''.join('<li><a href="/solar-repair-%s-ut">%s</a></li>' % (c[0], c[1]) for c in CITIES)
-    faqs = [('Do you serve Utah?', 'Yes, in Salt Lake City, UT, starting around South Jordan. We start with photos and your bill, then a technician visit or a guided video evaluation.'), UT_FAQ('Salt Lake City, UT')[1]]
+    faqs = [('Do you serve Utah?', 'Yes, in Salt Lake City, UT, starting around South Jordan. We start with photos and your bill, then a technician visit or a guided video evaluation.'), UT_FAQ('Salt Lake City, UT')[1], ('What should I send first?', 'A photo of your inverter (including its label), a photo of any error or fault light, and your most recent utility bill. With those we can usually tell you what we think is happening before anyone visits.')]
     body = ('<article class="wrap">\n<div class="eyebrow">Utah</div>\n<h1>Solar Repair and Inverter Diagnostics in Salt Lake City, UT</h1>\n'
       '<p class="lede">Solar not producing, an inverter error, or an installer that closed? We diagnose existing solar systems and add batteries across Salt Lake City, UT. The first evaluation is free.</p>\n'
       '<p class="meta">Solar Review &middot; Updated October 2026</p>\n<h2>Cities we serve</h2>\n<ul id="ut-city-list">%s</ul>\n'
@@ -65,8 +66,8 @@ def hub_html():
     svc = json.dumps({"@context":"https://schema.org","@type":"Service","name":"Solar repair and diagnostics in Salt Lake City, UT","provider":{"@type":"Organization","name":"Solar Review","url":SITE,"telephone":"+1-619-777-6527"},
       "areaServed":{"@type":"AdministrativeArea","name":"Salt Lake County, Utah"},"url":SITE+"/utah-solar-repair"})
     faqld = json.dumps({"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":q,"acceptedAnswer":{"@type":"Answer","text":a}} for q,a in faqs]})
-    return 'utah-solar-repair', page('Solar Panel Repair & Inverter Diagnostics in Salt Lake City, UT | Solar Review',
-      'Solar not producing in Utah? Free evaluation, inverter and panel diagnostics and Powerwall battery retrofits across Salt Lake City, UT, even if your installer closed.', SITE+'/utah-solar-repair', [svc, faqld], body)
+    return 'utah-solar-repair', page('Solar Panel Repair in Salt Lake City & Utah | Solar Review',
+      'Solar not producing in Utah? Free evaluation, inverter repair and Powerwall battery add-ons across Salt Lake City, even if your installer closed.', SITE+'/utah-solar-repair', [svc, faqld], body)
 
 pages = [hub_html()] + [city_html(c) for c in CITIES]
 sm = open('sitemap.xml').read(); nt = open('netlify.toml').read()
