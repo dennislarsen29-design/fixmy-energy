@@ -2450,13 +2450,17 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         _curDep.forEach(function(x){ if (x.status === 'needs_review') { _unrevAmt += parseFloat(x.amount) || 0; _unrevN++; } });
         // ACCOUNTS RECEIVABLE (with age)
         var _arRows = [];
-        var _addAr = function(j, why, amt, since){ if (!(amt > 0)) return; var days = since ? Math.max(0, Math.floor((_now - new Date(since).getTime()) / 86400000)) : null; _arRows.push({ nm: _nm(j), why: why, amt: amt, days: days, who: why.indexOf('Cosmic') === 0 ? 'Cosmic' : 'Axia' }); };
+        var _addAr = function(j, why, amt, since){ if (!(amt > 0)) return; var days = since ? Math.max(0, Math.floor((_now - new Date(since).getTime()) / 86400000)) : null; _arRows.push({ nm: _nm(j), why: why, amt: amt, days: days, who: why.indexOf('Cosmic') === 0 ? 'Cosmic' : (why.indexOf('Installer') === 0 ? 'Installer' : 'Axia') }); };
         _allSold.forEach(function(j){
           if (j.sold_type === 'battery_retrofit' && j.docs_sent_at) {
             var half = Math.round(((parseFloat(j.br_revenue) || 0) - (parseFloat(j.br_redline) || 0)) * 50) / 100;
-            if (half > 0) {
+            var _instC = j.battery_ops || j.assigned_ops || 'ops3';
+            if (half > 0 && _instC === 'ops3') {
               if (!_rcv[j.id + '|cosmic_sale']) _addAr(j, 'Cosmic 50% at sale', half, j.docs_sent_at);
               if ((parseInt(j.step, 10) || 1) >= 9 && !_rcv[j.id + '|cosmic_done']) _addAr(j, 'Cosmic 50% at completion', half, j.installed_at || j.install_date || null);
+            } else if (half > 0) {
+              // other installers (e.g. Spring Solar) pay the full Gross Commission once the install is done
+              if ((parseInt(j.step, 10) || 1) >= 9 && !_rcv[j.id + '|cosmic_done']) _addAr(j, 'Installer payment at completion', half * 2, j.installed_at || j.install_date || null);
             }
           } else if (j.lead_category === 'new_solar') {
             var d = _axiaCommCache[j.id]; if (!d) return;
@@ -24565,7 +24569,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
 
     // Cosmic → Solar Review: 50% of Gross Commission (price − redline) at sale, 50% at completion. Battery Retrofit only.
     try {
-      var bj = await pc.from('customers').select('id,first_name,last_name,br_revenue,br_redline,step,install_date,sold_at,archived').eq('sold_type','battery_retrofit').limit(300);
+      var bj = await pc.from('customers').select('id,first_name,last_name,br_revenue,br_redline,step,install_date,sold_at,archived,assigned_ops,battery_ops').eq('sold_type','battery_retrofit').limit(300);
+      var _opsNm = {}; try { var _om = await pc.from('team_members').select('id,name').eq('role','ops'); (_om.data||[]).forEach(function(o){ _opsNm[o.id] = o.name; }); } catch(e) {}
       var bJobs = (bj.data||[]).filter(function(c){ return !c.archived; });
       var cosRows = comms.filter(function(x){ return x.line==='fixmy' && x.kind==='override' && /^cosmic_(sale|done)$/.test(x.note||''); });
       if (bJobs.length) {
@@ -24577,20 +24582,25 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           var nm = ((c.first_name||'')+' '+(c.last_name||'')).trim();
           var done = (c.step||0) >= 9;
           var line = '';
-          [['sale','50% at sale',true],['done','50% at completion',done]].forEach(function(t){
+          // Cosmic pays 50% at sale + 50% at completion. Any other installer (e.g. Spring Solar) pays once, in full, when the install is done (per Dennis 2026-11-26).
+          var _inst = c.battery_ops || c.assigned_ops || 'ops3';
+          var _isCos = _inst === 'ops3';
+          var _instNm = _isCos ? 'Cosmic' : (_opsNm[_inst] || 'Installer');
+          var _parts = _isCos ? [['sale','50% at sale',true,half],['done','50% at completion',done,half]] : [['done','Paid in full at completion',done,Math.round(gross*100)/100]];
+          _parts.forEach(function(t){ var amtDue = t[3];
             var row = cosRows.find(function(x){ return x.customer_id===c.id && x.note==='cosmic_'+t[0]; });
-            expectTot += half;
+            expectTot += amtDue;
             var st;
             if (row) { recvTot += parseFloat(row.amount)||0; st = '<span style="color:#8DC63F;font-weight:700;">&#10003; Received '+money(row.amount)+' &middot; '+new Date(row.paid_at||row.sold_at).toLocaleDateString()+'</span> <button class="no-print" onclick="cosmicUndoPayment(\''+row.id+'\')" style="background:none;border:none;color:#666;font-size:0.62rem;cursor:pointer;text-decoration:underline;">undo</button>'; }
-            else if (t[2]) { dueTot += half; st = '<span style="color:#f59e0b;font-weight:700;">Due now</span> <button class="no-print fin-btn" onclick="cosmicRecordPayment(\''+c.id+'\',\''+t[0]+'\','+half+')" style="padding:3px 11px;">Mark received</button>'; }
+            else if (t[2]) { dueTot += amtDue; st = '<span style="color:#f59e0b;font-weight:700;">Due now</span> <button class="no-print fin-btn" onclick="cosmicRecordPayment(\''+c.id+'\',\''+t[0]+'\','+amtDue+',\''+_instNm.replace(/'/g,'')+'\')" style="padding:3px 11px;">Mark received</button>'; }
             else st = '<span style="color:#777;">Not due &mdash; waiting on install completion</span>';
-            line += '<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;padding:6px 0;border-top:1px solid rgba(255,255,255,0.06);font-size:0.74rem;"><span style="color:#ccc;">'+t[1]+' &middot; <b>'+money(half)+'</b></span><span>'+st+'</span></div>';
+            line += '<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;padding:6px 0;border-top:1px solid rgba(255,255,255,0.06);font-size:0.74rem;"><span style="color:#ccc;">'+t[1]+' &middot; <b>'+money(amtDue)+'</b></span><span>'+st+'</span></div>';
           });
-          cards += '<div class="fin-card"><div style="font-size:0.85rem;font-weight:800;color:#ddd;">'+esc(nm)+' <span style="color:#666;font-weight:500;font-size:0.7rem;">&middot; Gross Commission '+money(gross)+'</span></div>'+line+'</div>';
+          cards += '<div class="fin-card"><div style="font-size:0.85rem;font-weight:800;color:#ddd;">'+esc(nm)+' <span style="color:#22d3ee;font-weight:600;font-size:0.7rem;">&middot; '+esc(_instNm)+'</span> <span style="color:#666;font-weight:500;font-size:0.7rem;">&middot; Gross Commission '+money(gross)+'</span></div>'+line+'</div>';
         });
         if (cards) {
-          h += '<div style="font-size:0.9rem;font-weight:800;color:#22d3ee;margin:22px 0 2px;">&#127970; Cosmic payments to Solar Review</div>';
-          h += '<div style="font-size:0.72rem;color:#888;margin-bottom:8px;">Battery Retrofit only. Cosmic pays Solar Review 50% of the Gross Commission (price &minus; redline) at sale and 50% at completion. Marking one received books it as income.</div>';
+          h += '<div style="font-size:0.9rem;font-weight:800;color:#22d3ee;margin:22px 0 2px;">&#127970; Installer payments to Solar Review</div>';
+          h += '<div style="font-size:0.72rem;color:#888;margin-bottom:8px;">Battery Retrofit only. Cosmic pays 50% of the Gross Commission (price &minus; redline) at sale and 50% at completion. Other installers (e.g. Spring Solar) pay it in full when the install is done. The rep&rsquo;s commission becomes payable once the completion payment is marked received. Marking one received books it as income.</div>';
           h += '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px;"><div class="fin-tile" style="flex:0 1 auto;"><div class="v" style="color:#22d3ee;">'+money(expectTot)+'</div><div class="l">Total expected</div></div><div class="fin-tile" style="flex:0 1 auto;"><div class="v" style="color:#8DC63F;">'+money(recvTot)+'</div><div class="l">Received</div></div><div class="fin-tile" style="flex:0 1 auto;"><div class="v" style="color:#f59e0b;">'+money(dueTot)+'</div><div class="l">Due now, not received</div></div></div>';
           h += cards;
         }
@@ -24809,8 +24819,9 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
       renderTeamView('payroll');
     } catch(e) { alert('Could not save: '+(e.message||e)); }
   };
-  window.cosmicRecordPayment = async function(cid, which, half) {
-    var v = prompt('Amount Cosmic paid (default is the 50% share):', String(half));
+  window.cosmicRecordPayment = async function(cid, which, half, instNm) {
+    instNm = instNm || 'Cosmic';
+    var v = prompt('Amount '+instNm+' paid:', String(half));
     if (v === null) return;
     var amt = parseFloat(String(v).replace(/[$,]/g,''));
     if (!(amt>0)) { alert('Enter a valid amount.'); return; }
@@ -24820,7 +24831,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (isNaN(when.getTime())) { alert('Invalid date.'); return; }
     try {
       var pc = supabase.createClient(SUPA_URL, SUPA_KEY);
-      var r = await pc.from('commissions').insert({ customer_id:cid, line:'fixmy', kind:'override', payee:'solar_review_corp', payee_name:'Cosmic payment',
+      var r = await pc.from('commissions').insert({ customer_id:cid, line:'fixmy', kind:'override', payee:'solar_review_corp', payee_name:(instNm==='Cosmic'?'Cosmic payment':instNm+' payment'),
         amount:amt, status:'paid', sold_at:when.toISOString(), paid_at:when.toISOString(), note:'cosmic_'+which }).select('id');
       if (r.error) throw r.error;
       if (!r.data || !r.data.length) throw new Error('nothing was saved');
