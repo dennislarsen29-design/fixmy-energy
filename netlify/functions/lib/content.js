@@ -220,7 +220,30 @@ async function ghlAccounts() {
   const list = (j.results && j.results.accounts) || j.accounts || (Array.isArray(j.results) ? j.results : []) || [];
   return list.map(a => ({ id: a.id || a._id, name: a.name || a.displayName || a.username || '', platform: platformOf(a), raw_platform: a.platform || a.type || '', expired: !!(a.isExpired || a.expired) }));
 }
+// GHL requires a userId (the GHL user the post is made as). Prefer the one saved in
+// Channels; otherwise use the user who connected the social accounts, then the first
+// user on the location. Cached per function instance.
+let _ghlUserId = null;
+async function ghlUserId() {
+  if (_ghlUserId) return _ghlUserId;
+  try {
+    const r = await fetch(GHL + '/social-media-posting/' + loc() + '/accounts', { headers: ghlH() });
+    const j = JSON.parse(await r.text() || '{}');
+    const list = (j.results && j.results.accounts) || j.accounts || [];
+    for (const a of list) { const u = a.userId || a.user_id || a.createdBy || (a.meta && a.meta.userId); if (u && typeof u === 'string') { _ghlUserId = u; return u; } }
+  } catch (e) {}
+  try {
+    const r = await fetch(GHL + '/users/?locationId=' + encodeURIComponent(loc()), { headers: ghlH() });
+    const j = JSON.parse(await r.text() || '{}');
+    const users = j.users || [];
+    const pick = users.find(u => /info@fixmy\.energy|dennis/i.test((u.email || '') + ' ' + (u.name || ''))) || users[0];
+    if (pick && pick.id) { _ghlUserId = pick.id; return pick.id; }
+  } catch (e) {}
+  return null;
+}
 async function ghlPost(accountIds, text, imageUrl, userId) {
+  if (!userId) userId = await ghlUserId();
+  if (!userId) throw new Error('No GHL user id found (needed to post). Set GHL_GBP_USER_ID or pick a user under Channels.');
   const body = { accountIds, summary: text, type: 'post', status: 'published' };
   if (userId) body.userId = userId;
   if (imageUrl) body.media = [{ url: imageUrl, type: /\.png(\?|$)/i.test(imageUrl) ? 'image/png' : 'image/jpeg' }];
