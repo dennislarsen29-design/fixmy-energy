@@ -12946,7 +12946,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
           system_size:                 rec.system_size  || null,
           monthly_bill:                rec.monthly_bill || null,
           nem_status:                  rec.nem_status   || '',
-          region:                      (window._isUtahLead && window._isUtahLead(rec)) ? 'UT' : (window._isNevadaLead && window._isNevadaLead(rec)) ? 'NV' : (window._propIsPGE || (window._isNorCalLead && window._isNorCalLead(rec))) ? 'PGE' : (((window._isOtherStateLead && window._isOtherStateLead(rec)) || (window._isTexasLead && window._isTexasLead(rec))) ? 'OTHER' : 'CA'),
+          region:                      (window._isUtahLead && window._isUtahLead(rec)) ? 'UT' : (window._isNevadaLead && window._isNevadaLead(rec)) ? 'NV' : (window._propIsPGE || (window._isNorCalLead && window._isNorCalLead(rec))) ? 'PGE' : window._propIsSCE ? 'SCE' : window._propIsLADWP ? 'LADWP' : (((window._isOtherStateLead && window._isOtherStateLead(rec)) || (window._isTexasLead && window._isTexasLead(rec))) ? 'OTHER' : 'CA'),
           installer:                   rec.installer    || '',
           option_totals:               optionTotals,
           issue:                       issueContext,
@@ -13054,8 +13054,20 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   var TX_RATE_EST = 0.15; // ESTIMATE of a typical Central Texas residential rate ($/kWh). Used ONLY when no bill has been read; the bill's own rate always wins. Verify before relying on it.
   window._evUtilName = function(){ var u = _evLocal && _evLocal.utility; return u === 'sce' ? 'Southern California Edison (SCE)' : u === 'sdge' ? 'SDG&amp;E' : u === 'ladwp' ? 'LADWP' : u === 'rmp' ? 'Rocky Mountain Power' : u === 'nve' ? 'NV Energy' : u === 'pge' ? 'PG&amp;E' : 'utility'; };
   var SCE_RATE_EST = 0.40; // ESTIMATE of Southern California Edison's blended residential rate ($/kWh), NOT verified against a tariff. Used ONLY when no bill has been read and the utility is SCE (picked by the rep or read from a bill); the bill's own rate always wins.
+  var LADWP_RATE_EST = 0.25; // ESTIMATE of LADWP's blended residential rate ($/kWh), NOT verified against a tariff. Used ONLY when no bill has been read.
   var PGE_RATE_EST = 0.42; // ESTIMATE of PG&E's blended residential rate ($/kWh, E-TOU-C-like), NOT verified against a tariff. Used ONLY when no bill has been read.
   // PG&E lead (2026-11-28, per Dennis): the rep picked PG&E, the bill was read as PG&E, or a California ZIP 93600+ with no other utility chosen.
+  // Effective California utility for the evaluation: rep's pick, else the bill read, else ZIP (919xx-921xx = SDG&E, 93600+ = PG&E).
+  // SCE / LADWP are never guessed from a ZIP (LA/OC/Inland ZIPs mix SCE, LADWP and city utilities): they come from the pick or the bill.
+  window._evUtilKey = function(){
+    if (window._evRegion() !== 'CA') return '';
+    var u = _evLocal && _evLocal.utility, bd = _evLocal && _evLocal.billAnalysis && _evLocal.billAnalysis.utility_detected;
+    if (u) return u;
+    if (bd && bd !== 'unknown') return bd;
+    if (window._isNorCalLead(_evRec)) return 'pge';
+    var z = parseInt(extractZip(String((_evRec && _evRec.address) || '')), 10) || 0;
+    return (z >= 91900 && z <= 92199) ? 'sdge' : '';
+  };
   window._evIsPge = function(){
     if (window._evRegion() !== 'CA') return false;
     var u = _evLocal && _evLocal.utility, bd = _evLocal && _evLocal.billAnalysis && _evLocal.billAnalysis.utility_detected;
@@ -13063,7 +13075,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     if (bd && bd !== 'unknown') return bd === 'pge';
     return window._isNorCalLead(_evRec);
   };
-  window._evFallbackRate = function(){ var rg = window._evRegion(); return rg === 'UT' ? UT_RATE_EST : rg === 'TX' ? TX_RATE_EST : rg === 'NV' ? NV_RATE_EST : window._evIsPge() ? PGE_RATE_EST : (_evLocal && _evLocal.utility === 'sce') ? SCE_RATE_EST : 0.453; };
+  window._evFallbackRate = function(){ var rg = window._evRegion(); return rg === 'UT' ? UT_RATE_EST : rg === 'TX' ? TX_RATE_EST : rg === 'NV' ? NV_RATE_EST : window._evIsPge() ? PGE_RATE_EST : window._evUtilKey() === 'sce' ? SCE_RATE_EST : window._evUtilKey() === 'ladwp' ? LADWP_RATE_EST : 0.453; };
   window._evRegion = function(){ var r = _evRec || {}; return (window._isUtahLead && window._isUtahLead(r)) ? 'UT' : (window._isTexasLead && window._isTexasLead(r)) ? 'TX' : (window._isNevadaLead && window._isNevadaLead(r)) ? 'NV' : 'CA'; };
   // Getting a real bill is the step reps most often fumble. Written out per utility.
   var UTILITY_HELP = {
@@ -15471,7 +15483,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     out.tone = yrs <= 0 ? 'bad' : yrs < 5 ? 'warn' : 'good';
     var hint = d >= '2023-04-14' ? '3' : d < '2016-06-01' ? '1' : '2';
     if ((ver === '1' && hint !== '1' && d >= '2017-01-01') || (ver === '2' && (hint === '3' || d < '2016-01-01'))) out.text += '<br><span style="color:#ffaa00;">The date and version don&rsquo;t fit together &mdash; double-check both.</span>';
-    out.text += '<br><span style="color:#999;">Tip: adding a battery generally keeps NEM status; adding many more panels (roughly 10% / 1 kW or more) may change it, so a quick check with SDG&amp;E is worthwhile when quoting. Sources differ on whether the 20 years counts from the application or from Permission to Operate: the utility letter settles it.</span>';
+    out.text += '<br><span style="color:#999;">Tip: adding a battery generally keeps NEM status; adding many more panels (roughly 10% / 1 kW or more) may change it, so a quick check with ' + (window._evUtilKey() === 'sce' ? 'SCE' : window._evUtilKey() === 'pge' ? 'PG&amp;E' : 'SDG&amp;E') + ' is worthwhile when quoting. Sources differ on whether the 20 years counts from the application or from Permission to Operate: the utility letter settles it.</span>';
+    if (window._evUtilKey() === 'ladwp') out.text = '<b>LADWP is a city utility, not under the CPUC&rsquo;s NEM 1.0/2.0/3.0.</b> It runs its own net metering program. Confirm the customer&rsquo;s LADWP net-metering terms on the bill before quoting savings; the versions above don&rsquo;t apply.';
     return out;
   }
   window.evNemSet = function(k, v) {
@@ -15707,7 +15720,8 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     var a = (_evLocal.answers || {}), g = a.gbd || null, ba = (_evLocal.billAnalysis && !_evLocal.billAnalysis._err) ? _evLocal.billAnalysis : null;
     if (a.has_ev !== 'yes') return null;
     if (window._evRegion() !== 'CA') return null; // SDG&E EV-TOU rate comparison; no Utah equivalent built
-    if (window._evIsPge()) return null; // PG&E EV plans (EV2-A, E-ELEC) are not built; don't show SDG&E rates to a PG&E customer
+    var _uk = window._evUtilKey();
+    if (_uk && _uk !== 'sdge') return null; // only SDG&E's EV-TOU-5 is built; never show SDG&E rates to an SCE, LADWP or PG&E customer
     var out = { need: [] };
     if (!g || g.night_kwh_per_day == null) { out.need.push('Green Button meter data (to see when the car charges)'); }
     if (!ba || !(ba.avg_rate_per_kwh > 0)) out.need.push('a utility bill (to know the rate they pay now)');
@@ -17196,6 +17210,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
   function _propUsageFromBill(bill, fallbackRate) {
     if (window._propIsTX && fallbackRate === 0.453) fallbackRate = 0.15; // Central Texas estimate, only when no bill is read
     if (window._propIsPGE && fallbackRate === 0.453) fallbackRate = 0.42; // PG&E estimate, only when no bill is read (bill's own rate wins)
+    if (window._propIsLADWP && fallbackRate === 0.453) fallbackRate = 0.25; // LADWP estimate, only when no bill is read (bill's own rate wins)
     if (window._propIsSCE && fallbackRate === 0.453) fallbackRate = 0.40; // Southern California Edison estimate, only when no bill is read (bill's own rate wins)
     if (window._propIsNV && fallbackRate === 0.453) fallbackRate = 0.13; // Las Vegas / NV Energy estimate, only when no bill is read
     if (window._propIsUT && fallbackRate === 0.453) fallbackRate = 0.12; // Utah estimate, only when no bill is read (bill's own rate wins)
@@ -31508,7 +31523,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
     // ⚠️ Always reset first — opening the builder for a different customer must never
     // carry over the previous lead's bill_analysis into this one's savings math.
     _propBillAnalysis = null;
-    window._propIsSCE = false;
+    window._propIsSCE = false; window._propIsLADWP = false;
     window._propPhotos = null; window._propHiddenIds = [];   // per-lead photo list for the Review step
     try { var _pc0 = (typeof adminCustomers !== 'undefined' ? adminCustomers : []).find(function(x){ return x.id === id; }); window._propIsUT = !!(_pc0 && window._isUtahLead(_pc0)); window._propNonCA = !!(_pc0 && window._isNonCaLead(_pc0)); window._propIsTX = !!(_pc0 && window._isTexasLead && window._isTexasLead(_pc0)); window._propIsNV = !!(_pc0 && window._isNevadaLead && window._isNevadaLead(_pc0)); window._propIsPGE = !!(_pc0 && window._isNorCalLead && window._isNorCalLead(_pc0)); } catch(e) { window._propIsPGE = false; window._propIsUT = false; window._propIsTX = false; window._propIsNV = false; }
     _propEvKwh = 0;
@@ -31520,6 +31535,7 @@ height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
         _propEvalRowId = _beRes.data[0].id;
         window._propIsSCE = (_beRes.data[0].utility === 'sce') || !!(_beRes.data[0].bill_analysis && _beRes.data[0].bill_analysis.utility_detected === 'sce');
         var _beU = _beRes.data[0].utility || (_beRes.data[0].bill_analysis && _beRes.data[0].bill_analysis.utility_detected) || '';
+        window._propIsLADWP = _beU === 'ladwp';
         if (_beU === 'pge') window._propIsPGE = true; else if (_beU && _beU !== 'unknown' && _beU !== 'other') window._propIsPGE = false;
         if (_beRes.data[0].bill_analysis) _propBillAnalysis = _beRes.data[0].bill_analysis;
         try { _propEvKwh = window._evEvKwh(_beRes.data[0].answers) || 0; } catch(e) {}

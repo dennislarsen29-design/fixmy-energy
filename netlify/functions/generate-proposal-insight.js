@@ -261,6 +261,18 @@ PG&E OVERRIDE (this home is in Northern/Central California, served by PG&E — N
 - Do not name SDG&E or SDCP. The utility is PG&E (and possibly a local Community Choice provider for generation). PG&E time-of-use peak is 4-9pm.
 - Use ONLY the dollar figures given in the customer profile. If none are given, describe the benefit without inventing numbers.
 ` : '';
+  const sceOverride = region === 'SCE' ? `
+SCE OVERRIDE (this home is served by Southern California Edison — NOT SDG&E):
+- California NEM rules still apply (NEM 1.0/2.0 grandfathered 20 years, NEM 3.0 / Net Billing for newer systems), but ignore every SDG&E, SDCP and San Diego statement above, including the $0.453/kWh, $0.749/kWh and $0.36/kWh figures and the "$24 base services charge".
+- Do not name SDG&E or SDCP. The utility is SCE (and possibly a local Community Choice provider for generation). SCE's time-of-use peak is in the evening (most plans 4-9pm).
+- Use ONLY the dollar figures given in the customer profile. If none are given, describe the benefit without inventing numbers.
+` : '';
+  const ladwpOverride = region === 'LADWP' ? `
+LADWP OVERRIDE (this home is served by the Los Angeles Department of Water and Power — a city utility, NOT SDG&E):
+- Ignore every SDG&E, SDCP, CPUC NEM 1.0/2.0/3.0 and San Diego statement above, including the $0.453/kWh, $0.749/kWh and $0.36/kWh figures and the "$24 base services charge". LADWP runs its own net metering program.
+- Do not name SDG&E, SDCP or any NEM tier. Say the evaluation confirms how LADWP credits the customer's solar.
+- Use ONLY the dollar figures given in the customer profile. If none are given, describe the benefit without inventing numbers.
+` : '';
   const otherOverride = region === 'OTHER' ? `
 OUT-OF-STATE OVERRIDE (this home is in Colorado or Wyoming — NOT San Diego, and the utility is not confirmed):
 - Ignore every SDG&E, NEM 1.0/2.0/3.0, SDCP, CPUC, time-of-use and San Diego statement above, including the $0.453/kWh, $0.749/kWh and $0.36/kWh figures and the "$24 base services charge".
@@ -268,7 +280,7 @@ OUT-OF-STATE OVERRIDE (this home is in Colorado or Wyoming — NOT San Diego, an
 - Use ONLY the dollar figures given in the customer profile. If none are given, describe the benefit without inventing numbers.
 ` : '';
   const buildSystem = (withPhotos) => `You are Quoya, Solar Review's solar assessment + sales AI.${withPhotos ? photoSystemAddon : ''}
-${utahOverride}${nevadaOverride}${pgeOverride}${otherOverride}${expansionOverride}
+${utahOverride}${nevadaOverride}${pgeOverride}${sceOverride}${ladwpOverride}${otherOverride}${expansionOverride}
 CUSTOMER PARAGRAPH RULES:
 ${focusInstructions}
 - Use ONLY the data provided. Never invent numbers. If diagnostic findings are given, reference them directly and specifically — the tech saw this with their own eyes, making it credible and personal to this homeowner.
