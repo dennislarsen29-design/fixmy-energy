@@ -3178,3 +3178,6 @@ GHL Social Planner now has Google Business Profile ("Solar Review | www.FixMy.En
 
 ## Netlify 4 KB function env limit (2026-11-27)
 Functions run in Lambda compatibility mode, so all env vars scoped to functions must total under 4 KB (keys + values). Adding the new `GITHUB_TOKEN` pushed it over and the deploy failed ("Your environment variables exceed the 4KB limit"). Fixed by deleting the dead Top Tier vars `GHL_TT_CONFIRMED` and `GHL_TT_REMINDER_WEBHOOK`. Before adding any env var, delete an unused one or scope build-only vars (e.g. `SECRETS_SCAN_*`) to builds; the permanent fix is Netlify's "upgrade from Lambda compatibility mode" (changes every function's runtime — do on purpose). Blog publishing via GITHUB_TOKEN works (Sunworks post, commit 38ce248).
+
+## Maxwell HDM LTO discount by system type (2026-11-28, per Dennis)
+Maxwell HDM (Prepaid 5-Year LTO) default discount: **23% battery only, 28% when the option adds solar panels** (was a flat 25%). `window._ltoDefaultPct(build)` in portal.html picks it live from the option's line items (`_ltoHasSolar`: the 420W/440W panel stepper item or any line named "panel(s)", ignoring service/main/sub/breaker panel). Adding or removing panels re-prices the option unless the rep typed their own %. Participate stays 30%. Saved proposals keep the % they were saved with.
